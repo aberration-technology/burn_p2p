@@ -724,16 +724,10 @@ impl ShardCache {
                     .map_err(|error| DataloaderError::Io(error.to_string()))?
             }
             UpstreamAdapter::Http { base_url } => {
-                let response = reqwest::blocking::get(format!(
+                let bytes = http_get_bytes(format!(
                     "{}/fetch-manifest.json",
                     base_url.trim_end_matches('/')
-                ))
-                .map_err(|error| DataloaderError::Http(error.to_string()))?;
-                let bytes = response
-                    .error_for_status()
-                    .map_err(|error| DataloaderError::Http(error.to_string()))?
-                    .bytes()
-                    .map_err(|error| DataloaderError::Http(error.to_string()))?;
+                ))?;
                 serde_json::from_slice(bytes.as_ref())
                     .map_err(|error| DataloaderError::Io(error.to_string()))?
             }
@@ -774,23 +768,42 @@ impl ShardCache {
         match upstream {
             UpstreamAdapter::Local { root } => fs::read(Path::new(root).join(&entry.locator))
                 .map_err(|error| DataloaderError::Io(error.to_string())),
-            UpstreamAdapter::Http { base_url } => {
-                let response = reqwest::blocking::get(format!(
-                    "{}/{}",
-                    base_url.trim_end_matches('/'),
-                    entry.locator.trim_start_matches('/')
-                ))
-                .map_err(|error| DataloaderError::Http(error.to_string()))?;
-                let bytes = response
-                    .error_for_status()
-                    .map_err(|error| DataloaderError::Http(error.to_string()))?
-                    .bytes()
-                    .map_err(|error| DataloaderError::Http(error.to_string()))?;
-                Ok(bytes.to_vec())
-            }
+            UpstreamAdapter::Http { base_url } => http_get_bytes(format!(
+                "{}/{}",
+                base_url.trim_end_matches('/'),
+                entry.locator.trim_start_matches('/')
+            )),
             unsupported => Err(DataloaderError::UnsupportedAdapter(unsupported.clone())),
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_get_bytes(url: String) -> Result<Vec<u8>, DataloaderError> {
+    let response =
+        reqwest::blocking::get(url).map_err(|error| DataloaderError::Http(error.to_string()))?;
+    let bytes = response
+        .error_for_status()
+        .map_err(|error| DataloaderError::Http(error.to_string()))?
+        .bytes()
+        .map_err(|error| DataloaderError::Http(error.to_string()))?;
+    Ok(bytes.to_vec())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn http_get_bytes(url: String) -> Result<Vec<u8>, DataloaderError> {
+    futures::executor::block_on(async move {
+        let response = reqwest::get(url)
+            .await
+            .map_err(|error| DataloaderError::Http(error.to_string()))?;
+        let bytes = response
+            .error_for_status()
+            .map_err(|error| DataloaderError::Http(error.to_string()))?
+            .bytes()
+            .await
+            .map_err(|error| DataloaderError::Http(error.to_string()))?;
+        Ok(bytes.to_vec())
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

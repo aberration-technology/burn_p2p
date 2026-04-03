@@ -1,0 +1,21 @@
+[package]
+name = "burn_p2p_social"
+description = "Optional social and leaderboard service boundary crate for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["profiles", "leaderboards", "badges"]
+profiles = []
+leaderboards = ["profiles"]
+badges = []
+team-rollups = ["profiles"]
+
+[dependencies]
+burn_p2p_core = { path = "../burn_p2p_core" }
+chrono.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

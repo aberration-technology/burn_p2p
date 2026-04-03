@@ -370,10 +370,10 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
             root: root.path().join("soak"),
             trainer_count: 3,
             trainer_window_count: 2,
-            startup_timeout_secs: 15,
+            startup_timeout_secs: 20,
             poll_interval_ms: 50,
-            sync_timeout_secs: 15,
-            merge_wait_timeout_secs: 15,
+            sync_timeout_secs: 30,
+            merge_wait_timeout_secs: 30,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;

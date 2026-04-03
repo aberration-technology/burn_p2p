@@ -30,13 +30,20 @@
   },
   "http_bind_addr": "127.0.0.1:8789",
   "admin_token": "local-admin",
+  "allow_dev_admin_token": true,
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
   "auth": {
     "authority_name": "local-auth",
+    "connector": {
+      "kind": "static"
+    },
     "authority_key_path": ".burn_p2p-auth/bootstrap-authority.key",
     "project_family_id": "demo-family",
-    "required_client_release_hash": "demo-release",
+    "required_release_train_hash": "demo-train",
+    "allowed_target_artifact_hashes": [
+      "demo-artifact-native"
+    ],
     "session_ttl_seconds": 3600,
     "minimum_revocation_epoch": 1,
     "principals": [
@@ -68,7 +75,8 @@
           "secure-demo"
         ],
         "custom_claims": {
-          "team": "research"
+          "team": "research",
+          "operator_role": "admin"
         }
       }
     ],

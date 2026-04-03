@@ -448,13 +448,26 @@ fn validate_network_manifest(
         );
     }
 
-    if network_manifest.required_client_release_hash != release_manifest.client_release_hash {
+    if network_manifest.required_release_train_hash != release_manifest.release_train_hash {
         anyhow::bail!(
-            "network {} requires client release {}, but family {} exposes {}",
+            "network {} requires release train {}, but family {} exposes {}",
             network_manifest.network_id.as_str(),
-            network_manifest.required_client_release_hash.as_str(),
+            network_manifest.required_release_train_hash.as_str(),
             project_family_id.as_str(),
-            release_manifest.client_release_hash.as_str(),
+            release_manifest.release_train_hash.as_str(),
+        );
+    }
+
+    if !network_manifest.allowed_target_artifact_hashes.is_empty()
+        && !network_manifest
+            .allowed_target_artifact_hashes
+            .contains(&release_manifest.target_artifact_hash)
+    {
+        anyhow::bail!(
+            "network {} does not allow target artifact {} for family {}",
+            network_manifest.network_id.as_str(),
+            release_manifest.target_artifact_hash.as_str(),
+            project_family_id.as_str(),
         );
     }
 
@@ -564,13 +577,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use chrono::Utc;
 
     use crate::{
         ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, CapabilityEstimate,
-        ClientReleaseManifest, ContentId, DatasetRegistration, EvalSplit,
+        ClientPlatform, ClientReleaseManifest, ContentId, DatasetRegistration, EvalSplit,
         ExperimentResourceRequirements, FsArtifactStore, MetricReport, MetricValue, NetworkId,
         NetworkManifest, NodeBuilder, P2pProject, P2pProjectFamily, PatchOutcome, PatchSupport,
         ProjectBackend, ProjectFamilyId, RevisionId, RevisionManifest, RuntimePatch,
@@ -716,7 +729,10 @@ mod tests {
     fn release_manifest(workload: SupportedWorkload) -> ClientReleaseManifest {
         ClientReleaseManifest {
             project_family_id: ProjectFamilyId::new("family-a"),
-            client_release_hash: ContentId::new("release-a"),
+            release_train_hash: ContentId::new("train-a"),
+            target_artifact_id: "native-linux-x86_64".into(),
+            target_artifact_hash: ContentId::new("artifact-native-a"),
+            target_platform: ClientPlatform::Native,
             app_semver: semver::Version::new(0, 2, 0),
             git_commit: "deadbeef".into(),
             cargo_lock_hash: ContentId::new("cargo-lock"),
@@ -731,7 +747,10 @@ mod tests {
     fn release_manifest_with_workloads(workloads: Vec<SupportedWorkload>) -> ClientReleaseManifest {
         ClientReleaseManifest {
             project_family_id: ProjectFamilyId::new("family-a"),
-            client_release_hash: ContentId::new("release-a"),
+            release_train_hash: ContentId::new("train-a"),
+            target_artifact_id: "native-linux-x86_64".into(),
+            target_artifact_hash: ContentId::new("artifact-native-a"),
+            target_platform: ClientPlatform::Native,
             app_semver: semver::Version::new(0, 2, 0),
             git_commit: "deadbeef".into(),
             cargo_lock_hash: ContentId::new("cargo-lock"),
@@ -748,7 +767,8 @@ mod tests {
             network_id: NetworkId::new("network-a"),
             project_family_id: ProjectFamilyId::new("family-a"),
             protocol_major: 1,
-            required_client_release_hash: ContentId::new("release-a"),
+            required_release_train_hash: ContentId::new("train-a"),
+            allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
             authority_public_keys: vec!["authority-key".into()],
             bootstrap_addrs: vec!["/ip4/127.0.0.1/tcp/4101".into()],
             auth_policy_hash: ContentId::new("auth-policy"),
@@ -836,8 +856,8 @@ mod tests {
                 .config()
                 .client_release_manifest
                 .as_ref()
-                .map(|manifest| manifest.client_release_hash.clone()),
-            Some(ContentId::new("release-a"))
+                .map(|manifest| manifest.release_train_hash.clone()),
+            Some(ContentId::new("train-a"))
         );
         assert_eq!(
             builder.config().selected_workload_id,
@@ -933,7 +953,7 @@ mod tests {
             experiment_id: crate::ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
             workload_id: WorkloadId::new("compiled"),
-            required_client_release_hash: ContentId::new("release-a"),
+            required_release_train_hash: ContentId::new("train-a"),
             model_schema_hash: ContentId::new("schema-a"),
             checkpoint_format_hash: ContentId::new("format-a"),
             dataset_view_id: crate::DatasetViewId::new("view-a"),
@@ -950,6 +970,17 @@ mod tests {
                 activation_window: crate::WindowId(1),
                 grace_windows: 0,
             },
+            lag_policy: crate::LagPolicy::default(),
+            merge_window_miss_policy: crate::MergeWindowMissPolicy::default(),
+            browser_enabled: false,
+            browser_role_policy: crate::BrowserRolePolicy::default(),
+            max_browser_checkpoint_bytes: None,
+            max_browser_window_secs: None,
+            max_browser_shard_bytes: None,
+            requires_webgpu: false,
+            max_browser_batch_size: None,
+            recommended_browser_precision: None,
+            visibility_policy: crate::BrowserVisibilityPolicy::Hidden,
             description: "test revision".into(),
         };
 

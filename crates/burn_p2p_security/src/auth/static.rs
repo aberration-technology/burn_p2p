@@ -105,10 +105,14 @@ impl IdentityConnector for StaticIdentityConnector {
             return Err(AuthError::LoginExpired(pending.login_id));
         }
 
+        let principal_id = callback
+            .principal_id
+            .ok_or(AuthError::MissingProviderPrincipal)?;
+
         let record = self
             .principals
-            .get(&callback.principal_id)
-            .ok_or_else(|| AuthError::UnknownPrincipal(callback.principal_id.clone()))?;
+            .get(&principal_id)
+            .ok_or_else(|| AuthError::UnknownPrincipal(principal_id.clone()))?;
 
         if !record.allowed_networks.contains(&pending.network_id) {
             return Err(AuthError::NetworkNotGranted(pending.network_id));
@@ -124,7 +128,7 @@ impl IdentityConnector for StaticIdentityConnector {
         let issued_at = Utc::now();
         let expires_at = issued_at + self.session_ttl;
         let session_id = burn_p2p_core::ContentId::derive(&(
-            callback.principal_id.as_str(),
+            principal_id.as_str(),
             pending.network_id.as_str(),
             issued_at.timestamp_millis(),
         ))?;

@@ -434,6 +434,9 @@ pub struct ClientReenrollmentStatus {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrustBundleState {
     pub source_url: String,
+    pub required_release_train_hash: ContentId,
+    #[serde(default)]
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub active_issuer_peer_id: PeerId,
     pub trusted_issuers: BTreeMap<PeerId, TrustedIssuer>,
     pub minimum_revocation_epoch: RevocationEpoch,
@@ -446,6 +449,9 @@ pub struct NodeTelemetrySnapshot {
     pub status: RuntimeStatus,
     pub node_state: NodeRuntimeState,
     pub slot_states: Vec<SlotRuntimeState>,
+    pub lag_state: LagState,
+    pub head_lag_steps: u64,
+    pub lag_policy: LagPolicy,
     pub network_id: Option<NetworkId>,
     pub local_peer_id: Option<PeerId>,
     pub configured_roles: PeerRoleSet,
@@ -486,6 +492,9 @@ impl NodeTelemetrySnapshot {
             status: RuntimeStatus::Starting,
             node_state: NodeRuntimeState::Starting,
             slot_states: vec![SlotRuntimeState::Unassigned],
+            lag_state: LagState::Current,
+            head_lag_steps: 0,
+            lag_policy: LagPolicy::default(),
             network_id: Some(mainnet.genesis.network_id.clone()),
             local_peer_id: None,
             configured_roles: mainnet.roles.clone(),
@@ -544,6 +553,18 @@ impl NodeTelemetrySnapshot {
         } else {
             self.slot_states[0] = slot_state;
         }
+        self.updated_at = Utc::now();
+    }
+
+    pub(crate) fn set_lag_status(
+        &mut self,
+        lag_state: LagState,
+        head_lag_steps: u64,
+        lag_policy: LagPolicy,
+    ) {
+        self.lag_state = lag_state;
+        self.head_lag_steps = head_lag_steps;
+        self.lag_policy = lag_policy;
         self.updated_at = Utc::now();
     }
 

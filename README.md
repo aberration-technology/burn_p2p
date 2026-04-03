@@ -4,101 +4,100 @@ Distributed Burn training over a policy-gated peer-to-peer network.
 
 This workspace is intentionally split into one stable facade crate, a small
 set of companion crates, and a set of internal implementation crates that are
-not semver promises yet. The companion operator crates
-`burn_p2p_bootstrap`, `burn_p2p_ui`, and `burn_p2p_testkit` are consumed
-directly instead of being re-exported from the facade.
+not semver promises yet. The companion/operator crates
+`burn_p2p_auth_external`, `burn_p2p_auth_github`, `burn_p2p_auth_oidc`,
+`burn_p2p_auth_oauth`, `burn_p2p_bootstrap`, `burn_p2p_browser`,
+`burn_p2p_portal`, `burn_p2p_social`, `burn_p2p_ui`, and
+`burn_p2p_testkit` are consumed directly instead of being re-exported from the
+facade.
 
 Current status:
 
-- The workspace scaffold and shared schemas are in place.
-- `burn_p2p` now has a real `spawn()` path that starts a live background runtime
-  plus `prepare()` for the old handle-only behavior.
-- `burn_p2p` defaults to a native TCP listen address, persists identity when
-  configured, and auto-syncs the remote control snapshot on connection.
-- `burn_p2p` now exposes a stable `RuntimeProject` trait plus one-step native
-  runtime methods for initializing a canonical head, training a leased window,
-  validating candidate heads, syncing canonical heads, and restoring persisted
-  canonical state after restart.
-- `burn_p2p` now also exposes the first phase of the new project-family facade:
-  `P2pProjectFamily`, `P2pWorkload`, and `SingleWorkloadProjectFamily`, plus
-  family-selected runtime binding through `NodeBuilder::with_network(...)` for
-  single-workload releases and `NodeBuilder::for_workload(...)` for
-  multi-workload releases, so downstream applications can bind one approved
-  client release to a compiled workload registry without importing internal
-  engine crates.
-- `burn_p2p` now also exposes a feature-gated `burn` runtime helper surface
-  for Burn-native checkpoint bytes and artifact materialization, plus a public
-  `burn_ndarray_runtime` example that exercises the facade without importing
-  internal adapter crates. That path now includes parameter-wise weighted
-  model merging and single-root EMA helpers for real Burn modules.
-- `burn_p2p_swarm` now has both memory-transport and native TCP+QUIC
-  request-response control-plane shells plus identify, mDNS, and gossipsub
-  control propagation for live connectivity, discovery, snapshot exchange,
-  lease announcements, merge announcements, and artifact transfer.
-- `burn_p2p` now persists discovered peer listen addresses in node state and
-  reloads them on restart, so native peers can reconnect from remembered peers
-  instead of relying only on the original bootstrap list.
-- `burn_p2p_checkpoint` now supports streamed artifact descriptor building and
-  an on-disk filesystem CAS with chunk storage, manifest persistence, pinning,
-  materialization, and garbage collection.
-- `burn_p2p_dataloader` now has real manifest-backed `local` and `http` shard
-  fetch plus disk caching, and it only fetches shards that are actually leased.
-- `burn_p2p_limits` now supports both initial capability calibration and
-  observed-throughput rebudgeting, and the live `burn_p2p` runtime now persists
-  and reapplies the effective limit profile per experiment so window budgets can
-  correct toward measured runtime throughput instead of staying locked to the
-  initial benchmark.
-- `burn_p2p_security` now has a first-class auth/admission layer with
-  principal sessions, a static identity connector, network-signed node
-  certificates bound to peer IDs, peer auth envelopes, trusted-issuer
-  verification, revocation-epoch checks, and experiment-scoped admission.
-- `burn_p2p_core`, `burn_p2p_experiment`, `burn_p2p_testkit`, and
-  `burn_p2p_ui` now include a first-class merge-topology subsystem:
-  replicated-rendezvous DAG policy/schema types, deterministic reducer
-  assignment, merge-window state, aggregate envelopes, reduction
-  certificates, reducer-load reporting, topology dashboard views, and a
-  policy-comparison simulator for broadcast, central reducer, tree, gossip,
-  and hierarchical cohort strategies. The live native runtime now publishes
-  merge-window, reducer-assignment, update, aggregate, reduction-certificate,
-  and reducer-load announcements through the control plane during
-  train/validate flows, and validator promotion now stores a real aggregate
-  evidence artifact in the filesystem CAS instead of pointing aggregate
-  envelopes at the promoted trainer head artifact. The root validator merge
-  path now also supports exact weighted candidate combination over model
-  parameters through the internal engine seam instead of only promoting a
-  winning candidate head.
-- `burn_p2p_experiment` now exposes a typed experiment directory with
-  scope-aware visibility filtering, and the live control-plane snapshot now
-  carries authenticated-peer and experiment-directory announcements.
-- `burn_p2p_bootstrap` now ships a first headless binary surface,
-  `burn-p2p-bootstrap`, with JSON config loading, `/status`, `/metrics`,
-  `/events`, `/receipts`, `/admin`, a static operator dashboard, and an
-  embedded validator/trainer loop path built on the public `burn_p2p` runtime.
-  When `auth` is configured it also exposes a minimal static admission portal:
-  `POST /login/static`, `POST /device`, `POST /callback/static`,
-  `POST /enroll`, `GET /revocations`, and `GET /directory`.
-  It also now includes a library-level embedded daemon example showing how a
-  downstream project packages its own `RuntimeProject` instead of relying on
-  the bundled synthetic bootstrap binary path.
-- `burn_p2p_ui` remains a framework-neutral typed contract crate; it now also
-  includes typed auth portal, trust badge, contribution identity, and
-  experiment picker views. The reference bootstrap dashboard is intentionally
-  minimal and static-asset based.
-- `burn_p2p_testkit` includes semantic simulation coverage and higher-peer mixed
-  update tests, a synthetic multi-process native harness, smoke/restart
-  coverage across separate processes, runnable coordinated soak and heavy-stress
-  binary/config paths, stable non-ignored multi-window, concurrent soak, and
-  process fan-in stress tests. `burn_p2p` itself also has native two-trainer,
-  restart, and many-trainer runtime e2e coverage.
-- The workspace now also ships real Criterion benchmark targets for streamed
-  checkpoint packaging, Burn-side weighted module merge/root EMA, and
-  merge-topology simulation throughput, plus control-plane pubsub/snapshot/
-  manifest serialization throughput for the native swarm, plus dataloader
-  microshard planning, lease planning, and receipt generation throughput, plus
-  limits calibration and observed-throughput rebudgeting throughput.
+- Verified baseline: see [docs/stabilization-baseline.md](docs/stabilization-baseline.md)
+  for the exact commands and results recorded on 2026-04-03.
+- Canonical public model: `burn_p2p` is now centered on
+  `P2pProjectFamily` + `P2pWorkload` with workload selection through
+  `NodeBuilder::with_network(...)` and `NodeBuilder::for_workload(...)`.
+  Legacy `P2pProject` / `RuntimeProject` layers still exist as compatibility
+  adapters, but they are no longer the forward path for docs or new examples.
+- Compatibility model: networks are pinned to one project family and one
+  release train, with a bounded set of approved target artifacts inside that
+  train. Native and browser builds can coexist only when they share the same
+  release train and exact experiment/revision/schema gates.
+- Native runtime baseline: `spawn()` starts a real runtime; native peers can
+  discover, admit, sync snapshots and artifacts, train leased windows, validate
+  candidate heads, advance certified heads, and recover persisted state after
+  restart. TCP and QUIC native control-plane paths are exercised in tests.
+- Checkpoint/data baseline: the workspace has a real filesystem CAS, streamed
+  chunking/materialization, pinning/GC, resumable artifact sync state, manifest-
+  backed local/http shard fetch, lease-scoped shard caching, and per-experiment
+  rebudgeting from observed throughput.
+- Security/admission baseline: admission is certificate-based and strict.
+  Static principal sessions, node certificates bound to peer IDs, trusted issuer
+  validation, revocation epochs, trust-bundle rollout, and exact release-train /
+  target-artifact checks are implemented and tested.
+- Control-plane and topology baseline: the live runtime publishes and consumes
+  directory, head, lease, reducer, merge-window, aggregate, and reduction
+  announcements. The replicated-rendezvous DAG merge policy, deterministic
+  reducer assignment, aggregate evidence persistence, and validator promotion
+  flow are all live and covered by simulation tests.
+- Browser baseline: the bootstrap daemon now serves browser-edge snapshot
+  surfaces (`/portal/snapshot`, `/directory/signed`, `/leaderboard`,
+  `/leaderboard/signed`, `/trust`, `/reenrollment`), and the new
+  `burn_p2p_browser` crate provides typed browser portal/enrollment/storage and
+  worker-state client logic. The browser worker can select authorized
+  assignments, run local verify/train flows, queue and submit receipts to the
+  browser edge, and the wasm compile matrix is now exercised explicitly through
+  testkit. Live browser swarm join and transport-backed browser execution are
+  still in progress.
+- Bootstrap/operator baseline: `burn-p2p-bootstrap` exposes `/status`,
+  `/metrics`, `/events`, `/diagnostics/bundle`, `/heads`, `/receipts`,
+  `/reducers/load`, `/admin`, and the browser-edge routes above. It supports
+  embedded runtime mode, trust-bundle export, authority rotation, provider-
+  specific auth routes, RBAC-backed operator sessions, a signed edge
+  capability manifest at `/capabilities` and
+  `/.well-known/burn-p2p-capabilities`, optional portal/social/browser-edge
+  route gating, and startup validation when config requests services that were
+  not compiled in. The `x-admin-token` path is now an explicit dev-only
+  fallback behind `allow_dev_admin_token`.
+- Social modularization baseline: leaderboard aggregation and badge rollups now
+  live in the optional `burn_p2p_social` crate. `burn_p2p_bootstrap` consumes
+  it through its `social` feature and falls back to an empty snapshot when that
+  feature is not compiled in.
+- Auth modularization baseline: provider-specific auth connectors now live in
+  dedicated optional crates. `burn_p2p_security` retains certificate/admission
+  core, static auth, connector traits, and revocation/release policy logic,
+  while `burn_p2p_auth_github`, `burn_p2p_auth_oidc`,
+  `burn_p2p_auth_oauth`, and `burn_p2p_auth_external` provide the optional
+  edge-facing identity connectors.
+- Portal modularization baseline: the reference portal HTML/rendering surface
+  now lives in the optional `burn_p2p_portal` crate. `burn_p2p_bootstrap`
+  consumes it through its `portal` feature and minimal builds can exclude the
+  portal implementation entirely.
+- UI/testkit baseline: `burn_p2p_ui` remains a framework-neutral typed contract
+  crate with portal, picker, trust, and participant views. `burn_p2p_testkit`
+  provides topology simulation, mixed-fleet browser/native fixtures,
+  deployment-profile build checks, multiprocess smoke tests, and soak/stress
+  entrypoints.
 
-The previously open native-MVP runtime blockers are closed. What remains is
-follow-on hardening and scale work rather than missing runtime closure.
+Known gaps:
+
+- GitHub/OIDC/OAuth connectors now support provider-specific bootstrap/browser
+  login routes plus exchange-backed callback resolution, userinfo/profile
+  hydration, and provider-side refresh/revoke hooks. The remaining auth gap is
+  full upstream provider integration beyond this generic edge contract, such as
+  real token exchange discovery/metadata and provider-native revocation policy.
+- Browser support now covers portal, picker, worker state, local verify/train,
+  receipt outbox, receipt submission, mixed native+browser worker coverage,
+  live browser-client-to-edge HTTP coverage, and wasm compile coverage. Live
+  browser swarm join and transport-backed browser execution are still not
+  complete.
+- The reference browser portal is now split into the dedicated
+  `burn_p2p_portal` crate, but it is still intentionally lightweight HTML plus
+  typed contracts rather than a fuller product UI.
+- Benchmark baselines are now recorded, and the latest security benchmark rerun
+  shows broad improvement across release-policy, auth-admission,
+  validator-policy, and reputation paths.
 
 Quick start surfaces:
 
@@ -106,9 +105,29 @@ Quick start surfaces:
 - Burn facade example: `cargo run -p burn_p2p --example burn_ndarray_runtime --features burn`
 - Bootstrap daemon: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/local-bootstrap.json`
 - Auth-enabled bootstrap daemon: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/authenticated-bootstrap.json`
+- Trusted-minimal example: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/trusted-minimal.json`
+- Enterprise SSO example: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/enterprise-sso.json`
+- Trusted-browser example: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/trusted-browser.json`
+- Community-web example: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/community-web.json`
 - Embedded validator daemon: `cargo run -p burn_p2p_bootstrap --bin burn-p2p-bootstrap -- crates/burn_p2p_bootstrap/examples/embedded-validator.json`
 - Downstream-style embedded daemon example: `cargo run -p burn_p2p_bootstrap --example embedded_runtime_daemon`
-- Workspace tests: `cargo test --manifest-path Cargo.toml`
+- Edge capability manifest: `curl http://127.0.0.1:9000/capabilities`
+- Browser client crate tests: `cargo test --manifest-path Cargo.toml -p burn_p2p_browser`
+- Social service crate tests: `cargo test --manifest-path Cargo.toml -p burn_p2p_social`
+- Portal crate tests: `cargo test --manifest-path Cargo.toml -p burn_p2p_portal`
+- Auth connector crate tests:
+  `cargo test --manifest-path Cargo.toml -p burn_p2p_auth_external -p burn_p2p_auth_github -p burn_p2p_auth_oidc -p burn_p2p_auth_oauth`
+- Browser client-to-edge HTTP e2e: `cargo test --manifest-path Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_round_trips_against_live_http_router`
+- Browser provider-exchange auth e2e: `cargo test --manifest-path Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_completes_github_login_via_exchange_callback`
+- Browser wasm matrix: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test browser_matrix -- --ignored`
+- Deployment profile matrix: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test deployment_profiles -- --ignored`
+- Mixed native+browser worker test: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test mixed_browser_worker`
+- Trusted-minimal bootstrap compile: `cargo check --manifest-path Cargo.toml -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static`
+- Trusted-minimal bootstrap tree hygiene:
+  `cargo tree --manifest-path Cargo.toml -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static -e normal`
+- Security-core dependency hygiene:
+  `cargo tree --manifest-path Cargo.toml -p burn_p2p_security -e normal`
+- Workspace tests: `cargo test --manifest-path Cargo.toml --workspace --features burn`
 - Multi-process smoke test: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test multiprocess`
 - Soak runner: `cargo run -p burn_p2p_testkit --bin burn-p2p-testkit-soak -- crates/burn_p2p_testkit/examples/native-soak.json`
 - Merge-topology simulator tests: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit merge_topology`

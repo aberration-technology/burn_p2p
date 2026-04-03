@@ -37,6 +37,18 @@ pub enum AuthError {
     SessionExpired(ContentId),
     #[error("unknown principal: {0}")]
     UnknownPrincipal(PrincipalId),
+    #[error("provider callback is missing a principal and no provider code exchange succeeded")]
+    MissingProviderPrincipal,
+    #[error("provider callback is missing an authorization or device code")]
+    MissingProviderCode,
+    #[error("provider exchange failed: {0}")]
+    ProviderExchange(String),
+    #[error("provider userinfo fetch failed: {0}")]
+    ProviderUserInfo(String),
+    #[error("provider refresh failed: {0}")]
+    ProviderRefresh(String),
+    #[error("provider revoke failed: {0}")]
+    ProviderRevoke(String),
     #[error("untrusted issuer: {0}")]
     UntrustedIssuer(PeerId),
     #[error("network not granted: {0}")]
@@ -46,8 +58,8 @@ pub enum AuthError {
         expected: ProjectFamilyId,
         found: ProjectFamilyId,
     },
-    #[error("client release hash mismatch: expected {expected}, found {found}")]
-    ClientReleaseHashMismatch {
+    #[error("release train hash mismatch: expected {expected}, found {found}")]
+    ReleaseTrainHashMismatch {
         expected: ContentId,
         found: ContentId,
     },
@@ -75,7 +87,10 @@ pub struct LoginStart {
 pub struct CallbackPayload {
     pub login_id: ContentId,
     pub state: String,
-    pub principal_id: PrincipalId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<PrincipalId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,13 +121,17 @@ pub trait IdentityConnector {
     fn complete_login(&self, callback: CallbackPayload) -> Result<PrincipalSession, AuthError>;
     fn refresh(&self, session: &PrincipalSession) -> Result<PrincipalSession, AuthError>;
     fn fetch_claims(&self, session: &PrincipalSession) -> Result<PrincipalClaims, AuthError>;
+    fn revoke(&self, _session: &PrincipalSession) -> Result<(), AuthError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeEnrollmentRequest {
     pub session: PrincipalSession,
     pub project_family_id: ProjectFamilyId,
-    pub client_release_hash: ContentId,
+    pub release_train_hash: ContentId,
+    pub target_artifact_hash: ContentId,
     pub peer_id: PeerId,
     pub peer_public_key_hex: String,
     pub granted_roles: PeerRoleSet,
@@ -128,7 +147,7 @@ pub struct NodeEnrollmentRequest {
 pub struct NodeCertificateAuthority {
     network_id: NetworkId,
     project_family_id: ProjectFamilyId,
-    required_client_release_hash: ContentId,
+    required_release_train_hash: ContentId,
     protocol_version: Version,
     issuer_keypair: Keypair,
     issuer_key_id: String,
@@ -139,7 +158,7 @@ impl NodeCertificateAuthority {
     pub fn new(
         network_id: NetworkId,
         project_family_id: ProjectFamilyId,
-        required_client_release_hash: ContentId,
+        required_release_train_hash: ContentId,
         protocol_version: Version,
         issuer_keypair: Keypair,
         issuer_key_id: impl Into<String>,
@@ -148,7 +167,7 @@ impl NodeCertificateAuthority {
         Ok(Self {
             network_id,
             project_family_id,
-            required_client_release_hash,
+            required_release_train_hash,
             protocol_version,
             issuer_keypair,
             issuer_key_id: issuer_key_id.into(),
@@ -177,17 +196,18 @@ impl NodeCertificateAuthority {
             });
         }
 
-        if request.client_release_hash != self.required_client_release_hash {
-            return Err(AuthError::ClientReleaseHashMismatch {
-                expected: self.required_client_release_hash.clone(),
-                found: request.client_release_hash,
+        if request.release_train_hash != self.required_release_train_hash {
+            return Err(AuthError::ReleaseTrainHashMismatch {
+                expected: self.required_release_train_hash.clone(),
+                found: request.release_train_hash,
             });
         }
 
         let claims = NodeCertificateClaims {
             network_id: self.network_id.clone(),
             project_family_id: request.project_family_id,
-            client_release_hash: request.client_release_hash,
+            release_train_hash: request.release_train_hash,
+            target_artifact_hash: request.target_artifact_hash,
             peer_id: request.peer_id,
             peer_public_key_hex: request.peer_public_key_hex,
             principal_id: request.session.claims.principal_id.clone(),
@@ -243,7 +263,8 @@ pub struct TrustedIssuer {
 pub struct AdmissionPolicy {
     pub network_id: NetworkId,
     pub project_family_id: ProjectFamilyId,
-    pub required_client_release_hash: ContentId,
+    pub required_release_train_hash: ContentId,
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub trusted_issuers: BTreeMap<PeerId, TrustedIssuer>,
     pub minimum_revocation_epoch: RevocationEpoch,
 }
@@ -317,10 +338,21 @@ impl AdmissionPolicy {
             });
         }
 
-        if claims.client_release_hash != self.required_client_release_hash {
-            findings.push(AuditFinding::ClientReleaseHashMismatch {
-                expected: Some(self.required_client_release_hash.clone()),
-                found: claims.client_release_hash.clone(),
+        if claims.release_train_hash != self.required_release_train_hash {
+            findings.push(AuditFinding::ReleaseTrainHashMismatch {
+                expected: Some(self.required_release_train_hash.clone()),
+                found: claims.release_train_hash.clone(),
+            });
+        }
+
+        if !self.allowed_target_artifact_hashes.is_empty()
+            && !self
+                .allowed_target_artifact_hashes
+                .contains(&claims.target_artifact_hash)
+        {
+            findings.push(AuditFinding::TargetArtifactHashMismatch {
+                expected: Some(self.allowed_target_artifact_hashes.clone()),
+                found: claims.target_artifact_hash.clone(),
             });
         }
 
@@ -512,7 +544,6 @@ mod tests {
         NodeCertificateAuthority, NodeEnrollmentRequest, PrincipalClaims, PrincipalSession,
         StaticIdentityConnector, StaticPrincipalRecord, TrustedIssuer,
     };
-
     fn static_connector() -> StaticIdentityConnector {
         let now = Utc::now();
         StaticIdentityConnector::new(
@@ -564,7 +595,8 @@ mod tests {
             .complete_login(CallbackPayload {
                 login_id: login.login_id,
                 state: login.state,
-                principal_id: PrincipalId::new("alice"),
+                principal_id: Some(PrincipalId::new("alice")),
+                provider_code: None,
             })
             .expect("session");
 
@@ -590,7 +622,8 @@ mod tests {
             .complete_login(CallbackPayload {
                 login_id: login.login_id,
                 state: login.state,
-                principal_id: PrincipalId::new("alice"),
+                principal_id: Some(PrincipalId::new("alice")),
+                provider_code: None,
             })
             .expect("session");
 
@@ -598,7 +631,7 @@ mod tests {
         let authority = NodeCertificateAuthority::new(
             NetworkId::new("network-a"),
             ProjectFamilyId::new("family-a"),
-            ContentId::new("release-a"),
+            ContentId::new("train-a"),
             Version::new(0, 1, 0),
             authority_keypair,
             "authority-1",
@@ -613,7 +646,8 @@ mod tests {
             .issue_certificate(NodeEnrollmentRequest {
                 session,
                 project_family_id: ProjectFamilyId::new("family-a"),
-                client_release_hash: ContentId::new("release-a"),
+                release_train_hash: ContentId::new("train-a"),
+                target_artifact_hash: ContentId::new("artifact-native-a"),
                 peer_id: peer_id.clone(),
                 peer_public_key_hex: hex::encode(node_keypair.public().encode_protobuf()),
                 granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
@@ -647,7 +681,8 @@ mod tests {
         let policy = AdmissionPolicy {
             network_id: NetworkId::new("network-a"),
             project_family_id: ProjectFamilyId::new("family-a"),
-            required_client_release_hash: ContentId::new("release-a"),
+            required_release_train_hash: ContentId::new("train-a"),
+            allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
             trusted_issuers: BTreeMap::from([(
                 authority.issuer_peer_id(),
                 TrustedIssuer {
@@ -670,7 +705,7 @@ mod tests {
         let authority = NodeCertificateAuthority::new(
             NetworkId::new("network-a"),
             ProjectFamilyId::new("family-a"),
-            ContentId::new("release-a"),
+            ContentId::new("train-a"),
             Version::new(0, 1, 0),
             authority_keypair,
             "authority-1",
@@ -705,7 +740,8 @@ mod tests {
             .issue_certificate(NodeEnrollmentRequest {
                 session,
                 project_family_id: ProjectFamilyId::new("family-a"),
-                client_release_hash: ContentId::new("release-a"),
+                release_train_hash: ContentId::new("train-a"),
+                target_artifact_hash: ContentId::new("artifact-native-a"),
                 peer_id: peer_id.clone(),
                 peer_public_key_hex: hex::encode(node_keypair.public().encode_protobuf()),
                 granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
@@ -732,7 +768,8 @@ mod tests {
         let policy = AdmissionPolicy {
             network_id: NetworkId::new("network-a"),
             project_family_id: ProjectFamilyId::new("family-a"),
-            required_client_release_hash: ContentId::new("release-a"),
+            required_release_train_hash: ContentId::new("train-a"),
+            allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
             trusted_issuers: BTreeMap::from([(
                 authority.issuer_peer_id(),
                 TrustedIssuer {

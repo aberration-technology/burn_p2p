@@ -98,7 +98,107 @@ pub enum AuthProvider {
     GitHub,
     Oidc { issuer: String },
     OAuth { provider: String },
+    External { authority: String },
     Static { authority: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EdgeAuthProvider {
+    Static,
+    GitHub,
+    Oidc,
+    OAuth,
+    External,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PortalMode {
+    Disabled,
+    Readonly,
+    Interactive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BrowserMode {
+    Disabled,
+    Observer,
+    Verifier,
+    Trainer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SocialMode {
+    Disabled,
+    Private,
+    Public,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProfileMode {
+    Disabled,
+    Private,
+    Public,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum AdminMode {
+    Disabled,
+    Token,
+    Rbac,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MetricsMode {
+    Disabled,
+    OpenMetrics,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EdgeFeature {
+    AdminHttp,
+    Metrics,
+    Portal,
+    BrowserEdge,
+    Rbac,
+    AuthStatic,
+    AuthGitHub,
+    AuthOidc,
+    AuthOAuth,
+    AuthExternal,
+    Social,
+    Profiles,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledFeatureSet {
+    pub features: BTreeSet<EdgeFeature>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredServiceSet {
+    pub features: BTreeSet<EdgeFeature>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveServiceSet {
+    pub features: BTreeSet<EdgeFeature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeServiceManifest {
+    pub edge_id: PeerId,
+    pub network_id: NetworkId,
+    pub portal_mode: PortalMode,
+    pub browser_mode: BrowserMode,
+    pub available_auth_providers: BTreeSet<EdgeAuthProvider>,
+    pub social_mode: SocialMode,
+    pub profile_mode: ProfileMode,
+    pub admin_mode: AdminMode,
+    pub metrics_mode: MetricsMode,
+    pub compiled_feature_set: CompiledFeatureSet,
+    pub configured_service_set: ConfiguredServiceSet,
+    pub active_feature_set: ActiveServiceSet,
+    pub generated_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -111,6 +211,11 @@ pub enum PeerRole {
     TrainerGpu,
     TrainerCpu,
     Evaluator,
+    PortalViewer,
+    BrowserObserver,
+    BrowserVerifier,
+    BrowserTrainerWgpu,
+    BrowserFallback,
     BrowserTrainer,
     RelayHelper,
 }
@@ -176,6 +281,66 @@ pub enum ClientPlatform {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ArtifactTargetKind {
+    NativeLinuxX86_64,
+    NativeMacosAarch64,
+    NativeWindowsX86_64,
+    BrowserWasm,
+    Other(String),
+}
+
+impl ArtifactTargetKind {
+    pub fn as_target_artifact_id(&self) -> &str {
+        match self {
+            Self::NativeLinuxX86_64 => "native-linux-x86_64",
+            Self::NativeMacosAarch64 => "native-macos-aarch64",
+            Self::NativeWindowsX86_64 => "native-windows-x86_64",
+            Self::BrowserWasm => "browser-wasm",
+            Self::Other(target) => target.as_str(),
+        }
+    }
+
+    pub fn parse(target: &str) -> Self {
+        match target {
+            "native-linux-x86_64" => Self::NativeLinuxX86_64,
+            "native-macos-aarch64" => Self::NativeMacosAarch64,
+            "native-windows-x86_64" => Self::NativeWindowsX86_64,
+            "browser-wasm" => Self::BrowserWasm,
+            other => Self::Other(other.into()),
+        }
+    }
+
+    pub fn platform(&self) -> ClientPlatform {
+        match self {
+            Self::BrowserWasm => ClientPlatform::Browser,
+            Self::NativeLinuxX86_64
+            | Self::NativeMacosAarch64
+            | Self::NativeWindowsX86_64
+            | Self::Other(_) => ClientPlatform::Native,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BrowserRole {
+    PortalViewer,
+    Observer,
+    Verifier,
+    TrainerWgpu,
+    Fallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BrowserCapability {
+    WebGpu,
+    DedicatedWorker,
+    PersistentStorage,
+    WebRtcDirect,
+    WebTransport,
+    WssFallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AttestationLevel {
     None,
     Manifest,
@@ -190,6 +355,10 @@ pub enum CapabilityClass {
     Evaluator,
     Archive,
     RelayHelper,
+    BrowserObserver,
+    BrowserVerifier,
+    BrowserTrainerWgpu,
+    BrowserFallback,
     BrowserOpportunistic,
 }
 
@@ -250,9 +419,41 @@ pub struct SupportedWorkload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetArtifactManifest {
+    pub target_artifact_id: String,
+    pub target_artifact_hash: ContentId,
+    pub platform: ClientPlatform,
+    pub built_at: DateTime<Utc>,
+}
+
+impl TargetArtifactManifest {
+    pub fn target_kind(&self) -> ArtifactTargetKind {
+        ArtifactTargetKind::parse(&self.target_artifact_id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseTrainManifest {
+    pub project_family_id: ProjectFamilyId,
+    pub release_train_hash: ContentId,
+    pub app_semver: Version,
+    pub git_commit: String,
+    pub cargo_lock_hash: ContentId,
+    pub burn_version_string: String,
+    pub enabled_features_hash: ContentId,
+    pub protocol_major: u16,
+    pub supported_workloads: Vec<SupportedWorkload>,
+    pub approved_target_artifacts: Vec<TargetArtifactManifest>,
+    pub built_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientReleaseManifest {
     pub project_family_id: ProjectFamilyId,
-    pub client_release_hash: ContentId,
+    pub release_train_hash: ContentId,
+    pub target_artifact_id: String,
+    pub target_artifact_hash: ContentId,
+    pub target_platform: ClientPlatform,
     pub app_semver: Version,
     pub git_commit: String,
     pub cargo_lock_hash: ContentId,
@@ -263,12 +464,19 @@ pub struct ClientReleaseManifest {
     pub built_at: DateTime<Utc>,
 }
 
+impl ClientReleaseManifest {
+    pub fn target_kind(&self) -> ArtifactTargetKind {
+        ArtifactTargetKind::parse(&self.target_artifact_id)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkManifest {
     pub network_id: NetworkId,
     pub project_family_id: ProjectFamilyId,
     pub protocol_major: u16,
-    pub required_client_release_hash: ContentId,
+    pub required_release_train_hash: ContentId,
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub authority_public_keys: Vec<String>,
     pub bootstrap_addrs: Vec<String>,
     pub auth_policy_hash: ContentId,
@@ -289,11 +497,211 @@ pub struct ExperimentManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserRolePolicy {
+    pub observer: bool,
+    pub verifier: bool,
+    pub trainer_wgpu: bool,
+    pub fallback: bool,
+}
+
+impl Default for BrowserRolePolicy {
+    fn default() -> Self {
+        Self {
+            observer: true,
+            verifier: true,
+            trainer_wgpu: false,
+            fallback: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BrowserVisibilityPolicy {
+    Hidden,
+    PortalListed,
+    AuthenticatedPortal,
+    SwarmEligible,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum IdentityVisibility {
+    Anonymous,
+    AggregateOnly,
+    PublicDisplayName,
+    PublicProfile,
+    PublicOrg,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SocialProfile {
+    pub principal_id: PrincipalId,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_url: Option<String>,
+    pub org_slug: Option<String>,
+    pub team_slug: Option<String>,
+    pub visibility: IdentityVisibility,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BadgeKind {
+    FirstAcceptedUpdate,
+    FirstVerifiedHead,
+    SevenDayStreak,
+    TopBrowserContributor,
+    TopValidatorContributor,
+    HelpedPromoteCanonicalHead,
+    TeamContributor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BadgeAward {
+    pub kind: BadgeKind,
+    pub label: String,
+    pub awarded_at: Option<DateTime<Utc>>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaderboardIdentity {
+    pub principal_id: Option<PrincipalId>,
+    pub peer_ids: BTreeSet<PeerId>,
+    pub label: String,
+    #[serde(default)]
+    pub social_profile: Option<SocialProfile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContributionRollup {
+    pub accepted_work_score: f64,
+    pub quality_weighted_impact_score: f64,
+    pub validation_service_score: f64,
+    pub artifact_serving_score: f64,
+    pub leaderboard_score_v1: f64,
+    pub accepted_receipt_count: u64,
+    pub last_receipt_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LagState {
+    Current,
+    SlightlyBehind,
+    CatchupRequired,
+    LeaseBlocked,
+    RebaseRequired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LagPolicy {
+    pub max_head_lag_before_catchup: u64,
+    pub max_head_lag_before_block: u64,
+    pub max_head_lag_before_full_rebase: u64,
+    pub max_window_skew_before_lease_revoke: u64,
+}
+
+impl Default for LagPolicy {
+    fn default() -> Self {
+        Self {
+            max_head_lag_before_catchup: 1,
+            max_head_lag_before_block: 4,
+            max_head_lag_before_full_rebase: 16,
+            max_window_skew_before_lease_revoke: 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MergeWindowMissPolicy {
+    CatchupOnly,
+    #[default]
+    LeaseBlocked,
+    RebaseRequired,
+}
+
+impl MergeWindowMissPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CatchupOnly => "catchup-only",
+            Self::LeaseBlocked => "lease-blocked",
+            Self::RebaseRequired => "rebase-required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "catchup-only" => Some(Self::CatchupOnly),
+            "lease-blocked" => Some(Self::LeaseBlocked),
+            "rebase-required" => Some(Self::RebaseRequired),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackpressurePolicy {
+    pub max_in_flight_chunk_requests_per_peer: u16,
+    pub max_in_flight_updates_per_peer: u16,
+    pub reducer_queue_depth_limit: u16,
+    pub upload_concurrency_limit: u16,
+    pub browser_transfer_budget_bytes: u64,
+    pub portal_feed_sample_rate: u16,
+}
+
+impl Default for BackpressurePolicy {
+    fn default() -> Self {
+        Self {
+            max_in_flight_chunk_requests_per_peer: 8,
+            max_in_flight_updates_per_peer: 4,
+            reducer_queue_depth_limit: 64,
+            upload_concurrency_limit: 4,
+            browser_transfer_budget_bytes: 64 * 1024 * 1024,
+            portal_feed_sample_rate: 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardEntry {
+    pub identity: LeaderboardIdentity,
+    pub accepted_work_score: f64,
+    pub quality_weighted_impact_score: f64,
+    pub validation_service_score: f64,
+    pub artifact_serving_score: f64,
+    pub leaderboard_score_v1: f64,
+    pub accepted_receipt_count: u64,
+    pub last_receipt_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub badges: Vec<BadgeAward>,
+}
+
+impl LeaderboardEntry {
+    pub fn contribution_rollup(&self) -> ContributionRollup {
+        ContributionRollup {
+            accepted_work_score: self.accepted_work_score,
+            quality_weighted_impact_score: self.quality_weighted_impact_score,
+            validation_service_score: self.validation_service_score,
+            artifact_serving_score: self.artifact_serving_score,
+            leaderboard_score_v1: self.leaderboard_score_v1,
+            accepted_receipt_count: self.accepted_receipt_count,
+            last_receipt_at: self.last_receipt_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardSnapshot {
+    pub network_id: NetworkId,
+    pub score_version: String,
+    pub entries: Vec<LeaderboardEntry>,
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionManifest {
     pub experiment_id: ExperimentId,
     pub revision_id: RevisionId,
     pub workload_id: WorkloadId,
-    pub required_client_release_hash: ContentId,
+    pub required_release_train_hash: ContentId,
     pub model_schema_hash: ContentId,
     pub checkpoint_format_hash: ContentId,
     pub dataset_view_id: DatasetViewId,
@@ -301,14 +709,34 @@ pub struct RevisionManifest {
     pub merge_topology_policy_hash: ContentId,
     pub slot_requirements: ExperimentResourceRequirements,
     pub activation_window: WindowActivation,
+    #[serde(default)]
+    pub lag_policy: LagPolicy,
+    #[serde(default)]
+    pub merge_window_miss_policy: MergeWindowMissPolicy,
+    pub browser_enabled: bool,
+    pub browser_role_policy: BrowserRolePolicy,
+    pub max_browser_checkpoint_bytes: Option<u64>,
+    pub max_browser_window_secs: Option<u64>,
+    pub max_browser_shard_bytes: Option<u64>,
+    pub requires_webgpu: bool,
+    pub max_browser_batch_size: Option<u32>,
+    pub recommended_browser_precision: Option<Precision>,
+    pub visibility_policy: BrowserVisibilityPolicy,
     pub description: String,
+}
+
+impl RevisionManifest {
+    pub fn effective_lag_policy(&self) -> LagPolicy {
+        self.lag_policy.clone()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCertificateClaims {
     pub network_id: NetworkId,
     pub project_family_id: ProjectFamilyId,
-    pub client_release_hash: ContentId,
+    pub release_train_hash: ContentId,
+    pub target_artifact_hash: ContentId,
     pub peer_id: PeerId,
     pub peer_public_key_hex: String,
     pub principal_id: PrincipalId,
@@ -781,14 +1209,19 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        AuthProvider, ClientReleaseManifest, ExperimentDirectoryEntry, ExperimentOptInPolicy,
-        ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, MergeStrategy,
-        MergeTopologyPolicy, MetricValue, NetworkManifest, NodeCertificate, NodeCertificateClaims,
-        PeerRole, PeerRoleSet, RevocationEpoch, SchemaEnvelope, SupportedWorkload,
+        ActiveServiceSet, AdminMode, AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind,
+        BrowserMode, ClientPlatform, ClientReleaseManifest, CompiledFeatureSet,
+        ConfiguredServiceSet, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest,
+        ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
+        ExperimentScope, ExperimentVisibility, IdentityVisibility, LagPolicy, LagState,
+        LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, MergeStrategy,
+        MergeTopologyPolicy, MergeWindowMissPolicy, MetricValue, MetricsMode, NetworkManifest,
+        NodeCertificate, NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PortalMode,
+        ProfileMode, RevocationEpoch, SchemaEnvelope, SocialMode, SocialProfile, SupportedWorkload,
         WindowActivation, WindowId,
     };
     use crate::{
-        codec::{CanonicalSchema, from_cbor_slice},
+        codec::{CanonicalSchema, deterministic_cbor, from_cbor_slice},
         id::{ContentId, PrincipalId},
     };
 
@@ -850,7 +1283,8 @@ mod tests {
         let claims = NodeCertificateClaims {
             network_id: crate::id::NetworkId::new("network-a"),
             project_family_id: crate::id::ProjectFamilyId::new("family-a"),
-            client_release_hash: ContentId::new("release-a"),
+            release_train_hash: ContentId::new("train-a"),
+            target_artifact_hash: ContentId::new("artifact-native-a"),
             peer_id: crate::id::PeerId::new("peer-a"),
             peer_public_key_hex: "001122".into(),
             principal_id: PrincipalId::new("principal-a"),
@@ -898,7 +1332,10 @@ mod tests {
         };
         let release = ClientReleaseManifest {
             project_family_id: crate::id::ProjectFamilyId::new("family-a"),
-            client_release_hash: ContentId::new("release-a"),
+            release_train_hash: ContentId::new("train-a"),
+            target_artifact_id: "native-linux-x86_64".into(),
+            target_artifact_hash: ContentId::new("artifact-native-a"),
+            target_platform: ClientPlatform::Native,
             app_semver: semver::Version::new(0, 2, 0),
             git_commit: "deadbeef".into(),
             cargo_lock_hash: ContentId::new("cargo-lock"),
@@ -912,7 +1349,8 @@ mod tests {
             network_id: crate::id::NetworkId::new("network-a"),
             project_family_id: crate::id::ProjectFamilyId::new("family-a"),
             protocol_major: 1,
-            required_client_release_hash: ContentId::new("release-a"),
+            required_release_train_hash: ContentId::new("train-a"),
+            allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
             authority_public_keys: vec!["001122".into()],
             bootstrap_addrs: vec!["/ip4/127.0.0.1/tcp/4101".into()],
             auth_policy_hash: ContentId::new("auth-policy"),
@@ -985,6 +1423,138 @@ mod tests {
         let bytes = entry.to_cbor_vec().expect("encode");
         let decoded: ExperimentDirectoryEntry = from_cbor_slice(&bytes).expect("decode");
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn leaderboard_snapshot_round_trips() {
+        let now = Utc::now();
+        let snapshot = LeaderboardSnapshot {
+            network_id: crate::NetworkId::new("net-social"),
+            score_version: "leaderboard_score_v1".into(),
+            entries: vec![LeaderboardEntry {
+                identity: LeaderboardIdentity {
+                    principal_id: Some(PrincipalId::new("alice")),
+                    peer_ids: BTreeSet::from([PeerId::new("peer-1"), PeerId::new("peer-2")]),
+                    label: "alice".into(),
+                    social_profile: Some(SocialProfile {
+                        principal_id: PrincipalId::new("alice"),
+                        display_name: Some("Alice".into()),
+                        avatar_url: Some("https://example.invalid/alice.png".into()),
+                        profile_url: None,
+                        org_slug: Some("openai".into()),
+                        team_slug: Some("research".into()),
+                        visibility: IdentityVisibility::PublicProfile,
+                    }),
+                },
+                accepted_work_score: 5.0,
+                quality_weighted_impact_score: 3.5,
+                validation_service_score: 1.0,
+                artifact_serving_score: 0.0,
+                leaderboard_score_v1: 7.75,
+                accepted_receipt_count: 2,
+                last_receipt_at: Some(now),
+                badges: vec![BadgeAward {
+                    kind: BadgeKind::HelpedPromoteCanonicalHead,
+                    label: "Helped Promote Canonical Head".into(),
+                    awarded_at: Some(now),
+                    detail: Some("Accepted work landed in a promoted merge.".into()),
+                }],
+            }],
+            captured_at: now,
+        };
+
+        let encoded = snapshot.to_cbor_vec().expect("encode leaderboard");
+        let decoded: LeaderboardSnapshot = from_cbor_slice(&encoded).expect("decode leaderboard");
+
+        assert_eq!(decoded, snapshot);
+        assert_eq!(
+            decoded.entries[0]
+                .contribution_rollup()
+                .leaderboard_score_v1,
+            7.75
+        );
+    }
+
+    #[test]
+    fn edge_service_manifest_round_trips() {
+        let manifest = EdgeServiceManifest {
+            edge_id: PeerId::new("edge-1"),
+            network_id: crate::NetworkId::new("network-a"),
+            portal_mode: PortalMode::Interactive,
+            browser_mode: BrowserMode::Verifier,
+            available_auth_providers: BTreeSet::from([
+                EdgeAuthProvider::Static,
+                EdgeAuthProvider::Oidc,
+            ]),
+            social_mode: SocialMode::Private,
+            profile_mode: ProfileMode::Private,
+            admin_mode: AdminMode::Rbac,
+            metrics_mode: MetricsMode::OpenMetrics,
+            compiled_feature_set: CompiledFeatureSet {
+                features: BTreeSet::from([
+                    EdgeFeature::AdminHttp,
+                    EdgeFeature::Portal,
+                    EdgeFeature::AuthOidc,
+                ]),
+            },
+            configured_service_set: ConfiguredServiceSet {
+                features: BTreeSet::from([
+                    EdgeFeature::AdminHttp,
+                    EdgeFeature::Portal,
+                    EdgeFeature::AuthOidc,
+                ]),
+            },
+            active_feature_set: ActiveServiceSet {
+                features: BTreeSet::from([
+                    EdgeFeature::AdminHttp,
+                    EdgeFeature::Portal,
+                    EdgeFeature::AuthOidc,
+                ]),
+            },
+            generated_at: Utc::now(),
+        };
+
+        let encoded = manifest
+            .to_cbor_vec()
+            .expect("encode edge service manifest");
+        let decoded: EdgeServiceManifest =
+            from_cbor_slice(&encoded).expect("decode edge service manifest");
+        assert_eq!(decoded, manifest);
+    }
+
+    #[test]
+    fn lag_and_backpressure_policies_round_trip() {
+        let payload = (
+            LagState::CatchupRequired,
+            LagPolicy {
+                max_head_lag_before_catchup: 2,
+                max_head_lag_before_block: 5,
+                max_head_lag_before_full_rebase: 11,
+                max_window_skew_before_lease_revoke: 3,
+            },
+            MergeWindowMissPolicy::RebaseRequired,
+            BackpressurePolicy {
+                max_in_flight_chunk_requests_per_peer: 12,
+                max_in_flight_updates_per_peer: 6,
+                reducer_queue_depth_limit: 96,
+                upload_concurrency_limit: 3,
+                browser_transfer_budget_bytes: 8 * 1024 * 1024,
+                portal_feed_sample_rate: 2,
+            },
+        );
+
+        let encoded = deterministic_cbor(&payload).expect("encode policy payload");
+        let decoded: (
+            LagState,
+            LagPolicy,
+            MergeWindowMissPolicy,
+            BackpressurePolicy,
+        ) = from_cbor_slice(&encoded).expect("decode policy payload");
+
+        assert_eq!(decoded.0, LagState::CatchupRequired);
+        assert_eq!(decoded.1.max_head_lag_before_full_rebase, 11);
+        assert_eq!(decoded.2, MergeWindowMissPolicy::RebaseRequired);
+        assert_eq!(decoded.3.reducer_queue_depth_limit, 96);
     }
 
     #[test]

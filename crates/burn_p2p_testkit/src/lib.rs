@@ -724,10 +724,22 @@ impl SimulationRunner {
             };
 
             let limit_profile = self.calibrator.calibrate(probe, now)?;
+            let target_artifact_id = if browser {
+                "browser-wasm"
+            } else {
+                "native-linux-x86_64"
+            };
+            let target_artifact_hash = if browser {
+                ContentId::new("approved-artifact-browser")
+            } else {
+                ContentId::new("approved-artifact-native")
+            };
             let client_manifest = ClientManifest::new(
                 peer_id.clone(),
                 ProjectFamilyId::new("synthetic-family"),
-                ContentId::new("synthetic-release"),
+                ContentId::new("synthetic-train"),
+                target_artifact_hash,
+                target_artifact_id,
                 Version::new(0, 1, 1),
                 bootstrap_plan.genesis.protocol_version.clone(),
                 ContentId::new("approved-build"),
@@ -737,7 +749,7 @@ impl SimulationRunner {
                     .preferred_backends
                     .iter()
                     .cloned()
-                    .collect(),
+                    .collect::<BTreeSet<_>>(),
                 limit_profile.card.platform.clone(),
                 Some(ContentId::new(format!("binary-{index}"))),
                 browser.then_some(ContentId::new(format!("wasm-{index}"))),
@@ -1023,7 +1035,13 @@ fn default_release_policy() -> Result<ReleasePolicy, TestkitError> {
         ],
     )?;
     release_policy.required_project_family_id = Some(ProjectFamilyId::new("synthetic-family"));
-    release_policy.required_client_release_hash = Some(ContentId::new("synthetic-release"));
+    release_policy.required_release_train_hash = Some(ContentId::new("synthetic-train"));
+    release_policy
+        .allowed_target_artifact_hashes
+        .insert(ContentId::new("approved-artifact-native"));
+    release_policy
+        .allowed_target_artifact_hashes
+        .insert(ContentId::new("approved-artifact-browser"));
     release_policy
         .approved_build_hashes
         .insert(ContentId::new("approved-build"));

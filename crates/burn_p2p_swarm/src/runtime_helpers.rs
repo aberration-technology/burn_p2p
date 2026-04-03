@@ -1,7 +1,7 @@
-use std::{
-    convert::Infallible,
-    net::{TcpListener, UdpSocket},
-};
+use std::convert::Infallible;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::{TcpListener, UdpSocket};
 
 use libp2p::{Multiaddr, multiaddr::Protocol as MultiaddrProtocol};
 use libp2p_identity::Keypair;
@@ -9,7 +9,10 @@ use libp2p_plaintext as plaintext;
 use libp2p_request_response as request_response;
 use libp2p_swarm::SwarmEvent;
 
-use crate::{ControlPlaneRequest, ControlPlaneResponse, NativeControlPlaneBehaviourEvent};
+use crate::{ControlPlaneRequest, ControlPlaneResponse};
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::NativeControlPlaneBehaviourEvent;
 
 pub(crate) fn other_name(event: &SwarmEvent<Infallible>) -> &'static str {
     match event {
@@ -55,6 +58,7 @@ pub(crate) fn other_control_name(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn other_native_control_name(
     event: &SwarmEvent<NativeControlPlaneBehaviourEvent>,
 ) -> &'static str {
@@ -78,10 +82,16 @@ pub(crate) fn other_native_control_name(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn other_native_control_name<T>(_event: &SwarmEvent<T>) -> &'static str {
+    "other"
+}
+
 pub(crate) fn plaintext_config(keypair: &Keypair) -> Result<plaintext::Config, Infallible> {
     Ok(plaintext::Config::new(keypair))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, std::io::Error> {
     let protocols: Vec<_> = address.iter().collect();
     match protocols.as_slice() {
@@ -133,4 +143,9 @@ pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, 
         }
         _ => Ok(address.clone()),
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, std::io::Error> {
+    Ok(address.clone())
 }

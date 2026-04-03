@@ -27,6 +27,7 @@ burn_p2p_swarm = { path = "../burn_p2p_swarm" }
 [features]
 default = []
 burn = ["dep:burn", "dep:burn_p2p_engine"]
+browser = []
 
 [dev-dependencies]
 tempfile.workspace = true

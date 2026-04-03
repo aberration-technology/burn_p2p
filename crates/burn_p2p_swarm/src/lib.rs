@@ -21,7 +21,7 @@ use burn_p2p_core::{
 use burn_p2p_experiment::ExperimentControlEnvelope;
 use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt};
-use libp2p::{Multiaddr, StreamProtocol, SwarmBuilder, gossipsub, identify, mdns};
+use libp2p::{Multiaddr, StreamProtocol};
 use libp2p_core::{Transport, transport::MemoryTransport, upgrade};
 use libp2p_identity::{Keypair, PeerId as Libp2pPeerId};
 use libp2p_plaintext as plaintext;
@@ -29,6 +29,12 @@ use libp2p_request_response::{self as request_response, ProtocolSupport};
 use libp2p_swarm::{Config as Libp2pSwarmConfig, NetworkBehaviour, Swarm, SwarmEvent, dummy};
 use libp2p_yamux as yamux;
 use serde::{Deserialize, Serialize};
+
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p::{SwarmBuilder, gossipsub, identify};
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_mdns as mdns;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::{
     runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime},
     time::timeout,
@@ -428,6 +434,7 @@ pub struct PubsubEnvelope {
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "NativeControlPlaneBehaviourEvent")]
+#[cfg(not(target_arch = "wasm32"))]
 struct NativeControlPlaneBehaviour {
     request_response: request_response::json::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
     gossipsub: gossipsub::Behaviour,
@@ -435,6 +442,7 @@ struct NativeControlPlaneBehaviour {
     mdns: mdns::tokio::Behaviour,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum NativeControlPlaneBehaviourEvent {
     RequestResponse(Box<request_response::Event<ControlPlaneRequest, ControlPlaneResponse>>),
     Gossipsub(Box<gossipsub::Event>),
@@ -442,6 +450,7 @@ enum NativeControlPlaneBehaviourEvent {
     Mdns(mdns::Event),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<request_response::Event<ControlPlaneRequest, ControlPlaneResponse>>
     for NativeControlPlaneBehaviourEvent
 {
@@ -450,18 +459,21 @@ impl From<request_response::Event<ControlPlaneRequest, ControlPlaneResponse>>
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<gossipsub::Event> for NativeControlPlaneBehaviourEvent {
     fn from(value: gossipsub::Event) -> Self {
         Self::Gossipsub(Box::new(value))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<identify::Event> for NativeControlPlaneBehaviourEvent {
     fn from(value: identify::Event) -> Self {
         Self::Identify(Box::new(value))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<mdns::Event> for NativeControlPlaneBehaviourEvent {
     fn from(value: mdns::Event) -> Self {
         Self::Mdns(value)
@@ -1055,6 +1067,7 @@ impl From<SwarmEvent<request_response::Event<ControlPlaneRequest, ControlPlaneRe
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct NativeControlPlaneShell {
     runtime: TokioRuntime,
     local_peer_id: Libp2pPeerId,
@@ -1066,6 +1079,7 @@ pub struct NativeControlPlaneShell {
     pending_events: VecDeque<LiveControlPlaneEvent>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl NativeControlPlaneShell {
     pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
         Self::with_keypair(control_protocol, Keypair::generate_ed25519())
@@ -1091,6 +1105,7 @@ impl NativeControlPlaneShell {
             format!("{}/identify/1.0.0", control_protocol.as_str()),
             keypair.public(),
         );
+        #[cfg(not(target_arch = "wasm32"))]
         let mdns_behaviour = {
             let _guard = runtime.enter();
             mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)
@@ -1118,6 +1133,7 @@ impl NativeControlPlaneShell {
                     )
                     .expect("gossipsub behaviour should be valid"),
                     identify: identify::Behaviour::new(identify_config.clone()),
+                    #[cfg(not(target_arch = "wasm32"))]
                     mdns: mdns_behaviour,
                 })
                 .map_err(|error| SwarmError::Runtime(error.to_string()))?
@@ -1622,6 +1638,7 @@ impl NativeControlPlaneShell {
                                 }
                             }
                         },
+                        #[cfg(not(target_arch = "wasm32"))]
                         NativeControlPlaneBehaviourEvent::Mdns(event) => match event {
                             mdns::Event::Discovered(peers) => {
                                 let mut discovered = Vec::new();
@@ -1680,6 +1697,173 @@ impl NativeControlPlaneShell {
                     },
                 })
         })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct NativeControlPlaneShell {
+    inner: MemoryControlPlaneShell,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl NativeControlPlaneShell {
+    pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
+        Self::with_keypair(control_protocol, Keypair::generate_ed25519())
+    }
+
+    pub fn with_keypair(
+        control_protocol: ProtocolId,
+        keypair: Keypair,
+    ) -> Result<Self, SwarmError> {
+        Ok(Self {
+            inner: MemoryControlPlaneShell::with_keypair(control_protocol, keypair),
+        })
+    }
+
+    pub fn local_peer_id(&self) -> &Libp2pPeerId {
+        self.inner.local_peer_id()
+    }
+
+    pub fn listen_on(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
+        self.inner.listen_on(address)
+    }
+
+    pub fn dial(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
+        self.inner.dial(address)
+    }
+
+    pub fn connected_peer_count(&self) -> usize {
+        self.inner.connected_peer_count()
+    }
+
+    pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
+        self.inner.publish_control(announcement);
+    }
+
+    pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
+        self.inner.publish_head(announcement);
+    }
+
+    pub fn publish_lease(&mut self, announcement: LeaseAnnouncement) {
+        self.inner.publish_lease(announcement);
+    }
+
+    pub fn publish_merge(&mut self, announcement: MergeAnnouncement) {
+        self.inner.publish_merge(announcement);
+    }
+
+    pub fn publish_merge_window(&mut self, announcement: MergeWindowAnnouncement) {
+        self.inner.publish_merge_window(announcement);
+    }
+
+    pub fn publish_reducer_assignment(&mut self, announcement: ReducerAssignmentAnnouncement) {
+        self.inner.publish_reducer_assignment(announcement);
+    }
+
+    pub fn publish_update(&mut self, announcement: UpdateEnvelopeAnnouncement) {
+        self.inner.publish_update(announcement);
+    }
+
+    pub fn publish_aggregate(&mut self, announcement: AggregateAnnouncement) {
+        self.inner.publish_aggregate(announcement);
+    }
+
+    pub fn publish_reduction_certificate(
+        &mut self,
+        announcement: ReductionCertificateAnnouncement,
+    ) {
+        self.inner.publish_reduction_certificate(announcement);
+    }
+
+    pub fn publish_reducer_load(&mut self, announcement: ReducerLoadAnnouncement) {
+        self.inner.publish_reducer_load(announcement);
+    }
+
+    pub fn publish_auth(&mut self, announcement: PeerAuthAnnouncement) {
+        self.inner.publish_auth(announcement);
+    }
+
+    pub fn publish_directory(&mut self, announcement: ExperimentDirectoryAnnouncement) {
+        self.inner.publish_directory(announcement);
+    }
+
+    pub fn snapshot(&self) -> &ControlPlaneSnapshot {
+        self.inner.snapshot()
+    }
+
+    pub fn subscribe_topic(&mut self, topic: OverlayTopic) -> Result<(), SwarmError> {
+        self.inner.subscribe_topic(topic)
+    }
+
+    pub fn publish_pubsub(
+        &mut self,
+        topic: OverlayTopic,
+        payload: PubsubPayload,
+    ) -> Result<(), SwarmError> {
+        self.inner.publish_pubsub(topic, payload)
+    }
+
+    pub fn publish_artifact(
+        &mut self,
+        descriptor: ArtifactDescriptor,
+        chunks: Vec<ArtifactChunkPayload>,
+    ) {
+        self.inner.publish_artifact(descriptor, chunks);
+    }
+
+    pub fn request_snapshot(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        self.inner.request_snapshot(peer_id)
+    }
+
+    pub fn fetch_snapshot(
+        &mut self,
+        peer_id: &str,
+        timeout: Duration,
+    ) -> Result<ControlPlaneSnapshot, SwarmError> {
+        self.inner.fetch_snapshot(peer_id, timeout)
+    }
+
+    pub fn fetch_artifact_manifest(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        timeout: Duration,
+    ) -> Result<Option<ArtifactDescriptor>, SwarmError> {
+        self.inner
+            .fetch_artifact_manifest(peer_id, artifact_id, timeout)
+    }
+
+    pub fn request_artifact_manifest(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+    ) -> Result<(), SwarmError> {
+        self.inner.request_artifact_manifest(peer_id, artifact_id)
+    }
+
+    pub fn fetch_artifact_chunk(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+        timeout: Duration,
+    ) -> Result<Option<ArtifactChunkPayload>, SwarmError> {
+        self.inner
+            .fetch_artifact_chunk(peer_id, artifact_id, chunk_id, timeout)
+    }
+
+    pub fn request_artifact_chunk(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+    ) -> Result<(), SwarmError> {
+        self.inner
+            .request_artifact_chunk(peer_id, artifact_id, chunk_id)
+    }
+
+    pub fn wait_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        self.inner.wait_event(timeout)
     }
 }
 

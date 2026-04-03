@@ -832,23 +832,91 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn_p2p_auth_external"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p_core",
+ "burn_p2p_security",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "burn_p2p_auth_github"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p_auth_external",
+ "burn_p2p_core",
+ "burn_p2p_security",
+ "chrono",
+]
+
+[[package]]
+name = "burn_p2p_auth_oauth"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p_auth_external",
+ "burn_p2p_core",
+ "burn_p2p_security",
+ "chrono",
+]
+
+[[package]]
+name = "burn_p2p_auth_oidc"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p_auth_external",
+ "burn_p2p_core",
+ "burn_p2p_security",
+ "chrono",
+]
+
+[[package]]
 name = "burn_p2p_bootstrap"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "burn_p2p",
+ "burn_p2p_auth_external",
+ "burn_p2p_auth_github",
+ "burn_p2p_auth_oauth",
+ "burn_p2p_auth_oidc",
+ "burn_p2p_browser",
  "burn_p2p_core",
  "burn_p2p_experiment",
+ "burn_p2p_portal",
  "burn_p2p_security",
+ "burn_p2p_social",
  "burn_p2p_swarm",
  "chrono",
  "hex",
  "libp2p-identity",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "burn_p2p_browser"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p",
+ "burn_p2p_bootstrap",
+ "burn_p2p_core",
+ "burn_p2p_ui",
+ "chrono",
+ "getrandom 0.2.17",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -890,6 +958,7 @@ dependencies = [
  "burn_p2p_experiment",
  "chrono",
  "criterion",
+ "futures",
  "reqwest",
  "serde",
  "serde_json",
@@ -934,6 +1003,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn_p2p_portal"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "burn_p2p_security"
 version = "0.1.0"
 dependencies = [
@@ -949,6 +1025,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn_p2p_social"
+version = "0.1.0"
+dependencies = [
+ "burn_p2p_core",
+ "chrono",
+ "serde",
+]
+
+[[package]]
 name = "burn_p2p_swarm"
 version = "0.1.0"
 dependencies = [
@@ -957,6 +1042,8 @@ dependencies = [
  "chrono",
  "criterion",
  "futures",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
  "libp2p",
  "libp2p-core",
  "libp2p-gossipsub",
@@ -981,6 +1068,7 @@ dependencies = [
  "anyhow",
  "burn_p2p",
  "burn_p2p_bootstrap",
+ "burn_p2p_browser",
  "burn_p2p_checkpoint",
  "burn_p2p_core",
  "burn_p2p_dataloader",

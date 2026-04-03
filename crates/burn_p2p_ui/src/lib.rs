@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use burn_p2p_bootstrap::BootstrapDiagnostics;
 use burn_p2p_core::{
-    AggregateEnvelope, AggregateTier, ArtifactId, AssignmentLease, AuthProvider,
+    AggregateEnvelope, AggregateTier, ArtifactId, AssignmentLease, AuthProvider, BrowserRole,
     ContributionReceipt, ContributionReceiptId, DatasetViewId, ExperimentDirectoryEntry,
     ExperimentId, ExperimentScope, HeadDescriptor, HeadId, MergeCertId, MergeCertificate,
     MergeStrategy, MergeWindowState, MetricValue, MicroShardId, NetworkId, PeerId,
@@ -95,6 +95,50 @@ impl ExperimentPickerView {
         Self {
             network_id,
             entries: cards,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BrowserExperimentPickerState {
+    PortalOnly,
+    Observer,
+    Verifier,
+    Trainer,
+    BackgroundSuspended,
+    Catchup,
+    Blocked,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserExperimentPickerCard {
+    pub experiment_id: ExperimentId,
+    pub study_id: StudyId,
+    pub display_name: String,
+    pub current_revision_id: RevisionId,
+    pub current_head_id: Option<HeadId>,
+    pub estimated_download_bytes: u64,
+    pub estimated_window_seconds: u64,
+    pub allowed: bool,
+    pub recommended_state: BrowserExperimentPickerState,
+    pub recommended_role: Option<BrowserRole>,
+    pub fallback_from_preferred: bool,
+    pub eligible_roles: Vec<BrowserRole>,
+    pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserExperimentPickerView {
+    pub network_id: NetworkId,
+    pub entries: Vec<BrowserExperimentPickerCard>,
+}
+
+impl BrowserExperimentPickerView {
+    pub fn new(network_id: NetworkId, mut entries: Vec<BrowserExperimentPickerCard>) -> Self {
+        entries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        Self {
+            network_id,
+            entries,
         }
     }
 }
@@ -602,12 +646,13 @@ mod tests {
     use burn_p2p_bootstrap::{BootstrapDiagnostics, BootstrapPreset, BootstrapService};
     use burn_p2p_core::{
         AggregateEnvelope, AggregateStats, AggregateTier, ArtifactId, AssignmentLease,
-        AuthProvider, ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
-        ExperimentId, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
-        ExperimentVisibility, HeadDescriptor, HeadId, MergeCertId, MergeCertificate, MergePolicy,
-        MergeStrategy, MergeTopologyPolicy, MergeWindowState, NetworkEstimate, NetworkId, PeerId,
-        PeerRole, PeerRoleSet, ReducerLoadReport, ReductionCertificate, RevisionId,
-        RevocationEpoch, StudyId, WindowActivation, WindowId,
+        AuthProvider, BrowserRole, ContributionReceipt, ContributionReceiptId,
+        ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
+        ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadDescriptor,
+        HeadId, MergeCertId, MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy,
+        MergeWindowState, NetworkEstimate, NetworkId, PeerId, PeerRole, PeerRoleSet,
+        ReducerLoadReport, ReductionCertificate, RevisionId, RevocationEpoch, StudyId,
+        WindowActivation, WindowId,
     };
     use burn_p2p_security::PeerTrustLevel;
     use burn_p2p_swarm::{AlertSeverity, OverlayChannel, OverlayTopic};
@@ -615,6 +660,7 @@ mod tests {
 
     use super::{
         AggregateDagView, AlertNotice, AuthPortalView, AuthorityActionRecord,
+        BrowserExperimentPickerCard, BrowserExperimentPickerState, BrowserExperimentPickerView,
         CheckpointDagEdgeKind, CheckpointDagView, CheckpointDownload, ContributionIdentityPanel,
         CostPerformancePoint, EmaFlowView, ExperimentMigrationView, ExperimentPickerView,
         ExperimentVariantView, GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView,
@@ -988,6 +1034,55 @@ mod tests {
 
         assert_eq!(picker.entries.len(), 1);
         assert!(picker.entries[0].allowed);
+    }
+
+    #[test]
+    fn browser_experiment_picker_sorts_and_serializes_browser_state() {
+        let picker = BrowserExperimentPickerView::new(
+            NetworkId::new("net"),
+            vec![
+                BrowserExperimentPickerCard {
+                    experiment_id: ExperimentId::new("exp-b"),
+                    study_id: StudyId::new("study"),
+                    display_name: "Zulu".into(),
+                    current_revision_id: RevisionId::new("rev-b"),
+                    current_head_id: None,
+                    estimated_download_bytes: 2048,
+                    estimated_window_seconds: 30,
+                    allowed: false,
+                    recommended_state: BrowserExperimentPickerState::Blocked,
+                    recommended_role: None,
+                    fallback_from_preferred: false,
+                    eligible_roles: Vec::new(),
+                    blocked_reasons: vec!["missing scope".into()],
+                },
+                BrowserExperimentPickerCard {
+                    experiment_id: ExperimentId::new("exp-a"),
+                    study_id: StudyId::new("study"),
+                    display_name: "Alpha".into(),
+                    current_revision_id: RevisionId::new("rev-a"),
+                    current_head_id: Some(HeadId::new("head-a")),
+                    estimated_download_bytes: 1024,
+                    estimated_window_seconds: 15,
+                    allowed: true,
+                    recommended_state: BrowserExperimentPickerState::Verifier,
+                    recommended_role: Some(BrowserRole::Verifier),
+                    fallback_from_preferred: true,
+                    eligible_roles: vec![BrowserRole::Observer, BrowserRole::Verifier],
+                    blocked_reasons: vec!["revision requires WebGPU support".into()],
+                },
+            ],
+        );
+
+        assert_eq!(picker.entries[0].display_name, "Alpha");
+        let bytes = serde_json::to_vec(&picker).expect("serialize browser picker");
+        let decoded: BrowserExperimentPickerView =
+            serde_json::from_slice(&bytes).expect("deserialize browser picker");
+        assert_eq!(
+            decoded.entries[0].recommended_role,
+            Some(BrowserRole::Verifier)
+        );
+        assert!(decoded.entries[0].fallback_from_preferred);
     }
 
     #[test]

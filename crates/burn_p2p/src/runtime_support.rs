@@ -151,6 +151,9 @@ impl PersistedRuntimeBindingState {
 pub(crate) struct PersistedRuntimeSecurityState {
     pub node_state: NodeRuntimeState,
     pub slot_states: Vec<SlotRuntimeState>,
+    pub lag_state: LagState,
+    pub head_lag_steps: u64,
+    pub lag_policy: LagPolicy,
     pub admitted_peers: BTreeMap<PeerId, PeerAdmissionReport>,
     pub rejected_peers: BTreeMap<PeerId, String>,
     pub peer_reputation: BTreeMap<PeerId, ReputationState>,
@@ -164,6 +167,9 @@ impl PersistedRuntimeSecurityState {
         Self {
             node_state: persisted_node_state(&snapshot.node_state, default_state),
             slot_states: persisted_slot_states(&snapshot.slot_states),
+            lag_state: snapshot.lag_state,
+            head_lag_steps: snapshot.head_lag_steps,
+            lag_policy: snapshot.lag_policy.clone(),
             admitted_peers: snapshot.admitted_peers.clone(),
             rejected_peers: snapshot.rejected_peers.clone(),
             peer_reputation: snapshot.peer_reputation.clone(),
@@ -175,6 +181,9 @@ impl PersistedRuntimeSecurityState {
     fn apply_to_snapshot(self, snapshot: &mut NodeTelemetrySnapshot) {
         snapshot.node_state = self.node_state;
         snapshot.slot_states = self.slot_states;
+        snapshot.lag_state = self.lag_state;
+        snapshot.head_lag_steps = self.head_lag_steps;
+        snapshot.lag_policy = self.lag_policy;
         snapshot.admitted_peers = self.admitted_peers;
         snapshot.rejected_peers = self.rejected_peers;
         snapshot.peer_reputation = self.peer_reputation;
@@ -208,7 +217,9 @@ struct RemoteReenrollmentStatus {
 struct RemoteTrustBundleExport {
     network_id: NetworkId,
     project_family_id: ProjectFamilyId,
-    required_client_release_hash: ContentId,
+    required_release_train_hash: ContentId,
+    #[serde(default)]
+    allowed_target_artifact_hashes: BTreeSet<ContentId>,
     minimum_revocation_epoch: RevocationEpoch,
     active_issuer_peer_id: PeerId,
     issuers: Vec<RemoteTrustedIssuerStatus>,
@@ -909,6 +920,87 @@ pub(crate) fn latest_head_from_snapshot(
         })
 }
 
+fn latest_remote_head(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+) -> Option<(PeerId, HeadDescriptor)> {
+    let remote_merged = snapshots
+        .iter()
+        .filter_map(|(peer_id, snapshot)| {
+            if let Some(merge) = latest_merge_from_snapshot(snapshot, experiment) {
+                return snapshot
+                    .head_announcements
+                    .iter()
+                    .find(|announcement| announcement.head.head_id == merge.merged_head_id)
+                    .map(|announcement| {
+                        (
+                            announcement
+                                .provider_peer_id
+                                .clone()
+                                .unwrap_or_else(|| peer_id.clone()),
+                            announcement.head.clone(),
+                        )
+                    });
+            }
+            None
+        })
+        .max_by(|left, right| {
+            left.1
+                .global_step
+                .cmp(&right.1.global_step)
+                .then(left.1.created_at.cmp(&right.1.created_at))
+        });
+
+    remote_merged.or_else(|| {
+        snapshots
+            .iter()
+            .filter_map(|(_, snapshot)| latest_head_from_snapshot(snapshot.clone(), experiment))
+            .max_by(|left, right| {
+                left.1
+                    .global_step
+                    .cmp(&right.1.global_step)
+                    .then(left.1.created_at.cmp(&right.1.created_at))
+            })
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LagAssessment {
+    pub state: LagState,
+    pub head_lag_steps: u64,
+}
+
+pub(crate) fn assess_head_lag(
+    storage: &StorageConfig,
+    experiment: &ExperimentHandle,
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    lag_policy: &LagPolicy,
+) -> anyhow::Result<LagAssessment> {
+    let local_global_step = load_head_state(storage, experiment)?
+        .map(|head| head.global_step)
+        .unwrap_or(0);
+    let remote_global_step = latest_remote_head(snapshots, experiment)
+        .map(|(_, head)| head.global_step)
+        .unwrap_or(local_global_step);
+    let head_lag_steps = remote_global_step.saturating_sub(local_global_step);
+    let state = if head_lag_steps == 0 {
+        LagState::Current
+    } else if head_lag_steps <= lag_policy.max_head_lag_before_catchup {
+        LagState::SlightlyBehind
+    } else if head_lag_steps <= lag_policy.max_head_lag_before_block {
+        LagState::CatchupRequired
+    } else if head_lag_steps <= lag_policy.max_head_lag_before_full_rebase {
+        LagState::LeaseBlocked
+    } else {
+        LagState::RebaseRequired
+    };
+
+    Ok(LagAssessment {
+        state,
+        head_lag_steps,
+    })
+}
+
 fn latest_merge_from_snapshot(
     snapshot: &ControlPlaneSnapshot,
     experiment: &ExperimentHandle,
@@ -1247,17 +1339,21 @@ fn remote_trust_bundle_to_state(
 
     TrustBundleState {
         source_url: source_url.to_owned(),
+        required_release_train_hash: bundle.required_release_train_hash,
+        allowed_target_artifact_hashes: bundle.allowed_target_artifact_hashes,
         active_issuer_peer_id: bundle.active_issuer_peer_id,
         trusted_issuers,
         minimum_revocation_epoch: bundle.minimum_revocation_epoch,
-        reenrollment: bundle.reenrollment.map(|reenrollment| ClientReenrollmentStatus {
-            reason: reenrollment.reason,
-            rotated_at: reenrollment.rotated_at,
-            legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
-            login_path: reenrollment.login_path,
-            enroll_path: reenrollment.enroll_path,
-            trust_bundle_path: reenrollment.trust_bundle_path,
-        }),
+        reenrollment: bundle
+            .reenrollment
+            .map(|reenrollment| ClientReenrollmentStatus {
+                reason: reenrollment.reason,
+                rotated_at: reenrollment.rotated_at,
+                legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
+                login_path: reenrollment.login_path,
+                enroll_path: reenrollment.enroll_path,
+                trust_bundle_path: reenrollment.trust_bundle_path,
+            }),
         updated_at: Utc::now(),
     }
 }
@@ -1274,25 +1370,52 @@ fn trust_bundle_changed(current: Option<&TrustBundleState>, next: &TrustBundleSt
         || current.reenrollment != next.reenrollment
 }
 
-fn fetch_trust_bundle(
-    source_url: &str,
-    admission_policy: &AdmissionPolicy,
-) -> anyhow::Result<TrustBundleState> {
+#[cfg(not(target_arch = "wasm32"))]
+fn fetch_trust_bundle_export(source_url: &str) -> anyhow::Result<RemoteTrustBundleExport> {
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .map_err(|error| anyhow::anyhow!("failed to build trust bundle client: {error}"))?
         .get(source_url)
         .send()
-        .map_err(|error| anyhow::anyhow!("failed to fetch trust bundle from {source_url}: {error}"))?;
+        .map_err(|error| {
+            anyhow::anyhow!("failed to fetch trust bundle from {source_url}: {error}")
+        })?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("trust bundle endpoint {source_url} returned {status}");
     }
 
-    let bundle: RemoteTrustBundleExport = response
-        .json()
-        .map_err(|error| anyhow::anyhow!("failed to decode trust bundle from {source_url}: {error}"))?;
+    response.json().map_err(|error| {
+        anyhow::anyhow!("failed to decode trust bundle from {source_url}: {error}")
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn fetch_trust_bundle_export(source_url: &str) -> anyhow::Result<RemoteTrustBundleExport> {
+    futures::executor::block_on(async {
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|error| anyhow::anyhow!("failed to build trust bundle client: {error}"))?;
+        let response = client.get(source_url).send().await.map_err(|error| {
+            anyhow::anyhow!("failed to fetch trust bundle from {source_url}: {error}")
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!("trust bundle endpoint {source_url} returned {status}");
+        }
+
+        response.json().await.map_err(|error| {
+            anyhow::anyhow!("failed to decode trust bundle from {source_url}: {error}")
+        })
+    })
+}
+
+fn fetch_trust_bundle(
+    source_url: &str,
+    admission_policy: &AdmissionPolicy,
+) -> anyhow::Result<TrustBundleState> {
+    let bundle = fetch_trust_bundle_export(source_url)?;
 
     if bundle.network_id != admission_policy.network_id {
         anyhow::bail!(
@@ -1308,11 +1431,11 @@ fn fetch_trust_bundle(
             admission_policy.project_family_id.as_str(),
         );
     }
-    if bundle.required_client_release_hash != admission_policy.required_client_release_hash {
+    if bundle.required_release_train_hash != admission_policy.required_release_train_hash {
         anyhow::bail!(
-            "trust bundle release {} does not match runtime release {}",
-            bundle.required_client_release_hash.as_str(),
-            admission_policy.required_client_release_hash.as_str(),
+            "trust bundle release train {} does not match runtime release train {}",
+            bundle.required_release_train_hash.as_str(),
+            admission_policy.required_release_train_hash.as_str(),
         );
     }
 
@@ -1356,7 +1479,8 @@ fn reconcile_remote_trust_bundle(
     for endpoint in endpoints {
         match fetch_trust_bundle(&endpoint, initial_policy) {
             Ok(trust_bundle) => {
-                let bundle_changed = trust_bundle_changed(snapshot.trust_bundle.as_ref(), &trust_bundle);
+                let bundle_changed =
+                    trust_bundle_changed(snapshot.trust_bundle.as_ref(), &trust_bundle);
                 let mut changed = bundle_changed;
 
                 if trust_bundle.minimum_revocation_epoch
@@ -1377,7 +1501,16 @@ fn reconcile_remote_trust_bundle(
                         admission_policy.trusted_issuers = trust_bundle.trusted_issuers.clone();
                         changed = true;
                     }
-                    if trust_bundle.minimum_revocation_epoch > admission_policy.minimum_revocation_epoch
+                    if !trust_bundle.allowed_target_artifact_hashes.is_empty()
+                        && admission_policy.allowed_target_artifact_hashes
+                            != trust_bundle.allowed_target_artifact_hashes
+                    {
+                        admission_policy.allowed_target_artifact_hashes =
+                            trust_bundle.allowed_target_artifact_hashes.clone();
+                        changed = true;
+                    }
+                    if trust_bundle.minimum_revocation_epoch
+                        > admission_policy.minimum_revocation_epoch
                     {
                         admission_policy.minimum_revocation_epoch =
                             trust_bundle.minimum_revocation_epoch;
@@ -1394,8 +1527,9 @@ fn reconcile_remote_trust_bundle(
                     && let Some(storage) = storage
                     && let Err(error) = persist_auth_state(storage, Some(auth_config))
                 {
-                    snapshot.last_error =
-                        Some(format!("failed to persist trust bundle auth state: {error}"));
+                    snapshot.last_error = Some(format!(
+                        "failed to persist trust bundle auth state: {error}"
+                    ));
                 }
 
                 if let Some(admission_policy) = auth_config.admission_policy.as_ref() {
@@ -1974,8 +2108,9 @@ pub(crate) fn run_control_plane(
     }
 
     let mut last_redial_at = Instant::now();
-    let mut last_trust_bundle_sync_at =
-        Instant::now().checked_sub(TRUST_BUNDLE_REFRESH_INTERVAL).unwrap_or_else(Instant::now);
+    let mut last_trust_bundle_sync_at = Instant::now()
+        .checked_sub(TRUST_BUNDLE_REFRESH_INTERVAL)
+        .unwrap_or_else(Instant::now);
 
     loop {
         let mut shutdown_requested = false;
@@ -2336,8 +2471,7 @@ pub(crate) fn run_control_plane(
             if let Some(storage) = storage.as_ref()
                 && let Err(error) = persist_runtime_security_state(storage, &snapshot)
             {
-                snapshot.last_error =
-                    Some(format!("failed to persist security state: {error}"));
+                snapshot.last_error = Some(format!("failed to persist security state: {error}"));
             }
             last_trust_bundle_sync_at = Instant::now();
         }

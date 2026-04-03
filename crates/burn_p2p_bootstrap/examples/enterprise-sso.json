@@ -1,0 +1,130 @@
+{
+  "spec": {
+    "preset": "BootstrapOnly",
+    "genesis": {
+      "network_id": "enterprise-sso-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Enterprise SSO Demo",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "enterprise-sso-profile"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [],
+    "authority": null,
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": true
+    },
+    "admin_api": {
+      "supported_actions": [
+        "ExportDiagnostics",
+        "ExportReceipts"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": true
+    }
+  },
+  "http_bind_addr": "127.0.0.1:8791",
+  "optional_services": {
+    "portal_enabled": true,
+    "browser_mode": "Disabled",
+    "social_mode": "Private",
+    "profile_mode": "Private"
+  },
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority",
+  "auth": {
+    "authority_name": "enterprise-auth",
+    "connector": {
+      "kind": "oidc",
+      "issuer": "https://issuer.example",
+      "authorize_base_url": "https://issuer.example/authorize",
+      "exchange_url": "https://issuer.example/exchange",
+      "userinfo_url": "https://issuer.example/userinfo"
+    },
+    "authority_key_path": ".burn_p2p-auth/enterprise-authority.key",
+    "project_family_id": "demo-family",
+    "required_release_train_hash": "demo-train",
+    "allowed_target_artifact_hashes": [
+      "demo-artifact-native"
+    ],
+    "session_ttl_seconds": 3600,
+    "minimum_revocation_epoch": 1,
+    "principals": [
+      {
+        "principal_id": "alice",
+        "display_name": "Alice",
+        "org_memberships": [
+          "burn-enterprise"
+        ],
+        "group_memberships": [
+          "operators"
+        ],
+        "granted_roles": {
+          "roles": [
+            "TrainerGpu",
+            "Validator"
+          ]
+        },
+        "granted_scopes": [
+          "Connect",
+          "Discover",
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "allowed_networks": [
+          "enterprise-sso-demo"
+        ],
+        "custom_claims": {
+          "deployment_profile": "enterprise-sso"
+        }
+      }
+    ],
+    "directory_entries": [
+      {
+        "network_id": "enterprise-sso-demo",
+        "study_id": "study-auth",
+        "experiment_id": "exp-auth",
+        "workload_id": "auth-demo",
+        "display_name": "Enterprise Auth Demo",
+        "model_schema_hash": "model-auth",
+        "dataset_view_id": "view-auth",
+        "resource_requirements": {
+          "minimum_roles": [
+            "TrainerGpu"
+          ],
+          "minimum_device_memory_bytes": 1024,
+          "minimum_system_memory_bytes": 4096,
+          "estimated_download_bytes": 65536,
+          "estimated_window_seconds": 45
+        },
+        "visibility": "OptIn",
+        "opt_in_policy": "Scoped",
+        "current_revision_id": "rev-auth",
+        "current_head_id": null,
+        "allowed_roles": {
+          "roles": [
+            "TrainerGpu"
+          ]
+        },
+        "allowed_scopes": [
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "metadata": {
+          "owner": "burn-enterprise"
+        }
+      }
+    ]
+  }
+}

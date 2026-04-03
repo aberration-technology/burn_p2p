@@ -13,7 +13,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use libp2p_identity::Keypair;
 use semver::Version;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod config;
 mod project_family;
@@ -26,18 +26,24 @@ pub use burn_p2p_checkpoint::{
     materialize_aggregate_artifact_bytes,
 };
 pub use burn_p2p_core::{
-    AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
-    AssignmentLease, AuthProvider, CapabilityCard, CapabilityEstimate, ChunkId,
-    ClientReleaseManifest, ContentId, ContributionReceipt, ContributionReceiptId, DatasetId,
-    DatasetManifest, DatasetView, DatasetViewId, ExperimentDirectoryEntry, ExperimentId,
-    ExperimentManifest, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
-    ExperimentVisibility, GenesisSpec, HeadDescriptor, HeadId, HeadPromotionPolicy, LeaseId,
-    MergeCertId, MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy,
-    MergeWindowState, MetricValue, MicroShardId, NetworkEstimate, NetworkId, NetworkManifest,
-    NodeCertId, NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole,
-    PeerRoleSet, Precision, PrincipalId, ProjectFamilyId, ReducerAssignment, ReducerLoadReport,
-    ReductionCertificate, RevisionId, RevisionManifest, RevocationEpoch, StudyId,
-    SupportedWorkload, TelemetrySummary, UpdateAnnounce, UpdateNormStats, WindowActivation,
+    ActiveServiceSet, AdminMode, AggregateEnvelope, AggregateStats, AggregateTier,
+    ArtifactDescriptor, ArtifactId, ArtifactKind, ArtifactTargetKind, AssignmentLease,
+    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability, BrowserMode,
+    BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, CapabilityCard, CapabilityEstimate,
+    ChunkId, ClientPlatform, ClientReleaseManifest, CompiledFeatureSet, ConfiguredServiceSet,
+    ContentId, ContributionReceipt, ContributionReceiptId, ContributionRollup, DatasetId,
+    DatasetManifest, DatasetView, DatasetViewId, EdgeAuthProvider, EdgeFeature,
+    EdgeServiceManifest, ExperimentDirectoryEntry, ExperimentId, ExperimentManifest,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
+    GenesisSpec, HeadDescriptor, HeadId, HeadPromotionPolicy, IdentityVisibility, LagPolicy,
+    LagState, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId,
+    MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy,
+    MergeWindowState, MetricValue, MetricsMode, MicroShardId, NetworkEstimate, NetworkId,
+    NetworkManifest, NodeCertId, NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PeerId,
+    PeerRole, PeerRoleSet, PortalMode, Precision, PrincipalId, ProfileMode, ProjectFamilyId,
+    ReducerAssignment, ReducerLoadReport, ReductionCertificate, ReleaseTrainManifest, RevisionId,
+    RevisionManifest, RevocationEpoch, SocialMode, SocialProfile, StudyId, SupportedWorkload,
+    TargetArtifactManifest, TelemetrySummary, UpdateAnnounce, UpdateNormStats, WindowActivation,
     WindowId, WorkloadId,
 };
 pub use burn_p2p_dataloader::{
@@ -48,9 +54,9 @@ pub use burn_p2p_dataloader::{
     ShardFetchManifest, UpstreamAdapter,
 };
 pub use burn_p2p_experiment::{
-    ExperimentControlCommand, ExperimentDirectory, ExperimentDirectoryAccess, ExperimentSpec,
-    PatchClass, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch,
-    StudySpec,
+    ExperimentControlCommand, ExperimentDirectory, ExperimentDirectoryAccess,
+    ExperimentDirectoryPolicyExt, ExperimentSpec, PatchClass, PatchSupport, PatchValue,
+    RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
 };
 pub use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, LimitPolicy, LimitProfile, LimitsError, LocalBackend,
@@ -88,7 +94,7 @@ pub use config::{
     TelemetryHandle, TrustBundleState,
 };
 use runtime_support::{
-    connected_peer_ids, effective_limit_profile, latest_head_from_snapshot,
+    assess_head_lag, connected_peer_ids, effective_limit_profile, latest_head_from_snapshot,
     latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
     latest_reducer_assignment_from_snapshot, load_head_state, load_known_peers,
     load_latest_merge_certificate, load_primary_slot_assignment, matches_experiment_head,
@@ -338,6 +344,11 @@ pub trait ProjectBackend {
     type Device;
 }
 
+/// Legacy compatibility trait for the pre-family runtime API.
+///
+/// New downstream integrations should implement [`crate::P2pWorkload`] and
+/// expose workloads through [`crate::P2pProjectFamily`] instead of depending on
+/// this trait directly.
 pub trait P2pProject<B: ProjectBackend> {
     type Model;
     type Batch;
@@ -354,8 +365,14 @@ pub trait P2pProject<B: ProjectBackend> {
     fn supported_patch_classes(&self) -> PatchSupport;
 }
 
+#[deprecated(note = "Use P2pProjectFamily/P2pWorkload instead of the legacy Project alias.")]
 pub use P2pProject as Project;
 
+/// Legacy compatibility trait for the pre-family runtime API.
+///
+/// New downstream integrations should implement [`crate::P2pWorkload`] and use
+/// [`crate::SingleWorkloadProjectFamily`] or a custom
+/// [`crate::P2pProjectFamily`] implementation as the public integration surface.
 pub trait RuntimeProject<B: ProjectBackend>: P2pProject<B> {
     fn runtime_device(&self) -> B::Device;
 
@@ -575,13 +592,25 @@ impl<P> NodeBuilder<P> {
                     );
                 }
 
-                if release_manifest.client_release_hash
-                    != network_manifest.required_client_release_hash
+                if release_manifest.release_train_hash
+                    != network_manifest.required_release_train_hash
                 {
                     anyhow::bail!(
-                        "client release hash {} does not match network requirement {}",
-                        release_manifest.client_release_hash.as_str(),
-                        network_manifest.required_client_release_hash.as_str(),
+                        "release train hash {} does not match network requirement {}",
+                        release_manifest.release_train_hash.as_str(),
+                        network_manifest.required_release_train_hash.as_str(),
+                    );
+                }
+
+                if !network_manifest.allowed_target_artifact_hashes.is_empty()
+                    && !network_manifest
+                        .allowed_target_artifact_hashes
+                        .contains(&release_manifest.target_artifact_hash)
+                {
+                    anyhow::bail!(
+                        "target artifact hash {} is not allowed by network {}",
+                        release_manifest.target_artifact_hash.as_str(),
+                        network_manifest.network_id.as_str(),
                     );
                 }
 
@@ -603,7 +632,7 @@ impl<P> NodeBuilder<P> {
                 anyhow::bail!(
                     "selected workload {} is not compiled into client release {}",
                     workload_id.as_str(),
-                    release_manifest.client_release_hash.as_str(),
+                    release_manifest.target_artifact_hash.as_str(),
                 );
             }
         }
@@ -797,6 +826,42 @@ impl<P> RunningNode<P> {
         {
             snapshot.last_error = Some(format!("failed to persist security state: {error}"));
         }
+    }
+
+    fn update_lag_status(&self, lag_state: LagState, head_lag_steps: u64, lag_policy: LagPolicy) {
+        let mut snapshot = self
+            .telemetry
+            .state
+            .lock()
+            .expect("telemetry state lock should not be poisoned");
+        snapshot.set_lag_status(lag_state, head_lag_steps, lag_policy);
+        if let Some(storage) = self.config().storage.as_ref()
+            && let Err(error) = persist_runtime_security_state(storage, &snapshot)
+        {
+            snapshot.last_error = Some(format!("failed to persist security state: {error}"));
+        }
+    }
+
+    fn lag_policy(&self, experiment: &ExperimentHandle) -> LagPolicy {
+        self.visible_experiment_entry(
+            &experiment.study_id,
+            &experiment.experiment_id,
+            &experiment.revision_id,
+        )
+        .map(|entry| entry.lag_policy())
+        .unwrap_or_default()
+    }
+
+    fn assess_and_record_lag(
+        &self,
+        storage: &StorageConfig,
+        experiment: &ExperimentHandle,
+        snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    ) -> anyhow::Result<runtime_support::LagAssessment> {
+        let lag_policy = self.lag_policy(experiment);
+        let assessment = assess_head_lag(storage, experiment, snapshots, &lag_policy)?;
+        self.update_lag_status(assessment.state, assessment.head_lag_steps, lag_policy);
+        Ok(assessment)
     }
 
     fn persist_transfer_snapshot(&self, snapshot: &mut NodeTelemetrySnapshot) {
@@ -1320,6 +1385,31 @@ impl<P> RunningNode<P> {
         let store = FsArtifactStore::new(storage.root.clone());
         store.ensure_layout()?;
         let snapshots = self.fetch_connected_snapshots(Duration::from_secs(3))?;
+        let lag_assessment = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
+        if matches!(
+            lag_assessment.state,
+            LagState::LeaseBlocked | LagState::RebaseRequired
+        ) {
+            let reason = match lag_assessment.state {
+                LagState::LeaseBlocked => format!(
+                    "training blocked: local node is {} head steps behind canonical head",
+                    lag_assessment.head_lag_steps
+                ),
+                LagState::RebaseRequired => format!(
+                    "training blocked: full rebase required after falling {} head steps behind",
+                    lag_assessment.head_lag_steps
+                ),
+                _ => unreachable!("non-blocking lag state matched blocking branch"),
+            };
+            self.update_runtime_state(
+                NodeRuntimeState::HeadSync,
+                Some(SlotRuntimeState::Blocked {
+                    assignment: Some(assignment.clone()),
+                    reason: reason.clone(),
+                }),
+            );
+            return Err(anyhow::anyhow!(reason));
+        }
         let local_peer_id = self
             .telemetry()
             .snapshot()
@@ -1625,10 +1715,41 @@ impl<P> RunningNode<P> {
             .ok_or_else(|| anyhow::anyhow!("runtime does not have a local peer id yet"))?;
         let snapshots = self.fetch_connected_snapshots(Duration::from_secs(3))?;
         let telemetry_snapshot = self.telemetry().snapshot();
+        let lag_assessment = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
         let current_head =
             resolve_canonical_head(&storage, experiment, &snapshots)?.or_else(|| {
                 latest_head_from_snapshot(telemetry_snapshot.control_plane.clone(), experiment)
             });
+        if matches!(
+            lag_assessment.state,
+            LagState::LeaseBlocked | LagState::RebaseRequired
+        ) {
+            let reason = match lag_assessment.state {
+                LagState::LeaseBlocked => format!(
+                    "validation blocked: local node is {} head steps behind canonical head",
+                    lag_assessment.head_lag_steps
+                ),
+                LagState::RebaseRequired => format!(
+                    "validation blocked: full rebase required after falling {} head steps behind",
+                    lag_assessment.head_lag_steps
+                ),
+                _ => unreachable!("non-blocking lag state matched blocking branch"),
+            };
+            self.update_runtime_state(
+                NodeRuntimeState::HeadSync,
+                Some(SlotRuntimeState::Blocked {
+                    assignment: Some(assignment.clone()),
+                    reason: reason.clone(),
+                }),
+            );
+            return Err(anyhow::anyhow!(reason));
+        }
+        if let Some((source_peer_id, source_head)) = current_head.as_ref()
+            && !store.has_manifest(&source_head.artifact_id)
+            && source_head.global_step > 0
+        {
+            self.sync_artifact_from_peer(source_peer_id, source_head.artifact_id.clone())?;
+        }
         let base_head_id = current_head
             .as_ref()
             .map(|(_, head)| head.head_id.clone())
@@ -2106,6 +2227,7 @@ impl<P> RunningNode<P> {
             None => return Ok(None),
         };
         let snapshots = self.fetch_connected_snapshots(Duration::from_secs(3))?;
+        let _ = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
         let Some((source_peer_id, head)) =
             resolve_canonical_head(&storage, experiment, &snapshots)?
         else {
@@ -2116,6 +2238,7 @@ impl<P> RunningNode<P> {
             self.sync_artifact_from_peer(&source_peer_id, head.artifact_id.clone())?;
         }
         persist_head_state(&storage, experiment, &head)?;
+        self.update_lag_status(LagState::Current, 0, self.lag_policy(experiment));
         self.set_experiment_idle_state(experiment, NodeRuntimeState::IdleReady);
         Ok(Some(head))
     }
@@ -2502,7 +2625,14 @@ pub mod security {
 #[cfg(feature = "burn")]
 pub mod burn;
 
+#[cfg(feature = "browser")]
+pub mod browser {
+    pub use crate::{BrowserRolePolicy, BrowserVisibilityPolicy, ClientPlatform};
+}
+
 pub mod prelude {
+    #[cfg(feature = "browser")]
+    pub use crate::browser;
     #[cfg(feature = "burn")]
     pub use crate::burn;
     pub use crate::{
@@ -2540,6 +2670,107 @@ pub mod prelude {
     };
 }
 
+pub type SlotState = SlotRuntimeState;
+pub type CatchupPolicy = LagPolicy;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserJoinPolicy {
+    pub study_id: StudyId,
+    pub experiment_id: ExperimentId,
+    pub revision_id: RevisionId,
+    pub workload_id: WorkloadId,
+    pub target_artifact: ArtifactTargetKind,
+    pub visibility_policy: BrowserVisibilityPolicy,
+    pub eligible_roles: Vec<BrowserRole>,
+    pub blocked_reasons: Vec<String>,
+}
+
+impl BrowserJoinPolicy {
+    pub fn allows_join(&self) -> bool {
+        !self.eligible_roles.is_empty()
+    }
+
+    pub fn allows_peer_join(&self) -> bool {
+        self.eligible_roles.iter().any(|role| {
+            matches!(
+                role,
+                BrowserRole::Observer
+                    | BrowserRole::Verifier
+                    | BrowserRole::TrainerWgpu
+                    | BrowserRole::Fallback
+            )
+        })
+    }
+
+    pub fn allows_portal_only(&self) -> bool {
+        self.eligible_roles.contains(&BrowserRole::PortalViewer)
+    }
+
+    pub fn recommended_role(&self, preferred_role: BrowserRole) -> Option<BrowserRole> {
+        if self.eligible_roles.contains(&preferred_role) {
+            return Some(preferred_role);
+        }
+
+        [
+            BrowserRole::TrainerWgpu,
+            BrowserRole::Verifier,
+            BrowserRole::Observer,
+            BrowserRole::Fallback,
+            BrowserRole::PortalViewer,
+        ]
+        .into_iter()
+        .find(|role| self.eligible_roles.contains(role))
+    }
+}
+
+pub fn browser_join_policy_for_entry(
+    entry: &ExperimentDirectoryEntry,
+    target_artifact: &ArtifactTargetKind,
+    capabilities: &BTreeSet<BrowserCapability>,
+) -> BrowserJoinPolicy {
+    let mut blocked_reasons = Vec::new();
+    if !entry.is_compatible_with_target_artifact(target_artifact) {
+        blocked_reasons.push(format!(
+            "revision is not approved for target artifact {}",
+            target_artifact.as_target_artifact_id()
+        ));
+    }
+
+    if !entry.browser_enabled() {
+        blocked_reasons.push("revision is not browser enabled".into());
+    }
+
+    if !capabilities.contains(&BrowserCapability::DedicatedWorker) {
+        blocked_reasons.push("browser peer requires dedicated worker support".into());
+    }
+
+    if entry.requires_webgpu() && !capabilities.contains(&BrowserCapability::WebGpu) {
+        blocked_reasons.push("revision requires WebGPU support".into());
+    }
+
+    let eligible_roles = [
+        BrowserRole::PortalViewer,
+        BrowserRole::Observer,
+        BrowserRole::Verifier,
+        BrowserRole::TrainerWgpu,
+        BrowserRole::Fallback,
+    ]
+    .into_iter()
+    .filter(|role| entry.is_browser_eligible(*role, capabilities))
+    .collect();
+
+    BrowserJoinPolicy {
+        study_id: entry.study_id.clone(),
+        experiment_id: entry.experiment_id.clone(),
+        revision_id: entry.current_revision_id.clone(),
+        workload_id: entry.workload_id.clone(),
+        target_artifact: target_artifact.clone(),
+        visibility_policy: entry.browser_visibility_policy(),
+        eligible_roles,
+        blocked_reasons,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2567,12 +2798,13 @@ mod tests {
     use super::{
         ArtifactDescriptor, ArtifactKind, ArtifactTransferState, AssignmentLease, CachedMicroShard,
         CapabilityEstimate, ClientReenrollmentStatus, ContributionReceipt, EvalSplit,
-        ExperimentDirectoryAnnouncement, ExperimentDirectoryEntry, ExperimentHandle,
-        ExperimentResourceRequirements, FsArtifactStore, GenesisSpec, HeadAnnouncement,
-        HeadDescriptor, MainnetHandle, MergeCertificate, MetricReport, MetricValue,
-        NetworkEstimate, NodeBuilder, NodeCertificate, NodeCertificateClaims, P2pProject,
-        PeerAuthAnnouncement, PeerAuthEnvelope, ProjectBackend, RuntimeProject, StorageConfig,
-        SwarmAddress, TelemetrySummary, UpstreamAdapter, WindowCtx, WindowId, WindowReport,
+        ExperimentDirectoryAnnouncement, ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt,
+        ExperimentHandle, ExperimentResourceRequirements, FsArtifactStore, GenesisSpec,
+        HeadAnnouncement, HeadDescriptor, MainnetHandle, MergeCertificate, MetricReport,
+        MetricValue, NetworkEstimate, NodeBuilder, NodeCertificate, NodeCertificateClaims,
+        P2pProject, PeerAuthAnnouncement, PeerAuthEnvelope, ProjectBackend, RuntimeProject,
+        StorageConfig, SwarmAddress, TelemetrySummary, UpstreamAdapter, WindowCtx, WindowId,
+        WindowReport,
     };
 
     fn mainnet() -> MainnetHandle {
@@ -2993,7 +3225,10 @@ mod tests {
         SwitchingTestFamily {
             release_manifest: crate::ClientReleaseManifest {
                 project_family_id: crate::ProjectFamilyId::new("family-switch"),
-                client_release_hash: crate::ContentId::new("release-switch"),
+                release_train_hash: crate::ContentId::new("train-switch"),
+                target_artifact_id: "native-linux-x86_64".into(),
+                target_artifact_hash: crate::ContentId::new("artifact-native-switch"),
+                target_platform: crate::ClientPlatform::Native,
                 app_semver: Version::new(0, 2, 0),
                 git_commit: "switch-release".into(),
                 cargo_lock_hash: crate::ContentId::new("switch-cargo-lock"),
@@ -3016,7 +3251,10 @@ mod tests {
             project_family_id: crate::ProjectFamilyId::new("family-switch"),
             protocol_major: u16::try_from(mainnet().genesis.protocol_version.major)
                 .expect("protocol major"),
-            required_client_release_hash: crate::ContentId::new("release-switch"),
+            required_release_train_hash: crate::ContentId::new("train-switch"),
+            allowed_target_artifact_hashes: BTreeSet::from([crate::ContentId::new(
+                "artifact-native-switch",
+            )]),
             authority_public_keys: vec!["authority-switch".into()],
             bootstrap_addrs: Vec::new(),
             auth_policy_hash: crate::ContentId::new("auth-policy-switch"),
@@ -3108,7 +3346,10 @@ mod tests {
         crate::AdmissionPolicy {
             network_id: mainnet().genesis.network_id.clone(),
             project_family_id: crate::ProjectFamilyId::new("family-auth"),
-            required_client_release_hash: crate::ContentId::new("release-auth"),
+            required_release_train_hash: crate::ContentId::new("train-auth"),
+            allowed_target_artifact_hashes: BTreeSet::from([crate::ContentId::new(
+                "artifact-native-auth",
+            )]),
             trusted_issuers: BTreeMap::from([(
                 issuer_peer_id.clone(),
                 crate::TrustedIssuer {
@@ -3190,7 +3431,8 @@ mod tests {
             .issue_certificate(crate::NodeEnrollmentRequest {
                 session,
                 project_family_id: crate::ProjectFamilyId::new("family-auth"),
-                client_release_hash: crate::ContentId::new("release-auth"),
+                release_train_hash: crate::ContentId::new("train-auth"),
+                target_artifact_hash: crate::ContentId::new("artifact-native-auth"),
                 peer_id: peer_id.clone(),
                 peer_public_key_hex: node_keypair
                     .public()
@@ -3231,7 +3473,8 @@ mod tests {
     struct TestTrustBundleExport {
         network_id: crate::NetworkId,
         project_family_id: crate::ProjectFamilyId,
-        required_client_release_hash: crate::ContentId,
+        required_release_train_hash: crate::ContentId,
+        allowed_target_artifact_hashes: BTreeSet<crate::ContentId>,
         minimum_revocation_epoch: crate::RevocationEpoch,
         active_issuer_peer_id: crate::PeerId,
         issuers: Vec<TestTrustIssuerStatus>,
@@ -3379,7 +3622,10 @@ mod tests {
         TestTrustBundleExport {
             network_id: mainnet().genesis.network_id.clone(),
             project_family_id: crate::ProjectFamilyId::new("family-auth"),
-            required_client_release_hash: crate::ContentId::new("release-auth"),
+            required_release_train_hash: crate::ContentId::new("train-auth"),
+            allowed_target_artifact_hashes: BTreeSet::from([crate::ContentId::new(
+                "artifact-native-auth",
+            )]),
             minimum_revocation_epoch,
             active_issuer_peer_id,
             issuers,
@@ -3846,7 +4092,7 @@ mod tests {
             target_model: 10.0,
         })
         .with_mainnet(mainnet().genesis.clone())
-        .with_storage(StorageConfig::new(validator_storage))
+        .with_storage(StorageConfig::new(validator_storage.clone()))
         .spawn()
         .expect("validator spawn");
         let validator_telemetry = validator.telemetry();
@@ -4318,7 +4564,8 @@ mod tests {
                         NodeCertificateClaims {
                             network_id: crate::NetworkId::new("net-1"),
                             project_family_id: crate::ProjectFamilyId::new("family-auth"),
-                            client_release_hash: crate::ContentId::new("release-auth"),
+                            release_train_hash: crate::ContentId::new("train-auth"),
+                            target_artifact_hash: crate::ContentId::new("artifact-native-auth"),
                             peer_id: crate::PeerId::new("peer-auth"),
                             peer_public_key_hex: "001122".into(),
                             principal_id: crate::PrincipalId::new("principal-auth"),
@@ -4415,7 +4662,7 @@ mod tests {
         let authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-key",
@@ -4541,7 +4788,7 @@ mod tests {
         let authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-key",
@@ -4659,7 +4906,7 @@ mod tests {
         let authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-key",
@@ -4759,7 +5006,7 @@ mod tests {
         let authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-key",
@@ -4924,7 +5171,7 @@ mod tests {
         let authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-key",
@@ -5022,7 +5269,7 @@ mod tests {
         let legacy_authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-legacy",
@@ -5031,7 +5278,7 @@ mod tests {
         let rotated_authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-rotated",
@@ -5060,8 +5307,12 @@ mod tests {
             &local_peer_id,
             experiment_id.clone(),
         );
-        let initial_bundle =
-            test_trust_bundle_export(&legacy_authority, Vec::new(), crate::RevocationEpoch(1), None);
+        let initial_bundle = test_trust_bundle_export(
+            &legacy_authority,
+            Vec::new(),
+            crate::RevocationEpoch(1),
+            None,
+        );
         let trust_server = TestTrustBundleServer::start(&initial_bundle);
 
         let running = NodeBuilder::new(())
@@ -5089,13 +5340,10 @@ mod tests {
                         .trust_bundle
                         .as_ref()
                         .is_some_and(|bundle| bundle.source_url == trust_server.url())
-                    && snapshot
-                        .trust_bundle
-                        .as_ref()
-                        .is_some_and(|bundle| {
-                            bundle.active_issuer_peer_id == legacy_authority.issuer_peer_id()
-                                && bundle.trusted_issuers.len() == 1
-                        })
+                    && snapshot.trust_bundle.as_ref().is_some_and(|bundle| {
+                        bundle.active_issuer_peer_id == legacy_authority.issuer_peer_id()
+                            && bundle.trusted_issuers.len() == 1
+                    })
             },
             "runtime did not ingest initial trust bundle",
         );
@@ -5126,14 +5374,17 @@ mod tests {
                     && snapshot.minimum_revocation_epoch == Some(crate::RevocationEpoch(2))
                     && snapshot.trust_bundle.as_ref().is_some_and(|bundle| {
                         bundle.active_issuer_peer_id == rotated_authority.issuer_peer_id()
-                            && bundle.trusted_issuers.contains_key(&legacy_authority.issuer_peer_id())
-                            && bundle.trusted_issuers.contains_key(&rotated_authority.issuer_peer_id())
                             && bundle
-                                .reenrollment
-                                .as_ref()
-                                .is_some_and(|reenrollment| reenrollment
+                                .trusted_issuers
+                                .contains_key(&legacy_authority.issuer_peer_id())
+                            && bundle
+                                .trusted_issuers
+                                .contains_key(&rotated_authority.issuer_peer_id())
+                            && bundle.reenrollment.as_ref().is_some_and(|reenrollment| {
+                                reenrollment
                                     .legacy_issuer_peer_ids
-                                    .contains(&legacy_authority.issuer_peer_id()))
+                                    .contains(&legacy_authority.issuer_peer_id())
+                            })
                     })
             },
             "runtime did not ingest rotated trust bundle",
@@ -5193,7 +5444,7 @@ mod tests {
         let legacy_authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-legacy",
@@ -5202,7 +5453,7 @@ mod tests {
         let rotated_authority = crate::NodeCertificateAuthority::new(
             mainnet().genesis.network_id.clone(),
             crate::ProjectFamilyId::new("family-auth"),
-            crate::ContentId::new("release-auth"),
+            crate::ContentId::new("train-auth"),
             mainnet().genesis.protocol_version.clone(),
             libp2p_identity::Keypair::generate_ed25519(),
             "authority-rotated",
@@ -5257,10 +5508,14 @@ mod tests {
         wait_for(
             Duration::from_secs(5),
             || {
-                first_telemetry.snapshot().trust_bundle.as_ref().is_some_and(|bundle| {
-                    bundle.source_url == trust_server.url()
-                        && bundle.active_issuer_peer_id == legacy_authority.issuer_peer_id()
-                })
+                first_telemetry
+                    .snapshot()
+                    .trust_bundle
+                    .as_ref()
+                    .is_some_and(|bundle| {
+                        bundle.source_url == trust_server.url()
+                            && bundle.active_issuer_peer_id == legacy_authority.issuer_peer_id()
+                    })
             },
             "first runtime did not ingest initial trust bundle",
         );
@@ -5294,13 +5549,15 @@ mod tests {
                 snapshot.trust_bundle.as_ref().is_some_and(|bundle| {
                     bundle.source_url == trust_server.url()
                         && bundle.active_issuer_peer_id == rotated_authority.issuer_peer_id()
-                        && bundle.trusted_issuers.contains_key(&legacy_authority.issuer_peer_id())
-                        && bundle.trusted_issuers.contains_key(&rotated_authority.issuer_peer_id())
-                }) && restarted
-                    .config()
-                    .auth
-                    .as_ref()
-                    .is_some_and(|auth| auth.trust_bundle_endpoints == vec![trust_server.url().to_owned()])
+                        && bundle
+                            .trusted_issuers
+                            .contains_key(&legacy_authority.issuer_peer_id())
+                        && bundle
+                            .trusted_issuers
+                            .contains_key(&rotated_authority.issuer_peer_id())
+                }) && restarted.config().auth.as_ref().is_some_and(|auth| {
+                    auth.trust_bundle_endpoints == vec![trust_server.url().to_owned()]
+                })
             },
             "restarted runtime did not restore trust bundle source or resume ingestion",
         );
@@ -5361,8 +5618,8 @@ mod tests {
                 .config()
                 .client_release_manifest
                 .as_ref()
-                .map(|manifest| manifest.client_release_hash.clone()),
-            Some(crate::ContentId::new("release-switch"))
+                .map(|manifest| manifest.release_train_hash.clone()),
+            Some(crate::ContentId::new("train-switch"))
         );
         assert_eq!(
             restarted.mainnet().network_id(),
@@ -5811,7 +6068,10 @@ mod tests {
                 crate::AuthConfig::new().with_admission_policy(crate::AdmissionPolicy {
                     network_id: mainnet().genesis.network_id.clone(),
                     project_family_id: crate::ProjectFamilyId::new("family-auth"),
-                    required_client_release_hash: crate::ContentId::new("release-auth"),
+                    required_release_train_hash: crate::ContentId::new("train-auth"),
+                    allowed_target_artifact_hashes: BTreeSet::from([crate::ContentId::new(
+                        "artifact-native-auth",
+                    )]),
                     trusted_issuers: BTreeMap::new(),
                     minimum_revocation_epoch: crate::RevocationEpoch(0),
                 }),
@@ -6338,7 +6598,7 @@ mod tests {
             target_model: 10.0,
         })
         .with_mainnet(mainnet().genesis.clone())
-        .with_storage(StorageConfig::new(validator_storage))
+        .with_storage(StorageConfig::new(validator_storage.clone()))
         .spawn()
         .expect("validator spawn");
         let validator_telemetry = validator.telemetry();
@@ -6588,6 +6848,196 @@ mod tests {
     }
 
     #[test]
+    fn training_uses_revision_lag_policy_from_directory_entry() {
+        let dataset_dir = tempdir().expect("dataset dir");
+        create_runtime_dataset(dataset_dir.path());
+
+        let validator_storage = std::env::temp_dir().join(format!(
+            "burn-p2p-lag-validator-{}",
+            Utc::now().timestamp_nanos_opt().expect("nanos")
+        ));
+        let trainer_storage = std::env::temp_dir().join(format!(
+            "burn-p2p-lag-trainer-{}",
+            Utc::now().timestamp_nanos_opt().expect("nanos")
+        ));
+
+        let validator = NodeBuilder::new(SyntheticRuntimeProject {
+            dataset_root: dataset_dir.path().to_path_buf(),
+            learning_rate: 1.0,
+            target_model: 10.0,
+        })
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(validator_storage.clone()))
+        .spawn()
+        .expect("validator spawn");
+        let validator_telemetry = validator.telemetry();
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                let snapshot = validator_telemetry.snapshot();
+                snapshot.status == crate::RuntimeStatus::Running
+                    && !snapshot.listen_addresses.is_empty()
+            },
+            "validator runtime did not start",
+        );
+        let validator_addr = validator_telemetry.snapshot().listen_addresses[0].clone();
+
+        let experiment = experiment();
+        let mut lag_directory_entry = ExperimentDirectoryEntry {
+            network_id: mainnet().genesis.network_id.clone(),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            workload_id: crate::WorkloadId::new("synthetic-workload"),
+            display_name: "Synthetic".into(),
+            model_schema_hash: crate::ContentId::new("model-synthetic"),
+            dataset_view_id: crate::DatasetViewId::new("view-synthetic"),
+            resource_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::from([crate::PeerRole::TrainerCpu]),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: Some(1024),
+                estimated_download_bytes: 4096,
+                estimated_window_seconds: 30,
+            },
+            visibility: crate::ExperimentVisibility::Public,
+            opt_in_policy: crate::ExperimentOptInPolicy::Open,
+            current_revision_id: experiment.revision_id.clone(),
+            current_head_id: None,
+            allowed_roles: crate::PeerRoleSet::default_trainer(),
+            allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train {
+                experiment_id: experiment.experiment_id.clone(),
+            }]),
+            metadata: BTreeMap::new(),
+        };
+        lag_directory_entry.apply_revision_policy(&crate::RevisionManifest {
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            workload_id: lag_directory_entry.workload_id.clone(),
+            required_release_train_hash: crate::ContentId::new("train-synthetic"),
+            model_schema_hash: lag_directory_entry.model_schema_hash.clone(),
+            checkpoint_format_hash: crate::ContentId::new("checkpoint-synthetic"),
+            dataset_view_id: lag_directory_entry.dataset_view_id.clone(),
+            training_config_hash: crate::ContentId::new("training-synthetic"),
+            merge_topology_policy_hash: crate::ContentId::new("topology-synthetic"),
+            slot_requirements: lag_directory_entry.resource_requirements.clone(),
+            activation_window: crate::WindowActivation {
+                activation_window: crate::WindowId(1),
+                grace_windows: 0,
+            },
+            lag_policy: crate::LagPolicy {
+                max_head_lag_before_catchup: 1,
+                max_head_lag_before_block: 2,
+                max_head_lag_before_full_rebase: 8,
+                max_window_skew_before_lease_revoke: 1,
+            },
+            merge_window_miss_policy: crate::MergeWindowMissPolicy::LeaseBlocked,
+            browser_enabled: false,
+            browser_role_policy: crate::BrowserRolePolicy::default(),
+            max_browser_checkpoint_bytes: None,
+            max_browser_window_secs: None,
+            max_browser_shard_bytes: None,
+            requires_webgpu: false,
+            max_browser_batch_size: None,
+            recommended_browser_precision: None,
+            visibility_policy: crate::BrowserVisibilityPolicy::Hidden,
+            description: "synthetic lag policy".into(),
+        });
+
+        let mut validator = validator;
+        let genesis_head = validator
+            .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+            .expect("init validator genesis head");
+        let lagged_head = HeadDescriptor {
+            head_id: crate::HeadId::new("validator-lagged-head"),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            artifact_id: genesis_head.artifact_id.clone(),
+            parent_head_id: Some(genesis_head.head_id.clone()),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: genesis_head.metrics.clone(),
+        };
+        super::runtime_support::persist_head_state(
+            &StorageConfig::new(validator_storage.clone()),
+            &experiment,
+            &lagged_head,
+        )
+        .expect("persist lagged head state");
+        super::persist_json(
+            StorageConfig::new(validator_storage.clone()).scoped_head_path(&lagged_head.head_id),
+            &lagged_head,
+        )
+        .expect("persist lagged head descriptor");
+        let restored_lagged_head = validator
+            .restore_experiment_head(&experiment)
+            .expect("restore lagged head")
+            .expect("restored lagged head");
+        assert_eq!(restored_lagged_head.global_step, 3);
+
+        let trainer = NodeBuilder::new(SyntheticRuntimeProject {
+            dataset_root: dataset_dir.path().to_path_buf(),
+            learning_rate: 1.0,
+            target_model: 10.0,
+        })
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(trainer_storage))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(vec![lag_directory_entry]))
+        .with_bootstrap_peer(validator_addr)
+        .spawn()
+        .expect("trainer spawn");
+        let trainer_telemetry = trainer.telemetry();
+        wait_for(
+            Duration::from_secs(5),
+            || trainer_telemetry.snapshot().connected_peers >= 1,
+            "trainer did not connect",
+        );
+
+        let mut trainer = trainer;
+        let error = trainer
+            .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+            .expect_err("training should block on excessive lag");
+        assert!(
+            error
+                .to_string()
+                .contains("training blocked: local node is 3 head steps behind")
+        );
+
+        let snapshot = trainer_telemetry.snapshot();
+        assert_eq!(snapshot.lag_state, crate::LagState::LeaseBlocked);
+        assert_eq!(snapshot.head_lag_steps, 3);
+        assert_eq!(
+            snapshot.lag_policy,
+            crate::LagPolicy {
+                max_head_lag_before_catchup: 1,
+                max_head_lag_before_block: 2,
+                max_head_lag_before_full_rebase: 8,
+                max_window_skew_before_lease_revoke: 1,
+            }
+        );
+        match snapshot
+            .slot_states
+            .first()
+            .expect("slot state should exist")
+        {
+            crate::SlotRuntimeState::Blocked { assignment, reason } => {
+                assert_eq!(
+                    assignment.as_ref(),
+                    Some(&crate::SlotAssignmentState::from_experiment(&experiment))
+                );
+                assert!(reason.contains("3 head steps behind"));
+            }
+            other => panic!("expected blocked slot state, got {other:?}"),
+        }
+
+        trainer.shutdown().expect("trainer shutdown");
+        let _ = trainer.await_termination().expect("trainer termination");
+        validator.shutdown().expect("validator shutdown");
+        let _ = validator
+            .await_termination()
+            .expect("validator termination");
+    }
+
+    #[test]
     fn validator_restart_restores_canonical_head_for_late_joiners() {
         let dataset_dir = tempdir().expect("dataset dir");
         create_runtime_dataset(dataset_dir.path());
@@ -6649,6 +7099,25 @@ mod tests {
         let trained = trainer
             .train_window_once::<SyntheticRuntimeBackend>(&experiment)
             .expect("trainer window");
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                let snapshot = validator_telemetry.snapshot();
+                snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| announcement.head.head_id == trained.head.head_id)
+                    && snapshot
+                        .control_plane
+                        .update_announcements
+                        .iter()
+                        .any(|announcement| {
+                            announcement.update.delta_artifact_id == trained.artifact.artifact_id
+                        })
+            },
+            "validator did not observe trainer head/update before validation",
+        );
         let validated = validator
             .validate_candidates_once::<SyntheticRuntimeBackend>(&experiment)
             .expect("validate")

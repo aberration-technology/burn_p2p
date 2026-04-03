@@ -1,0 +1,24 @@
+[package]
+name = "burn_p2p_browser"
+description = "Browser runtime glue, worker bridge, and portal bindings for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+burn_p2p = { path = "../burn_p2p" }
+burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap" }
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_ui = { path = "../burn_p2p_ui" }
+chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[lints]
+workspace = true

@@ -14,14 +14,17 @@ use std::{
 
 use burn_p2p::{
     ArtifactTransferState, ContentId, ControlHandle, ExperimentHandle, HeadDescriptor,
-    IdentityConfig, LiveControlPlaneEvent, NodeBuilder, NodeConfig, NodeTelemetrySnapshot,
-    ProjectBackend, ProjectFamilyId, ReducerLoadAnnouncement, RevocationEpoch, RunningNode,
-    RuntimeProject, StorageConfig, TelemetryHandle, TrustedIssuer,
+    IdentityConfig, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot,
+    LiveControlPlaneEvent, NodeBuilder, NodeConfig, NodeTelemetrySnapshot, ProjectBackend,
+    ProjectFamilyId, ReducerLoadAnnouncement, RevocationEpoch, RunningNode, RuntimeProject,
+    StorageConfig, TelemetryHandle, TrustedIssuer,
 };
+#[cfg(any(test, feature = "portal"))]
+use burn_p2p_core::PrincipalId;
 use burn_p2p_core::{
-    ArtifactId, ContributionReceipt, ControlCertificate, ExperimentId, GenesisSpec, HeadId,
-    MergeCertificate, NetworkId, PeerId, PeerRole, PeerRoleSet, RevisionId, SignatureMetadata,
-    StudyId,
+    ArtifactId, ContributionReceipt, ContributionReceiptId, ControlCertificate,
+    ExperimentDirectoryEntry, ExperimentId, GenesisSpec, HeadId, MergeCertificate, NetworkId,
+    PeerId, PeerRole, PeerRoleSet, RevisionId, SignatureMetadata, StudyId,
 };
 use burn_p2p_experiment::{ExperimentControlCommand, ExperimentControlEnvelope};
 use burn_p2p_security::{
@@ -565,11 +568,176 @@ pub struct ReenrollmentStatus {
 pub struct TrustBundleExport {
     pub network_id: NetworkId,
     pub project_family_id: ProjectFamilyId,
-    pub required_client_release_hash: ContentId,
+    pub required_release_train_hash: ContentId,
+    #[serde(default)]
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub minimum_revocation_epoch: RevocationEpoch,
     pub active_issuer_peer_id: PeerId,
     pub issuers: Vec<TrustedIssuerStatus>,
     pub reenrollment: Option<ReenrollmentStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BrowserEdgeMode {
+    Minimal,
+    Peer,
+    Full,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserEdgePaths {
+    pub capabilities_path: String,
+    pub portal_snapshot_path: String,
+    pub directory_path: String,
+    pub signed_directory_path: String,
+    pub leaderboard_path: String,
+    pub signed_leaderboard_path: String,
+    pub receipt_submit_path: String,
+    pub login_path: String,
+    pub callback_path: String,
+    pub enroll_path: String,
+    pub event_stream_path: String,
+    pub metrics_path: String,
+    pub trust_bundle_path: String,
+    pub reenrollment_path: String,
+}
+
+impl Default for BrowserEdgePaths {
+    fn default() -> Self {
+        Self {
+            capabilities_path: "/capabilities".into(),
+            portal_snapshot_path: "/portal/snapshot".into(),
+            directory_path: "/directory".into(),
+            signed_directory_path: "/directory/signed".into(),
+            leaderboard_path: "/leaderboard".into(),
+            signed_leaderboard_path: "/leaderboard/signed".into(),
+            receipt_submit_path: "/receipts/browser".into(),
+            login_path: "/login/static".into(),
+            callback_path: "/callback/static".into(),
+            enroll_path: "/enroll".into(),
+            event_stream_path: "/events".into(),
+            metrics_path: "/metrics".into(),
+            trust_bundle_path: "/trust".into(),
+            reenrollment_path: "/reenrollment".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTransportSurface {
+    pub webrtc_direct: bool,
+    pub webtransport_gateway: bool,
+    pub wss_fallback: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLoginProvider {
+    pub label: String,
+    pub login_path: String,
+    pub callback_path: Option<String>,
+    pub device_path: Option<String>,
+}
+
+pub type BrowserLeaderboardIdentity = LeaderboardIdentity;
+pub type BrowserLeaderboardEntry = LeaderboardEntry;
+pub type BrowserLeaderboardSnapshot = LeaderboardSnapshot;
+
+#[cfg(feature = "social")]
+mod social_services {
+    use std::collections::BTreeMap;
+
+    use burn_p2p_core::{
+        ContributionReceipt, LeaderboardSnapshot, MergeCertificate, NetworkId, PeerId, PrincipalId,
+    };
+    use burn_p2p_social::{
+        LeaderboardComputationInput, LeaderboardService, ReceiptLeaderboardService,
+    };
+    use chrono::{DateTime, Utc};
+
+    pub(super) fn leaderboard_snapshot(
+        network_id: &NetworkId,
+        receipts: &[ContributionReceipt],
+        merge_certificates: &[MergeCertificate],
+        peer_principals: &BTreeMap<PeerId, PrincipalId>,
+        captured_at: DateTime<Utc>,
+    ) -> LeaderboardSnapshot {
+        ReceiptLeaderboardService::default().snapshot(&LeaderboardComputationInput {
+            network_id,
+            receipts,
+            merge_certificates,
+            peer_principals,
+            captured_at,
+        })
+    }
+}
+
+#[cfg(not(feature = "social"))]
+mod social_services {
+    use std::collections::BTreeMap;
+
+    use burn_p2p_core::{
+        ContributionReceipt, LeaderboardSnapshot, MergeCertificate, NetworkId, PeerId, PrincipalId,
+    };
+    use chrono::{DateTime, Utc};
+
+    pub(super) fn leaderboard_snapshot(
+        network_id: &NetworkId,
+        _receipts: &[ContributionReceipt],
+        _merge_certificates: &[MergeCertificate],
+        _peer_principals: &BTreeMap<PeerId, PrincipalId>,
+        captured_at: DateTime<Utc>,
+    ) -> LeaderboardSnapshot {
+        LeaderboardSnapshot {
+            network_id: network_id.clone(),
+            score_version: "leaderboard_score_v1".into(),
+            entries: Vec::new(),
+            captured_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserDirectorySnapshot {
+    pub network_id: NetworkId,
+    pub generated_at: DateTime<Utc>,
+    pub entries: Vec<ExperimentDirectoryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrowserPortalSnapshot {
+    pub network_id: NetworkId,
+    pub edge_mode: BrowserEdgeMode,
+    pub transports: BrowserTransportSurface,
+    pub paths: BrowserEdgePaths,
+    pub auth_enabled: bool,
+    pub login_providers: Vec<BrowserLoginProvider>,
+    pub required_release_train_hash: Option<ContentId>,
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    pub diagnostics: BootstrapDiagnostics,
+    pub directory: BrowserDirectorySnapshot,
+    pub heads: Vec<HeadDescriptor>,
+    pub leaderboard: BrowserLeaderboardSnapshot,
+    pub trust_bundle: Option<TrustBundleExport>,
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserReceiptSubmissionResponse {
+    pub accepted_receipt_ids: Vec<ContributionReceiptId>,
+    pub pending_receipt_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrowserPortalSnapshotConfig {
+    pub captured_at: DateTime<Utc>,
+    pub remaining_work_units: Option<u64>,
+    pub directory: BrowserDirectorySnapshot,
+    pub edge_mode: BrowserEdgeMode,
+    pub transports: BrowserTransportSurface,
+    pub auth_enabled: bool,
+    pub login_providers: Vec<BrowserLoginProvider>,
+    pub required_release_train_hash: Option<ContentId>,
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -672,6 +840,72 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    pub fn ingest_contribution_receipts(
+        &mut self,
+        receipts: impl IntoIterator<Item = ContributionReceipt>,
+    ) -> Vec<ContributionReceiptId> {
+        let mut known_receipt_ids = self
+            .contribution_receipts
+            .iter()
+            .map(|receipt| receipt.receipt_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut accepted_receipt_ids = Vec::new();
+
+        for receipt in receipts {
+            if !known_receipt_ids.insert(receipt.receipt_id.clone()) {
+                continue;
+            }
+            accepted_receipt_ids.push(receipt.receipt_id.clone());
+            self.contribution_receipts.push(receipt);
+        }
+
+        self.contribution_receipts
+            .sort_by_key(|receipt| receipt.accepted_at);
+        accepted_receipt_ids
+    }
+
+    pub fn leaderboard_snapshot(
+        &self,
+        plan: &BootstrapPlan,
+        captured_at: DateTime<Utc>,
+    ) -> BrowserLeaderboardSnapshot {
+        let peer_principals = self
+            .peer_admission_reports
+            .iter()
+            .map(|(peer_id, report)| (peer_id.clone(), report.principal_id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        social_services::leaderboard_snapshot(
+            &plan.genesis.network_id,
+            &self.contribution_receipts,
+            &self.merge_certificates,
+            &peer_principals,
+            captured_at,
+        )
+    }
+
+    pub fn browser_portal_snapshot(
+        &self,
+        plan: &BootstrapPlan,
+        config: BrowserPortalSnapshotConfig,
+    ) -> BrowserPortalSnapshot {
+        BrowserPortalSnapshot {
+            network_id: plan.genesis.network_id.clone(),
+            edge_mode: config.edge_mode,
+            transports: config.transports,
+            paths: BrowserEdgePaths::default(),
+            auth_enabled: config.auth_enabled,
+            login_providers: config.login_providers,
+            required_release_train_hash: config.required_release_train_hash,
+            allowed_target_artifact_hashes: config.allowed_target_artifact_hashes,
+            diagnostics: self.diagnostics(plan, config.captured_at, config.remaining_work_units),
+            directory: config.directory,
+            heads: self.head_descriptors.clone(),
+            leaderboard: self.leaderboard_snapshot(plan, config.captured_at),
+            trust_bundle: self.trust_bundle.clone(),
+            captured_at: config.captured_at,
+        }
+    }
+
     fn peer_diagnostics(&self) -> Vec<BootstrapPeerDiagnostic> {
         let peer_ids = self
             .peer_store
@@ -1102,107 +1336,87 @@ pub fn render_openmetrics(diagnostics: &BootstrapDiagnostics) -> String {
     lines.join("\n") + "\n"
 }
 
+#[cfg(feature = "portal")]
+fn portal_snapshot_view(snapshot: &BrowserPortalSnapshot) -> burn_p2p_portal::PortalSnapshotView {
+    burn_p2p_portal::PortalSnapshotView {
+        network_id: snapshot.network_id.as_str().to_owned(),
+        auth_enabled: snapshot.auth_enabled,
+        edge_mode: format!("{:?}", snapshot.edge_mode),
+        login_providers: snapshot
+            .login_providers
+            .iter()
+            .map(|provider| burn_p2p_portal::PortalLoginProvider {
+                label: provider.label.clone(),
+                login_path: provider.login_path.clone(),
+                callback_path: provider.callback_path.clone(),
+                device_path: provider.device_path.clone(),
+            })
+            .collect(),
+        transports: burn_p2p_portal::PortalTransportSurface {
+            webrtc_direct: snapshot.transports.webrtc_direct,
+            webtransport_gateway: snapshot.transports.webtransport_gateway,
+            wss_fallback: snapshot.transports.wss_fallback,
+        },
+        paths: burn_p2p_portal::PortalPaths {
+            portal_snapshot_path: snapshot.paths.portal_snapshot_path.clone(),
+            signed_directory_path: snapshot.paths.signed_directory_path.clone(),
+            signed_leaderboard_path: snapshot.paths.signed_leaderboard_path.clone(),
+            trust_bundle_path: snapshot.paths.trust_bundle_path.clone(),
+        },
+        experiments: snapshot
+            .directory
+            .entries
+            .iter()
+            .map(|entry| burn_p2p_portal::PortalExperimentRow {
+                display_name: entry.display_name.clone(),
+                experiment_id: entry.experiment_id.as_str().to_owned(),
+                revision_id: entry.current_revision_id.as_str().to_owned(),
+                has_head: entry.current_head_id.is_some(),
+                estimated_window_seconds: entry.resource_requirements.estimated_window_seconds,
+            })
+            .collect(),
+        leaderboard: snapshot
+            .leaderboard
+            .entries
+            .iter()
+            .map(|entry| burn_p2p_portal::PortalLeaderboardRow {
+                principal_label: entry
+                    .identity
+                    .principal_id
+                    .as_ref()
+                    .map(PrincipalId::as_str)
+                    .unwrap_or("anonymous")
+                    .to_owned(),
+                leaderboard_score_v1: entry.leaderboard_score_v1,
+                accepted_receipt_count: entry.accepted_receipt_count as usize,
+            })
+            .collect(),
+    }
+}
+
+#[cfg(feature = "portal")]
+pub fn render_dashboard_html(network_id: &NetworkId) -> String {
+    burn_p2p_portal::render_dashboard_html(network_id.as_str())
+}
+
+#[cfg(not(feature = "portal"))]
 pub fn render_dashboard_html(network_id: &NetworkId) -> String {
     format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>burn_p2p bootstrap {network_id}</title>
-  <style>
-    :root {{
-      --bg: #f6f5ef;
-      --panel: #fffdf7;
-      --ink: #1d241f;
-      --accent: #0d6b4d;
-      --muted: #5f665f;
-      --line: #d6d2c4;
-      --danger: #8b2e24;
-      font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
-    }}
-    body {{ margin: 0; background: linear-gradient(180deg, #ede8da, #f8f6ef); color: var(--ink); }}
-    main {{ max-width: 1040px; margin: 0 auto; padding: 24px; }}
-    h1 {{ margin: 0 0 8px; font-size: 2rem; }}
-    .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
-    .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: 0 8px 24px rgba(29,36,31,0.06); }}
-    .metric {{ font-size: 1.6rem; font-weight: 700; color: var(--accent); }}
-    .muted {{ color: var(--muted); }}
-    pre {{ white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid var(--line); font-size: 0.9rem; }}
-    .danger {{ color: var(--danger); }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>burn_p2p bootstrap</h1>
-    <p class="muted">Network <strong>{network_id}</strong>. Live diagnostics stream over <code>/events</code>; bundle export lives at <code>/diagnostics/bundle</code>; operator history is available from <code>/heads</code>, <code>/receipts</code>, and <code>/reducers/load</code>; trust rollout and re-enrollment status are exposed via <code>/trust</code> and <code>/reenrollment</code>.</p>
-    <section class="grid">
-      <article class="panel"><div class="muted">Connected peers</div><div id="connected" class="metric">0</div></article>
-      <article class="panel"><div class="muted">Observed peers</div><div id="observed" class="metric">0</div></article>
-      <article class="panel"><div class="muted">Admitted peers</div><div id="admitted" class="metric">0</div></article>
-      <article class="panel"><div class="muted">Rejected peers</div><div id="rejected" class="metric">0</div></article>
-      <article class="panel"><div class="muted">Accepted receipts</div><div id="receipts" class="metric">0</div></article>
-      <article class="panel"><div class="muted">Certified merges</div><div id="merges" class="metric">0</div></article>
-    </section>
-    <section class="panel" style="margin-top:16px;">
-      <h2>Services</h2>
-      <div id="services" class="muted">loading...</div>
-    </section>
-    <section class="panel" style="margin-top:16px;">
-      <h2>Peers / policy</h2>
-      <table>
-        <tbody>
-          <tr><th>In-flight transfers</th><td id="transfers">0</td></tr>
-          <tr><th>Quarantined peers</th><td id="quarantined">0</td></tr>
-          <tr><th>Banned peers</th><td id="banned">0</td></tr>
-          <tr><th>Min revocation epoch</th><td id="revocation">n/a</td></tr>
-          <tr><th>ETA range</th><td id="eta">n/a</td></tr>
-          <tr><th>Last error</th><td id="error">none</td></tr>
-        </tbody>
-      </table>
-    </section>
-    <section class="panel" style="margin-top:16px;">
-      <h2>Raw diagnostics</h2>
-      <pre id="raw">waiting for snapshot...</pre>
-    </section>
-  </main>
-  <script>
-    const raw = document.getElementById("raw");
-    const update = (payload) => {{
-      document.getElementById("connected").textContent = payload.swarm.connected_peers;
-      document.getElementById("observed").textContent = payload.swarm.observed_peers.length;
-      document.getElementById("admitted").textContent = payload.admitted_peers.length;
-      document.getElementById("rejected").textContent = Object.keys(payload.rejected_peers).length;
-      document.getElementById("receipts").textContent = payload.accepted_receipts;
-      document.getElementById("merges").textContent = payload.certified_merges;
-      document.getElementById("services").textContent = payload.services.join(", ");
-      document.getElementById("transfers").textContent = payload.in_flight_transfers.length;
-      document.getElementById("quarantined").textContent = payload.quarantined_peers.length;
-      document.getElementById("banned").textContent = payload.banned_peers.length;
-      document.getElementById("revocation").textContent = payload.minimum_revocation_epoch == null ? "n/a" : payload.minimum_revocation_epoch;
-      const lower = payload.swarm.network_estimate.eta_lower_seconds;
-      const upper = payload.swarm.network_estimate.eta_upper_seconds;
-      document.getElementById("eta").textContent = lower == null && upper == null ? "n/a" : `${{lower ?? "?"}}s - ${{upper ?? "?"}}s`;
-      document.getElementById("error").textContent = payload.last_error ?? "none";
-      raw.textContent = JSON.stringify(payload, null, 2);
-    }};
+        "<!doctype html><html lang=\"en\"><body><main><h1>burn_p2p bootstrap</h1><p>Network <strong>{}</strong>. Portal support was not compiled into this build.</p></main></body></html>",
+        network_id.as_str()
+    )
+}
 
-    fetch("/status").then((response) => response.json()).then(update).catch((error) => {{
-      raw.textContent = `failed to load /status: ${{error}}`;
-    }});
+#[cfg(feature = "portal")]
+pub fn render_browser_portal_html(snapshot: &BrowserPortalSnapshot) -> String {
+    burn_p2p_portal::render_browser_portal_html(&portal_snapshot_view(snapshot))
+}
 
-    const events = new EventSource("/events");
-    events.onmessage = (event) => {{
-      update(JSON.parse(event.data));
-    }};
-    events.onerror = () => {{
-      document.body.classList.add("danger");
-    }};
-  </script>
-</body>
-</html>"#
+#[cfg(not(feature = "portal"))]
+pub fn render_browser_portal_html(snapshot: &BrowserPortalSnapshot) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><body><main><h1>burn_p2p browser portal</h1><p>Network <strong>{}</strong>. Portal support was not compiled into this build.</p></main></body></html>",
+        snapshot.network_id.as_str()
     )
 }
 
@@ -1506,16 +1720,20 @@ mod tests {
     use burn_p2p::{
         ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
         CapabilityEstimate, ChunkingScheme, ControlPlaneSnapshot, DatasetConfig,
-        DatasetRegistration, DatasetSizing, EvalSplit, FsArtifactStore, HeadDescriptor,
-        LiveControlPlaneEvent, MetricReport, MetricValue, NodeBuilder, NodeConfig,
-        NodeTelemetrySnapshot, P2pProject, PatchOutcome, PatchSupport, ProjectBackend,
-        ReducerLoadAnnouncement, RuntimePatch, RuntimeProject, RuntimeStatus, ShardFetchManifest,
-        SlotAssignmentState, StorageConfig, TrainError, WindowCtx, WindowReport,
+        DatasetRegistration, DatasetSizing, DatasetViewId, EvalSplit, ExperimentDirectoryEntry,
+        ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
+        ExperimentVisibility, FsArtifactStore, HeadDescriptor, LeaderboardEntry,
+        LeaderboardIdentity, LeaderboardSnapshot, LiveControlPlaneEvent, MetricReport, MetricValue,
+        NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pProject, PatchOutcome, PatchSupport,
+        PeerRoleSet, ProjectBackend, ReducerLoadAnnouncement, RuntimePatch, RuntimeProject,
+        RuntimeStatus, ShardFetchManifest, SlotAssignmentState, StorageConfig, TrainError,
+        WindowCtx, WindowReport, WorkloadId,
     };
     use burn_p2p_core::{
-        ArtifactId, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform, ContentId,
-        ContributionReceipt, ExperimentId, HeadId, MergeCertificate, PeerId, PersistenceClass,
-        PrincipalId, RevisionId, StudyId, TelemetrySummary, WindowActivation, WindowId,
+        ArtifactId, BadgeKind, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform,
+        ContentId, ContributionReceipt, ExperimentId, HeadId, MergeCertificate, PeerId,
+        PersistenceClass, PrincipalId, RevisionId, StudyId, TelemetrySummary, WindowActivation,
+        WindowId,
     };
     use burn_p2p_experiment::{ActivationTarget, ExperimentControlCommand};
     use burn_p2p_security::{
@@ -1530,7 +1748,9 @@ mod tests {
     use super::{
         ActiveExperiment, AdminAction, AdminResult, BootstrapAdminState,
         BootstrapEmbeddedDaemonConfig, BootstrapPlan, BootstrapPreset, BootstrapService,
-        BootstrapSpec, HeadQuery, ReceiptQuery, ReducerLoadQuery, render_dashboard_html,
+        BootstrapSpec, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+        BrowserLoginProvider, BrowserPortalSnapshot, BrowserTransportSurface, HeadQuery,
+        ReceiptQuery, ReducerLoadQuery, render_browser_portal_html, render_dashboard_html,
         render_openmetrics,
     };
 
@@ -2146,6 +2366,9 @@ mod tests {
                 ExperimentId::new("exp"),
                 RevisionId::new("rev"),
             ))],
+            lag_state: burn_p2p::LagState::SlightlyBehind,
+            head_lag_steps: 1,
+            lag_policy: burn_p2p::LagPolicy::default(),
             network_id: Some(burn_p2p_core::NetworkId::new("mainnet")),
             local_peer_id: Some(peer_id.clone()),
             configured_roles: burn_p2p_core::PeerRoleSet::new([burn_p2p_core::PeerRole::Validator]),
@@ -2449,7 +2672,93 @@ mod tests {
 
         assert!(html.contains("/status"));
         assert!(html.contains("/events"));
+        assert!(html.contains("/portal"));
         assert!(html.contains("burn_p2p bootstrap"));
+    }
+
+    #[test]
+    fn browser_portal_html_renders_snapshot_content() {
+        let snapshot = BrowserPortalSnapshot {
+            network_id: burn_p2p_core::NetworkId::new("mainnet"),
+            edge_mode: BrowserEdgeMode::Peer,
+            transports: BrowserTransportSurface {
+                webrtc_direct: true,
+                webtransport_gateway: false,
+                wss_fallback: true,
+            },
+            paths: BrowserEdgePaths::default(),
+            auth_enabled: true,
+            login_providers: vec![BrowserLoginProvider {
+                label: "Static".into(),
+                login_path: "/login/static".into(),
+                callback_path: Some("/callback/static".into()),
+                device_path: Some("/device".into()),
+            }],
+            required_release_train_hash: Some(ContentId::new("train-browser")),
+            allowed_target_artifact_hashes: BTreeSet::new(),
+            diagnostics: BootstrapAdminState::default().diagnostics(
+                &plan(BootstrapPreset::BootstrapOnly),
+                Utc::now(),
+                Some(10),
+            ),
+            directory: BrowserDirectorySnapshot {
+                network_id: burn_p2p_core::NetworkId::new("mainnet"),
+                generated_at: Utc::now(),
+                entries: vec![ExperimentDirectoryEntry {
+                    network_id: burn_p2p_core::NetworkId::new("mainnet"),
+                    study_id: StudyId::new("study"),
+                    experiment_id: ExperimentId::new("exp"),
+                    workload_id: WorkloadId::new("demo"),
+                    display_name: "Demo".into(),
+                    model_schema_hash: ContentId::new("model"),
+                    dataset_view_id: DatasetViewId::new("view"),
+                    resource_requirements: ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::new(),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 1024,
+                        estimated_window_seconds: 30,
+                    },
+                    visibility: ExperimentVisibility::Public,
+                    opt_in_policy: ExperimentOptInPolicy::Open,
+                    current_revision_id: RevisionId::new("rev"),
+                    current_head_id: None,
+                    allowed_roles: PeerRoleSet::default(),
+                    allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                    metadata: BTreeMap::new(),
+                }],
+            },
+            heads: Vec::new(),
+            leaderboard: LeaderboardSnapshot {
+                network_id: burn_p2p_core::NetworkId::new("mainnet"),
+                score_version: "leaderboard_score_v1".into(),
+                captured_at: Utc::now(),
+                entries: vec![LeaderboardEntry {
+                    identity: LeaderboardIdentity {
+                        principal_id: Some(PrincipalId::new("alice")),
+                        peer_ids: BTreeSet::new(),
+                        label: "Alice".into(),
+                        social_profile: None,
+                    },
+                    accepted_receipt_count: 1,
+                    accepted_work_score: 1.0,
+                    quality_weighted_impact_score: 0.5,
+                    validation_service_score: 0.0,
+                    artifact_serving_score: 0.0,
+                    leaderboard_score_v1: 1.5,
+                    last_receipt_at: None,
+                    badges: Vec::new(),
+                }],
+            },
+            trust_bundle: None,
+            captured_at: Utc::now(),
+        };
+
+        let html = render_browser_portal_html(&snapshot);
+        assert!(html.contains("burn_p2p browser portal"));
+        assert!(html.contains("/login/static"));
+        assert!(html.contains("Demo"));
+        assert!(html.contains("alice"));
     }
 
     #[test]
@@ -2568,5 +2877,95 @@ mod tests {
         let _ = trainer.await_termination().expect("trainer termination");
         daemon.shutdown().expect("daemon shutdown");
         daemon.await_termination().expect("daemon termination");
+    }
+
+    #[cfg(feature = "social")]
+    #[test]
+    fn leaderboard_snapshot_aggregates_receipts_by_principal() {
+        let peer_one = PeerId::new("peer-1");
+        let peer_two = PeerId::new("peer-2");
+        let principal_id = PrincipalId::new("alice");
+        let report = |peer_id: &PeerId| PeerAdmissionReport {
+            peer_id: peer_id.clone(),
+            principal_id: principal_id.clone(),
+            requested_scopes: BTreeSet::new(),
+            trust_level: PeerTrustLevel::ScopeAuthorized,
+            issuer_peer_id: PeerId::new("authority-1"),
+            findings: Vec::new(),
+            verified_at: Utc::now(),
+        };
+        let receipt =
+            |peer_id: &PeerId, suffix: &str, accepted_weight: f64, loss: f64| ContributionReceipt {
+                receipt_id: burn_p2p_core::ContributionReceiptId::new(format!("receipt-{suffix}")),
+                peer_id: peer_id.clone(),
+                study_id: StudyId::new("study-1"),
+                experiment_id: ExperimentId::new("exp-1"),
+                revision_id: RevisionId::new("rev-1"),
+                base_head_id: HeadId::new("head-0"),
+                artifact_id: ArtifactId::new(format!("artifact-{suffix}")),
+                accepted_at: Utc::now(),
+                accepted_weight,
+                metrics: BTreeMap::from([("loss".into(), MetricValue::Float(loss))]),
+                merge_cert_id: None,
+            };
+
+        let first_receipt = receipt(&peer_one, "a", 3.0, 1.0);
+        let second_receipt = receipt(&peer_two, "b", 2.0, 0.5);
+        let state = BootstrapAdminState {
+            contribution_receipts: vec![first_receipt.clone(), second_receipt],
+            merge_certificates: vec![MergeCertificate {
+                merge_cert_id: burn_p2p_core::MergeCertId::new("merge-1"),
+                study_id: StudyId::new("study-1"),
+                experiment_id: ExperimentId::new("exp-1"),
+                revision_id: RevisionId::new("rev-1"),
+                base_head_id: HeadId::new("head-0"),
+                merged_head_id: HeadId::new("head-1"),
+                merged_artifact_id: ArtifactId::new("artifact-merged"),
+                policy: burn_p2p::MergePolicy::WeightedMean,
+                issued_at: Utc::now(),
+                validator: PeerId::new("validator-1"),
+                contribution_receipts: vec![first_receipt.receipt_id.clone()],
+            }],
+            peer_admission_reports: BTreeMap::from([
+                (peer_one.clone(), report(&peer_one)),
+                (peer_two.clone(), report(&peer_two)),
+            ]),
+            ..BootstrapAdminState::default()
+        };
+
+        let leaderboard =
+            state.leaderboard_snapshot(&plan(BootstrapPreset::BootstrapOnly), Utc::now());
+        assert_eq!(leaderboard.entries.len(), 1);
+        let entry = &leaderboard.entries[0];
+        assert_eq!(entry.identity.principal_id, Some(principal_id));
+        assert_eq!(
+            entry.identity.peer_ids,
+            BTreeSet::from([peer_one, peer_two])
+        );
+        assert_eq!(entry.accepted_receipt_count, 2);
+        assert!((entry.accepted_work_score - 5.0).abs() < f64::EPSILON);
+        assert!(entry.leaderboard_score_v1 >= entry.accepted_work_score);
+        assert!(
+            entry
+                .badges
+                .iter()
+                .any(|badge| badge.kind == BadgeKind::FirstAcceptedUpdate)
+        );
+        assert!(
+            entry
+                .badges
+                .iter()
+                .any(|badge| badge.kind == BadgeKind::HelpedPromoteCanonicalHead)
+        );
+    }
+
+    #[cfg(not(feature = "social"))]
+    #[test]
+    fn leaderboard_snapshot_is_empty_when_social_service_is_not_compiled() {
+        let state = BootstrapAdminState::default();
+        let leaderboard =
+            state.leaderboard_snapshot(&plan(BootstrapPreset::BootstrapOnly), Utc::now());
+        assert!(leaderboard.entries.is_empty());
+        assert_eq!(leaderboard.score_version, "leaderboard_score_v1");
     }
 }

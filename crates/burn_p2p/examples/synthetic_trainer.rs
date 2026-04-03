@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     thread,
@@ -269,7 +269,10 @@ fn synthetic_workload_manifest() -> SupportedWorkload {
 fn synthetic_release_manifest() -> ClientReleaseManifest {
     ClientReleaseManifest {
         project_family_id: ProjectFamilyId::new("synthetic-family"),
-        client_release_hash: ContentId::new("synthetic-release"),
+        release_train_hash: ContentId::new("synthetic-train"),
+        target_artifact_id: "native-linux-x86_64".into(),
+        target_artifact_hash: ContentId::new("synthetic-artifact-native"),
+        target_platform: burn_p2p::ClientPlatform::Native,
         app_semver: Version::new(0, 2, 0),
         git_commit: "local-demo".into(),
         cargo_lock_hash: ContentId::new("cargo-lock"),
@@ -296,7 +299,10 @@ fn main() -> anyhow::Result<()> {
         network_id: genesis.network_id.clone(),
         project_family_id: ProjectFamilyId::new("synthetic-family"),
         protocol_major: 0,
-        required_client_release_hash: ContentId::new("synthetic-release"),
+        required_release_train_hash: ContentId::new("synthetic-train"),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
+            "synthetic-artifact-native",
+        )]),
         authority_public_keys: vec!["local-validator".into()],
         bootstrap_addrs: Vec::new(),
         auth_policy_hash: ContentId::new("auth-policy"),

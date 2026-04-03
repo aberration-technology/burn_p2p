@@ -62,6 +62,7 @@
   },
   "http_bind_addr": "127.0.0.1:8788",
   "admin_token": "local-admin",
+  "allow_dev_admin_token": true,
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
   "embedded_runtime": {

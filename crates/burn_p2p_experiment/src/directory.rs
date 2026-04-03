@@ -1,11 +1,31 @@
 use std::collections::BTreeSet;
 
 use burn_p2p_core::{
-    ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy, ExperimentScope,
-    ExperimentVisibility, NetworkId,
+    ArtifactTargetKind, BrowserCapability, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy,
+    CapabilityCard, ClientPlatform, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
+    ExperimentScope, ExperimentVisibility, LagPolicy, MergeWindowMissPolicy, NetworkId, Precision,
+    RevisionManifest,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+const LAG_CATCHUP_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_catchup";
+const LAG_BLOCK_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_block";
+const LAG_REBASE_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_full_rebase";
+const LAG_SKEW_KEY: &str = "burn_p2p.revision.lag.max_window_skew_before_lease_revoke";
+const MERGE_WINDOW_MISS_POLICY_KEY: &str = "burn_p2p.revision.merge_window_miss_policy";
+const BROWSER_ENABLED_KEY: &str = "burn_p2p.revision.browser.enabled";
+const BROWSER_VISIBILITY_POLICY_KEY: &str = "burn_p2p.revision.browser.visibility_policy";
+const BROWSER_ROLE_OBSERVER_KEY: &str = "burn_p2p.revision.browser.role.observer";
+const BROWSER_ROLE_VERIFIER_KEY: &str = "burn_p2p.revision.browser.role.verifier";
+const BROWSER_ROLE_TRAINER_WGPU_KEY: &str = "burn_p2p.revision.browser.role.trainer_wgpu";
+const BROWSER_ROLE_FALLBACK_KEY: &str = "burn_p2p.revision.browser.role.fallback";
+const BROWSER_REQUIRES_WEBGPU_KEY: &str = "burn_p2p.revision.browser.requires_webgpu";
+const BROWSER_MAX_CHECKPOINT_BYTES_KEY: &str = "burn_p2p.revision.browser.max_checkpoint_bytes";
+const BROWSER_MAX_WINDOW_SECS_KEY: &str = "burn_p2p.revision.browser.max_window_secs";
+const BROWSER_MAX_SHARD_BYTES_KEY: &str = "burn_p2p.revision.browser.max_shard_bytes";
+const BROWSER_MAX_BATCH_SIZE_KEY: &str = "burn_p2p.revision.browser.max_batch_size";
+const BROWSER_RECOMMENDED_PRECISION_KEY: &str = "burn_p2p.revision.browser.recommended_precision";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExperimentDirectory {
@@ -27,11 +47,65 @@ impl ExperimentDirectory {
             .iter()
             .find(|entry| &entry.experiment_id == experiment_id)
     }
+
+    pub fn compatible_with_capability(
+        &self,
+        capability: &CapabilityCard,
+    ) -> Vec<&ExperimentDirectoryEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_compatible_with_capability(capability))
+            .collect()
+    }
+
+    pub fn compatible_with_target_artifact(
+        &self,
+        target: &ArtifactTargetKind,
+    ) -> Vec<&ExperimentDirectoryEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_compatible_with_target_artifact(target))
+            .collect()
+    }
+
+    pub fn browser_eligible(
+        &self,
+        role: BrowserRole,
+        capabilities: &BTreeSet<BrowserCapability>,
+    ) -> Vec<&ExperimentDirectoryEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_browser_eligible(role, capabilities))
+            .collect()
+    }
 }
 
 pub trait ExperimentDirectoryAccess {
     fn is_visible_to(&self, scopes: &BTreeSet<ExperimentScope>) -> bool;
     fn permits_scope(&self, scope: &ExperimentScope) -> bool;
+}
+
+pub trait ExperimentDirectoryPolicyExt {
+    fn lag_policy(&self) -> LagPolicy;
+    fn merge_window_miss_policy(&self) -> MergeWindowMissPolicy;
+    fn browser_enabled(&self) -> bool;
+    fn browser_role_policy(&self) -> BrowserRolePolicy;
+    fn browser_visibility_policy(&self) -> BrowserVisibilityPolicy;
+    fn requires_webgpu(&self) -> bool;
+    fn max_browser_checkpoint_bytes(&self) -> Option<u64>;
+    fn max_browser_window_secs(&self) -> Option<u64>;
+    fn max_browser_shard_bytes(&self) -> Option<u64>;
+    fn max_browser_batch_size(&self) -> Option<u32>;
+    fn recommended_browser_precision(&self) -> Option<Precision>;
+    fn browser_role_allowed(&self, role: BrowserRole) -> bool;
+    fn is_browser_eligible(
+        &self,
+        role: BrowserRole,
+        capabilities: &BTreeSet<BrowserCapability>,
+    ) -> bool;
+    fn is_compatible_with_target_artifact(&self, target: &ArtifactTargetKind) -> bool;
+    fn is_compatible_with_capability(&self, capability: &CapabilityCard) -> bool;
+    fn apply_revision_policy(&mut self, revision: &RevisionManifest);
 }
 
 impl ExperimentDirectoryAccess for ExperimentDirectoryEntry {
@@ -77,18 +151,328 @@ impl ExperimentDirectoryAccess for ExperimentDirectoryEntry {
     }
 }
 
+impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
+    fn lag_policy(&self) -> LagPolicy {
+        fn parse_u64(entry: &ExperimentDirectoryEntry, key: &str, default: u64) -> u64 {
+            entry
+                .metadata
+                .get(key)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        }
+
+        let default = LagPolicy::default();
+        LagPolicy {
+            max_head_lag_before_catchup: parse_u64(
+                self,
+                LAG_CATCHUP_KEY,
+                default.max_head_lag_before_catchup,
+            ),
+            max_head_lag_before_block: parse_u64(
+                self,
+                LAG_BLOCK_KEY,
+                default.max_head_lag_before_block,
+            ),
+            max_head_lag_before_full_rebase: parse_u64(
+                self,
+                LAG_REBASE_KEY,
+                default.max_head_lag_before_full_rebase,
+            ),
+            max_window_skew_before_lease_revoke: parse_u64(
+                self,
+                LAG_SKEW_KEY,
+                default.max_window_skew_before_lease_revoke,
+            ),
+        }
+    }
+
+    fn merge_window_miss_policy(&self) -> MergeWindowMissPolicy {
+        self.metadata
+            .get(MERGE_WINDOW_MISS_POLICY_KEY)
+            .and_then(|value| MergeWindowMissPolicy::parse(value))
+            .unwrap_or_default()
+    }
+
+    fn browser_enabled(&self) -> bool {
+        self.metadata
+            .get(BROWSER_ENABLED_KEY)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(false)
+    }
+
+    fn browser_role_policy(&self) -> BrowserRolePolicy {
+        fn parse_bool(entry: &ExperimentDirectoryEntry, key: &str, default: bool) -> bool {
+            entry
+                .metadata
+                .get(key)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        }
+
+        let default = BrowserRolePolicy::default();
+        BrowserRolePolicy {
+            observer: parse_bool(self, BROWSER_ROLE_OBSERVER_KEY, default.observer),
+            verifier: parse_bool(self, BROWSER_ROLE_VERIFIER_KEY, default.verifier),
+            trainer_wgpu: parse_bool(self, BROWSER_ROLE_TRAINER_WGPU_KEY, default.trainer_wgpu),
+            fallback: parse_bool(self, BROWSER_ROLE_FALLBACK_KEY, default.fallback),
+        }
+    }
+
+    fn browser_visibility_policy(&self) -> BrowserVisibilityPolicy {
+        self.metadata
+            .get(BROWSER_VISIBILITY_POLICY_KEY)
+            .and_then(|value| match value.as_str() {
+                "hidden" => Some(BrowserVisibilityPolicy::Hidden),
+                "portal-listed" => Some(BrowserVisibilityPolicy::PortalListed),
+                "authenticated-portal" => Some(BrowserVisibilityPolicy::AuthenticatedPortal),
+                "swarm-eligible" => Some(BrowserVisibilityPolicy::SwarmEligible),
+                _ => None,
+            })
+            .unwrap_or(BrowserVisibilityPolicy::Hidden)
+    }
+
+    fn requires_webgpu(&self) -> bool {
+        self.metadata
+            .get(BROWSER_REQUIRES_WEBGPU_KEY)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(false)
+    }
+
+    fn max_browser_checkpoint_bytes(&self) -> Option<u64> {
+        self.metadata
+            .get(BROWSER_MAX_CHECKPOINT_BYTES_KEY)
+            .and_then(|value| value.parse().ok())
+    }
+
+    fn max_browser_window_secs(&self) -> Option<u64> {
+        self.metadata
+            .get(BROWSER_MAX_WINDOW_SECS_KEY)
+            .and_then(|value| value.parse().ok())
+    }
+
+    fn max_browser_shard_bytes(&self) -> Option<u64> {
+        self.metadata
+            .get(BROWSER_MAX_SHARD_BYTES_KEY)
+            .and_then(|value| value.parse().ok())
+    }
+
+    fn max_browser_batch_size(&self) -> Option<u32> {
+        self.metadata
+            .get(BROWSER_MAX_BATCH_SIZE_KEY)
+            .and_then(|value| value.parse().ok())
+    }
+
+    fn recommended_browser_precision(&self) -> Option<Precision> {
+        self.metadata
+            .get(BROWSER_RECOMMENDED_PRECISION_KEY)
+            .and_then(|value| match value.as_str() {
+                "fp16" => Some(Precision::Fp16),
+                "fp32" => Some(Precision::Fp32),
+                "bf16" => Some(Precision::Bf16),
+                "int8" => Some(Precision::Int8),
+                _ => None,
+            })
+    }
+
+    fn browser_role_allowed(&self, role: BrowserRole) -> bool {
+        let policy = self.browser_role_policy();
+        match role {
+            BrowserRole::PortalViewer => {
+                self.browser_visibility_policy() != BrowserVisibilityPolicy::Hidden
+            }
+            BrowserRole::Observer => policy.observer,
+            BrowserRole::Verifier => policy.verifier,
+            BrowserRole::TrainerWgpu => policy.trainer_wgpu,
+            BrowserRole::Fallback => policy.fallback,
+        }
+    }
+
+    fn is_browser_eligible(
+        &self,
+        role: BrowserRole,
+        capabilities: &BTreeSet<BrowserCapability>,
+    ) -> bool {
+        let visibility = self.browser_visibility_policy();
+        if !self.browser_role_allowed(role) {
+            return false;
+        }
+
+        match role {
+            BrowserRole::PortalViewer => {
+                matches!(
+                    visibility,
+                    BrowserVisibilityPolicy::PortalListed
+                        | BrowserVisibilityPolicy::AuthenticatedPortal
+                        | BrowserVisibilityPolicy::SwarmEligible
+                )
+            }
+            BrowserRole::Observer | BrowserRole::Verifier | BrowserRole::Fallback => {
+                self.browser_enabled()
+                    && visibility == BrowserVisibilityPolicy::SwarmEligible
+                    && capabilities.contains(&BrowserCapability::DedicatedWorker)
+            }
+            BrowserRole::TrainerWgpu => {
+                self.browser_enabled()
+                    && visibility == BrowserVisibilityPolicy::SwarmEligible
+                    && capabilities.contains(&BrowserCapability::DedicatedWorker)
+                    && capabilities.contains(&BrowserCapability::WebGpu)
+                    && (!self.requires_webgpu()
+                        || capabilities.contains(&BrowserCapability::WebGpu))
+            }
+        }
+    }
+
+    fn is_compatible_with_target_artifact(&self, target: &ArtifactTargetKind) -> bool {
+        match target.platform() {
+            ClientPlatform::Native => true,
+            ClientPlatform::Browser => self.browser_enabled(),
+        }
+    }
+
+    fn is_compatible_with_capability(&self, capability: &CapabilityCard) -> bool {
+        let minimum_roles_satisfied = self.resource_requirements.minimum_roles.is_empty()
+            || self
+                .resource_requirements
+                .minimum_roles
+                .iter()
+                .any(|role| capability.roles.contains(role));
+        if !minimum_roles_satisfied {
+            return false;
+        }
+
+        if let Some(min_device_memory) = self.resource_requirements.minimum_device_memory_bytes
+            && capability.device_memory_bytes.unwrap_or_default() < min_device_memory
+        {
+            return false;
+        }
+
+        if let Some(min_system_memory) = self.resource_requirements.minimum_system_memory_bytes
+            && capability.system_memory_bytes < min_system_memory
+        {
+            return false;
+        }
+
+        if capability.platform == ClientPlatform::Browser {
+            if !self.browser_enabled() {
+                return false;
+            }
+
+            if self.requires_webgpu()
+                && !capability
+                    .preferred_backends
+                    .iter()
+                    .any(|backend| backend.eq_ignore_ascii_case("wgpu"))
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn apply_revision_policy(&mut self, revision: &RevisionManifest) {
+        let lag_policy = revision.effective_lag_policy();
+        self.metadata.insert(
+            LAG_CATCHUP_KEY.into(),
+            lag_policy.max_head_lag_before_catchup.to_string(),
+        );
+        self.metadata.insert(
+            LAG_BLOCK_KEY.into(),
+            lag_policy.max_head_lag_before_block.to_string(),
+        );
+        self.metadata.insert(
+            LAG_REBASE_KEY.into(),
+            lag_policy.max_head_lag_before_full_rebase.to_string(),
+        );
+        self.metadata.insert(
+            LAG_SKEW_KEY.into(),
+            lag_policy.max_window_skew_before_lease_revoke.to_string(),
+        );
+        self.metadata.insert(
+            MERGE_WINDOW_MISS_POLICY_KEY.into(),
+            revision.merge_window_miss_policy.as_str().into(),
+        );
+        self.metadata.insert(
+            BROWSER_ENABLED_KEY.into(),
+            revision.browser_enabled.to_string(),
+        );
+        self.metadata.insert(
+            BROWSER_VISIBILITY_POLICY_KEY.into(),
+            match revision.visibility_policy {
+                BrowserVisibilityPolicy::Hidden => "hidden",
+                BrowserVisibilityPolicy::PortalListed => "portal-listed",
+                BrowserVisibilityPolicy::AuthenticatedPortal => "authenticated-portal",
+                BrowserVisibilityPolicy::SwarmEligible => "swarm-eligible",
+            }
+            .into(),
+        );
+        self.metadata.insert(
+            BROWSER_ROLE_OBSERVER_KEY.into(),
+            revision.browser_role_policy.observer.to_string(),
+        );
+        self.metadata.insert(
+            BROWSER_ROLE_VERIFIER_KEY.into(),
+            revision.browser_role_policy.verifier.to_string(),
+        );
+        self.metadata.insert(
+            BROWSER_ROLE_TRAINER_WGPU_KEY.into(),
+            revision.browser_role_policy.trainer_wgpu.to_string(),
+        );
+        self.metadata.insert(
+            BROWSER_ROLE_FALLBACK_KEY.into(),
+            revision.browser_role_policy.fallback.to_string(),
+        );
+        self.metadata.insert(
+            BROWSER_REQUIRES_WEBGPU_KEY.into(),
+            revision.requires_webgpu.to_string(),
+        );
+        if let Some(bytes) = revision.max_browser_checkpoint_bytes {
+            self.metadata
+                .insert(BROWSER_MAX_CHECKPOINT_BYTES_KEY.into(), bytes.to_string());
+        }
+        if let Some(seconds) = revision.max_browser_window_secs {
+            self.metadata
+                .insert(BROWSER_MAX_WINDOW_SECS_KEY.into(), seconds.to_string());
+        }
+        if let Some(bytes) = revision.max_browser_shard_bytes {
+            self.metadata
+                .insert(BROWSER_MAX_SHARD_BYTES_KEY.into(), bytes.to_string());
+        }
+        if let Some(batch) = revision.max_browser_batch_size {
+            self.metadata
+                .insert(BROWSER_MAX_BATCH_SIZE_KEY.into(), batch.to_string());
+        }
+        if let Some(precision) = &revision.recommended_browser_precision {
+            self.metadata.insert(
+                BROWSER_RECOMMENDED_PRECISION_KEY.into(),
+                match precision {
+                    Precision::Fp16 => "fp16",
+                    Precision::Fp32 => "fp32",
+                    Precision::Bf16 => "bf16",
+                    Precision::Int8 => "int8",
+                    Precision::Custom(value) => value.as_str(),
+                }
+                .into(),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use burn_p2p_core::{
+        ArtifactTargetKind, AttestationLevel, BrowserCapability, BrowserRole, BrowserRolePolicy,
+        BrowserVisibilityPolicy, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform,
         ContentId, ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
-        ExperimentScope, ExperimentVisibility, HeadId, NetworkId, PeerRole, PeerRoleSet,
-        RevisionId, StudyId,
+        ExperimentScope, ExperimentVisibility, HeadId, LagPolicy, MergeWindowMissPolicy, NetworkId,
+        PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision, RevisionId, RevisionManifest,
+        StudyId, WindowActivation, WindowId,
     };
     use chrono::Utc;
 
-    use super::{ExperimentDirectory, ExperimentDirectoryAccess};
+    use super::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};
 
     fn entry() -> ExperimentDirectoryEntry {
         let experiment_id = burn_p2p_core::ExperimentId::new("exp-a");
@@ -119,6 +503,34 @@ mod tests {
                 ExperimentScope::Validate { experiment_id },
             ]),
             metadata: BTreeMap::new(),
+        }
+    }
+
+    fn capability_card(
+        peer_id: &str,
+        platform: ClientPlatform,
+        roles: impl IntoIterator<Item = PeerRole>,
+        preferred_backends: Vec<&str>,
+        device_memory_bytes: Option<u64>,
+        system_memory_bytes: u64,
+    ) -> CapabilityCard {
+        CapabilityCard {
+            card_id: CapabilityCardId::new(format!("card-{peer_id}")),
+            peer_id: PeerId::new(peer_id),
+            platform,
+            roles: PeerRoleSet::new(roles),
+            preferred_backends: preferred_backends.into_iter().map(str::to_string).collect(),
+            recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
+            device_memory_bytes,
+            system_memory_bytes,
+            disk_bytes: 1024,
+            upload_mbps: 10.0,
+            download_mbps: 10.0,
+            persistence: PersistenceClass::Session,
+            work_units_per_second: 32.0,
+            attestation_level: AttestationLevel::Challenge,
+            benchmark_hash: None,
+            reported_at: Utc::now(),
         }
     }
 
@@ -182,6 +594,218 @@ mod tests {
         assert!(
             directory
                 .visible_to(&BTreeSet::from([ExperimentScope::Connect]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn entry_projects_and_recovers_revision_policy_from_metadata() {
+        let mut entry = entry();
+        let revision = RevisionManifest {
+            experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
+            required_release_train_hash: ContentId::new("train-a"),
+            model_schema_hash: ContentId::new("model-a"),
+            checkpoint_format_hash: ContentId::new("format-a"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("view-a"),
+            training_config_hash: ContentId::new("training-a"),
+            merge_topology_policy_hash: ContentId::new("topology-a"),
+            slot_requirements: entry.resource_requirements.clone(),
+            activation_window: WindowActivation {
+                activation_window: WindowId(2),
+                grace_windows: 1,
+            },
+            lag_policy: LagPolicy {
+                max_head_lag_before_catchup: 2,
+                max_head_lag_before_block: 6,
+                max_head_lag_before_full_rebase: 12,
+                max_window_skew_before_lease_revoke: 4,
+            },
+            merge_window_miss_policy: MergeWindowMissPolicy::RebaseRequired,
+            browser_enabled: true,
+            browser_role_policy: BrowserRolePolicy::default(),
+            max_browser_checkpoint_bytes: Some(1024),
+            max_browser_window_secs: Some(30),
+            max_browser_shard_bytes: Some(512),
+            requires_webgpu: true,
+            max_browser_batch_size: Some(8),
+            recommended_browser_precision: Some(Precision::Fp16),
+            visibility_policy: BrowserVisibilityPolicy::SwarmEligible,
+            description: "demo".into(),
+        };
+
+        entry.apply_revision_policy(&revision);
+
+        assert_eq!(entry.lag_policy(), revision.effective_lag_policy());
+        assert_eq!(
+            entry.merge_window_miss_policy(),
+            MergeWindowMissPolicy::RebaseRequired
+        );
+        assert!(entry.browser_enabled());
+        assert_eq!(
+            entry.browser_visibility_policy(),
+            BrowserVisibilityPolicy::SwarmEligible
+        );
+        assert_eq!(entry.recommended_browser_precision(), Some(Precision::Fp16));
+        assert_eq!(entry.max_browser_window_secs(), Some(30));
+    }
+
+    #[test]
+    fn directory_filters_browser_eligibility_and_artifact_target() {
+        let mut browser_entry = entry();
+        let browser_revision = RevisionManifest {
+            experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
+            required_release_train_hash: ContentId::new("train-a"),
+            model_schema_hash: ContentId::new("model-a"),
+            checkpoint_format_hash: ContentId::new("format-a"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("view-a"),
+            training_config_hash: ContentId::new("training-a"),
+            merge_topology_policy_hash: ContentId::new("topology-a"),
+            slot_requirements: browser_entry.resource_requirements.clone(),
+            activation_window: WindowActivation {
+                activation_window: WindowId(1),
+                grace_windows: 0,
+            },
+            lag_policy: LagPolicy::default(),
+            merge_window_miss_policy: MergeWindowMissPolicy::LeaseBlocked,
+            browser_enabled: true,
+            browser_role_policy: BrowserRolePolicy {
+                observer: true,
+                verifier: true,
+                trainer_wgpu: true,
+                fallback: true,
+            },
+            max_browser_checkpoint_bytes: Some(1024),
+            max_browser_window_secs: Some(60),
+            max_browser_shard_bytes: Some(512),
+            requires_webgpu: true,
+            max_browser_batch_size: Some(4),
+            recommended_browser_precision: Some(Precision::Fp16),
+            visibility_policy: BrowserVisibilityPolicy::SwarmEligible,
+            description: "browser".into(),
+        };
+        browser_entry.apply_revision_policy(&browser_revision);
+
+        let native_entry = entry();
+        let directory = ExperimentDirectory {
+            network_id: NetworkId::new("net-a"),
+            generated_at: Utc::now(),
+            entries: vec![browser_entry, native_entry],
+        };
+
+        let observer_caps = BTreeSet::from([BrowserCapability::DedicatedWorker]);
+        let trainer_caps = BTreeSet::from([
+            BrowserCapability::DedicatedWorker,
+            BrowserCapability::WebGpu,
+        ]);
+
+        assert_eq!(
+            directory
+                .browser_eligible(BrowserRole::Observer, &observer_caps)
+                .len(),
+            1
+        );
+        assert_eq!(
+            directory
+                .browser_eligible(BrowserRole::TrainerWgpu, &observer_caps)
+                .len(),
+            0
+        );
+        assert_eq!(
+            directory
+                .browser_eligible(BrowserRole::TrainerWgpu, &trainer_caps)
+                .len(),
+            1
+        );
+        assert_eq!(
+            directory
+                .compatible_with_target_artifact(&ArtifactTargetKind::BrowserWasm)
+                .len(),
+            1
+        );
+        assert_eq!(
+            directory
+                .compatible_with_target_artifact(&ArtifactTargetKind::NativeLinuxX86_64)
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn directory_filters_entries_by_capability_card() {
+        let mut browser_entry = entry();
+        browser_entry.apply_revision_policy(&RevisionManifest {
+            experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
+            required_release_train_hash: ContentId::new("train-a"),
+            model_schema_hash: ContentId::new("model-a"),
+            checkpoint_format_hash: ContentId::new("format-a"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("view-a"),
+            training_config_hash: ContentId::new("training-a"),
+            merge_topology_policy_hash: ContentId::new("topology-a"),
+            slot_requirements: browser_entry.resource_requirements.clone(),
+            activation_window: WindowActivation {
+                activation_window: WindowId(1),
+                grace_windows: 0,
+            },
+            lag_policy: LagPolicy::default(),
+            merge_window_miss_policy: MergeWindowMissPolicy::LeaseBlocked,
+            browser_enabled: true,
+            browser_role_policy: BrowserRolePolicy::default(),
+            max_browser_checkpoint_bytes: None,
+            max_browser_window_secs: None,
+            max_browser_shard_bytes: None,
+            requires_webgpu: true,
+            max_browser_batch_size: None,
+            recommended_browser_precision: None,
+            visibility_policy: BrowserVisibilityPolicy::SwarmEligible,
+            description: "browser".into(),
+        });
+
+        let directory = ExperimentDirectory {
+            network_id: NetworkId::new("net-a"),
+            generated_at: Utc::now(),
+            entries: vec![browser_entry],
+        };
+
+        let browser_ok = capability_card(
+            "browser-ok",
+            ClientPlatform::Browser,
+            [PeerRole::TrainerGpu],
+            vec!["wgpu"],
+            Some(2048),
+            4096,
+        );
+        let browser_low_mem = capability_card(
+            "browser-low-mem",
+            ClientPlatform::Browser,
+            [PeerRole::TrainerGpu],
+            vec!["wgpu"],
+            Some(512),
+            4096,
+        );
+        let browser_no_wgpu = capability_card(
+            "browser-no-wgpu",
+            ClientPlatform::Browser,
+            [PeerRole::TrainerGpu],
+            vec!["cpu"],
+            Some(2048),
+            4096,
+        );
+
+        assert_eq!(directory.compatible_with_capability(&browser_ok).len(), 1);
+        assert!(
+            directory
+                .compatible_with_capability(&browser_low_mem)
+                .is_empty()
+        );
+        assert!(
+            directory
+                .compatible_with_capability(&browser_no_wgpu)
                 .is_empty()
         );
     }

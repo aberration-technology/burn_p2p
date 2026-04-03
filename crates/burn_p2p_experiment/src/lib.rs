@@ -9,7 +9,7 @@ pub use control::{
     ActivationTarget, ExperimentControlCommand, ExperimentControlEnvelope, ExperimentControlState,
     ExperimentSnapshot, PatchPlan, StageError,
 };
-pub use directory::{ExperimentDirectory, ExperimentDirectoryAccess};
+pub use directory::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};
 pub use spec::{
     ExperimentSpec, PatchClass, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec,
     RuntimePatch, StudySpec,

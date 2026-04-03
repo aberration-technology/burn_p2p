@@ -1,0 +1,19 @@
+[package]
+name = "burn_p2p_portal"
+description = "Optional reference portal/product surface for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["readonly"]
+readonly = []
+interactive = ["readonly"]
+social = []
+browser-join = ["interactive"]
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

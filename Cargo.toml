@@ -2,7 +2,14 @@
 resolver = "3"
 members = [
   "crates/burn_p2p",
+  "crates/burn_p2p_auth_external",
+  "crates/burn_p2p_auth_github",
+  "crates/burn_p2p_auth_oidc",
+  "crates/burn_p2p_auth_oauth",
+  "crates/burn_p2p_portal",
+  "crates/burn_p2p_social",
   "crates/burn_p2p_bootstrap",
+  "crates/burn_p2p_browser",
   "crates/burn_p2p_engine",
   "crates/burn_p2p_checkpoint",
   "crates/burn_p2p_core",

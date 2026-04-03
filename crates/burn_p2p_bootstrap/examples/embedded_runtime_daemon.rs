@@ -8,10 +8,12 @@ use std::{
 
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
-    CapabilityEstimate, ChunkingScheme, DatasetRegistration, DatasetSizing, EvalSplit,
-    FsArtifactStore, MetricReport, MetricValue, MicroShardPlanner, MicroShardPlannerConfig,
-    P2pProject, PatchOutcome, PatchSupport, ProjectBackend, RuntimePatch, RuntimeProject,
-    ShardFetchManifest, StorageConfig, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    CapabilityEstimate, ChunkingScheme, ClientReleaseManifest, ContentId, DatasetRegistration,
+    DatasetSizing, EvalSplit, FsArtifactStore, MetricReport, MetricValue, MicroShardPlanner,
+    MicroShardPlannerConfig, P2pProject, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
+    ProjectFamilyId, RuntimePatch, RuntimeProject, ShardFetchManifest, SingleWorkloadProjectFamily,
+    StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    WorkloadId,
 };
 use burn_p2p_bootstrap::{
     ActiveExperiment, AdminApiPlan, ArchivePlan, AuthorityPlan, BootstrapEmbeddedDaemonConfig,
@@ -249,6 +251,45 @@ impl RuntimeProject<DemoBackend> for DemoProject {
     }
 }
 
+impl P2pWorkload<DemoBackend> for DemoProject {
+    fn supported_workload(&self) -> SupportedWorkload {
+        demo_workload_manifest()
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        ContentId::new("demo-schema")
+    }
+}
+
+fn demo_workload_manifest() -> SupportedWorkload {
+    SupportedWorkload {
+        workload_id: WorkloadId::new("embedded-demo-regression"),
+        workload_name: "Embedded Demo Regression".into(),
+        model_program_hash: ContentId::new("demo-program"),
+        checkpoint_format_hash: ContentId::new("synthetic-json"),
+        supported_revision_family: ContentId::new("demo-revision-family"),
+        resource_class: "cpu".into(),
+    }
+}
+
+fn demo_release_manifest() -> ClientReleaseManifest {
+    ClientReleaseManifest {
+        project_family_id: ProjectFamilyId::new("embedded-demo-family"),
+        release_train_hash: ContentId::new("embedded-demo-train"),
+        target_artifact_id: "native-linux-x86_64".into(),
+        target_artifact_hash: ContentId::new("embedded-demo-artifact-native"),
+        target_platform: ClientPlatform::Native,
+        app_semver: Version::new(0, 2, 0),
+        git_commit: "local-demo".into(),
+        cargo_lock_hash: ContentId::new("cargo-lock"),
+        burn_version_string: "0.21.0-pre.2".into(),
+        enabled_features_hash: ContentId::new("bootstrap-example"),
+        protocol_major: 0,
+        supported_workloads: vec![demo_workload_manifest()],
+        built_at: Utc::now(),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let temp = tempdir()?;
     let dataset_root = temp.path().join("dataset");
@@ -286,12 +327,16 @@ fn main() -> anyhow::Result<()> {
     }
     .plan()?;
 
-    let daemon = plan.spawn_embedded_daemon::<_, DemoBackend>(
+    let daemon_family = SingleWorkloadProjectFamily::<DemoBackend, _>::new(
+        demo_release_manifest(),
         DemoProject {
             dataset_root,
             learning_rate: 1.0,
             target_model: 10.0,
         },
+    )?;
+    let daemon = plan.spawn_embedded_daemon::<_, DemoBackend>(
+        daemon_family,
         BootstrapEmbeddedDaemonConfig {
             node: burn_p2p::NodeConfig {
                 identity: burn_p2p::IdentityConfig::Persistent,
@@ -299,8 +344,8 @@ fn main() -> anyhow::Result<()> {
                 dataset: None,
                 auth: None,
                 network_manifest: None,
-                client_release_manifest: None,
-                selected_workload_id: None,
+                client_release_manifest: Some(demo_release_manifest()),
+                selected_workload_id: Some(demo_workload_manifest().workload_id),
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
             },

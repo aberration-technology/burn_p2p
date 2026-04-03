@@ -89,7 +89,10 @@ fn validator_policy() -> ValidatorPolicy {
     )
     .expect("release policy");
     release_policy.required_project_family_id = Some(ProjectFamilyId::new("family-1"));
-    release_policy.required_client_release_hash = Some(ContentId::new("release-1"));
+    release_policy.required_release_train_hash = Some(ContentId::new("train-1"));
+    release_policy
+        .allowed_target_artifact_hashes
+        .insert(ContentId::new("artifact-native-1"));
     release_policy
         .approved_build_hashes
         .insert(ContentId::new("build-1"));
@@ -105,7 +108,9 @@ fn client_manifest() -> ClientManifest {
     ClientManifest::new(
         PeerId::new("peer-1"),
         ProjectFamilyId::new("family-1"),
-        ContentId::new("release-1"),
+        ContentId::new("train-1"),
+        ContentId::new("artifact-native-1"),
+        "native-linux-x86_64",
         Version::new(0, 4, 0),
         Version::new(0, 1, 2),
         ContentId::new("build-1"),
@@ -251,7 +256,7 @@ fn auth_fixture(
     let authority = NodeCertificateAuthority::new(
         NetworkId::new("network-a"),
         ProjectFamilyId::new("family-1"),
-        ContentId::new("release-1"),
+        ContentId::new("train-1"),
         Version::new(0, 1, 0),
         authority_keypair,
         "authority-1",
@@ -265,7 +270,8 @@ fn auth_fixture(
         .issue_certificate(NodeEnrollmentRequest {
             session,
             project_family_id: ProjectFamilyId::new("family-1"),
-            client_release_hash: ContentId::new("release-1"),
+            release_train_hash: ContentId::new("train-1"),
+            target_artifact_hash: ContentId::new("artifact-native-1"),
             peer_id: peer_id.clone(),
             peer_public_key_hex: hex::encode(node_keypair.public().encode_protobuf()),
             granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
@@ -292,7 +298,8 @@ fn auth_fixture(
     let policy = AdmissionPolicy {
         network_id: NetworkId::new("network-a"),
         project_family_id: ProjectFamilyId::new("family-1"),
-        required_client_release_hash: ContentId::new("release-1"),
+        required_release_train_hash: ContentId::new("train-1"),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-1")]),
         trusted_issuers: BTreeMap::from([(
             authority.issuer_peer_id(),
             TrustedIssuer {
@@ -354,7 +361,8 @@ fn bench_auth_admission(c: &mut Criterion) {
         let enrollment = NodeEnrollmentRequest {
             session,
             project_family_id: ProjectFamilyId::new("family-1"),
-            client_release_hash: ContentId::new("release-1"),
+            release_train_hash: ContentId::new("train-1"),
+            target_artifact_hash: ContentId::new("artifact-native-1"),
             peer_id,
             peer_public_key_hex: hex::encode(node_keypair.public().encode_protobuf()),
             granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
@@ -393,7 +401,8 @@ fn bench_auth_admission(c: &mut Criterion) {
                 .complete_login(CallbackPayload {
                     login_id: login.login_id,
                     state: login.state,
-                    principal_id: PrincipalId::new("alice"),
+                    principal_id: Some(PrincipalId::new("alice")),
+                    provider_code: None,
                 })
                 .expect("session")
         });

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     thread,
@@ -13,10 +13,12 @@ use burn::{
     tensor::{Tensor, backend::Backend},
 };
 use burn_p2p::{
-    AssignmentLease, CachedMicroShard, CapabilityEstimate, DatasetRegistration, DatasetSizing,
-    EvalSplit, FsArtifactStore, GenesisSpec, MergePolicy, MetricReport, MetricValue, NodeBuilder,
-    P2pProject, PatchOutcome, PatchSupport, ProjectBackend, RoleSet, RuntimePatch, RuntimeProject,
-    ShardFetchManifest, StorageConfig, TrainError, WindowCtx, WindowReport,
+    AssignmentLease, CachedMicroShard, CapabilityEstimate, ClientReleaseManifest, ContentId,
+    DatasetRegistration, DatasetSizing, EvalSplit, FsArtifactStore, GenesisSpec, MergePolicy,
+    MetricReport, MetricValue, NetworkManifest, NodeBuilder, P2pProject, P2pWorkload, PatchOutcome,
+    PatchSupport, ProjectBackend, ProjectFamilyId, RoleSet, RuntimePatch, RuntimeProject,
+    ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainError,
+    WindowCtx, WindowReport, WorkloadId,
 };
 use chrono::Utc;
 use semver::Version;
@@ -293,6 +295,45 @@ impl RuntimeProject<TinyProject> for TinyProject {
     }
 }
 
+impl P2pWorkload<TinyProject> for TinyProject {
+    fn supported_workload(&self) -> SupportedWorkload {
+        tiny_workload_manifest()
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        ContentId::new("burn-ndarray-schema")
+    }
+}
+
+fn tiny_workload_manifest() -> SupportedWorkload {
+    SupportedWorkload {
+        workload_id: WorkloadId::new("burn-ndarray-linear"),
+        workload_name: "Burn NdArray Linear".into(),
+        model_program_hash: ContentId::new("burn-ndarray-program"),
+        checkpoint_format_hash: ContentId::new("burn-ndarray-burnpack"),
+        supported_revision_family: ContentId::new("burn-ndarray-revision-family"),
+        resource_class: "cpu".into(),
+    }
+}
+
+fn tiny_release_manifest() -> ClientReleaseManifest {
+    ClientReleaseManifest {
+        project_family_id: ProjectFamilyId::new("burn-ndarray-family"),
+        release_train_hash: ContentId::new("burn-ndarray-train"),
+        target_artifact_id: "native-linux-x86_64".into(),
+        target_artifact_hash: ContentId::new("burn-ndarray-artifact-native"),
+        target_platform: burn_p2p::ClientPlatform::Native,
+        app_semver: Version::new(0, 2, 0),
+        git_commit: "local-demo".into(),
+        cargo_lock_hash: ContentId::new("cargo-lock"),
+        burn_version_string: "0.21.0-pre.2".into(),
+        enabled_features_hash: ContentId::new("burn-runtime"),
+        protocol_major: 0,
+        supported_workloads: vec![tiny_workload_manifest()],
+        built_at: Utc::now(),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let data_root = PathBuf::from(".burn_p2p-burn-demo-data");
     create_demo_dataset(&data_root)?;
@@ -304,6 +345,20 @@ fn main() -> anyhow::Result<()> {
         created_at: Utc::now(),
         metadata: BTreeMap::from([("purpose".into(), "burn runtime example".into())]),
     };
+    let network_manifest = NetworkManifest {
+        network_id: genesis.network_id.clone(),
+        project_family_id: ProjectFamilyId::new("burn-ndarray-family"),
+        protocol_major: 0,
+        required_release_train_hash: ContentId::new("burn-ndarray-train"),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
+            "burn-ndarray-artifact-native",
+        )]),
+        authority_public_keys: vec!["burn-validator".into()],
+        bootstrap_addrs: Vec::new(),
+        auth_policy_hash: ContentId::new("auth-policy"),
+        created_at: genesis.created_at,
+        description: genesis.display_name.clone(),
+    };
     let experiment = burn_p2p::MainnetHandle {
         genesis: genesis.clone(),
         roles: RoleSet::default_trainer(),
@@ -314,18 +369,22 @@ fn main() -> anyhow::Result<()> {
         burn_p2p::RevisionId::new("rev-1"),
     );
 
-    let validator = NodeBuilder::new(TinyProject {
-        dataset_root: data_root.clone(),
-        ema_decay: 0.75,
-    })
-    .with_mainnet(genesis.clone())
-    .with_roles(burn_p2p::PeerRoleSet::new([
-        burn_p2p::PeerRole::Authority,
-        burn_p2p::PeerRole::Validator,
-        burn_p2p::PeerRole::Archive,
-    ]))
-    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
-    .spawn()?;
+    let validator_family = SingleWorkloadProjectFamily::<TinyProject, _>::new(
+        tiny_release_manifest(),
+        TinyProject {
+            dataset_root: data_root.clone(),
+            ema_decay: 0.75,
+        },
+    )?;
+    let validator = NodeBuilder::new(validator_family)
+        .with_network(network_manifest.clone())?
+        .with_roles(burn_p2p::PeerRoleSet::new([
+            burn_p2p::PeerRole::Authority,
+            burn_p2p::PeerRole::Validator,
+            burn_p2p::PeerRole::Archive,
+        ]))
+        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
+        .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || {
@@ -344,15 +403,19 @@ fn main() -> anyhow::Result<()> {
         genesis_head.head_id.as_str()
     );
 
-    let trainer = NodeBuilder::new(TinyProject {
-        dataset_root: data_root,
-        ema_decay: 0.75,
-    })
-    .with_mainnet(genesis)
-    .with_roles(RoleSet::default_trainer())
-    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
-    .with_bootstrap_peer(validator_addr)
-    .spawn()?;
+    let trainer_family = SingleWorkloadProjectFamily::<TinyProject, _>::new(
+        tiny_release_manifest(),
+        TinyProject {
+            dataset_root: data_root,
+            ema_decay: 0.75,
+        },
+    )?;
+    let trainer = NodeBuilder::new(trainer_family)
+        .with_network(network_manifest)?
+        .with_roles(RoleSet::default_trainer())
+        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
+        .with_bootstrap_peer(validator_addr)
+        .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || trainer.telemetry().snapshot().connected_peers >= 1,

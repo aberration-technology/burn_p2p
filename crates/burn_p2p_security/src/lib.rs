@@ -36,7 +36,8 @@ pub enum SecurityError {
 pub struct ReleaseManifest {
     pub release_id: ContentId,
     pub project_family_id: ProjectFamilyId,
-    pub client_release_hash: ContentId,
+    pub release_train_hash: ContentId,
+    pub target_artifact_hash: ContentId,
     pub version: Version,
     pub protocol_version: Version,
     pub build_hash: ContentId,
@@ -49,7 +50,8 @@ impl ReleaseManifest {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         project_family_id: ProjectFamilyId,
-        client_release_hash: ContentId,
+        release_train_hash: ContentId,
+        target_artifact_hash: ContentId,
         version: Version,
         protocol_version: Version,
         build_hash: ContentId,
@@ -59,7 +61,8 @@ impl ReleaseManifest {
     ) -> Result<Self, SecurityError> {
         let release_id = ContentId::derive(&(
             project_family_id.as_str(),
-            client_release_hash.as_str(),
+            release_train_hash.as_str(),
+            target_artifact_hash.as_str(),
             version.clone(),
             protocol_version.clone(),
             build_hash.as_str(),
@@ -70,7 +73,8 @@ impl ReleaseManifest {
         Ok(Self {
             release_id,
             project_family_id,
-            client_release_hash,
+            release_train_hash,
+            target_artifact_hash,
             version,
             protocol_version,
             build_hash,
@@ -86,7 +90,9 @@ pub struct ClientManifest {
     pub manifest_id: ContentId,
     pub peer_id: PeerId,
     pub project_family_id: ProjectFamilyId,
-    pub client_release_hash: ContentId,
+    pub release_train_hash: ContentId,
+    pub target_artifact_hash: ContentId,
+    pub target_artifact_id: String,
     pub client_version: Version,
     pub protocol_version: Version,
     pub build_hash: ContentId,
@@ -103,7 +109,9 @@ impl ClientManifest {
     pub fn new(
         peer_id: PeerId,
         project_family_id: ProjectFamilyId,
-        client_release_hash: ContentId,
+        release_train_hash: ContentId,
+        target_artifact_hash: ContentId,
+        target_artifact_id: impl Into<String>,
         client_version: Version,
         protocol_version: Version,
         build_hash: ContentId,
@@ -114,10 +122,13 @@ impl ClientManifest {
         wasm_hash: Option<ContentId>,
         declared_at: DateTime<Utc>,
     ) -> Result<Self, SecurityError> {
+        let target_artifact_id = target_artifact_id.into();
         let manifest_id = ContentId::derive(&(
             peer_id.as_str(),
             project_family_id.as_str(),
-            client_release_hash.as_str(),
+            release_train_hash.as_str(),
+            target_artifact_hash.as_str(),
+            target_artifact_id.as_str(),
             client_version.clone(),
             protocol_version.clone(),
             build_hash.as_str(),
@@ -132,7 +143,9 @@ impl ClientManifest {
             manifest_id,
             peer_id,
             project_family_id,
-            client_release_hash,
+            release_train_hash,
+            target_artifact_hash,
+            target_artifact_id,
             client_version,
             protocol_version,
             build_hash,
@@ -158,7 +171,8 @@ pub struct ChallengeResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleasePolicy {
     pub required_project_family_id: Option<ProjectFamilyId>,
-    pub required_client_release_hash: Option<ContentId>,
+    pub required_release_train_hash: Option<ContentId>,
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub minimum_client_version: Version,
     pub allowed_protocol_versions: Vec<VersionReq>,
     pub approved_build_hashes: BTreeSet<ContentId>,
@@ -178,7 +192,8 @@ impl ReleasePolicy {
 
         Ok(Self {
             required_project_family_id: None,
-            required_client_release_hash: None,
+            required_release_train_hash: None,
+            allowed_target_artifact_hashes: BTreeSet::new(),
             minimum_client_version,
             allowed_protocol_versions,
             approved_build_hashes: BTreeSet::new(),
@@ -200,12 +215,23 @@ impl ReleasePolicy {
             });
         }
 
-        if self.required_client_release_hash.as_ref() != Some(&manifest.client_release_hash)
-            && self.required_client_release_hash.is_some()
+        if self.required_release_train_hash.as_ref() != Some(&manifest.release_train_hash)
+            && self.required_release_train_hash.is_some()
         {
-            findings.push(AuditFinding::ClientReleaseHashMismatch {
-                expected: self.required_client_release_hash.clone(),
-                found: manifest.client_release_hash.clone(),
+            findings.push(AuditFinding::ReleaseTrainHashMismatch {
+                expected: self.required_release_train_hash.clone(),
+                found: manifest.release_train_hash.clone(),
+            });
+        }
+
+        if !self.allowed_target_artifact_hashes.is_empty()
+            && !self
+                .allowed_target_artifact_hashes
+                .contains(&manifest.target_artifact_hash)
+        {
+            findings.push(AuditFinding::TargetArtifactHashMismatch {
+                expected: Some(self.allowed_target_artifact_hashes.clone()),
+                found: manifest.target_artifact_hash.clone(),
             });
         }
 
@@ -583,8 +609,12 @@ pub enum AuditFinding {
         expected: Option<ProjectFamilyId>,
         found: ProjectFamilyId,
     },
-    ClientReleaseHashMismatch {
+    ReleaseTrainHashMismatch {
         expected: Option<ContentId>,
+        found: ContentId,
+    },
+    TargetArtifactHashMismatch {
+        expected: Option<BTreeSet<ContentId>>,
         found: ContentId,
     },
     UnsupportedFeature(String),
@@ -707,7 +737,9 @@ mod tests {
         ClientManifest::new(
             burn_p2p_core::PeerId::new("peer-1"),
             ProjectFamilyId::new("family-1"),
-            ContentId::new("release-1"),
+            ContentId::new("train-1"),
+            ContentId::new("artifact-native-1"),
+            "native-linux-x86_64",
             Version::new(0, 4, 0),
             Version::new(0, 1, 2),
             ContentId::new("build-1"),
@@ -749,7 +781,10 @@ mod tests {
         )
         .expect("policy");
         release_policy.required_project_family_id = Some(ProjectFamilyId::new("family-1"));
-        release_policy.required_client_release_hash = Some(ContentId::new("release-1"));
+        release_policy.required_release_train_hash = Some(ContentId::new("train-1"));
+        release_policy
+            .allowed_target_artifact_hashes
+            .insert(ContentId::new("artifact-native-1"));
         release_policy
             .approved_build_hashes
             .insert(ContentId::new("build-1"));
@@ -776,9 +811,16 @@ mod tests {
         assert!(matches!(decision, AdmissionDecision::Reject(_)));
 
         manifest.build_hash = ContentId::new("build-1");
-        manifest.client_release_hash = ContentId::new("wrong-release");
+        manifest.release_train_hash = ContentId::new("wrong-train");
         let decision = policy.evaluate_client(&manifest);
         assert!(matches!(decision, AdmissionDecision::Reject(_)));
+
+        manifest.release_train_hash = ContentId::new("train-1");
+        manifest.target_artifact_hash = ContentId::new("artifact-browser-1");
+        let decision = policy.evaluate_client(&manifest);
+        assert!(matches!(decision, AdmissionDecision::Reject(_)));
+
+        manifest.target_artifact_hash = ContentId::new("artifact-native-1");
 
         policy.banned_features.insert("gpu".into());
         let decision = policy.evaluate_client(&manifest);
