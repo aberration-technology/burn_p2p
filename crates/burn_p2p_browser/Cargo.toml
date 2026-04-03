@@ -9,6 +9,7 @@ license.workspace = true
 burn_p2p = { path = "../burn_p2p" }
 burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap" }
 burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_swarm = { path = "../burn_p2p_swarm" }
 burn_p2p_ui = { path = "../burn_p2p_ui" }
 chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

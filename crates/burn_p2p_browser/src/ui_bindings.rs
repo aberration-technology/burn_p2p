@@ -18,6 +18,7 @@ use crate::{
 pub struct BrowserEdgeEndpoints {
     pub portal_snapshot_path: String,
     pub directory_path: String,
+    pub heads_path: String,
     pub signed_directory_path: String,
     pub leaderboard_path: String,
     pub signed_leaderboard_path: String,
@@ -36,6 +37,7 @@ impl Default for BrowserEdgeEndpoints {
         Self {
             portal_snapshot_path: "/portal/snapshot".into(),
             directory_path: "/directory".into(),
+            heads_path: "/heads".into(),
             signed_directory_path: "/directory/signed".into(),
             leaderboard_path: "/leaderboard".into(),
             signed_leaderboard_path: "/leaderboard/signed".into(),
@@ -75,6 +77,7 @@ impl BrowserUiBindings {
             paths: BrowserEdgeEndpoints {
                 portal_snapshot_path: snapshot.paths.portal_snapshot_path.clone(),
                 directory_path: snapshot.paths.directory_path.clone(),
+                heads_path: snapshot.paths.heads_path.clone(),
                 signed_directory_path: snapshot.paths.signed_directory_path.clone(),
                 leaderboard_path: snapshot.paths.leaderboard_path.clone(),
                 signed_leaderboard_path: snapshot.paths.signed_leaderboard_path.clone(),

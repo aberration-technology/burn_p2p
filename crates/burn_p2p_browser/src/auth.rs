@@ -9,6 +9,7 @@ use burn_p2p_bootstrap::{
     BrowserReceiptSubmissionResponse, TrustBundleExport,
 };
 use burn_p2p_core::{SchemaEnvelope, SignedPayload};
+use burn_p2p_swarm::{BrowserEdgeControlPlaneClient, BrowserEdgeControlPlanePaths};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -169,6 +170,10 @@ pub enum BrowserAuthClientError {
     MissingCallbackPath,
     #[error("target artifact {0} is not approved by the browser edge")]
     UnapprovedTargetArtifact(ContentId),
+    #[error("browser edge snapshot mismatch: {0}")]
+    EdgeSnapshotMismatch(&'static str),
+    #[error("swarm edge sync failed: {0}")]
+    Swarm(String),
 }
 
 #[derive(Clone, Debug)]
@@ -273,12 +278,38 @@ impl BrowserPortalClient {
     ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
         let session_id = session.and_then(BrowserSessionState::session_id);
         let portal_snapshot = self.fetch_portal_snapshot().await?;
+        let edge_snapshot = BrowserEdgeControlPlaneClient::new(
+            self.bindings.edge_base_url.clone(),
+            portal_snapshot.network_id.clone(),
+        )
+        .with_paths(BrowserEdgeControlPlanePaths {
+            directory_path: self.bindings.paths.directory_path.clone(),
+            heads_path: self.bindings.paths.heads_path.clone(),
+        })
+        .fetch_snapshot(session_id)
+        .await
+        .map_err(|error| BrowserAuthClientError::Swarm(error.to_string()))?;
         let signed_directory = self.fetch_signed_directory(session_id).await?;
         let signed_leaderboard = if include_leaderboard {
             Some(self.fetch_signed_leaderboard().await?)
         } else {
             None
         };
+        let edge_directory = edge_snapshot
+            .directory_announcements
+            .last()
+            .map(|announcement| announcement.entries.as_slice())
+            .unwrap_or(&[]);
+        if edge_directory != signed_directory.payload.payload.entries.as_slice() {
+            return Err(BrowserAuthClientError::EdgeSnapshotMismatch(
+                "directory entries did not match the signed directory snapshot",
+            ));
+        }
+        let heads = edge_snapshot
+            .head_announcements
+            .iter()
+            .map(|announcement| announcement.head.clone())
+            .collect::<Vec<_>>();
         let transport = BrowserTransportStatus {
             active: None,
             webrtc_direct_enabled: portal_snapshot.transports.webrtc_direct,
@@ -288,7 +319,7 @@ impl BrowserPortalClient {
         };
         Ok(runtime.apply_edge_sync(
             signed_directory,
-            &portal_snapshot.heads,
+            &heads,
             signed_leaderboard,
             transport,
             session,

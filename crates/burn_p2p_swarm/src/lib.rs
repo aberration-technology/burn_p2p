@@ -14,7 +14,7 @@ use std::{
 
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
-    ControlCertificate, DatasetViewId, ExperimentDirectoryEntry, HeadDescriptor, HeadId,
+    ContentId, ControlCertificate, DatasetViewId, ExperimentDirectoryEntry, HeadDescriptor, HeadId,
     MergeCertificate, MergeWindowState, MicroShardId, NetworkId, PeerAuthEnvelope, PeerId,
     ReducerAssignment, ReducerLoadReport, ReductionCertificate, TelemetrySummary, UpdateAnnounce,
 };
@@ -51,6 +51,116 @@ pub use types::{
     ExperimentOverlaySet, OverlayChannel, OverlayTopic, ProtocolId, ProtocolSet, RuntimeBoundary,
     RuntimeEnvironment, RuntimeTransportPolicy, SwarmAddress, TransportKind,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserEdgeControlPlanePaths {
+    pub directory_path: String,
+    pub heads_path: String,
+}
+
+impl Default for BrowserEdgeControlPlanePaths {
+    fn default() -> Self {
+        Self {
+            directory_path: "/directory".into(),
+            heads_path: "/heads".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BrowserEdgeControlPlaneClient {
+    http: reqwest::Client,
+    base_url: String,
+    network_id: NetworkId,
+    paths: BrowserEdgeControlPlanePaths,
+}
+
+impl BrowserEdgeControlPlaneClient {
+    pub fn new(base_url: impl Into<String>, network_id: NetworkId) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            network_id,
+            paths: BrowserEdgeControlPlanePaths::default(),
+        }
+    }
+
+    pub fn with_paths(mut self, paths: BrowserEdgeControlPlanePaths) -> Self {
+        self.paths = paths;
+        self
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        session_id: Option<&ContentId>,
+    ) -> Result<T, SwarmError> {
+        let request = session_id.map_or_else(
+            || self.http.get(format!("{}{}", self.base_url, path)),
+            |session_id| {
+                self.http
+                    .get(format!("{}{}", self.base_url, path))
+                    .header("x-session-id", session_id.as_str())
+            },
+        );
+        request
+            .send()
+            .await
+            .map_err(|error| SwarmError::Request(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| SwarmError::Request(error.to_string()))?
+            .json::<T>()
+            .await
+            .map_err(|error| SwarmError::Request(error.to_string()))
+    }
+
+    pub async fn fetch_directory(
+        &self,
+        session_id: Option<&ContentId>,
+    ) -> Result<Vec<ExperimentDirectoryEntry>, SwarmError> {
+        self.get_json(&self.paths.directory_path, session_id).await
+    }
+
+    pub async fn fetch_heads(&self) -> Result<Vec<HeadDescriptor>, SwarmError> {
+        self.get_json::<Vec<HeadDescriptor>>(&self.paths.heads_path, None)
+            .await
+    }
+
+    pub async fn fetch_snapshot(
+        &self,
+        session_id: Option<&ContentId>,
+    ) -> Result<ControlPlaneSnapshot, SwarmError> {
+        let generated_at = Utc::now();
+        let entries = self.fetch_directory(session_id).await?;
+        let heads = self.fetch_heads().await?;
+
+        let mut snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![ExperimentDirectoryAnnouncement {
+                network_id: self.network_id.clone(),
+                entries,
+                announced_at: generated_at,
+            }],
+            ..Default::default()
+        };
+
+        for head in heads {
+            let overlay = OverlayTopic::experiment(
+                self.network_id.clone(),
+                head.study_id.clone(),
+                head.experiment_id.clone(),
+                OverlayChannel::Heads,
+            )?;
+            snapshot.head_announcements.push(HeadAnnouncement {
+                overlay,
+                provider_peer_id: None,
+                head,
+                announced_at: generated_at,
+            });
+        }
+
+        Ok(snapshot)
+    }
+}
 
 pub struct MemorySwarmShell {
     local_peer_id: Libp2pPeerId,
@@ -2099,6 +2209,12 @@ impl ControlPlaneShell {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::io::{Read, Write};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::net::TcpListener;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use burn_p2p_core::{
@@ -2119,6 +2235,62 @@ mod tests {
         RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind,
     };
     use burn_p2p_experiment::ActivationTarget;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_browser_edge_server(
+        directory: Vec<burn_p2p_core::ExperimentDirectoryEntry>,
+        heads: Vec<HeadDescriptor>,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test edge");
+        let address = listener.local_addr().expect("local addr");
+        let directory_body = serde_json::to_string(&directory).expect("encode directory");
+        let heads_body = serde_json::to_string(&heads).expect("encode heads");
+
+        let handle = thread::spawn(move || {
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut buffer = [0_u8; 8192];
+                let size = stream.read(&mut buffer).expect("read request");
+                let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+                let request_lower = request.to_ascii_lowercase();
+
+                let (body, expected_path) = if request.starts_with("GET /directory ") {
+                    assert!(
+                        request_lower.contains("x-session-id: browser-session"),
+                        "directory request should include x-session-id header"
+                    );
+                    (directory_body.clone(), "/directory")
+                } else if request.starts_with("GET /heads ") {
+                    assert!(
+                        !request_lower.contains("x-session-id: browser-session"),
+                        "heads request should not include x-session-id header"
+                    );
+                    (heads_body.clone(), "/heads")
+                } else {
+                    panic!("unexpected browser edge request: {request}");
+                };
+
+                if request_index == 0 {
+                    assert!(
+                        request.starts_with("GET /directory "),
+                        "first request should fetch /directory before /heads, got {expected_path}"
+                    );
+                }
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+
+        (format!("http://{address}"), handle)
+    }
 
     #[test]
     fn experiment_topics_match_the_documented_paths() {
@@ -2636,6 +2808,75 @@ mod tests {
                 auth_announcements: listener.snapshot().auth_announcements.clone(),
                 directory_announcements: listener.snapshot().directory_announcements.clone(),
             }
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn browser_edge_control_plane_client_fetches_directory_and_heads_snapshot() {
+        let network_id = NetworkId::new("browser-network");
+        let study_id = StudyId::new("study");
+        let experiment_id = burn_p2p_core::ExperimentId::new("exp");
+        let revision_id = RevisionId::new("rev");
+        let now = Utc::now();
+        let directory = vec![burn_p2p_core::ExperimentDirectoryEntry {
+            network_id: network_id.clone(),
+            study_id: study_id.clone(),
+            experiment_id: experiment_id.clone(),
+            workload_id: burn_p2p_core::WorkloadId::new("workload"),
+            display_name: "Browser Edge Experiment".into(),
+            model_schema_hash: ContentId::new("schema"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("dataset"),
+            resource_requirements: burn_p2p_core::ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: Some(1024),
+                estimated_download_bytes: 1024 * 1024,
+                estimated_window_seconds: 30,
+            },
+            visibility: burn_p2p_core::ExperimentVisibility::OptIn,
+            opt_in_policy: burn_p2p_core::ExperimentOptInPolicy::Scoped,
+            current_revision_id: revision_id.clone(),
+            current_head_id: Some(HeadId::new("head-1")),
+            allowed_roles: PeerRoleSet::default(),
+            allowed_scopes: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        }];
+        let heads = vec![HeadDescriptor {
+            head_id: HeadId::new("head-1"),
+            study_id: study_id.clone(),
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            artifact_id: ArtifactId::new("artifact"),
+            parent_head_id: Some(HeadId::new("genesis-head")),
+            global_step: 7,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        }];
+        let (base_url, server) = spawn_browser_edge_server(directory.clone(), heads.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        let snapshot = runtime
+            .block_on(async {
+                super::BrowserEdgeControlPlaneClient::new(base_url, network_id.clone())
+                    .fetch_snapshot(Some(&ContentId::new("browser-session")))
+                    .await
+            })
+            .expect("fetch snapshot");
+
+        server.join().expect("join test edge");
+
+        assert_eq!(snapshot.directory_announcements.len(), 1);
+        assert_eq!(snapshot.directory_announcements[0].entries, directory);
+        assert_eq!(snapshot.head_announcements.len(), 1);
+        assert_eq!(snapshot.head_announcements[0].head, heads[0]);
+        assert_eq!(
+            snapshot.head_announcements[0].overlay,
+            OverlayTopic::experiment(network_id, study_id, experiment_id, OverlayChannel::Heads)
+                .expect("heads overlay")
         );
     }
 
