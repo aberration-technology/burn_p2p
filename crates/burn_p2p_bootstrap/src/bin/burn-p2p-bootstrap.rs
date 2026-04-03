@@ -789,6 +789,7 @@ fn handle_connection(
             }
             let snapshot = current_browser_portal_snapshot(
                 &plan,
+                &current_config,
                 &state,
                 auth_state.as_ref(),
                 &request,
@@ -827,6 +828,7 @@ fn handle_connection(
             }
             let snapshot = current_browser_portal_snapshot(
                 &plan,
+                &current_config,
                 &state,
                 auth_state.as_ref(),
                 &request,
@@ -1645,7 +1647,17 @@ fn browser_edge_mode(plan: &BootstrapPlan) -> BrowserEdgeMode {
     }
 }
 
-fn browser_transport_surface(plan: &BootstrapPlan) -> BrowserTransportSurface {
+fn browser_transport_surface(
+    plan: &BootstrapPlan,
+    config: &BootstrapDaemonConfig,
+) -> BrowserTransportSurface {
+    if !browser_edge_enabled(config) {
+        return BrowserTransportSurface {
+            webrtc_direct: false,
+            webtransport_gateway: false,
+            wss_fallback: false,
+        };
+    }
     let edge_mode = browser_edge_mode(plan);
     BrowserTransportSurface {
         webrtc_direct: matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
@@ -1688,6 +1700,7 @@ fn current_browser_leaderboard(
 
 fn current_browser_portal_snapshot(
     plan: &BootstrapPlan,
+    config: &BootstrapDaemonConfig,
     state: &Arc<Mutex<BootstrapAdminState>>,
     auth_state: Option<&Arc<AuthPortalState>>,
     request: &HttpRequest,
@@ -1713,7 +1726,10 @@ fn current_browser_portal_snapshot(
                 remaining_work_units,
                 directory,
                 edge_mode: browser_edge_mode(plan),
-                transports: browser_transport_surface(plan),
+                browser_mode: config.optional_services.browser_mode.clone(),
+                social_mode: config.optional_services.social_mode.clone(),
+                profile_mode: config.optional_services.profile_mode.clone(),
+                transports: browser_transport_surface(plan, config),
                 auth_enabled: auth_state.is_some(),
                 login_providers: browser_login_providers(auth_state),
                 required_release_train_hash,
@@ -3875,6 +3891,70 @@ mod tests {
             },
         );
         assert!(browser_receipts.starts_with("HTTP/1.1 404 Not Found"));
+    }
+
+    #[test]
+    fn portal_hides_disabled_browser_auth_and_social_flows() {
+        let temp = tempdir().expect("temp dir");
+        let context = HttpServerContext {
+            plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+            state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+            config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+                spec: sample_spec(),
+                http_bind_addr: None,
+                admin_token: None,
+                allow_dev_admin_token: false,
+                optional_services: BootstrapOptionalServicesConfig {
+                    portal_enabled: true,
+                    browser_mode: BrowserMode::Disabled,
+                    social_mode: SocialMode::Disabled,
+                    profile_mode: ProfileMode::Disabled,
+                },
+                remaining_work_units: None,
+                admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+                embedded_runtime: None,
+                auth: None,
+            })),
+            config_path: Arc::new(temp.path().join("portal-hidden-flows.json")),
+            admin_token: None,
+            allow_dev_admin_token: false,
+            remaining_work_units: None,
+            admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+            auth_state: None,
+            control_handle: None,
+        };
+
+        let portal_snapshot = response_json(&issue_request(
+            context.clone(),
+            IssueRequestSpec {
+                method: "GET",
+                path: "/portal/snapshot",
+                body: None,
+                headers: &[],
+            },
+        ));
+        assert_eq!(portal_snapshot["browser_mode"], "Disabled");
+        assert_eq!(portal_snapshot["social_mode"], "Disabled");
+        assert_eq!(portal_snapshot["profile_mode"], "Disabled");
+        assert_eq!(portal_snapshot["auth_enabled"], false);
+        assert_eq!(portal_snapshot["transports"]["wss_fallback"], false);
+
+        let portal = issue_request(
+            context,
+            IssueRequestSpec {
+                method: "GET",
+                path: "/portal",
+                body: None,
+                headers: &[],
+            },
+        );
+        let portal_html = response_body(&portal);
+        assert!(portal_html.contains("Join currently requires pre-provisioned credentials"));
+        assert!(portal_html.contains("Browser peer join is not currently available"));
+        assert!(portal_html.contains("Social features are disabled for this deployment."));
+        assert!(!portal_html.contains("/login/static"));
+        assert!(!portal_html.contains("<h2>Leaderboard</h2>"));
+        assert!(!portal_html.contains("/leaderboard"));
     }
 
     #[test]

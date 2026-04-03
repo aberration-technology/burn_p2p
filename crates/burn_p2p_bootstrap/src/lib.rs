@@ -22,9 +22,9 @@ use burn_p2p::{
 #[cfg(any(test, feature = "portal"))]
 use burn_p2p_core::PrincipalId;
 use burn_p2p_core::{
-    ArtifactId, ContributionReceipt, ContributionReceiptId, ControlCertificate,
+    ArtifactId, BrowserMode, ContributionReceipt, ContributionReceiptId, ControlCertificate,
     ExperimentDirectoryEntry, ExperimentId, GenesisSpec, HeadId, MergeCertificate, NetworkId,
-    PeerId, PeerRole, PeerRoleSet, RevisionId, SignatureMetadata, StudyId,
+    PeerId, PeerRole, PeerRoleSet, ProfileMode, RevisionId, SignatureMetadata, SocialMode, StudyId,
 };
 use burn_p2p_experiment::{ExperimentControlCommand, ExperimentControlEnvelope};
 use burn_p2p_security::{
@@ -709,6 +709,9 @@ pub struct BrowserDirectorySnapshot {
 pub struct BrowserPortalSnapshot {
     pub network_id: NetworkId,
     pub edge_mode: BrowserEdgeMode,
+    pub browser_mode: BrowserMode,
+    pub social_mode: SocialMode,
+    pub profile_mode: ProfileMode,
     pub transports: BrowserTransportSurface,
     pub paths: BrowserEdgePaths,
     pub auth_enabled: bool,
@@ -735,6 +738,9 @@ pub struct BrowserPortalSnapshotConfig {
     pub remaining_work_units: Option<u64>,
     pub directory: BrowserDirectorySnapshot,
     pub edge_mode: BrowserEdgeMode,
+    pub browser_mode: BrowserMode,
+    pub social_mode: SocialMode,
+    pub profile_mode: ProfileMode,
     pub transports: BrowserTransportSurface,
     pub auth_enabled: bool,
     pub login_providers: Vec<BrowserLoginProvider>,
@@ -893,6 +899,9 @@ impl BootstrapAdminState {
         BrowserPortalSnapshot {
             network_id: plan.genesis.network_id.clone(),
             edge_mode: config.edge_mode,
+            browser_mode: config.browser_mode,
+            social_mode: config.social_mode,
+            profile_mode: config.profile_mode,
             transports: config.transports,
             paths: BrowserEdgePaths::default(),
             auth_enabled: config.auth_enabled,
@@ -1344,6 +1353,9 @@ fn portal_snapshot_view(snapshot: &BrowserPortalSnapshot) -> burn_p2p_portal::Po
         network_id: snapshot.network_id.as_str().to_owned(),
         auth_enabled: snapshot.auth_enabled,
         edge_mode: format!("{:?}", snapshot.edge_mode),
+        browser_mode: format!("{:?}", snapshot.browser_mode),
+        social_enabled: snapshot.social_mode != SocialMode::Disabled,
+        profile_enabled: snapshot.profile_mode != ProfileMode::Disabled,
         login_providers: snapshot
             .login_providers
             .iter()
@@ -1732,10 +1744,10 @@ mod tests {
         WindowCtx, WindowReport, WorkloadId,
     };
     use burn_p2p_core::{
-        ArtifactId, BadgeKind, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform,
-        ContentId, ContributionReceipt, ExperimentId, HeadId, MergeCertificate, PeerId,
-        PersistenceClass, PrincipalId, RevisionId, StudyId, TelemetrySummary, WindowActivation,
-        WindowId,
+        ArtifactId, BadgeKind, BrowserMode, CapabilityCard, CapabilityCardId, CapabilityClass,
+        ClientPlatform, ContentId, ContributionReceipt, ExperimentId, HeadId, MergeCertificate,
+        PeerId, PersistenceClass, PrincipalId, ProfileMode, RevisionId, SocialMode, StudyId,
+        TelemetrySummary, WindowActivation, WindowId,
     };
     use burn_p2p_experiment::{ActivationTarget, ExperimentControlCommand};
     use burn_p2p_security::{
@@ -2683,6 +2695,9 @@ mod tests {
         let snapshot = BrowserPortalSnapshot {
             network_id: burn_p2p_core::NetworkId::new("mainnet"),
             edge_mode: BrowserEdgeMode::Peer,
+            browser_mode: BrowserMode::Verifier,
+            social_mode: SocialMode::Public,
+            profile_mode: ProfileMode::Public,
             transports: BrowserTransportSurface {
                 webrtc_direct: true,
                 webtransport_gateway: false,

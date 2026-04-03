@@ -46,6 +46,9 @@ pub struct PortalSnapshotView {
     pub network_id: String,
     pub auth_enabled: bool,
     pub edge_mode: String,
+    pub browser_mode: String,
+    pub social_enabled: bool,
+    pub profile_enabled: bool,
     pub login_providers: Vec<PortalLoginProvider>,
     pub transports: PortalTransportSurface,
     pub paths: PortalPaths,
@@ -166,9 +169,8 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
             .replace('"', "&quot;")
     }
 
-    let login_providers = if snapshot.login_providers.is_empty() {
-        "<li>No login providers configured.</li>".to_owned()
-    } else {
+    let interactive_auth_enabled = snapshot.auth_enabled && !snapshot.login_providers.is_empty();
+    let login_providers = if interactive_auth_enabled {
         snapshot
             .login_providers
             .iter()
@@ -189,6 +191,8 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
             })
             .collect::<Vec<_>>()
             .join("")
+    } else {
+        String::new()
     };
 
     let experiments = if snapshot.experiments.is_empty() {
@@ -251,11 +255,12 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
     .collect::<Vec<_>>()
     .join("");
 
-    let browser_join_enabled = (snapshot.transports.webrtc_direct
-        || snapshot.transports.webtransport_gateway
-        || snapshot.transports.wss_fallback)
+    let browser_join_enabled = snapshot.browser_mode != "Disabled"
+        && (snapshot.transports.webrtc_direct
+            || snapshot.transports.webtransport_gateway
+            || snapshot.transports.wss_fallback)
         && !snapshot.experiments.is_empty();
-    let auth_message = if snapshot.auth_enabled && !snapshot.login_providers.is_empty() {
+    let auth_message = if interactive_auth_enabled {
         "Interactive enrollment is available from this edge."
     } else {
         "Join currently requires pre-provisioned credentials or a trusted upstream auth layer."
@@ -265,11 +270,92 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
     } else {
         "Browser peer join is not currently available. Use the native client path or wait for an eligible browser revision."
     };
-    let social_message = if snapshot.leaderboard.is_empty() {
+    let social_message = if !snapshot.social_enabled {
+        "Social features are disabled for this deployment."
+    } else if snapshot.leaderboard.is_empty() {
         "No public leaderboard data is currently exposed from this edge."
     } else {
         "Leaderboard entries are driven from accepted receipts only."
     };
+    let profile_message = if snapshot.profile_enabled {
+        "Profile pages are available for this deployment."
+    } else {
+        "Profile pages are disabled for this deployment."
+    };
+    let login_panel = if interactive_auth_enabled {
+        format!(
+            r#"<article class="panel">
+        <h2>Login providers</h2>
+        <p class="muted">{auth_message}</p>
+        <ul>{login_providers}</ul>
+      </article>"#,
+            auth_message = escape(auth_message),
+            login_providers = login_providers
+        )
+    } else {
+        format!(
+            r#"<article class="panel">
+        <h2>Enrollment</h2>
+        <p class="muted">{auth_message}</p>
+      </article>"#,
+            auth_message = escape(auth_message)
+        )
+    };
+    let transport_panel = format!(
+        r#"<article class="panel">
+        <h2>{transport_title}</h2>
+        <p class="muted">{browser_message}</p>
+        {transports_block}
+      </article>"#,
+        transport_title = if browser_join_enabled {
+            "Transport surface"
+        } else {
+            "Native client path"
+        },
+        browser_message = escape(browser_message),
+        transports_block = if browser_join_enabled {
+            format!("<ul>{transports}</ul>")
+        } else {
+            "<p class=\"muted\">Browser peer join is disabled on this edge. Use the native client path for trainer and validator participation.</p>".into()
+        }
+    );
+    let leaderboard_path_pill = if snapshot.social_enabled {
+        format!(
+            "<div class=\"pill\"><code>{}</code></div>",
+            escape(&snapshot.paths.signed_leaderboard_path)
+        )
+    } else {
+        String::new()
+    };
+    let leaderboard_row = if snapshot.social_enabled {
+        format!(
+            "<tr><th>Leaderboard snapshot</th><td><code>{}</code></td></tr>",
+            escape(&snapshot.paths.signed_leaderboard_path)
+        )
+    } else {
+        String::new()
+    };
+    let leaderboard_panel = if snapshot.social_enabled {
+        format!(
+            r#"<section class="panel" style="margin-top:16px;">
+      <h2>Leaderboard</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Principal</th><th>Score</th><th>Accepted receipts</th></tr>
+        </thead>
+        <tbody>{leaderboard}</tbody>
+      </table>
+    </section>"#,
+            leaderboard = leaderboard
+        )
+    } else {
+        String::new()
+    };
+    let edge_mode_label = format!(
+        "{} / {}",
+        escape(&snapshot.edge_mode),
+        escape(&snapshot.browser_mode)
+    );
 
     format!(
         r#"<!doctype html>
@@ -315,21 +401,13 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
       <article class="panel"><div class="muted">Edge mode</div><div class="metric">{edge_mode}</div></article>
     </section>
     <section class="grid" style="margin-top:16px;">
-      <article class="panel">
-        <h2>Login providers</h2>
-        <p class="muted">{auth_message}</p>
-        <ul>{login_providers}</ul>
-      </article>
-      <article class="panel">
-        <h2>Transport surface</h2>
-        <p class="muted">{browser_message}</p>
-        <ul>{transports}</ul>
-      </article>
+      {login_panel}
+      {transport_panel}
       <article class="panel">
         <h2>Snapshot paths</h2>
         <div class="pill"><code>{portal_path}</code></div>
         <div class="pill"><code>{directory_path}</code></div>
-        <div class="pill"><code>{leaderboard_path}</code></div>
+        {leaderboard_path_pill}
         <div class="pill"><code>{trust_path}</code></div>
       </article>
     </section>
@@ -339,6 +417,7 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         <p class="muted">{auth_message}</p>
         <p class="muted">{browser_message}</p>
         <p class="muted">{social_message}</p>
+        <p class="muted">{profile_message}</p>
       </article>
       <article class="panel">
         <h2>Edge snapshot</h2>
@@ -346,7 +425,7 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
           <tbody>
             <tr><th>Portal snapshot</th><td><code>{portal_path}</code></td></tr>
             <tr><th>Directory snapshot</th><td><code>{directory_path}</code></td></tr>
-            <tr><th>Leaderboard snapshot</th><td><code>{leaderboard_path}</code></td></tr>
+            {leaderboard_row}
             <tr><th>Trust bundle</th><td><code>{trust_path}</code></td></tr>
           </tbody>
         </table>
@@ -361,15 +440,7 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         <tbody>{experiments}</tbody>
       </table>
     </section>
-    <section class="panel" style="margin-top:16px;">
-      <h2>Leaderboard</h2>
-      <table>
-        <thead>
-          <tr><th>#</th><th>Principal</th><th>Score</th><th>Accepted receipts</th></tr>
-        </thead>
-        <tbody>{leaderboard}</tbody>
-      </table>
-    </section>
+    {leaderboard_panel}
   </main>
 </body>
 </html>"#,
@@ -380,19 +451,25 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
             "disabled"
         },
         experiments_count = snapshot.experiments.len(),
-        leaders_count = snapshot.leaderboard.len(),
-        edge_mode = escape(&snapshot.edge_mode),
+        leaders_count = if snapshot.social_enabled {
+            snapshot.leaderboard.len()
+        } else {
+            0
+        },
+        edge_mode = edge_mode_label,
         auth_message = escape(auth_message),
         browser_message = escape(browser_message),
         social_message = escape(social_message),
-        login_providers = login_providers,
-        transports = transports,
+        profile_message = escape(profile_message),
+        login_panel = login_panel,
+        transport_panel = transport_panel,
+        leaderboard_path_pill = leaderboard_path_pill,
+        leaderboard_row = leaderboard_row,
         portal_path = escape(&snapshot.paths.portal_snapshot_path),
         directory_path = escape(&snapshot.paths.signed_directory_path),
-        leaderboard_path = escape(&snapshot.paths.signed_leaderboard_path),
         trust_path = escape(&snapshot.paths.trust_bundle_path),
         experiments = experiments,
-        leaderboard = leaderboard,
+        leaderboard_panel = leaderboard_panel,
     )
 }
 
@@ -417,6 +494,9 @@ mod tests {
             network_id: "mainnet".into(),
             auth_enabled: true,
             edge_mode: "Trainer".into(),
+            browser_mode: "Trainer".into(),
+            social_enabled: true,
+            profile_enabled: true,
             login_providers: vec![PortalLoginProvider {
                 label: "GitHub".into(),
                 login_path: "/login/github".into(),
@@ -450,5 +530,43 @@ mod tests {
         assert!(html.contains("burn_p2p browser portal"));
         assert!(html.contains("/login/github"));
         assert!(html.contains("alice"));
+    }
+
+    #[test]
+    fn browser_portal_html_hides_disabled_auth_and_social_flows() {
+        let html = render_browser_portal_html(&PortalSnapshotView {
+            network_id: "mainnet".into(),
+            auth_enabled: false,
+            edge_mode: "Minimal".into(),
+            browser_mode: "Disabled".into(),
+            social_enabled: false,
+            profile_enabled: false,
+            login_providers: Vec::new(),
+            transports: PortalTransportSurface {
+                webrtc_direct: false,
+                webtransport_gateway: false,
+                wss_fallback: false,
+            },
+            paths: PortalPaths {
+                portal_snapshot_path: "/portal/snapshot".into(),
+                signed_directory_path: "/directory/signed".into(),
+                signed_leaderboard_path: "/leaderboard/signed".into(),
+                trust_bundle_path: "/trust".into(),
+            },
+            experiments: vec![PortalExperimentRow {
+                display_name: "Native Only".into(),
+                experiment_id: "exp-native".into(),
+                revision_id: "rev-native".into(),
+                has_head: false,
+                estimated_window_seconds: 60,
+            }],
+            leaderboard: Vec::new(),
+        });
+        assert!(html.contains("Join currently requires pre-provisioned credentials"));
+        assert!(html.contains("Browser peer join is not currently available"));
+        assert!(html.contains("Social features are disabled for this deployment."));
+        assert!(!html.contains("No login providers configured."));
+        assert!(!html.contains("<h2>Leaderboard</h2>"));
+        assert!(!html.contains("/leaderboard/signed"));
     }
 }

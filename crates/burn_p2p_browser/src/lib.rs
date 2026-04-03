@@ -1617,6 +1617,9 @@ mod tests {
         let snapshot = BrowserPortalSnapshot {
             network_id: NetworkId::new("net-browser"),
             edge_mode: BrowserEdgeMode::Peer,
+            browser_mode: burn_p2p::BrowserMode::Verifier,
+            social_mode: burn_p2p::SocialMode::Public,
+            profile_mode: burn_p2p::ProfileMode::Public,
             transports: BrowserTransportSurface {
                 webrtc_direct: true,
                 webtransport_gateway: false,
@@ -1737,6 +1740,9 @@ mod tests {
         let mut snapshot = BrowserPortalSnapshot {
             network_id: NetworkId::new("net-browser"),
             edge_mode: BrowserEdgeMode::Peer,
+            browser_mode: burn_p2p::BrowserMode::Verifier,
+            social_mode: burn_p2p::SocialMode::Public,
+            profile_mode: burn_p2p::ProfileMode::Public,
             transports: BrowserTransportSurface {
                 webrtc_direct: true,
                 webtransport_gateway: false,
