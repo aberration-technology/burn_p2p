@@ -1,0 +1,36 @@
+[package]
+name = "burn_p2p_testkit"
+description = "Simulation and QA boundary crate for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+burn_p2p = { path = "../burn_p2p" }
+burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap" }
+burn_p2p_engine = { path = "../burn_p2p_engine" }
+burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_dataloader = { path = "../burn_p2p_dataloader" }
+burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_limits = { path = "../burn_p2p_limits" }
+burn_p2p_security = { path = "../burn_p2p_security" }
+burn_p2p_swarm = { path = "../burn_p2p_swarm" }
+burn_p2p_ui = { path = "../burn_p2p_ui" }
+chrono.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "merge_topology"
+harness = false
+
+[lints]
+workspace = true

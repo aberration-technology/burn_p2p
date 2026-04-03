@@ -1,0 +1,27 @@
+[package]
+name = "burn_p2p_engine"
+description = "Internal Burn execution engine boundary crate for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+burn.workspace = true
+burn-store.workspace = true
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
+burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "module_merge"
+harness = false
+
+[lints]
+workspace = true

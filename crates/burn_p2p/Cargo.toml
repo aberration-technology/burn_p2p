@@ -1,0 +1,39 @@
+[package]
+name = "burn_p2p"
+description = "Stable public facade for peer-to-peer Burn training orchestration."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+burn = { workspace = true, optional = true }
+chrono.workspace = true
+futures = "0.3"
+libp2p-identity = "0.2.13"
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
+burn_p2p_engine = { path = "../burn_p2p_engine", optional = true }
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_dataloader = { path = "../burn_p2p_dataloader" }
+burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_limits = { path = "../burn_p2p_limits" }
+burn_p2p_security = { path = "../burn_p2p_security" }
+burn_p2p_swarm = { path = "../burn_p2p_swarm" }
+
+[features]
+default = []
+burn = ["dep:burn", "dep:burn_p2p_engine"]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[example]]
+name = "burn_ndarray_runtime"
+required-features = ["burn"]
+
+[lints]
+workspace = true

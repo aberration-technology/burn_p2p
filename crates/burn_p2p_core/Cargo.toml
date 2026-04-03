@@ -1,0 +1,20 @@
+[package]
+name = "burn_p2p_core"
+description = "Internal shared schemas, IDs, and deterministic encodings for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ciborium.workspace = true
+chrono.workspace = true
+hex.workspace = true
+multihash.workspace = true
+multihash-codetable.workspace = true
+semver.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

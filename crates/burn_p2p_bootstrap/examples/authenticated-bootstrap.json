@@ -1,0 +1,115 @@
+{
+  "spec": {
+    "preset": "BootstrapOnly",
+    "genesis": {
+      "network_id": "secure-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Authenticated Demo Network",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "authenticated-bootstrap-example"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [],
+    "authority": null,
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": true
+    },
+    "admin_api": {
+      "supported_actions": [
+        "ExportDiagnostics",
+        "ExportReceipts"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": true
+    }
+  },
+  "http_bind_addr": "127.0.0.1:8789",
+  "admin_token": "local-admin",
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority",
+  "auth": {
+    "authority_name": "local-auth",
+    "authority_key_path": ".burn_p2p-auth/bootstrap-authority.key",
+    "project_family_id": "demo-family",
+    "required_client_release_hash": "demo-release",
+    "session_ttl_seconds": 3600,
+    "minimum_revocation_epoch": 1,
+    "principals": [
+      {
+        "principal_id": "alice",
+        "display_name": "Alice",
+        "org_memberships": [
+          "burn-lab"
+        ],
+        "group_memberships": [
+          "trainers"
+        ],
+        "granted_roles": {
+          "roles": [
+            "TrainerGpu",
+            "Evaluator"
+          ]
+        },
+        "granted_scopes": [
+          "Connect",
+          "Discover",
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "allowed_networks": [
+          "secure-demo"
+        ],
+        "custom_claims": {
+          "team": "research"
+        }
+      }
+    ],
+    "directory_entries": [
+      {
+        "network_id": "secure-demo",
+        "study_id": "study-auth",
+        "experiment_id": "exp-auth",
+        "workload_id": "auth-demo",
+        "display_name": "Authenticated Demo",
+        "model_schema_hash": "model-auth",
+        "dataset_view_id": "view-auth",
+        "resource_requirements": {
+          "minimum_roles": [
+            "TrainerGpu"
+          ],
+          "minimum_device_memory_bytes": 1024,
+          "minimum_system_memory_bytes": 4096,
+          "estimated_download_bytes": 65536,
+          "estimated_window_seconds": 45
+        },
+        "visibility": "OptIn",
+        "opt_in_policy": "Scoped",
+        "current_revision_id": "rev-auth",
+        "current_head_id": null,
+        "allowed_roles": {
+          "roles": [
+            "TrainerGpu"
+          ]
+        },
+        "allowed_scopes": [
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "metadata": {
+          "owner": "burn-lab"
+        }
+      }
+    ]
+  }
+}

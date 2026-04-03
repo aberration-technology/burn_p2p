@@ -1,0 +1,16 @@
+[package]
+name = "burn_p2p_experiment"
+description = "Internal study, experiment, revision, and control-plane schemas for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+semver.workspace = true
+serde.workspace = true
+burn_p2p_core = { path = "../burn_p2p_core" }
+
+[lints]
+workspace = true

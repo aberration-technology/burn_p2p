@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/burn_p2p",
+  "crates/burn_p2p_bootstrap",
+  "crates/burn_p2p_engine",
+  "crates/burn_p2p_checkpoint",
+  "crates/burn_p2p_core",
+  "crates/burn_p2p_dataloader",
+  "crates/burn_p2p_experiment",
+  "crates/burn_p2p_limits",
+  "crates/burn_p2p_security",
+  "crates/burn_p2p_swarm",
+  "crates/burn_p2p_testkit",
+  "crates/burn_p2p_ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["burn_p2p contributors"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+burn = { version = "0.21.0-pre.2", default-features = false, features = ["std", "ndarray", "train", "store"] }
+burn-store = { version = "0.21.0-pre.2", default-features = false, features = ["std", "burnpack", "safetensors"] }
+ciborium = "0.2.2"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+criterion = "0.5"
+hex = "0.4"
+multihash = "0.19.3"
+multihash-codetable = { version = "0.1.4", features = ["sha2"] }
+semver = { version = "1.0.27", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.13"
+thiserror = "2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"

@@ -1,0 +1,9 @@
+{
+  "root": ".burn_p2p-testkit-soak",
+  "trainer_count": 3,
+  "trainer_window_count": 2,
+  "startup_timeout_secs": 15,
+  "poll_interval_ms": 50,
+  "sync_timeout_secs": 15,
+  "merge_wait_timeout_secs": 15
+}

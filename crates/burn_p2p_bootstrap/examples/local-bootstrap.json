@@ -1,0 +1,35 @@
+{
+  "spec": {
+    "preset": "BootstrapOnly",
+    "genesis": {
+      "network_id": "local-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Local Demo Network",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "bootstrap-example"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [],
+    "authority": null,
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": true
+    },
+    "admin_api": {
+      "supported_actions": [
+        "ExportDiagnostics",
+        "ExportReceipts"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": true
+    }
+  },
+  "http_bind_addr": "127.0.0.1:8787",
+  "admin_token": "local-admin",
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority"
+}

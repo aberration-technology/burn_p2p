@@ -1,0 +1,89 @@
+{
+  "spec": {
+    "preset": "AuthorityValidator",
+    "genesis": {
+      "network_id": "embedded-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Embedded Validator Demo",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "embedded-validator-example"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [],
+    "authority": {
+      "release_policy": {
+        "minimum_client_version": "0.1.0",
+        "allowed_protocol_versions": [
+          "^0.1"
+        ],
+        "approved_build_hashes": [],
+        "required_project_hash": null,
+        "allowed_features": null,
+        "banned_features": []
+      },
+      "validator_policy": {
+        "release_policy": {
+          "minimum_client_version": "0.1.0",
+          "allowed_protocol_versions": [
+            "^0.1"
+          ],
+          "approved_build_hashes": [],
+          "required_project_hash": null,
+          "allowed_features": null,
+          "banned_features": []
+        },
+        "evidence_requirement": {
+          "minimum_attestation_level": "Challenge",
+          "minimum_reputation_score": 0.0,
+          "require_data_receipt": true,
+          "require_challenge_response": true,
+          "require_holdout_metrics": true
+        }
+      }
+    },
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": true
+    },
+    "admin_api": {
+      "supported_actions": [
+        "Control",
+        "BanPeer",
+        "ExportDiagnostics",
+        "ExportReceipts"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": true
+    }
+  },
+  "http_bind_addr": "127.0.0.1:8788",
+  "admin_token": "local-admin",
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority",
+  "embedded_runtime": {
+    "node": {
+      "identity": "Persistent",
+      "storage": {
+        "root": ".burn_p2p-embedded-validator"
+      },
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": [
+        "/ip4/127.0.0.1/tcp/0"
+      ]
+    },
+    "active_experiment": {
+      "study_id": "study",
+      "experiment_id": "exp",
+      "revision_id": "rev"
+    },
+    "initialize_head_on_start": true,
+    "restore_head_on_start": true,
+    "validation_interval_millis": 250,
+    "training_interval_millis": null
+  }
+}

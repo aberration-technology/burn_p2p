@@ -1,0 +1,28 @@
+[package]
+name = "burn_p2p_bootstrap"
+description = "Bootstrap and admin composition boundary crate for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+burn_p2p = { path = "../burn_p2p" }
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_security = { path = "../burn_p2p_security" }
+burn_p2p_swarm = { path = "../burn_p2p_swarm" }
+chrono.workspace = true
+hex.workspace = true
+libp2p-identity = "0.2.13"
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

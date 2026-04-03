@@ -1,0 +1,136 @@
+use std::{
+    convert::Infallible,
+    net::{TcpListener, UdpSocket},
+};
+
+use libp2p::{Multiaddr, multiaddr::Protocol as MultiaddrProtocol};
+use libp2p_identity::Keypair;
+use libp2p_plaintext as plaintext;
+use libp2p_request_response as request_response;
+use libp2p_swarm::SwarmEvent;
+
+use crate::{ControlPlaneRequest, ControlPlaneResponse, NativeControlPlaneBehaviourEvent};
+
+pub(crate) fn other_name(event: &SwarmEvent<Infallible>) -> &'static str {
+    match event {
+        SwarmEvent::Behaviour(_) => "behaviour",
+        SwarmEvent::ConnectionEstablished { .. } => "connection-established",
+        SwarmEvent::ConnectionClosed { .. } => "connection-closed",
+        SwarmEvent::IncomingConnection { .. } => "incoming-connection",
+        SwarmEvent::IncomingConnectionError { .. } => "incoming-connection-error",
+        SwarmEvent::OutgoingConnectionError { .. } => "outgoing-connection-error",
+        SwarmEvent::NewListenAddr { .. } => "new-listen-addr",
+        SwarmEvent::ExpiredListenAddr { .. } => "expired-listen-addr",
+        SwarmEvent::ListenerClosed { .. } => "listener-closed",
+        SwarmEvent::ListenerError { .. } => "listener-error",
+        SwarmEvent::Dialing { .. } => "dialing",
+        SwarmEvent::NewExternalAddrCandidate { .. } => "new-external-addr-candidate",
+        SwarmEvent::ExternalAddrConfirmed { .. } => "external-addr-confirmed",
+        SwarmEvent::ExternalAddrExpired { .. } => "external-addr-expired",
+        SwarmEvent::NewExternalAddrOfPeer { .. } => "new-external-addr-of-peer",
+        _ => "other",
+    }
+}
+
+pub(crate) fn other_control_name(
+    event: &SwarmEvent<request_response::Event<ControlPlaneRequest, ControlPlaneResponse>>,
+) -> &'static str {
+    match event {
+        SwarmEvent::Behaviour(_) => "behaviour",
+        SwarmEvent::ConnectionEstablished { .. } => "connection-established",
+        SwarmEvent::ConnectionClosed { .. } => "connection-closed",
+        SwarmEvent::IncomingConnection { .. } => "incoming-connection",
+        SwarmEvent::IncomingConnectionError { .. } => "incoming-connection-error",
+        SwarmEvent::OutgoingConnectionError { .. } => "outgoing-connection-error",
+        SwarmEvent::NewListenAddr { .. } => "new-listen-addr",
+        SwarmEvent::ExpiredListenAddr { .. } => "expired-listen-addr",
+        SwarmEvent::ListenerClosed { .. } => "listener-closed",
+        SwarmEvent::ListenerError { .. } => "listener-error",
+        SwarmEvent::Dialing { .. } => "dialing",
+        SwarmEvent::NewExternalAddrCandidate { .. } => "new-external-addr-candidate",
+        SwarmEvent::ExternalAddrConfirmed { .. } => "external-addr-confirmed",
+        SwarmEvent::ExternalAddrExpired { .. } => "external-addr-expired",
+        SwarmEvent::NewExternalAddrOfPeer { .. } => "new-external-addr-of-peer",
+        _ => "other",
+    }
+}
+
+pub(crate) fn other_native_control_name(
+    event: &SwarmEvent<NativeControlPlaneBehaviourEvent>,
+) -> &'static str {
+    match event {
+        SwarmEvent::Behaviour(_) => "behaviour",
+        SwarmEvent::ConnectionEstablished { .. } => "connection-established",
+        SwarmEvent::ConnectionClosed { .. } => "connection-closed",
+        SwarmEvent::IncomingConnection { .. } => "incoming-connection",
+        SwarmEvent::IncomingConnectionError { .. } => "incoming-connection-error",
+        SwarmEvent::OutgoingConnectionError { .. } => "outgoing-connection-error",
+        SwarmEvent::NewListenAddr { .. } => "new-listen-addr",
+        SwarmEvent::ExpiredListenAddr { .. } => "expired-listen-addr",
+        SwarmEvent::ListenerClosed { .. } => "listener-closed",
+        SwarmEvent::ListenerError { .. } => "listener-error",
+        SwarmEvent::Dialing { .. } => "dialing",
+        SwarmEvent::NewExternalAddrCandidate { .. } => "new-external-addr-candidate",
+        SwarmEvent::ExternalAddrConfirmed { .. } => "external-addr-confirmed",
+        SwarmEvent::ExternalAddrExpired { .. } => "external-addr-expired",
+        SwarmEvent::NewExternalAddrOfPeer { .. } => "new-external-addr-of-peer",
+        _ => "other",
+    }
+}
+
+pub(crate) fn plaintext_config(keypair: &Keypair) -> Result<plaintext::Config, Infallible> {
+    Ok(plaintext::Config::new(keypair))
+}
+
+pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, std::io::Error> {
+    let protocols: Vec<_> = address.iter().collect();
+    match protocols.as_slice() {
+        [MultiaddrProtocol::Ip4(ip), MultiaddrProtocol::Tcp(0)] => {
+            let listener = TcpListener::bind((*ip, 0))?;
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip4(*ip));
+            concrete.push(MultiaddrProtocol::Tcp(port));
+            Ok(concrete)
+        }
+        [MultiaddrProtocol::Ip6(ip), MultiaddrProtocol::Tcp(0)] => {
+            let listener = TcpListener::bind((*ip, 0))?;
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip6(*ip));
+            concrete.push(MultiaddrProtocol::Tcp(port));
+            Ok(concrete)
+        }
+        [
+            MultiaddrProtocol::Ip4(ip),
+            MultiaddrProtocol::Udp(0),
+            MultiaddrProtocol::QuicV1,
+        ] => {
+            let socket = UdpSocket::bind((*ip, 0))?;
+            let port = socket.local_addr()?.port();
+            drop(socket);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip4(*ip));
+            concrete.push(MultiaddrProtocol::Udp(port));
+            concrete.push(MultiaddrProtocol::QuicV1);
+            Ok(concrete)
+        }
+        [
+            MultiaddrProtocol::Ip6(ip),
+            MultiaddrProtocol::Udp(0),
+            MultiaddrProtocol::QuicV1,
+        ] => {
+            let socket = UdpSocket::bind((*ip, 0))?;
+            let port = socket.local_addr()?.port();
+            drop(socket);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip6(*ip));
+            concrete.push(MultiaddrProtocol::Udp(port));
+            concrete.push(MultiaddrProtocol::QuicV1);
+            Ok(concrete)
+        }
+        _ => Ok(address.clone()),
+    }
+}

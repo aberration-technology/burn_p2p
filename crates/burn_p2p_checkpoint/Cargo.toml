@@ -1,0 +1,28 @@
+[package]
+name = "burn_p2p_checkpoint"
+description = "Internal checkpoint, artifact, and merge boundary crate for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+chrono.workspace = true
+multihash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "artifact_pipeline"
+harness = false
+
+[lints]
+workspace = true

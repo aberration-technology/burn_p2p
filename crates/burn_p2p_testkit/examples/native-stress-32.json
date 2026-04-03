@@ -1,0 +1,9 @@
+{
+  "root": ".burn_p2p-testkit-stress-32",
+  "trainer_count": 32,
+  "trainer_window_count": 1,
+  "startup_timeout_secs": 20,
+  "poll_interval_ms": 50,
+  "sync_timeout_secs": 20,
+  "merge_wait_timeout_secs": 30
+}
