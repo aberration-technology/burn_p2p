@@ -10,6 +10,7 @@ use burn_p2p_security::{
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingLogin {
@@ -35,6 +36,22 @@ struct ProviderExchangeResponse {
     principal_id: PrincipalId,
     #[serde(default, flatten)]
     session: ProviderSessionMaterial,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct StandardTokenResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_in: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +195,15 @@ struct ProviderRevokeRequest {
     session_handle: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProviderExchangeOutcome {
+    Mapped {
+        principal_id: PrincipalId,
+        session: ProviderSessionMaterial,
+    },
+    SessionOnly(ProviderSessionMaterial),
+}
+
 #[derive(Debug)]
 pub struct ProviderMappedIdentityConnector {
     provider: AuthProvider,
@@ -187,6 +213,9 @@ pub struct ProviderMappedIdentityConnector {
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
     authorize_base_url: Option<String>,
     exchange_url: Option<String>,
+    token_url: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
     userinfo_url: Option<String>,
     refresh_url: Option<String>,
     revoke_url: Option<String>,
@@ -207,6 +236,9 @@ impl ProviderMappedIdentityConnector {
             principals,
             authorize_base_url,
             exchange_url: None,
+            token_url: None,
+            client_id: None,
+            client_secret: None,
             userinfo_url: None,
             refresh_url: None,
             revoke_url: None,
@@ -215,6 +247,21 @@ impl ProviderMappedIdentityConnector {
 
     pub fn with_exchange_url(mut self, exchange_url: Option<String>) -> Self {
         self.exchange_url = exchange_url;
+        self
+    }
+
+    pub fn with_token_url(mut self, token_url: Option<String>) -> Self {
+        self.token_url = token_url;
+        self
+    }
+
+    pub fn with_client_credentials(
+        mut self,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+    ) -> Self {
+        self.client_id = client_id;
+        self.client_secret = client_secret;
         self
     }
 
@@ -241,6 +288,231 @@ impl ProviderMappedIdentityConnector {
         self.authorize_base_url
             .as_ref()
             .map(|base| format!("{base}?login_id={}&state={state}", login_id.as_str()))
+    }
+
+    fn uses_standard_token_flow(&self) -> bool {
+        self.token_url.is_some()
+    }
+
+    fn standard_form_pairs<'a>(
+        &'a self,
+        grant_type: &'a str,
+        code: Option<&'a str>,
+        refresh_token: Option<&'a str>,
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut pairs = vec![("grant_type", grant_type)];
+        if let Some(code) = code {
+            pairs.push(("code", code));
+        }
+        if let Some(refresh_token) = refresh_token {
+            pairs.push(("refresh_token", refresh_token));
+        }
+        if let Some(client_id) = self.client_id.as_deref() {
+            pairs.push(("client_id", client_id));
+        }
+        if let Some(client_secret) = self.client_secret.as_deref() {
+            pairs.push(("client_secret", client_secret));
+        }
+        pairs
+    }
+
+    fn standard_session_from_token_response(
+        &self,
+        response: StandardTokenResponse,
+    ) -> Result<ProviderSessionMaterial, AuthError> {
+        let access_token = response.access_token.ok_or_else(|| {
+            AuthError::ProviderExchange("provider token response omitted access_token".into())
+        })?;
+        Ok(ProviderSessionMaterial {
+            access_token: Some(access_token),
+            refresh_token: response.refresh_token,
+            provider_expires_at: response
+                .expires_in
+                .map(|secs| Utc::now() + Duration::seconds(secs.max(0))),
+            ..Default::default()
+        })
+    }
+
+    fn provider_session_from_userinfo_value(&self, value: Value) -> ProviderSessionMaterial {
+        let mut session = ProviderSessionMaterial::default();
+        let Some(object) = value.as_object() else {
+            return session;
+        };
+
+        session.provider_subject = object
+            .get("sub")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                object.get("id").map(|value| match value {
+                    Value::String(value) => value.clone(),
+                    Value::Number(value) => value.to_string(),
+                    _ => String::new(),
+                })
+            })
+            .filter(|value| !value.is_empty());
+
+        session.profile.display_name = object
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                object
+                    .get("preferred_username")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                object
+                    .get("login")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            });
+
+        if let Some(login) = object
+            .get("login")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                object
+                    .get("preferred_username")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+        {
+            session
+                .profile
+                .custom_claims
+                .insert("provider_login".into(), login);
+        }
+        if let Some(email) = object
+            .get("email")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            session
+                .profile
+                .custom_claims
+                .insert("provider_email".into(), email);
+        }
+        if let Some(avatar) = object
+            .get("avatar_url")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                object
+                    .get("picture")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+        {
+            session
+                .profile
+                .custom_claims
+                .insert("avatar_url".into(), avatar);
+        }
+
+        for key in ["organizations", "orgs", "org_memberships"] {
+            if let Some(values) = object.get(key).and_then(Value::as_array) {
+                session.profile.org_memberships.extend(
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned),
+                );
+            }
+        }
+        for key in ["groups", "roles", "group_memberships"] {
+            if let Some(values) = object.get(key).and_then(Value::as_array) {
+                session.profile.group_memberships.extend(
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned),
+                );
+            }
+        }
+
+        for (key, value) in object {
+            if session.profile.custom_claims.contains_key(key) {
+                continue;
+            }
+            if matches!(
+                key.as_str(),
+                "sub"
+                    | "id"
+                    | "name"
+                    | "display_name"
+                    | "preferred_username"
+                    | "login"
+                    | "email"
+                    | "organizations"
+                    | "orgs"
+                    | "org_memberships"
+                    | "groups"
+                    | "roles"
+                    | "group_memberships"
+                    | "avatar_url"
+                    | "picture"
+            ) {
+                continue;
+            }
+            if let Some(value) = value.as_str() {
+                session
+                    .profile
+                    .custom_claims
+                    .insert(key.clone(), value.to_owned());
+            }
+        }
+
+        session
+    }
+
+    fn principal_matches_provider_session(
+        record: &StaticPrincipalRecord,
+        session: &ProviderSessionMaterial,
+    ) -> bool {
+        let claims = &record.claims.custom_claims;
+        session
+            .provider_subject
+            .as_ref()
+            .is_some_and(|subject| claims.get("provider_subject") == Some(subject))
+            || session
+                .profile
+                .custom_claims
+                .get("provider_login")
+                .is_some_and(|login| claims.get("provider_login") == Some(login))
+            || session
+                .profile
+                .custom_claims
+                .get("provider_email")
+                .is_some_and(|email| claims.get("provider_email") == Some(email))
+    }
+
+    fn resolve_principal_from_provider_session(
+        &self,
+        session: &ProviderSessionMaterial,
+    ) -> Result<PrincipalId, AuthError> {
+        let mut matches = self
+            .principals
+            .iter()
+            .filter(|(_, record)| Self::principal_matches_provider_session(record, session))
+            .map(|(principal_id, _)| principal_id.clone());
+        let Some(principal_id) = matches.next() else {
+            return Err(AuthError::MissingProviderPrincipal);
+        };
+        if matches.next().is_some() {
+            return Err(AuthError::ProviderExchange(
+                "provider profile matched multiple principals".into(),
+            ));
+        }
+        Ok(principal_id)
     }
 
     fn issue_session(
@@ -327,28 +599,48 @@ impl ProviderMappedIdentityConnector {
         &self,
         pending: &PendingLogin,
         provider_code: &str,
-    ) -> Result<(PrincipalId, ProviderSessionMaterial), AuthError> {
-        let exchange_url = self
-            .exchange_url
+    ) -> Result<ProviderExchangeOutcome, AuthError> {
+        if let Some(exchange_url) = self.exchange_url.as_ref() {
+            let response = reqwest::blocking::Client::new()
+                .post(exchange_url)
+                .json(&ProviderExchangeRequest {
+                    login_id: pending.login_id.clone(),
+                    state: pending.state.clone(),
+                    network_id: pending.network_id.clone(),
+                    provider: self.provider(),
+                    provider_code: provider_code.to_owned(),
+                    requested_scopes: pending.requested_scopes.clone(),
+                })
+                .send()
+                .map_err(|error| AuthError::ProviderExchange(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| AuthError::ProviderExchange(error.to_string()))?
+                .json::<ProviderExchangeResponse>()
+                .map_err(|error| AuthError::ProviderExchange(error.to_string()))?;
+            return Ok(ProviderExchangeOutcome::Mapped {
+                principal_id: response.principal_id,
+                session: response.session,
+            });
+        }
+
+        let token_url = self
+            .token_url
             .as_ref()
             .ok_or(AuthError::MissingProviderCode)?;
         let response = reqwest::blocking::Client::new()
-            .post(exchange_url)
-            .json(&ProviderExchangeRequest {
-                login_id: pending.login_id.clone(),
-                state: pending.state.clone(),
-                network_id: pending.network_id.clone(),
-                provider: self.provider(),
-                provider_code: provider_code.to_owned(),
-                requested_scopes: pending.requested_scopes.clone(),
-            })
+            .post(token_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::USER_AGENT, "burn_p2p-auth")
+            .form(&self.standard_form_pairs("authorization_code", Some(provider_code), None))
             .send()
             .map_err(|error| AuthError::ProviderExchange(error.to_string()))?
             .error_for_status()
             .map_err(|error| AuthError::ProviderExchange(error.to_string()))?
-            .json::<ProviderExchangeResponse>()
+            .json::<StandardTokenResponse>()
             .map_err(|error| AuthError::ProviderExchange(error.to_string()))?;
-        Ok((response.principal_id, response.session))
+        Ok(ProviderExchangeOutcome::SessionOnly(
+            self.standard_session_from_token_response(response)?,
+        ))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -356,7 +648,7 @@ impl ProviderMappedIdentityConnector {
         &self,
         _pending: &PendingLogin,
         _provider_code: &str,
-    ) -> Result<(PrincipalId, ProviderSessionMaterial), AuthError> {
+    ) -> Result<ProviderExchangeOutcome, AuthError> {
         Err(AuthError::ProviderExchange(
             "provider exchange is unavailable on wasm targets".to_owned(),
         ))
@@ -371,16 +663,45 @@ impl ProviderMappedIdentityConnector {
         let Some(prior) = prior else {
             return Ok(None);
         };
-        let Some(refresh_url) = self.refresh_url.as_ref() else {
-            return self.hydrate_provider_profile(
-                &session.network_id,
-                &session.claims.principal_id,
-                Some(prior),
-            );
-        };
         if !prior.has_remote_material() {
             return Ok(Some(prior));
         }
+        if self.uses_standard_token_flow() {
+            let Some(refresh_token) = prior.refresh_token.as_deref() else {
+                return self.hydrate_provider_profile(
+                    Some(&session.network_id),
+                    Some(&session.claims.principal_id),
+                    Some(prior),
+                );
+            };
+            let token_url = self.token_url.as_ref().ok_or_else(|| {
+                AuthError::ProviderRefresh("provider token endpoint is not configured".into())
+            })?;
+            let response = reqwest::blocking::Client::new()
+                .post(token_url)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::USER_AGENT, "burn_p2p-auth")
+                .form(&self.standard_form_pairs("refresh_token", None, Some(refresh_token)))
+                .send()
+                .map_err(|error| AuthError::ProviderRefresh(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| AuthError::ProviderRefresh(error.to_string()))?
+                .json::<StandardTokenResponse>()
+                .map_err(|error| AuthError::ProviderRefresh(error.to_string()))?;
+            return self.hydrate_provider_profile(
+                Some(&session.network_id),
+                Some(&session.claims.principal_id),
+                Some(prior.merge_update(self.standard_session_from_token_response(response)?)),
+            );
+        }
+
+        let Some(refresh_url) = self.refresh_url.as_ref() else {
+            return self.hydrate_provider_profile(
+                Some(&session.network_id),
+                Some(&session.claims.principal_id),
+                Some(prior),
+            );
+        };
         let response = reqwest::blocking::Client::new()
             .post(refresh_url)
             .json(&ProviderRefreshRequest {
@@ -399,8 +720,8 @@ impl ProviderMappedIdentityConnector {
             .json::<ProviderRefreshResponse>()
             .map_err(|error| AuthError::ProviderRefresh(error.to_string()))?;
         self.hydrate_provider_profile(
-            &session.network_id,
-            &session.claims.principal_id,
+            Some(&session.network_id),
+            Some(&session.claims.principal_id),
             Some(prior.merge_update(response.session)),
         )
     }
@@ -431,18 +752,42 @@ impl ProviderMappedIdentityConnector {
         if !prior.has_remote_material() {
             return Ok(());
         }
-        reqwest::blocking::Client::new()
-            .post(revoke_url)
-            .json(&ProviderRevokeRequest {
-                network_id: session.network_id.clone(),
-                principal_id: session.claims.principal_id.clone(),
-                provider: self.provider(),
-                provider_subject: prior.provider_subject,
-                access_token: prior.access_token,
-                refresh_token: prior.refresh_token,
-                session_handle: prior.session_handle,
-            })
-            .send()
+        let client = reqwest::blocking::Client::new();
+        let response = if self.uses_standard_token_flow() {
+            let token = prior
+                .refresh_token
+                .clone()
+                .or(prior.access_token.clone())
+                .ok_or_else(|| {
+                    AuthError::ProviderRevoke("provider revoke requires a token".into())
+                })?;
+            client
+                .post(revoke_url)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::USER_AGENT, "burn_p2p-auth")
+                .form(
+                    &self
+                        .standard_form_pairs("revoke", None, None)
+                        .into_iter()
+                        .chain(std::iter::once(("token", token.as_str())))
+                        .collect::<Vec<_>>(),
+                )
+                .send()
+        } else {
+            client
+                .post(revoke_url)
+                .json(&ProviderRevokeRequest {
+                    network_id: session.network_id.clone(),
+                    principal_id: session.claims.principal_id.clone(),
+                    provider: self.provider(),
+                    provider_subject: prior.provider_subject,
+                    access_token: prior.access_token,
+                    refresh_token: prior.refresh_token,
+                    session_handle: prior.session_handle,
+                })
+                .send()
+        };
+        response
             .map_err(|error| AuthError::ProviderRevoke(error.to_string()))?
             .error_for_status()
             .map_err(|error| AuthError::ProviderRevoke(error.to_string()))?;
@@ -452,8 +797,8 @@ impl ProviderMappedIdentityConnector {
     #[cfg(not(target_arch = "wasm32"))]
     fn hydrate_provider_profile(
         &self,
-        network_id: &NetworkId,
-        principal_id: &PrincipalId,
+        network_id: Option<&NetworkId>,
+        principal_id: Option<&PrincipalId>,
         prior: Option<ProviderSessionMaterial>,
     ) -> Result<Option<ProviderSessionMaterial>, AuthError> {
         let Some(prior) = prior else {
@@ -465,6 +810,35 @@ impl ProviderMappedIdentityConnector {
         if !prior.has_remote_material() {
             return Ok(Some(prior));
         }
+        if self.uses_standard_token_flow() {
+            let Some(access_token) = prior.access_token.as_deref() else {
+                return Ok(Some(prior));
+            };
+            let response = reqwest::blocking::Client::new()
+                .get(userinfo_url)
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Bearer {access_token}"),
+                )
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::USER_AGENT, "burn_p2p-auth")
+                .send()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?
+                .json::<Value>()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?;
+            return Ok(Some(prior.merge_update(
+                self.provider_session_from_userinfo_value(response),
+            )));
+        }
+
+        let network_id = network_id.ok_or_else(|| {
+            AuthError::ProviderUserInfo("custom provider userinfo requires a network id".into())
+        })?;
+        let principal_id = principal_id.ok_or_else(|| {
+            AuthError::ProviderUserInfo("custom provider userinfo requires a principal id".into())
+        })?;
         let response = reqwest::blocking::Client::new()
             .post(userinfo_url)
             .json(&ProviderUserInfoRequest {
@@ -487,8 +861,8 @@ impl ProviderMappedIdentityConnector {
     #[cfg(target_arch = "wasm32")]
     fn hydrate_provider_profile(
         &self,
-        _network_id: &NetworkId,
-        _principal_id: &PrincipalId,
+        _network_id: Option<&NetworkId>,
+        _principal_id: Option<&PrincipalId>,
         _prior: Option<ProviderSessionMaterial>,
     ) -> Result<Option<ProviderSessionMaterial>, AuthError> {
         Err(AuthError::ProviderUserInfo(
@@ -569,14 +943,32 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
         let (principal_id, provider_session) = if let Some(principal_id) = callback.principal_id {
             (principal_id, None)
         } else if let Some(provider_code) = callback.provider_code.as_deref() {
-            let (principal_id, provider_session) =
-                self.exchange_provider_session(&pending, provider_code)?;
-            let provider_session = self.hydrate_provider_profile(
-                &pending.network_id,
-                &principal_id,
-                Some(provider_session),
-            )?;
-            (principal_id, provider_session)
+            match self.exchange_provider_session(&pending, provider_code)? {
+                ProviderExchangeOutcome::Mapped {
+                    principal_id,
+                    session,
+                } => {
+                    let provider_session = self.hydrate_provider_profile(
+                        Some(&pending.network_id),
+                        Some(&principal_id),
+                        Some(session),
+                    )?;
+                    (principal_id, provider_session)
+                }
+                ProviderExchangeOutcome::SessionOnly(session) => {
+                    let provider_session = self.hydrate_provider_profile(
+                        Some(&pending.network_id),
+                        None,
+                        Some(session),
+                    )?;
+                    let principal_id = provider_session
+                        .as_ref()
+                        .map(|session| self.resolve_principal_from_provider_session(session))
+                        .transpose()?
+                        .ok_or(AuthError::MissingProviderPrincipal)?;
+                    (principal_id, provider_session)
+                }
+            }
         } else {
             return Err(AuthError::MissingProviderPrincipal);
         };
@@ -1123,6 +1515,109 @@ mod tests {
         );
 
         exchange_server.join().expect("join exchange server");
+        userinfo_server.join().expect("join userinfo server");
+    }
+
+    #[test]
+    fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mapping() {
+        let now = Utc::now();
+        let principals = BTreeMap::from([(
+            PrincipalId::new("alice"),
+            StaticPrincipalRecord {
+                claims: PrincipalClaims {
+                    principal_id: PrincipalId::new("alice"),
+                    provider: AuthProvider::GitHub,
+                    display_name: "Alice".into(),
+                    org_memberships: BTreeSet::from(["burn-core".into()]),
+                    group_memberships: BTreeSet::from(["contributors".into()]),
+                    granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+                    granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                    custom_claims: BTreeMap::from([
+                        ("provider_login".into(), "alice-gh".into()),
+                        ("provider_email".into(), "alice@example.com".into()),
+                    ]),
+                    issued_at: now,
+                    expires_at: now + Duration::hours(1),
+                },
+                allowed_networks: BTreeSet::from([NetworkId::new("network-a")]),
+            },
+        )]);
+        let (token_url, token_server) = spawn_provider_response_server(
+            |request| {
+                assert!(request.contains("grant_type=authorization_code"));
+                assert!(request.contains("code=github-standard-code"));
+                assert!(request.contains("client_id=github-client"));
+                assert!(request.contains("client_secret=github-secret"));
+            },
+            "200 OK",
+            serde_json::json!({
+                "access_token": "access-token-1",
+                "refresh_token": "refresh-token-1",
+                "expires_in": 3600
+            })
+            .to_string(),
+        );
+        let (userinfo_url, userinfo_server) = spawn_provider_response_server(
+            |request| {
+                let request = request.to_ascii_lowercase();
+                assert!(request.contains("authorization: bearer access-token-1"));
+            },
+            "200 OK",
+            serde_json::json!({
+                "id": 42,
+                "login": "alice-gh",
+                "email": "alice@example.com",
+                "name": "Alice Upstream",
+                "organizations": ["oss"],
+                "groups": ["maintainers"],
+                "avatar_url": "https://avatars.example/alice-upstream.png"
+            })
+            .to_string(),
+        );
+        let connector = ProviderMappedIdentityConnector::new(
+            AuthProvider::GitHub,
+            Duration::minutes(10),
+            principals,
+            Some("https://github.com/login/oauth/authorize".into()),
+        )
+        .with_token_url(Some(token_url))
+        .with_client_credentials(Some("github-client".into()), Some("github-secret".into()))
+        .with_userinfo_url(Some(userinfo_url));
+
+        let login = connector
+            .begin_login(LoginRequest {
+                network_id: NetworkId::new("network-a"),
+                principal_hint: None,
+                requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+            })
+            .expect("begin provider login");
+        let session = connector
+            .complete_login(CallbackPayload {
+                login_id: login.login_id,
+                state: login.state,
+                principal_id: None,
+                provider_code: Some("github-standard-code".into()),
+            })
+            .expect("complete provider login");
+
+        assert_eq!(session.claims.principal_id.as_str(), "alice");
+        assert_eq!(session.claims.display_name, "Alice Upstream");
+        assert!(session.claims.org_memberships.contains("oss"));
+        assert!(session.claims.group_memberships.contains("maintainers"));
+        assert_eq!(
+            session.claims.custom_claims.get("provider_login"),
+            Some(&"alice-gh".to_owned())
+        );
+        assert_eq!(
+            session.claims.custom_claims.get("provider_email"),
+            Some(&"alice@example.com".to_owned())
+        );
+        assert_eq!(
+            session.claims.custom_claims.get("avatar_url"),
+            Some(&"https://avatars.example/alice-upstream.png".to_owned())
+        );
+
+        token_server.join().expect("join token server");
         userinfo_server.join().expect("join userinfo server");
     }
 }

@@ -117,6 +117,12 @@ enum BootstrapAuthConnectorConfig {
         #[serde(default)]
         exchange_url: Option<String>,
         #[serde(default)]
+        token_url: Option<String>,
+        #[serde(default)]
+        client_id: Option<String>,
+        #[serde(default)]
+        client_secret: Option<String>,
+        #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
         refresh_url: Option<String>,
@@ -129,6 +135,12 @@ enum BootstrapAuthConnectorConfig {
         authorize_base_url: Option<String>,
         #[serde(default)]
         exchange_url: Option<String>,
+        #[serde(default)]
+        token_url: Option<String>,
+        #[serde(default)]
+        client_id: Option<String>,
+        #[serde(default)]
+        client_secret: Option<String>,
         #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
@@ -143,6 +155,12 @@ enum BootstrapAuthConnectorConfig {
         authorize_base_url: Option<String>,
         #[serde(default)]
         exchange_url: Option<String>,
+        #[serde(default)]
+        token_url: Option<String>,
+        #[serde(default)]
+        client_id: Option<String>,
+        #[serde(default)]
+        client_secret: Option<String>,
         #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
@@ -2183,6 +2201,9 @@ fn build_auth_portal(
         BootstrapAuthConnectorConfig::GitHub {
             authorize_base_url,
             exchange_url,
+            token_url,
+            client_id,
+            client_secret,
             userinfo_url,
             refresh_url,
             revoke_url,
@@ -2192,6 +2213,9 @@ fn build_auth_portal(
             PortalConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
+                token_url: token_url.clone(),
+                client_id: client_id.clone(),
+                client_secret: client_secret.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
@@ -2201,6 +2225,9 @@ fn build_auth_portal(
             issuer,
             authorize_base_url,
             exchange_url,
+            token_url,
+            client_id,
+            client_secret,
             userinfo_url,
             refresh_url,
             revoke_url,
@@ -2211,6 +2238,9 @@ fn build_auth_portal(
             PortalConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
+                token_url: token_url.clone(),
+                client_id: client_id.clone(),
+                client_secret: client_secret.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
@@ -2220,6 +2250,9 @@ fn build_auth_portal(
             provider,
             authorize_base_url,
             exchange_url,
+            token_url,
+            client_id,
+            client_secret,
             userinfo_url,
             refresh_url,
             revoke_url,
@@ -2230,6 +2263,9 @@ fn build_auth_portal(
             PortalConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
+                token_url: token_url.clone(),
+                client_id: client_id.clone(),
+                client_secret: client_secret.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
@@ -2295,6 +2331,9 @@ fn build_auth_portal(
 struct PortalConnectorEndpoints {
     authorize_base_url: Option<String>,
     exchange_url: Option<String>,
+    token_url: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
     userinfo_url: Option<String>,
     refresh_url: Option<String>,
     revoke_url: Option<String>,
@@ -2317,6 +2356,8 @@ fn build_github_portal_connector(
         Box::new(
             GitHubIdentityConnector::new(session_ttl, principals, endpoints.authorize_base_url)
                 .with_exchange_url(endpoints.exchange_url)
+                .with_token_url(endpoints.token_url)
+                .with_client_credentials(endpoints.client_id, endpoints.client_secret)
                 .with_userinfo_url(endpoints.userinfo_url)
                 .with_refresh_url(endpoints.refresh_url)
                 .with_revoke_url(endpoints.revoke_url),
@@ -2356,6 +2397,8 @@ fn build_oidc_portal_connector(
                 endpoints.authorize_base_url,
             )
             .with_exchange_url(endpoints.exchange_url)
+            .with_token_url(endpoints.token_url)
+            .with_client_credentials(endpoints.client_id, endpoints.client_secret)
             .with_userinfo_url(endpoints.userinfo_url)
             .with_refresh_url(endpoints.refresh_url)
             .with_revoke_url(endpoints.revoke_url),
@@ -2396,6 +2439,8 @@ fn build_oauth_portal_connector(
                 endpoints.authorize_base_url,
             )
             .with_exchange_url(endpoints.exchange_url)
+            .with_token_url(endpoints.token_url)
+            .with_client_credentials(endpoints.client_id, endpoints.client_secret)
             .with_userinfo_url(endpoints.userinfo_url)
             .with_refresh_url(endpoints.refresh_url)
             .with_revoke_url(endpoints.revoke_url),
@@ -3492,6 +3537,9 @@ mod tests {
                             "https://github.example/login/oauth/authorize".into(),
                         ),
                         exchange_url: Some(exchange_url),
+                        token_url: None,
+                        client_id: None,
+                        client_secret: None,
                         userinfo_url: Some(userinfo_url),
                         refresh_url: None,
                         revoke_url: None,
@@ -3583,6 +3631,152 @@ mod tests {
     }
 
     #[test]
+    fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
+        let (token_url, token_server) = spawn_provider_json_server(
+            |request| {
+                assert!(request.contains("grant_type=authorization_code"));
+                assert!(request.contains("code=github-upstream-code"));
+                assert!(request.contains("client_id=github-client"));
+                assert!(request.contains("client_secret=github-secret"));
+            },
+            "200 OK",
+            serde_json::json!({
+                "access_token": "access-token-1",
+                "refresh_token": "refresh-token-1",
+                "expires_in": 3600
+            })
+            .to_string(),
+        );
+        let (userinfo_url, userinfo_server) = spawn_provider_json_server(
+            |request| {
+                let request = request.to_ascii_lowercase();
+                assert!(request.contains("authorization: bearer access-token-1"));
+            },
+            "200 OK",
+            serde_json::json!({
+                "id": 42,
+                "login": "alice-gh",
+                "email": "alice@example.com",
+                "name": "Alice Upstream Browser",
+                "organizations": ["oss"],
+                "groups": ["maintainers"],
+                "avatar_url": "https://avatars.example/alice-upstream.png"
+            })
+            .to_string(),
+        );
+        let temp = tempdir().expect("temp dir");
+        let mut auth_config = sample_auth_config_with_connector(
+            temp.path(),
+            BootstrapAuthConnectorConfig::GitHub {
+                authorize_base_url: Some("https://github.com/login/oauth/authorize".into()),
+                exchange_url: None,
+                token_url: Some(token_url),
+                client_id: Some("github-client".into()),
+                client_secret: Some("github-secret".into()),
+                userinfo_url: Some(userinfo_url),
+                refresh_url: None,
+                revoke_url: None,
+            },
+        );
+        auth_config.principals[0]
+            .custom_claims
+            .insert("provider_login".into(), "alice-gh".into());
+        auth_config.principals[0]
+            .custom_claims
+            .insert("provider_email".into(), "alice@example.com".into());
+
+        let auth = Arc::new(
+            build_auth_portal(
+                &auth_config,
+                NetworkId::new("secure-demo"),
+                Version::new(0, 1, 0),
+            )
+            .expect("build github upstream auth portal"),
+        );
+        let context = HttpServerContext {
+            plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+            state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+            config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+                spec: sample_spec(),
+                http_bind_addr: None,
+                admin_token: None,
+                allow_dev_admin_token: false,
+                optional_services: BootstrapOptionalServicesConfig::default(),
+                remaining_work_units: None,
+                admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+                embedded_runtime: None,
+                auth: None,
+            })),
+            config_path: Arc::new(temp.path().join("github-browser-client-upstream.json")),
+            admin_token: None,
+            allow_dev_admin_token: false,
+            remaining_work_units: None,
+            admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+            auth_state: Some(auth),
+            control_handle: None,
+        };
+        let server = HttpTestServer::spawn(context);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async move {
+            let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+                .get(format!("{}/portal/snapshot", server.base_url()))
+                .send()
+                .await
+                .expect("fetch portal snapshot")
+                .error_for_status()
+                .expect("portal snapshot status")
+                .json()
+                .await
+                .expect("decode portal snapshot");
+            let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+            let enrollment = BrowserEnrollmentConfig {
+                network_id: NetworkId::new("secure-demo"),
+                project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+                release_train_hash: ContentId::new("demo-train"),
+                target_artifact_id: "browser-wasm".into(),
+                target_artifact_hash: ContentId::new("demo-artifact-native"),
+                login_path: "/login/github".into(),
+                callback_path: "/callback/github".into(),
+                enroll_path: "/enroll".into(),
+                trust_bundle_path: "/trust".into(),
+                requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                session_ttl_secs: 300,
+            };
+            let client = BrowserPortalClient::new(bindings, enrollment);
+            let login = client
+                .begin_login(Some("alice".into()))
+                .await
+                .expect("begin github upstream login");
+            let session = client
+                .complete_provider_login(&login, "github-upstream-code")
+                .await
+                .expect("complete github upstream login");
+            assert_eq!(session.claims.principal_id.as_str(), "alice");
+            assert_eq!(session.claims.provider, AuthProvider::GitHub);
+            assert_eq!(session.claims.display_name, "Alice Upstream Browser");
+            assert!(session.claims.org_memberships.contains("oss"));
+            assert!(session.claims.group_memberships.contains("maintainers"));
+            assert_eq!(
+                session.claims.custom_claims.get("provider_login"),
+                Some(&"alice-gh".to_owned())
+            );
+            assert_eq!(
+                session.claims.custom_claims.get("provider_email"),
+                Some(&"alice@example.com".to_owned())
+            );
+        });
+
+        token_server.join().expect("join provider token server");
+        userinfo_server
+            .join()
+            .expect("join provider userinfo server");
+    }
+
+    #[test]
     fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_router() {
         let (exchange_url, exchange_server) = spawn_provider_json_server(
             |request| {
@@ -3640,6 +3834,9 @@ mod tests {
                             "https://github.example/login/oauth/authorize".into(),
                         ),
                         exchange_url: Some(exchange_url),
+                        token_url: None,
+                        client_id: None,
+                        client_secret: None,
                         userinfo_url: None,
                         refresh_url: Some(refresh_url),
                         revoke_url: Some(revoke_url),
@@ -4552,6 +4749,9 @@ mod tests {
                             "https://github.example/login/oauth/authorize".into(),
                         ),
                         exchange_url: None,
+                        token_url: None,
+                        client_id: None,
+                        client_secret: None,
                         userinfo_url: None,
                         refresh_url: None,
                         revoke_url: None,
@@ -4645,6 +4845,9 @@ mod tests {
                         issuer: "https://issuer.example".into(),
                         authorize_base_url: Some("https://issuer.example/authorize".into()),
                         exchange_url: None,
+                        token_url: None,
+                        client_id: None,
+                        client_secret: None,
                         userinfo_url: None,
                         refresh_url: None,
                         revoke_url: None,

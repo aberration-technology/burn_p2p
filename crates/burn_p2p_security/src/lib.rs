@@ -203,23 +203,86 @@ impl ReleasePolicy {
         })
     }
 
-    pub fn evaluate_client(&self, manifest: &ClientManifest) -> AdmissionDecision {
-        let mut findings = Vec::new();
+    fn client_matches_policy(&self, manifest: &ClientManifest) -> bool {
+        if let Some(required_project_family_id) = self.required_project_family_id.as_ref()
+            && required_project_family_id != &manifest.project_family_id
+        {
+            return false;
+        }
 
-        if self.required_project_family_id.as_ref() != Some(&manifest.project_family_id)
-            && self.required_project_family_id.is_some()
+        if let Some(required_release_train_hash) = self.required_release_train_hash.as_ref()
+            && required_release_train_hash != &manifest.release_train_hash
+        {
+            return false;
+        }
+
+        if !self.allowed_target_artifact_hashes.is_empty()
+            && !self
+                .allowed_target_artifact_hashes
+                .contains(&manifest.target_artifact_hash)
+        {
+            return false;
+        }
+
+        if manifest.client_version < self.minimum_client_version {
+            return false;
+        }
+
+        if !self
+            .allowed_protocol_versions
+            .iter()
+            .any(|requirement| requirement.matches(&manifest.protocol_version))
+        {
+            return false;
+        }
+
+        if !self.approved_build_hashes.is_empty()
+            && !self.approved_build_hashes.contains(&manifest.build_hash)
+        {
+            return false;
+        }
+
+        if let Some(required_project_hash) = self.required_project_hash.as_ref()
+            && manifest.project_hash.as_ref() != Some(required_project_hash)
+        {
+            return false;
+        }
+
+        if let Some(allowed_features) = &self.allowed_features
+            && manifest
+                .feature_set
+                .iter()
+                .any(|feature| !allowed_features.contains(feature))
+        {
+            return false;
+        }
+
+        if manifest
+            .feature_set
+            .iter()
+            .any(|feature| self.banned_features.contains(feature))
+        {
+            return false;
+        }
+
+        true
+    }
+
+    fn append_client_findings(&self, manifest: &ClientManifest, findings: &mut Vec<AuditFinding>) {
+        if let Some(required_project_family_id) = self.required_project_family_id.as_ref()
+            && required_project_family_id != &manifest.project_family_id
         {
             findings.push(AuditFinding::ProjectFamilyMismatch {
-                expected: self.required_project_family_id.clone(),
+                expected: Some(required_project_family_id.clone()),
                 found: manifest.project_family_id.clone(),
             });
         }
 
-        if self.required_release_train_hash.as_ref() != Some(&manifest.release_train_hash)
-            && self.required_release_train_hash.is_some()
+        if let Some(required_release_train_hash) = self.required_release_train_hash.as_ref()
+            && required_release_train_hash != &manifest.release_train_hash
         {
             findings.push(AuditFinding::ReleaseTrainHashMismatch {
-                expected: self.required_release_train_hash.clone(),
+                expected: Some(required_release_train_hash.clone()),
                 found: manifest.release_train_hash.clone(),
             });
         }
@@ -260,11 +323,11 @@ impl ReleasePolicy {
             ));
         }
 
-        if self.required_project_hash.is_some()
-            && manifest.project_hash != self.required_project_hash
+        if let Some(required_project_hash) = self.required_project_hash.as_ref()
+            && manifest.project_hash.as_ref() != Some(required_project_hash)
         {
             findings.push(AuditFinding::ProjectHashMismatch {
-                expected: self.required_project_hash.clone(),
+                expected: Some(required_project_hash.clone()),
                 found: manifest.project_hash.clone(),
             });
         }
@@ -282,12 +345,18 @@ impl ReleasePolicy {
                 findings.push(AuditFinding::BannedFeature(feature.clone()));
             }
         }
+    }
 
-        if findings.is_empty() {
-            AdmissionDecision::Allow
-        } else {
-            AdmissionDecision::Reject(findings)
+    pub fn evaluate_client(&self, manifest: &ClientManifest) -> AdmissionDecision {
+        if self.client_matches_policy(manifest) {
+            return AdmissionDecision::Allow;
         }
+
+        let mut findings = Vec::new();
+        self.append_client_findings(manifest, &mut findings);
+        debug_assert!(!findings.is_empty());
+
+        AdmissionDecision::Reject(findings)
     }
 }
 
@@ -419,14 +488,12 @@ impl ValidatorPolicy {
             });
         }
 
-        match self
+        if !self
             .release_policy
-            .evaluate_client(&evidence.client_manifest)
+            .client_matches_policy(&evidence.client_manifest)
         {
-            AdmissionDecision::Allow => {}
-            AdmissionDecision::Quarantine(mut reasons) | AdmissionDecision::Reject(mut reasons) => {
-                findings.append(&mut reasons);
-            }
+            self.release_policy
+                .append_client_findings(&evidence.client_manifest, &mut findings);
         }
 
         if evidence.capability_card.peer_id != receipt.peer_id {

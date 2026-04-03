@@ -1377,6 +1377,41 @@ fn portal_snapshot_view(snapshot: &BrowserPortalSnapshot) -> burn_p2p_portal::Po
             signed_leaderboard_path: snapshot.paths.signed_leaderboard_path.clone(),
             trust_bundle_path: snapshot.paths.trust_bundle_path.clone(),
         },
+        diagnostics: burn_p2p_portal::PortalDiagnosticsView {
+            connected_peers: snapshot.diagnostics.swarm.connected_peers as usize,
+            admitted_peers: snapshot.diagnostics.admitted_peers.len(),
+            rejected_peers: snapshot.diagnostics.rejected_peers.len(),
+            quarantined_peers: snapshot.diagnostics.quarantined_peers.len(),
+            accepted_receipts: snapshot.diagnostics.accepted_receipts,
+            certified_merges: snapshot.diagnostics.certified_merges,
+            active_services: snapshot
+                .diagnostics
+                .services
+                .iter()
+                .map(|service| format!("{service:?}"))
+                .collect(),
+        },
+        trust: burn_p2p_portal::PortalTrustView {
+            required_release_train_hash: snapshot
+                .required_release_train_hash
+                .as_ref()
+                .map(ContentId::as_str)
+                .map(ToOwned::to_owned),
+            approved_target_artifact_count: snapshot.allowed_target_artifact_hashes.len(),
+            active_issuer_peer_id: snapshot
+                .trust_bundle
+                .as_ref()
+                .map(|bundle| bundle.active_issuer_peer_id.as_str().to_owned()),
+            minimum_revocation_epoch: snapshot
+                .trust_bundle
+                .as_ref()
+                .map(|bundle| bundle.minimum_revocation_epoch.0),
+            reenrollment_required: snapshot
+                .trust_bundle
+                .as_ref()
+                .and_then(|bundle| bundle.reenrollment.as_ref())
+                .is_some(),
+        },
         experiments: snapshot
             .directory
             .entries
@@ -1387,6 +1422,17 @@ fn portal_snapshot_view(snapshot: &BrowserPortalSnapshot) -> burn_p2p_portal::Po
                 revision_id: entry.current_revision_id.as_str().to_owned(),
                 has_head: entry.current_head_id.is_some(),
                 estimated_window_seconds: entry.resource_requirements.estimated_window_seconds,
+            })
+            .collect(),
+        heads: snapshot
+            .heads
+            .iter()
+            .map(|head| burn_p2p_portal::PortalHeadRow {
+                experiment_id: head.experiment_id.as_str().to_owned(),
+                revision_id: head.revision_id.as_str().to_owned(),
+                head_id: head.head_id.as_str().to_owned(),
+                global_step: head.global_step,
+                created_at: head.created_at.to_rfc3339(),
             })
             .collect(),
         leaderboard: snapshot

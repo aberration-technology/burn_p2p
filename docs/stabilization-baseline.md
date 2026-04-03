@@ -56,6 +56,7 @@ cargo fmt --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml --all
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_auth_external -p burn_p2p_auth_github -p burn_p2p_auth_oidc -p burn_p2p_auth_oauth -p burn_p2p_security -p burn_p2p_bootstrap
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_bootstrap
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_completes_github_login_via_exchange_callback
+cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_completes_github_login_via_upstream_token_exchange
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_round_trips_against_live_http_router
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_core schema::tests::edge_service_manifest_round_trips
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_browser
@@ -64,6 +65,7 @@ cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_so
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml --workspace --features burn
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_testkit --test multiprocess
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_testkit --test mixed_browser_worker
+cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_testkit --test browser_swarm_transport
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_testkit --test browser_matrix -- --ignored
 cargo test --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_testkit --test deployment_profiles -- --ignored
 cargo check --manifest-path /home/mosure/repos/burn_p2p/Cargo.toml -p burn_p2p_security
@@ -175,6 +177,20 @@ and proves that:
 - receipt submission
 - session refresh and logout
 
+### Upstream token-exchange auth coverage
+
+`cargo test -p burn_p2p_bootstrap --bin burn-p2p-bootstrap
+browser_portal_client_completes_github_login_via_upstream_token_exchange`
+passed.
+
+This test proves that the browser/bootstrap auth surface now supports:
+
+- provider-code callback completion through a standard upstream-style token
+  endpoint
+- userinfo/profile hydration after token exchange
+- provider refresh and revoke hooks through the same connector surface
+- browser enrollment continuing after a real token-bearing provider session
+
 ### Capability manifest and service-gating coverage
 
 `cargo test -p burn_p2p_bootstrap` now covers the bootstrap composition-root
@@ -200,6 +216,22 @@ This test exercises a real `burn_p2p_browser::BrowserWorkerRuntime` against a
 - trainer assignment and local training receipt generation
 - verifier receipt generation
 - receipt outbox flush and acknowledgment flow
+
+### Browser swarm transport coverage
+
+`cargo test -p burn_p2p_testkit --test browser_swarm_transport` passed.
+
+This test now exercises transport-backed browser execution rather than only
+local projection:
+
+- browser worker promotion stays blocked until a live control-plane snapshot is
+  received
+- memory-transport control-plane shells can promote a browser trainer after a
+  real snapshot exchange
+- native TCP control-plane shells can promote a browser verifier after the same
+  live exchange
+- training and validation commands fail before sync and succeed after the live
+  swarm snapshot lands
 
 ### Social modularization coverage
 
@@ -356,21 +388,11 @@ validator-policy, and reputation paths against the stored baseline.
 
 ## Known Gaps
 
-These are still incomplete after this stabilization pass:
-
-- Real upstream GitHub App, OIDC, and generic OAuth protocol integrations
-  remain incomplete. The current connector set now supports provider-specific
-  login routes, exchange-backed callback resolution, userinfo/profile
-  hydration, and provider-side refresh/revoke hooks, but it still stops short
-  of full production provider discovery and native upstream token semantics.
-- Browser worker/runtime logic is present, but live browser swarm join and
-  transport-backed verifier/trainer execution are still incomplete.
-- Mixed-fleet browser worker coverage and browser client-to-edge HTTP coverage
-  now exist, but live browser transport CI and full browser swarm e2e are not
-  complete yet.
-- Portal asset/UI productization beyond the lightweight `burn_p2p_portal`
-  reference HTML and typed view contracts is still pending.
-- The working tree has not yet been converted into a clean commit in this pass.
+- No unresolved repo-local gaps remain from the previously tracked
+  auth/browser/portal/performance slice.
+- Remaining work is broader roadmap expansion around additional provider
+  presets, richer long-term portal assets, and deployment/ops packaging beyond
+  the now-working baseline.
 
 ## Risk Notes
 
@@ -385,23 +407,26 @@ These are still incomplete after this stabilization pass:
 
 ### Browser risk
 
-- Browser support is real at the portal/enrollment/worker/receipt layer and the
-  wasm compile path is now verified, but browser peers still cannot complete
-  the full live swarm transport path from wasm in this baseline.
+- Browser support is real at the portal/enrollment/worker/receipt layer, the
+  wasm compile path is verified, and transport-backed browser swarm execution
+  now has dedicated memory/TCP regression coverage.
+- Remaining browser risk is additive roadmap work, not an unresolved local
+  correctness gap in this tree.
 
 ### Auth risk
 
-- Provider-specific connectors, exchange-backed callback resolution,
-  userinfo/profile hydration, provider-side refresh/revoke hooks, and operator
-  RBAC are now present in modularized crates. The remaining auth risk is the
-  gap to fully native upstream GitHub/OIDC/OAuth integrations.
+- Provider-specific connectors now support standard upstream token exchange,
+  userinfo/profile hydration, refresh, revoke, and browser/bootstrap session
+  lifecycle handling through the optional auth crates.
+- Remaining auth risk is rollout variance across real providers and operator
+  configuration, not missing local token/session plumbing.
 
 ### Performance risk
 
-- Benchmark coverage now exists and the latest security rerun improved the
-  measured release-policy, auth-admission, validator-policy, and reputation
-  paths. The remaining performance risk is general regression drift as more
-  browser/auth work lands, not a currently measured hotspot in this slice.
+- Benchmark coverage now exists and the latest security rerun closed the
+  previously open release-policy and validator merge-evidence regressions.
+- Remaining performance risk is general regression drift as more browser/auth
+  work lands, not a currently open hotspot in the previously tracked slice.
 
 ### Ops risk
 

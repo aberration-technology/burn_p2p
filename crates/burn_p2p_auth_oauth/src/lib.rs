@@ -35,6 +35,20 @@ impl OAuthIdentityConnector {
         self
     }
 
+    pub fn with_token_url(mut self, token_url: Option<String>) -> Self {
+        self.0 = self.0.with_token_url(token_url);
+        self
+    }
+
+    pub fn with_client_credentials(
+        mut self,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+    ) -> Self {
+        self.0 = self.0.with_client_credentials(client_id, client_secret);
+        self
+    }
+
     pub fn with_userinfo_url(mut self, userinfo_url: Option<String>) -> Self {
         self.0 = self.0.with_userinfo_url(userinfo_url);
         self

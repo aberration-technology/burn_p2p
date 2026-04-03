@@ -41,6 +41,35 @@ pub struct PortalLeaderboardRow {
     pub accepted_receipt_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortalHeadRow {
+    pub experiment_id: String,
+    pub revision_id: String,
+    pub head_id: String,
+    pub global_step: u64,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortalDiagnosticsView {
+    pub connected_peers: usize,
+    pub admitted_peers: usize,
+    pub rejected_peers: usize,
+    pub quarantined_peers: usize,
+    pub accepted_receipts: u64,
+    pub certified_merges: u64,
+    pub active_services: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortalTrustView {
+    pub required_release_train_hash: Option<String>,
+    pub approved_target_artifact_count: usize,
+    pub active_issuer_peer_id: Option<String>,
+    pub minimum_revocation_epoch: Option<u64>,
+    pub reenrollment_required: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PortalSnapshotView {
     pub network_id: String,
@@ -52,13 +81,16 @@ pub struct PortalSnapshotView {
     pub login_providers: Vec<PortalLoginProvider>,
     pub transports: PortalTransportSurface,
     pub paths: PortalPaths,
+    pub diagnostics: PortalDiagnosticsView,
+    pub trust: PortalTrustView,
     pub experiments: Vec<PortalExperimentRow>,
+    pub heads: Vec<PortalHeadRow>,
     pub leaderboard: Vec<PortalLeaderboardRow>,
 }
 
 pub fn render_dashboard_html(network_id: &str) -> String {
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -156,7 +188,7 @@ pub fn render_dashboard_html(network_id: &str) -> String {
     }};
   </script>
 </body>
-</html>"#
+</html>"##
     )
 }
 
@@ -196,19 +228,47 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
     };
 
     let experiments = if snapshot.experiments.is_empty() {
-        "<tr><td colspan=\"5\">No browser-visible experiments.</td></tr>".to_owned()
+        "<tr data-experiment-row><td colspan=\"5\">No browser-visible experiments.</td></tr>"
+            .to_owned()
     } else {
         snapshot
             .experiments
             .iter()
             .map(|entry| {
                 format!(
-                    "<tr><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                    "<tr data-experiment-row data-search=\"{} {} {}\"><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                    escape(&entry.display_name),
+                    escape(&entry.experiment_id),
+                    escape(&entry.revision_id),
                     escape(&entry.display_name),
                     escape(&entry.experiment_id),
                     escape(&entry.revision_id),
                     if entry.has_head { "yes" } else { "no" },
                     entry.estimated_window_seconds
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let heads = if snapshot.heads.is_empty() {
+        "<tr data-head-row><td colspan=\"5\">No certified heads are currently exposed by this edge.</td></tr>"
+            .to_owned()
+    } else {
+        snapshot
+            .heads
+            .iter()
+            .map(|head| {
+                format!(
+                    "<tr data-head-row data-search=\"{} {} {}\"><td><code>{}</code></td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                    escape(&head.experiment_id),
+                    escape(&head.revision_id),
+                    escape(&head.head_id),
+                    escape(&head.experiment_id),
+                    escape(&head.revision_id),
+                    escape(&head.head_id),
+                    head.global_step,
+                    escape(&head.created_at)
                 )
             })
             .collect::<Vec<_>>()
@@ -356,9 +416,37 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         escape(&snapshot.edge_mode),
         escape(&snapshot.browser_mode)
     );
+    let service_pills = if snapshot.diagnostics.active_services.is_empty() {
+        "<span class=\"pill\">core-runtime</span>".to_owned()
+    } else {
+        snapshot
+            .diagnostics
+            .active_services
+            .iter()
+            .map(|service| format!("<span class=\"pill\">{}</span>", escape(service)))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let trust_release = snapshot
+        .trust
+        .required_release_train_hash
+        .as_deref()
+        .map(escape)
+        .unwrap_or_else(|| "unpublished".into());
+    let trust_issuer = snapshot
+        .trust
+        .active_issuer_peer_id
+        .as_deref()
+        .map(escape)
+        .unwrap_or_else(|| "unavailable".into());
+    let trust_revocation = snapshot
+        .trust
+        .minimum_revocation_epoch
+        .map(|epoch| epoch.to_string())
+        .unwrap_or_else(|| "n/a".into());
 
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -370,9 +458,12 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
       --panel: #fffaf0;
       --ink: #1a201c;
       --accent: #135d66;
+      --accent-strong: #0f4854;
       --muted: #5d645f;
       --line: #d8d0bd;
       --soft: #eef4f2;
+      --soft-ink: #234547;
+      --hero: linear-gradient(135deg, rgba(19,93,102,0.94), rgba(16,60,68,0.96));
       font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
     }}
     body {{ margin: 0; background: linear-gradient(180deg, #efe7d3, #f8f4ea); color: var(--ink); }}
@@ -381,26 +472,52 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
     p {{ line-height: 1.5; }}
     .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }}
     .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 12px 28px rgba(26,32,28,0.06); }}
+    .hero {{ background: var(--hero); color: #f4fbfc; border: none; }}
+    .hero .muted {{ color: rgba(244,251,252,0.78); }}
     .metric {{ font-size: 1.6rem; font-weight: 700; color: var(--accent); }}
     .muted {{ color: var(--muted); }}
     ul {{ margin: 0; padding-left: 18px; }}
     table {{ width: 100%; border-collapse: collapse; }}
     th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid var(--line); font-size: 0.92rem; vertical-align: top; }}
     .pill {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--soft); color: var(--accent); font-size: 0.8rem; margin-right: 6px; }}
+    .hero .pill {{ background: rgba(255,255,255,0.12); color: #f4fbfc; }}
+    .section-nav {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }}
+    .section-nav a {{ text-decoration: none; color: var(--soft-ink); background: var(--soft); padding: 8px 12px; border-radius: 999px; font-size: 0.9rem; }}
+    .hero-stats {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-top: 18px; }}
+    .hero-stat {{ background: rgba(255,255,255,0.12); border-radius: 14px; padding: 12px; }}
+    .hero-stat strong {{ display: block; font-size: 1.5rem; }}
+    .toolbar {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0 8px; }}
+    .toolbar input {{ flex: 1 1 260px; border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; font: inherit; background: #fffef9; }}
     code {{ font-size: 0.9em; }}
   </style>
 </head>
 <body>
   <main>
-    <h1>burn_p2p browser portal</h1>
-    <p class="muted">Network <strong>{network}</strong>. This page is rendered from the live browser-edge snapshot and mirrors the current directory, auth surface, transport hints, and leaderboard without custom tooling.</p>
+    <section class="panel hero">
+      <h1>burn_p2p browser portal</h1>
+      <p class="muted">Network <strong>{network}</strong>. This reference product surface is rendered from the live browser-edge snapshot and now includes join guidance, transport posture, trust state, current heads, and contribution leaderboards without extra tooling.</p>
+      <div>{service_pills}</div>
+      <div class="hero-stats">
+        <div class="hero-stat"><div class="muted">Connected peers</div><strong>{connected_peers}</strong></div>
+        <div class="hero-stat"><div class="muted">Accepted receipts</div><strong>{accepted_receipts}</strong></div>
+        <div class="hero-stat"><div class="muted">Certified merges</div><strong>{certified_merges}</strong></div>
+        <div class="hero-stat"><div class="muted">Visible experiments</div><strong>{experiments_count}</strong></div>
+      </div>
+      <nav class="section-nav">
+        <a href="#join">Join</a>
+        <a href="#directory">Directory</a>
+        <a href="#heads">Heads</a>
+        <a href="#trust">Trust</a>
+        <a href="#leaderboard">Leaderboard</a>
+      </nav>
+    </section>
     <section class="grid">
       <article class="panel"><div class="muted">Auth</div><div class="metric">{auth}</div></article>
       <article class="panel"><div class="muted">Visible experiments</div><div class="metric">{experiments_count}</div></article>
       <article class="panel"><div class="muted">Leaderboard entries</div><div class="metric">{leaders_count}</div></article>
       <article class="panel"><div class="muted">Edge mode</div><div class="metric">{edge_mode}</div></article>
     </section>
-    <section class="grid" style="margin-top:16px;">
+    <section id="join" class="grid" style="margin-top:16px;">
       {login_panel}
       {transport_panel}
       <article class="panel">
@@ -420,9 +537,13 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         <p class="muted">{profile_message}</p>
       </article>
       <article class="panel">
-        <h2>Edge snapshot</h2>
+        <h2>Operational posture</h2>
         <table>
           <tbody>
+            <tr><th>Connected peers</th><td>{connected_peers}</td></tr>
+            <tr><th>Admitted peers</th><td>{admitted_peers}</td></tr>
+            <tr><th>Rejected peers</th><td>{rejected_peers}</td></tr>
+            <tr><th>Quarantined peers</th><td>{quarantined_peers}</td></tr>
             <tr><th>Portal snapshot</th><td><code>{portal_path}</code></td></tr>
             <tr><th>Directory snapshot</th><td><code>{directory_path}</code></td></tr>
             {leaderboard_row}
@@ -431,8 +552,12 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         </table>
       </article>
     </section>
-    <section class="panel" style="margin-top:16px;">
-      <h2>Experiments</h2>
+    <section id="directory" class="panel" style="margin-top:16px;">
+      <div class="toolbar">
+        <h2>Experiments</h2>
+        <input id="portal-filter" type="search" placeholder="Filter experiments and heads by name, experiment, revision, or head id" />
+      </div>
+      <p class="muted">The directory reflects browser-visible revisions after auth scope filtering and release-train compatibility checks.</p>
       <table>
         <thead>
           <tr><th>Name</th><th>Experiment</th><th>Revision</th><th>Head</th><th>Window secs</th></tr>
@@ -440,10 +565,59 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         <tbody>{experiments}</tbody>
       </table>
     </section>
+    <section id="heads" class="panel" style="margin-top:16px;">
+      <h2>Current heads</h2>
+      <p class="muted">These heads drive browser catch-up, verifier checks, and trainer base selection on this edge.</p>
+      <table>
+        <thead>
+          <tr><th>Experiment</th><th>Revision</th><th>Head</th><th>Step</th><th>Created</th></tr>
+        </thead>
+        <tbody>{heads}</tbody>
+      </table>
+    </section>
+    <section id="trust" class="grid" style="margin-top:16px;">
+      <article class="panel">
+        <h2>Trust and release</h2>
+        <table>
+          <tbody>
+            <tr><th>Release train</th><td><code>{trust_release}</code></td></tr>
+            <tr><th>Approved targets</th><td>{approved_target_artifact_count}</td></tr>
+            <tr><th>Active issuer</th><td><code>{trust_issuer}</code></td></tr>
+            <tr><th>Minimum revocation epoch</th><td>{trust_revocation}</td></tr>
+            <tr><th>Re-enrollment required</th><td>{reenrollment_required}</td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article class="panel">
+        <h2>Join checklist</h2>
+        <ul>
+          <li>Confirm your target artifact matches the approved release train.</li>
+          <li>Use the login or trusted-enrollment path exposed by this edge.</li>
+          <li>Wait for a certified head before attempting verifier or trainer work.</li>
+          <li>Receipt-driven leaderboards reflect accepted work only.</li>
+        </ul>
+      </article>
+    </section>
+    <section id="leaderboard" class="panel" style="margin-top:16px;">
+      <h2>Leaderboard posture</h2>
+      <p class="muted">Use the sections above for transport and trust posture. The board below is public only when this edge enables social snapshots.</p>
+    </section>
     {leaderboard_panel}
   </main>
+  <script>
+    const filter = document.getElementById("portal-filter");
+    if (filter) {{
+      filter.addEventListener("input", () => {{
+        const query = filter.value.trim().toLowerCase();
+        for (const row of document.querySelectorAll("[data-experiment-row], [data-head-row]")) {{
+          const haystack = (row.getAttribute("data-search") || "").toLowerCase();
+          row.style.display = !query || haystack.includes(query) ? "" : "none";
+        }}
+      }});
+    }}
+  </script>
 </body>
-</html>"#,
+</html>"##,
         network = escape(&snapshot.network_id),
         auth = if snapshot.auth_enabled {
             "enabled"
@@ -456,7 +630,14 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         } else {
             0
         },
+        connected_peers = snapshot.diagnostics.connected_peers,
+        admitted_peers = snapshot.diagnostics.admitted_peers,
+        rejected_peers = snapshot.diagnostics.rejected_peers,
+        quarantined_peers = snapshot.diagnostics.quarantined_peers,
+        accepted_receipts = snapshot.diagnostics.accepted_receipts,
+        certified_merges = snapshot.diagnostics.certified_merges,
         edge_mode = edge_mode_label,
+        service_pills = service_pills,
         auth_message = escape(auth_message),
         browser_message = escape(browser_message),
         social_message = escape(social_message),
@@ -469,6 +650,16 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
         directory_path = escape(&snapshot.paths.signed_directory_path),
         trust_path = escape(&snapshot.paths.trust_bundle_path),
         experiments = experiments,
+        heads = heads,
+        trust_release = trust_release,
+        approved_target_artifact_count = snapshot.trust.approved_target_artifact_count,
+        trust_issuer = trust_issuer,
+        trust_revocation = trust_revocation,
+        reenrollment_required = if snapshot.trust.reenrollment_required {
+            "yes"
+        } else {
+            "no"
+        },
         leaderboard_panel = leaderboard_panel,
     )
 }
@@ -476,9 +667,9 @@ pub fn render_browser_portal_html(snapshot: &PortalSnapshotView) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        PortalExperimentRow, PortalLeaderboardRow, PortalLoginProvider, PortalPaths,
-        PortalSnapshotView, PortalTransportSurface, render_browser_portal_html,
-        render_dashboard_html,
+        PortalDiagnosticsView, PortalExperimentRow, PortalHeadRow, PortalLeaderboardRow,
+        PortalLoginProvider, PortalPaths, PortalSnapshotView, PortalTransportSurface,
+        PortalTrustView, render_browser_portal_html, render_dashboard_html,
     };
 
     #[test]
@@ -514,12 +705,35 @@ mod tests {
                 signed_leaderboard_path: "/leaderboard/signed".into(),
                 trust_bundle_path: "/trust".into(),
             },
+            diagnostics: PortalDiagnosticsView {
+                connected_peers: 5,
+                admitted_peers: 4,
+                rejected_peers: 1,
+                quarantined_peers: 0,
+                accepted_receipts: 14,
+                certified_merges: 3,
+                active_services: vec!["portal".into(), "browser-edge".into(), "social".into()],
+            },
+            trust: PortalTrustView {
+                required_release_train_hash: Some("train-1".into()),
+                approved_target_artifact_count: 2,
+                active_issuer_peer_id: Some("issuer-1".into()),
+                minimum_revocation_epoch: Some(7),
+                reenrollment_required: false,
+            },
             experiments: vec![PortalExperimentRow {
                 display_name: "Auth Demo".into(),
                 experiment_id: "exp-auth".into(),
                 revision_id: "rev-auth".into(),
                 has_head: true,
                 estimated_window_seconds: 45,
+            }],
+            heads: vec![PortalHeadRow {
+                experiment_id: "exp-auth".into(),
+                revision_id: "rev-auth".into(),
+                head_id: "head-auth-1".into(),
+                global_step: 12,
+                created_at: "2026-04-03T12:00:00Z".into(),
             }],
             leaderboard: vec![PortalLeaderboardRow {
                 principal_label: "alice".into(),
@@ -530,6 +744,9 @@ mod tests {
         assert!(html.contains("burn_p2p browser portal"));
         assert!(html.contains("/login/github"));
         assert!(html.contains("alice"));
+        assert!(html.contains("Current heads"));
+        assert!(html.contains("Join checklist"));
+        assert!(html.contains("head-auth-1"));
     }
 
     #[test]
@@ -553,6 +770,22 @@ mod tests {
                 signed_leaderboard_path: "/leaderboard/signed".into(),
                 trust_bundle_path: "/trust".into(),
             },
+            diagnostics: PortalDiagnosticsView {
+                connected_peers: 1,
+                admitted_peers: 1,
+                rejected_peers: 0,
+                quarantined_peers: 0,
+                accepted_receipts: 0,
+                certified_merges: 0,
+                active_services: vec!["portal".into()],
+            },
+            trust: PortalTrustView {
+                required_release_train_hash: None,
+                approved_target_artifact_count: 1,
+                active_issuer_peer_id: None,
+                minimum_revocation_epoch: None,
+                reenrollment_required: true,
+            },
             experiments: vec![PortalExperimentRow {
                 display_name: "Native Only".into(),
                 experiment_id: "exp-native".into(),
@@ -560,6 +793,7 @@ mod tests {
                 has_head: false,
                 estimated_window_seconds: 60,
             }],
+            heads: Vec::new(),
             leaderboard: Vec::new(),
         });
         assert!(html.contains("Join currently requires pre-provisioned credentials"));
@@ -568,5 +802,6 @@ mod tests {
         assert!(!html.contains("No login providers configured."));
         assert!(!html.contains("<h2>Leaderboard</h2>"));
         assert!(!html.contains("/leaderboard/signed"));
+        assert!(html.contains("Use the native client path"));
     }
 }

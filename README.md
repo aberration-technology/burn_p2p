@@ -79,25 +79,17 @@ Current status:
   provides topology simulation, mixed-fleet browser/native fixtures,
   deployment-profile build checks, multiprocess smoke tests, and soak/stress
   entrypoints.
+- Portal product baseline: the reference `burn_p2p_portal` surface now renders
+  join guidance, current heads, trust/release posture, transport hints, and
+  receipt-driven leaderboards instead of acting as a thin placeholder page.
 
 Known gaps:
 
-- GitHub/OIDC/OAuth connectors now support provider-specific bootstrap/browser
-  login routes plus exchange-backed callback resolution, userinfo/profile
-  hydration, and provider-side refresh/revoke hooks. The remaining auth gap is
-  full upstream provider integration beyond this generic edge contract, such as
-  real token exchange discovery/metadata and provider-native revocation policy.
-- Browser support now covers portal, picker, worker state, local verify/train,
-  receipt outbox, receipt submission, mixed native+browser worker coverage,
-  live browser-client-to-edge HTTP coverage, and wasm compile coverage. Live
-  browser swarm join and transport-backed browser execution are still not
-  complete.
-- The reference browser portal is now split into the dedicated
-  `burn_p2p_portal` crate, but it is still intentionally lightweight HTML plus
-  typed contracts rather than a fuller product UI.
-- Benchmark baselines are now recorded, and the latest security benchmark rerun
-  shows broad improvement across release-policy, auth-admission,
-  validator-policy, and reputation paths.
+- No unresolved repo-local gaps remain from the previously tracked
+  auth/browser/portal/performance slice.
+- Remaining work is broader roadmap expansion around additional provider
+  presets, richer long-term portal assets, and packaging/ops hardening beyond
+  the now-working baseline.
 
 Quick start surfaces:
 
@@ -119,9 +111,11 @@ Quick start surfaces:
   `cargo test --manifest-path Cargo.toml -p burn_p2p_auth_external -p burn_p2p_auth_github -p burn_p2p_auth_oidc -p burn_p2p_auth_oauth`
 - Browser client-to-edge HTTP e2e: `cargo test --manifest-path Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_round_trips_against_live_http_router`
 - Browser provider-exchange auth e2e: `cargo test --manifest-path Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_completes_github_login_via_exchange_callback`
+- Browser upstream-token auth e2e: `cargo test --manifest-path Cargo.toml -p burn_p2p_bootstrap --bin burn-p2p-bootstrap browser_portal_client_completes_github_login_via_upstream_token_exchange`
 - Browser wasm matrix: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test browser_matrix -- --ignored`
 - Deployment profile matrix: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test deployment_profiles -- --ignored`
 - Mixed native+browser worker test: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test mixed_browser_worker`
+- Browser swarm transport test: `cargo test --manifest-path Cargo.toml -p burn_p2p_testkit --test browser_swarm_transport`
 - Trusted-minimal bootstrap compile: `cargo check --manifest-path Cargo.toml -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static`
 - Trusted-minimal bootstrap tree hygiene:
   `cargo tree --manifest-path Cargo.toml -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static -e normal`

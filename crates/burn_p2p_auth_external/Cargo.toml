@@ -11,9 +11,8 @@ burn_p2p_security = { path = "../burn_p2p_security" }
 chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
 
+[dev-dependencies]
 [lints]
 workspace = true

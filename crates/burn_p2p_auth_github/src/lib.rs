@@ -23,12 +23,26 @@ impl GitHubIdentityConnector {
             AuthProvider::GitHub,
             session_ttl,
             principals,
-            authorize_base_url,
+            authorize_base_url.or_else(|| Some("https://github.com/login/oauth/authorize".into())),
         ))
     }
 
     pub fn with_exchange_url(mut self, exchange_url: Option<String>) -> Self {
         self.0 = self.0.with_exchange_url(exchange_url);
+        self
+    }
+
+    pub fn with_token_url(mut self, token_url: Option<String>) -> Self {
+        self.0 = self.0.with_token_url(token_url);
+        self
+    }
+
+    pub fn with_client_credentials(
+        mut self,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+    ) -> Self {
+        self.0 = self.0.with_client_credentials(client_id, client_secret);
         self
     }
 
