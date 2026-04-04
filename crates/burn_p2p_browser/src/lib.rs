@@ -28,9 +28,11 @@ pub use auth::{
     BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};
-pub use burn_p2p_bootstrap::{
-    BrowserDirectorySnapshot, BrowserLeaderboardSnapshot, BrowserPortalSnapshot,
-    BrowserReceiptSubmissionResponse, TrustBundleExport,
+pub use burn_p2p_core::{
+    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
+    BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
+    BrowserPortalSnapshot, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
+    ReenrollmentStatus, TrustBundleExport,
 };
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
 pub use runtime::{

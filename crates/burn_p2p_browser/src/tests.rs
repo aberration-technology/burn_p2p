@@ -11,18 +11,16 @@ use std::{
 use burn_p2p::{
     ArtifactId, AuthProvider, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
     ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, NetworkEstimate,
-    NetworkId, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession,
-    RevisionId, StudyId, WindowActivation, WindowId, WorkloadId,
-};
-use burn_p2p_bootstrap::{
-    BootstrapDiagnostics, BootstrapPreset, BootstrapService, BrowserDirectorySnapshot,
-    BrowserEdgeMode, BrowserLeaderboardEntry, BrowserLeaderboardIdentity,
-    BrowserLeaderboardSnapshot, BrowserPortalSnapshot, BrowserTransportSurface, TrustBundleExport,
+    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, NetworkId, PeerId,
+    PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId, StudyId,
+    WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
-    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
-    RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
+    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
+    BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
+    BrowserPortalSnapshot, BrowserTransportSurface, MetricsLiveEvent, MetricsLiveEventKind,
+    MetricsSnapshotManifest, MetricsSyncCursor, ReenrollmentStatus, RevocationEpoch,
+    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
 use chrono::Utc;
@@ -1694,9 +1692,9 @@ fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
             webtransport_gateway: false,
             wss_fallback: true,
         },
-        paths: burn_p2p_bootstrap::BrowserEdgePaths::default(),
+        paths: BrowserEdgePaths::default(),
         auth_enabled: true,
-        login_providers: vec![burn_p2p_bootstrap::BrowserLoginProvider {
+        login_providers: vec![BrowserLoginProvider {
             label: "Static".into(),
             login_path: "/login/static".into(),
             callback_path: Some("/callback/static".into()),
@@ -1704,41 +1702,6 @@ fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
         }],
         required_release_train_hash: Some(ContentId::new("train-browser")),
         allowed_target_artifact_hashes: BTreeSet::from([artifact_hash.clone()]),
-        diagnostics: BootstrapDiagnostics {
-            network_id: NetworkId::new("net-browser"),
-            preset: BootstrapPreset::BootstrapOnly,
-            services: BTreeSet::from([BootstrapService::Kademlia]),
-            roles: PeerRoleSet::default(),
-            swarm: burn_p2p::SwarmStats {
-                connected_peers: 0,
-                connected_peer_ids: Vec::new(),
-                observed_peers: Vec::new(),
-                network_estimate: NetworkEstimate {
-                    connected_peers: 0,
-                    observed_peers: 0,
-                    estimated_network_size: 0.0,
-                    estimated_total_vram_bytes: None,
-                    estimated_total_flops: None,
-                    eta_lower_seconds: None,
-                    eta_upper_seconds: None,
-                },
-            },
-            pinned_heads: BTreeSet::new(),
-            pinned_artifacts: BTreeSet::<ArtifactId>::new(),
-            accepted_receipts: 0,
-            certified_merges: 0,
-            in_flight_transfers: Vec::new(),
-            admitted_peers: BTreeSet::new(),
-            peer_diagnostics: Vec::new(),
-            rejected_peers: Default::default(),
-            quarantined_peers: BTreeSet::new(),
-            banned_peers: BTreeSet::new(),
-            minimum_revocation_epoch: None,
-            last_error: None,
-            node_state: burn_p2p::NodeRuntimeState::Starting,
-            slot_states: Vec::new(),
-            captured_at: Utc::now(),
-        },
         directory: BrowserDirectorySnapshot {
             network_id: NetworkId::new("net-browser"),
             generated_at: Utc::now(),
@@ -1817,16 +1780,16 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
             webtransport_gateway: false,
             wss_fallback: true,
         },
-        paths: burn_p2p_bootstrap::BrowserEdgePaths::default(),
+        paths: BrowserEdgePaths::default(),
         auth_enabled: true,
         login_providers: vec![
-            burn_p2p_bootstrap::BrowserLoginProvider {
+            BrowserLoginProvider {
                 label: "GitHub".into(),
                 login_path: "/login/github".into(),
                 callback_path: Some("/callback/github".into()),
                 device_path: None,
             },
-            burn_p2p_bootstrap::BrowserLoginProvider {
+            BrowserLoginProvider {
                 label: "Static".into(),
                 login_path: "/login/static".into(),
                 callback_path: Some("/callback/static".into()),
@@ -1835,41 +1798,6 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
         ],
         required_release_train_hash: Some(ContentId::new("train-browser")),
         allowed_target_artifact_hashes: BTreeSet::from([artifact_hash.clone()]),
-        diagnostics: BootstrapDiagnostics {
-            network_id: NetworkId::new("net-browser"),
-            preset: BootstrapPreset::BootstrapOnly,
-            services: BTreeSet::from([BootstrapService::Kademlia]),
-            roles: PeerRoleSet::default(),
-            swarm: burn_p2p::SwarmStats {
-                connected_peers: 0,
-                connected_peer_ids: Vec::new(),
-                observed_peers: Vec::new(),
-                network_estimate: NetworkEstimate {
-                    connected_peers: 0,
-                    observed_peers: 0,
-                    estimated_network_size: 0.0,
-                    estimated_total_vram_bytes: None,
-                    estimated_total_flops: None,
-                    eta_lower_seconds: None,
-                    eta_upper_seconds: None,
-                },
-            },
-            pinned_heads: BTreeSet::new(),
-            pinned_artifacts: BTreeSet::<ArtifactId>::new(),
-            accepted_receipts: 0,
-            certified_merges: 0,
-            in_flight_transfers: Vec::new(),
-            admitted_peers: BTreeSet::new(),
-            peer_diagnostics: Vec::new(),
-            rejected_peers: Default::default(),
-            quarantined_peers: BTreeSet::new(),
-            banned_peers: BTreeSet::new(),
-            minimum_revocation_epoch: None,
-            last_error: None,
-            node_state: burn_p2p::NodeRuntimeState::Starting,
-            slot_states: Vec::new(),
-            captured_at: Utc::now(),
-        },
         directory: BrowserDirectorySnapshot {
             network_id: NetworkId::new("net-browser"),
             generated_at: Utc::now(),
@@ -1985,7 +1913,7 @@ fn session_and_storage_snapshots_capture_enrollment_and_signed_state() {
             minimum_revocation_epoch: RevocationEpoch(5),
             active_issuer_peer_id: PeerId::new("issuer-browser"),
             issuers: Vec::new(),
-            reenrollment: Some(burn_p2p_bootstrap::ReenrollmentStatus {
+            reenrollment: Some(ReenrollmentStatus {
                 reason: "rotate".into(),
                 rotated_at: None,
                 legacy_issuer_peer_ids: BTreeSet::new(),

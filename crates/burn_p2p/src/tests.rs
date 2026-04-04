@@ -23,8 +23,6 @@ use chrono::Utc;
 use semver::Version;
 use tempfile::tempdir;
 
-use crate::compat::{P2pProject, RuntimeProject};
-
 use super::{
     ArtifactDescriptor, ArtifactKind, ArtifactTransferState, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ClientReenrollmentStatus, ContributionReceipt, EvalSplit,
@@ -32,9 +30,9 @@ use super::{
     ExperimentHandle, ExperimentResourceRequirements, FsArtifactStore, GenesisSpec,
     HeadAnnouncement, HeadDescriptor, HeadEvalReport, MainnetHandle, MergeCertificate,
     MetricReport, MetricValue, MetricsRetentionConfig, NetworkEstimate, NodeBuilder,
-    NodeCertificate, NodeCertificateClaims, PeerAuthAnnouncement, PeerAuthEnvelope,
-    PeerWindowMetrics, ProjectBackend, ReducerCohortMetrics, StorageConfig, SwarmAddress,
-    TelemetrySummary, UpstreamAdapter, WindowCtx, WindowId, WindowReport,
+    NodeCertificate, NodeCertificateClaims, P2pWorkload, PeerAuthAnnouncement, PeerAuthEnvelope,
+    PeerWindowMetrics, ReducerCohortMetrics, StorageConfig, SwarmAddress, TelemetrySummary,
+    UpstreamAdapter, WindowCtx, WindowId, WindowReport,
 };
 
 fn mainnet() -> MainnetHandle {
@@ -59,20 +57,14 @@ fn experiment() -> ExperimentHandle {
 }
 
 #[derive(Clone, Debug)]
-struct SyntheticRuntimeBackend;
-
-impl ProjectBackend for SyntheticRuntimeBackend {
-    type Device = String;
-}
-
-#[derive(Clone, Debug)]
 struct SyntheticRuntimeProject {
     dataset_root: PathBuf,
     learning_rate: f64,
     target_model: f64,
 }
 
-impl P2pProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
+impl crate::P2pWorkload for SyntheticRuntimeProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -139,9 +131,7 @@ impl P2pProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -283,6 +273,21 @@ impl RuntimeProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
         }
         Ok(Some(weighted_sum / total_weight))
     }
+
+    fn supported_workload(&self) -> crate::SupportedWorkload {
+        crate::SupportedWorkload {
+            workload_id: crate::WorkloadId::new("synthetic-runtime"),
+            workload_name: "Synthetic Runtime".into(),
+            model_program_hash: crate::ContentId::new("synthetic-program"),
+            checkpoint_format_hash: crate::ContentId::new("synthetic-json"),
+            supported_revision_family: crate::ContentId::new("synthetic-revision-family"),
+            resource_class: "cpu".into(),
+        }
+    }
+
+    fn model_schema_hash(&self) -> crate::ContentId {
+        crate::ContentId::new("synthetic-schema")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -291,7 +296,8 @@ struct SwitchingTestWorkload {
     model_schema_hash: crate::ContentId,
 }
 
-impl P2pProject<SyntheticRuntimeBackend> for SwitchingTestWorkload {
+impl crate::P2pWorkload for SwitchingTestWorkload {
+    type Device = String;
     type Model = ();
     type Batch = ();
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -335,9 +341,7 @@ impl P2pProject<SyntheticRuntimeBackend> for SwitchingTestWorkload {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticRuntimeBackend> for SwitchingTestWorkload {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -388,9 +392,7 @@ impl RuntimeProject<SyntheticRuntimeBackend> for SwitchingTestWorkload {
     ) -> BTreeMap<String, MetricValue> {
         BTreeMap::new()
     }
-}
 
-impl crate::P2pWorkload<SyntheticRuntimeBackend> for SwitchingTestWorkload {
     fn supported_workload(&self) -> crate::SupportedWorkload {
         self.manifest.clone()
     }
@@ -407,7 +409,6 @@ struct SwitchingTestFamily {
 }
 
 impl crate::P2pProjectFamily for SwitchingTestFamily {
-    type Backend = SyntheticRuntimeBackend;
     type Workload = SwitchingTestWorkload;
 
     fn project_family_id(&self) -> &crate::ProjectFamilyId {
@@ -960,7 +961,8 @@ struct AdaptiveBudgetProject {
     observed_lease_budgets: Arc<Mutex<Vec<u64>>>,
 }
 
-impl P2pProject<SyntheticRuntimeBackend> for AdaptiveBudgetProject {
+impl crate::P2pWorkload for AdaptiveBudgetProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -1027,9 +1029,7 @@ impl P2pProject<SyntheticRuntimeBackend> for AdaptiveBudgetProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticRuntimeBackend> for AdaptiveBudgetProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -1134,6 +1134,21 @@ impl RuntimeProject<SyntheticRuntimeBackend> for AdaptiveBudgetProject {
         report: &WindowReport<Self::WindowStats>,
     ) -> BTreeMap<String, MetricValue> {
         report.stats.clone()
+    }
+
+    fn supported_workload(&self) -> crate::SupportedWorkload {
+        crate::SupportedWorkload {
+            workload_id: crate::WorkloadId::new("adaptive-budget"),
+            workload_name: "Adaptive Budget".into(),
+            model_program_hash: crate::ContentId::new("adaptive-program"),
+            checkpoint_format_hash: crate::ContentId::new("adaptive-json"),
+            supported_revision_family: crate::ContentId::new("adaptive-revision-family"),
+            resource_class: "cpu".into(),
+        }
+    }
+
+    fn model_schema_hash(&self) -> crate::ContentId {
+        crate::ContentId::new("adaptive-schema")
     }
 }
 
@@ -1366,7 +1381,7 @@ fn discovered_bootstrap_peer_survives_restart() {
 
     let mut validator = validator;
     let genesis_head = validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init genesis");
 
     let first_trainer = NodeBuilder::new(SyntheticRuntimeProject {
@@ -1476,10 +1491,10 @@ fn runtime_rebudgets_next_window_after_slow_observed_throughput() {
 
     let mut running = running;
     let first = running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("first window");
     let second = running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("second window");
 
     assert_eq!(first.lease.budget_work_units, 64);
@@ -1550,10 +1565,10 @@ fn runtime_rebudgets_next_window_after_fast_observed_throughput() {
 
     let mut running = running;
     let first = running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("first window");
     let second = running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("second window");
 
     assert_eq!(first.lease.budget_work_units, 40);
@@ -1601,7 +1616,7 @@ fn rebudgeted_limit_profile_survives_restart() {
     );
     let mut first = first;
     let first_window = first
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("first training window");
     first.shutdown().expect("first adaptive shutdown");
     let _ = first
@@ -1632,7 +1647,7 @@ fn rebudgeted_limit_profile_survives_restart() {
     );
     let mut restarted = restarted;
     let restarted_window = restarted
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("restarted training window");
     assert!(
         restarted_window.lease.budget_work_units < first_window.lease.budget_work_units,
@@ -1691,7 +1706,7 @@ fn active_lease_survives_restart() {
     );
     let mut first = first;
     let window = first
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("training window");
     let persisted = super::runtime_support::load_scoped_lease_announcement(
         &StorageConfig::new(storage_root.clone()),
@@ -1772,7 +1787,7 @@ fn training_window_persists_peer_window_metrics() {
 
     let mut running = running;
     let trained = running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("training window");
 
     let metrics = load_metric_artifacts::<PeerWindowMetrics>(&storage, "peer-window-");
@@ -1898,10 +1913,10 @@ fn training_window_prunes_raw_metrics_archive_to_configured_budget() {
         "runtime did not start",
     );
     running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("first training window");
     running
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment())
+        .train_window_once(&experiment())
         .expect("second training window");
 
     let metrics = load_metric_artifacts::<PeerWindowMetrics>(&storage, "peer-window-");
@@ -1950,10 +1965,10 @@ fn training_window_prunes_old_metric_revisions_to_configured_budget() {
         "runtime did not start",
     );
     running
-        .train_window_once::<SyntheticRuntimeBackend>(&revision_a)
+        .train_window_once(&revision_a)
         .expect("first revision training window");
     running
-        .train_window_once::<SyntheticRuntimeBackend>(&revision_b)
+        .train_window_once(&revision_b)
         .expect("second revision training window");
 
     let metrics = load_metric_artifacts::<PeerWindowMetrics>(&storage, "peer-window-");
@@ -1998,7 +2013,7 @@ fn validation_persists_cohort_and_head_eval_metrics() {
     let experiment = experiment();
     let mut validator = validator;
     let genesis_head = validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init validator genesis head");
 
     let trainer = NodeBuilder::new(SyntheticRuntimeProject {
@@ -2030,7 +2045,7 @@ fn validation_persists_cohort_and_head_eval_metrics() {
 
     let mut trainer = trainer;
     let trained = trainer
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("trainer window");
 
     wait_for(
@@ -2054,7 +2069,7 @@ fn validation_persists_cohort_and_head_eval_metrics() {
     );
 
     let validated = validator
-        .validate_candidates_once::<SyntheticRuntimeBackend>(&experiment)
+        .validate_candidates_once(&experiment)
         .expect("validate")
         .expect("validation outcome");
 
@@ -4277,7 +4292,7 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
 
     let mut validator = validator;
     let genesis_head = validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init genesis head");
     assert_eq!(genesis_head.global_step, 0);
 
@@ -4336,10 +4351,10 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
     let mut trainer_a = trainer_a;
     let mut trainer_b = trainer_b;
     let trainer_a_window = trainer_a
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("trainer a window");
     let trainer_b_window = trainer_b
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("trainer b window");
 
     assert_eq!(
@@ -4385,7 +4400,7 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
     );
 
     let validation = validator
-        .validate_candidates_once::<SyntheticRuntimeBackend>(&experiment)
+        .validate_candidates_once(&experiment)
         .expect("validate candidates")
         .expect("validation outcome");
     let validator_state = validator.telemetry().snapshot();
@@ -4483,7 +4498,7 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
 
     let mut late_joiner = late_joiner;
     let late_window = late_joiner
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("late joiner window");
     assert_eq!(
         late_window.head.parent_head_id,
@@ -4605,7 +4620,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
 
     let mut validator = validator;
     let genesis_head = validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init validator genesis head");
     let lagged_head = HeadDescriptor {
         head_id: crate::HeadId::new("validator-lagged-head"),
@@ -4655,7 +4670,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
 
     let mut trainer = trainer;
     let error = trainer
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect_err("training should block on excessive lag");
     assert!(
         error
@@ -4737,7 +4752,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
 
     let mut validator = validator;
     validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init genesis");
 
     let trainer = NodeBuilder::new(SyntheticRuntimeProject {
@@ -4758,7 +4773,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
     );
     let mut trainer = trainer;
     let trained = trainer
-        .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+        .train_window_once(&experiment)
         .expect("trainer window");
     wait_for(
         Duration::from_secs(5),
@@ -4780,7 +4795,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
         "validator did not observe trainer head/update before validation",
     );
     let validated = validator
-        .validate_candidates_once::<SyntheticRuntimeBackend>(&experiment)
+        .validate_candidates_once(&experiment)
         .expect("validate")
         .expect("validation outcome");
     assert_ne!(validated.merged_head.head_id, trained.head.head_id);
@@ -4909,7 +4924,7 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
 
     let mut validator = validator;
     let genesis_head = validator
-        .initialize_local_head::<SyntheticRuntimeBackend>(&experiment)
+        .initialize_local_head(&experiment)
         .expect("init genesis");
 
     let learning_rates = [0.2, 0.4, 0.6, 0.8, 1.0, 0.3];
@@ -4952,7 +4967,7 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
     let mut trainer_outcomes = Vec::new();
     for trainer in &mut trainers {
         let outcome = trainer
-            .train_window_once::<SyntheticRuntimeBackend>(&experiment)
+            .train_window_once(&experiment)
             .expect("trainer window");
         trainer_outcomes.push(outcome);
     }
@@ -4985,7 +5000,7 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
     );
 
     let validated = validator
-        .validate_candidates_once::<SyntheticRuntimeBackend>(&experiment)
+        .validate_candidates_once(&experiment)
         .expect("validate")
         .expect("validation outcome");
     assert_eq!(

@@ -46,17 +46,15 @@ struct ValidationExecution {
 
 impl<P> RunningNode<P> {
     /// Validates the candidates once.
-    pub fn validate_candidates_once<B>(
+    pub fn validate_candidates_once(
         &mut self,
         experiment: &ExperimentHandle,
     ) -> anyhow::Result<Option<ValidationOutcome>>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: P2pWorkload,
     {
         let prepared = self.prepare_validation_state(experiment)?;
-        let Some(execution) = self.execute_validation_candidates::<B>(experiment, &prepared)?
-        else {
+        let Some(execution) = self.execute_validation_candidates(experiment, &prepared)? else {
             return Ok(None);
         };
         self.publish_validation_execution(experiment, &prepared, &execution)?;
@@ -178,14 +176,13 @@ impl<P> RunningNode<P> {
         })
     }
 
-    fn execute_validation_candidates<B>(
+    fn execute_validation_candidates(
         &mut self,
         experiment: &ExperimentHandle,
         prepared: &ValidationPreparedState,
     ) -> anyhow::Result<Option<ValidationExecution>>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: P2pWorkload,
     {
         let started_at = Utc::now();
         let candidate_heads = collect_validation_candidate_heads(
@@ -211,12 +208,8 @@ impl<P> RunningNode<P> {
             .project;
         let device = project.runtime_device();
         let merge_policy = MergePolicy::QualityWeightedEma;
-        let base_model = load_validation_base_model::<B, P>(
-            project,
-            &prepared.current_head,
-            &prepared.store,
-            &device,
-        )?;
+        let base_model =
+            load_validation_base_model(project, &prepared.current_head, &prepared.store, &device)?;
         let mut candidate_models = load_validation_candidate_models(
             project,
             &prepared.store,
@@ -511,15 +504,14 @@ fn collect_validation_candidate_heads(
     candidate_heads
 }
 
-fn load_validation_base_model<B, P>(
+fn load_validation_base_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
     store: &FsArtifactStore,
-    device: &B::Device,
+    device: &P::Device,
 ) -> anyhow::Result<P::Model>
 where
-    B: ProjectBackend,
-    P: RuntimeProject<B>,
+    P: P2pWorkload,
 {
     Ok(if let Some((_, base_head)) = current_head.as_ref() {
         match store.load_manifest(&base_head.artifact_id) {
@@ -537,16 +529,15 @@ where
     })
 }
 
-fn load_validation_candidate_models<B, P>(
+fn load_validation_candidate_models<P>(
     project: &mut P,
     store: &FsArtifactStore,
-    device: &B::Device,
+    device: &P::Device,
     updates: &[UpdateAnnounce],
     candidate_heads: Vec<(PeerId, HeadDescriptor)>,
 ) -> anyhow::Result<Vec<ValidationCandidate<P::Model>>>
 where
-    B: ProjectBackend,
-    P: RuntimeProject<B>,
+    P: P2pWorkload,
 {
     let mut candidate_models = Vec::new();
     for (peer_id, head) in candidate_heads {
@@ -593,7 +584,7 @@ fn fallback_best_candidate_index<M>(candidate_models: &[ValidationCandidate<M>])
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_validation_head<B, P>(
+fn select_validation_head<P>(
     project: &mut P,
     experiment: &ExperimentHandle,
     store: &FsArtifactStore,
@@ -607,8 +598,7 @@ fn select_validation_head<B, P>(
     local_peer_id: &PeerId,
 ) -> anyhow::Result<(PeerId, HeadDescriptor, MetricReport)>
 where
-    B: ProjectBackend,
-    P: RuntimeProject<B>,
+    P: P2pWorkload,
 {
     let merged_model = {
         let merge_candidates = candidate_models

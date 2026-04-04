@@ -48,16 +48,15 @@ struct TrainingExecution<T> {
 
 impl<P> RunningNode<P> {
     /// Performs the train window once operation.
-    pub fn train_window_once<B>(
+    pub fn train_window_once(
         &mut self,
         experiment: &ExperimentHandle,
     ) -> anyhow::Result<TrainingWindowOutcome<P::WindowStats>>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: P2pWorkload,
     {
         let prepared = self.prepare_training_state(experiment)?;
-        let execution = self.execute_training_window::<B>(experiment, &prepared)?;
+        let execution = self.execute_training_window(experiment, &prepared)?;
         self.publish_training_execution(experiment, &prepared, &execution)?;
 
         Ok(TrainingWindowOutcome {
@@ -154,14 +153,13 @@ impl<P> RunningNode<P> {
         })
     }
 
-    fn execute_training_window<B>(
+    fn execute_training_window(
         &mut self,
         experiment: &ExperimentHandle,
         prepared: &TrainingPreparedState,
     ) -> anyhow::Result<TrainingExecution<P::WindowStats>>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: P2pWorkload,
     {
         let (device, model, capability) = {
             let project = &mut self
@@ -170,16 +168,12 @@ impl<P> RunningNode<P> {
                 .expect("running node should retain prepared node")
                 .project;
             let device = project.runtime_device();
-            let model = load_runtime_model::<B, P>(
-                project,
-                &prepared.current_head,
-                &prepared.store,
-                &device,
-            )?;
+            let model =
+                load_runtime_model(project, &prepared.current_head, &prepared.store, &device)?;
             let capability = project.benchmark(&model, &device);
             (device, model, capability)
         };
-        let mut planned = self.plan_training_window::<B>(experiment, prepared, &capability)?;
+        let mut planned = self.plan_training_window(experiment, prepared, &capability)?;
         let telemetry = self.telemetry.clone();
         let project = &mut self
             .node
@@ -316,15 +310,14 @@ impl<P> RunningNode<P> {
         })
     }
 
-    fn plan_training_window<B>(
+    fn plan_training_window(
         &mut self,
         experiment: &ExperimentHandle,
         prepared: &TrainingPreparedState,
         capability: &CapabilityEstimate,
     ) -> anyhow::Result<PlannedTrainingWindow>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: P2pWorkload,
     {
         let calibrator = CapabilityCalibrator::new(runtime_limit_policy(capability))?;
         let limit_profile = effective_limit_profile(
@@ -529,15 +522,14 @@ impl<P> RunningNode<P> {
     }
 }
 
-fn load_runtime_model<B, P>(
+fn load_runtime_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
     store: &FsArtifactStore,
-    device: &B::Device,
+    device: &P::Device,
 ) -> anyhow::Result<P::Model>
 where
-    B: ProjectBackend,
-    P: RuntimeProject<B>,
+    P: P2pWorkload,
 {
     Ok(if let Some((_, base_head)) = current_head.as_ref() {
         match store.load_manifest(&base_head.artifact_id) {

@@ -13,7 +13,6 @@ publish = false
 
 [dependencies]
 burn_p2p.workspace = true
-burn_p2p_bootstrap.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_metrics.workspace = true
 burn_p2p_publish = { version = "=0.21.0-pre.2", path = "../burn_p2p_publish" }

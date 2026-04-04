@@ -7,13 +7,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use burn_p2p::compat::{P2pProject, RuntimeProject};
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, ClientReleaseManifest, ContentId, DatasetRegistration,
     DatasetSizing, EvalSplit, FsArtifactStore, MetricReport, MetricValue, MicroShardPlanner,
-    MicroShardPlannerConfig, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
-    ProjectFamilyId, RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig,
+    MicroShardPlannerConfig, P2pWorkload, PatchOutcome, PatchSupport, ProjectFamilyId,
+    RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig,
     SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport, WorkloadId,
 };
 use burn_p2p_bootstrap::{
@@ -27,20 +26,14 @@ use semver::{Version, VersionReq};
 use tempfile::tempdir;
 
 #[derive(Clone, Debug)]
-struct DemoBackend;
-
-impl ProjectBackend for DemoBackend {
-    type Device = String;
-}
-
-#[derive(Clone, Debug)]
 struct DemoProject {
     dataset_root: PathBuf,
     learning_rate: f64,
     target_model: f64,
 }
 
-impl P2pProject<DemoBackend> for DemoProject {
+impl P2pWorkload for DemoProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -107,9 +100,7 @@ impl P2pProject<DemoBackend> for DemoProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<DemoBackend> for DemoProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -250,9 +241,7 @@ impl RuntimeProject<DemoBackend> for DemoProject {
         }
         Ok(Some(weighted_sum / total_weight))
     }
-}
 
-impl P2pWorkload<DemoBackend> for DemoProject {
     fn supported_workload(&self) -> SupportedWorkload {
         demo_workload_manifest()
     }
@@ -328,7 +317,7 @@ fn main() -> anyhow::Result<()> {
     }
     .plan()?;
 
-    let daemon_family = SingleWorkloadProjectFamily::<DemoBackend, _>::new(
+    let daemon_family = SingleWorkloadProjectFamily::new(
         demo_release_manifest(),
         DemoProject {
             dataset_root,
@@ -336,7 +325,7 @@ fn main() -> anyhow::Result<()> {
             target_model: 10.0,
         },
     )?;
-    let daemon = plan.spawn_embedded_daemon::<_, DemoBackend>(
+    let daemon = plan.spawn_embedded_daemon(
         daemon_family,
         BootstrapEmbeddedDaemonConfig {
             node: burn_p2p::NodeConfig {

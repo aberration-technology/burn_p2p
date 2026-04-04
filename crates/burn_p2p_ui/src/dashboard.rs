@@ -1,16 +1,111 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use burn_p2p_bootstrap::BootstrapDiagnostics;
 use burn_p2p_core::{
     AggregateEnvelope, AggregateTier, ArtifactId, AssignmentLease, ContentId,
     ContributionReceiptId, DatasetViewId, ExperimentId, HeadDescriptor, HeadId, MergeCertId,
-    MergeCertificate, MergeStrategy, MergeWindowState, MetricValue, MicroShardId, NetworkId,
-    PeerId, ReducerLoadReport, ReductionCertificate, RevisionId, StudyId, WindowActivation,
-    WindowId,
+    MergeCertificate, MergeStrategy, MergeWindowState, MetricValue, MicroShardId, NetworkEstimate,
+    NetworkId, PeerId, PeerRoleSet, ReducerLoadReport, ReductionCertificate, RevisionId,
+    RevocationEpoch, StudyId, WindowActivation, WindowId,
 };
+use burn_p2p_security::{PeerTrustLevel, ReputationDecision};
 use burn_p2p_swarm::{AlertNotice, OverlayTopic};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One in-flight artifact transfer surfaced in operator diagnostics.
+pub struct OperatorTransferView {
+    /// Artifact identifier being transferred.
+    pub artifact_id: ArtifactId,
+    /// Human-readable transfer phase label.
+    pub phase_label: String,
+    /// Known source peers for the transfer.
+    pub source_peers: Vec<PeerId>,
+    /// Selected provider peer, when known.
+    pub provider_peer_id: Option<PeerId>,
+    /// Number of completed chunks observed so far.
+    pub completed_chunk_count: usize,
+    /// Total chunk count from the descriptor, when known.
+    pub total_chunk_count: Option<usize>,
+    /// Transfer start timestamp.
+    pub started_at: DateTime<Utc>,
+    /// Most recent update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One peer-level diagnostic row surfaced in operator diagnostics.
+pub struct OperatorPeerDiagnosticView {
+    /// Peer identifier.
+    pub peer_id: PeerId,
+    /// Whether the peer is currently connected.
+    pub connected: bool,
+    /// Most recent observation timestamp.
+    pub observed_at: Option<DateTime<Utc>>,
+    /// Trust level assigned to the peer.
+    pub trust_level: Option<PeerTrustLevel>,
+    /// Rejection reason, when present.
+    pub rejection_reason: Option<String>,
+    /// Current reputation score, when known.
+    pub reputation_score: Option<f64>,
+    /// Current reputation decision, when known.
+    pub reputation_decision: Option<ReputationDecision>,
+    /// Whether the peer is quarantined.
+    pub quarantined: bool,
+    /// Whether the peer is banned.
+    pub banned: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Presentation-owned operator diagnostics payload.
+pub struct OperatorDiagnosticsView {
+    /// Network identifier for the diagnostics snapshot.
+    pub network_id: NetworkId,
+    /// Active preset label, when relevant.
+    pub preset_label: String,
+    /// Human-readable active service labels.
+    pub active_services: Vec<String>,
+    /// Runtime role set.
+    pub roles: PeerRoleSet,
+    /// Currently connected peers.
+    pub connected_peers: u32,
+    /// Connected peer identifiers.
+    pub connected_peer_ids: Vec<PeerId>,
+    /// Observed peer identifiers.
+    pub observed_peers: Vec<PeerId>,
+    /// Network estimate summary.
+    pub network_estimate: NetworkEstimate,
+    /// Pinned head identifiers.
+    pub pinned_heads: BTreeSet<HeadId>,
+    /// Pinned artifact identifiers.
+    pub pinned_artifacts: BTreeSet<ArtifactId>,
+    /// Accepted receipt count.
+    pub accepted_receipts: usize,
+    /// Certified merge count.
+    pub certified_merges: usize,
+    /// In-flight transfer summaries.
+    pub in_flight_transfers: Vec<OperatorTransferView>,
+    /// Admitted peer identifiers.
+    pub admitted_peers: BTreeSet<PeerId>,
+    /// Peer-level diagnostics.
+    pub peer_diagnostics: Vec<OperatorPeerDiagnosticView>,
+    /// Rejected peer reasons keyed by peer ID.
+    pub rejected_peers: BTreeMap<PeerId, String>,
+    /// Quarantined peer identifiers.
+    pub quarantined_peers: BTreeSet<PeerId>,
+    /// Banned peer identifiers.
+    pub banned_peers: BTreeSet<PeerId>,
+    /// Minimum revocation epoch, when active.
+    pub minimum_revocation_epoch: Option<RevocationEpoch>,
+    /// Last operator-visible runtime error.
+    pub last_error: Option<String>,
+    /// Human-readable node state label.
+    pub node_state_label: String,
+    /// Human-readable slot state labels.
+    pub slot_state_labels: Vec<String>,
+    /// Capture timestamp.
+    pub captured_at: DateTime<Utc>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Overlay health summary shown in the operator console.
@@ -68,7 +163,7 @@ pub struct AuthorityActionRecord {
 /// Operator-facing summary of diagnostics, overlays, merge state, and alerts.
 pub struct OperatorConsoleView {
     /// Current bootstrap diagnostics snapshot.
-    pub diagnostics: BootstrapDiagnostics,
+    pub diagnostics: OperatorDiagnosticsView,
     /// Overlay-level health summaries.
     pub overlays: Vec<OverlayStatusView>,
     /// Merge queue rows.
@@ -82,7 +177,7 @@ pub struct OperatorConsoleView {
 impl OperatorConsoleView {
     /// Creates an operator console view.
     pub fn new(
-        diagnostics: BootstrapDiagnostics,
+        diagnostics: OperatorDiagnosticsView,
         overlays: Vec<OverlayStatusView>,
         merge_queue: Vec<MergeQueueEntry>,
         authority_actions: Vec<AuthorityActionRecord>,

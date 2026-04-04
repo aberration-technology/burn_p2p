@@ -5,7 +5,6 @@
 //! - the project-family and workload integration traits
 //! - node configuration and builder APIs
 //! - stable identifiers, manifests, and runtime handles re-exported from the core crates
-//! - compatibility adapters for older `P2pProject` / `RuntimeProject` integrations
 //!
 //! The intended forward path is:
 //!
@@ -14,8 +13,6 @@
 //! 3. build a node with [`NodeBuilder`]
 //! 4. bind the node to a network, workload, storage root, and auth/enrollment flow
 //!
-//! The crate currently still exposes legacy compatibility traits for existing embeddings,
-//! but new integrations should prefer the family/workload path.
 #![forbid(unsafe_code)]
 
 use std::{
@@ -35,7 +32,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod backend;
 mod browser_join;
-pub mod compat;
 mod config;
 mod handles;
 mod metrics_runtime;
@@ -44,12 +40,11 @@ mod runtime_support;
 mod training;
 mod validation;
 
-use compat::RuntimeProject;
 use handles::dedupe_peer_ids;
 
 pub use backend::{
-    EvalSplit, MergeModelCandidate, MetricReport, PatchOutcome, ProjectBackend, TrainError,
-    TrainingWindowOutcome, ValidationOutcome, WindowCtx, WindowReport,
+    EvalSplit, MergeModelCandidate, MetricReport, PatchOutcome, TrainError, TrainingWindowOutcome,
+    ValidationOutcome, WindowCtx, WindowReport,
 };
 pub use browser_join::{BrowserJoinPolicy, browser_join_policy_for_entry};
 pub use burn_p2p_checkpoint::{
@@ -1022,13 +1017,12 @@ impl<P> RunningNode<P> {
     }
 
     /// Performs the initialize local head operation.
-    pub fn initialize_local_head<B>(
+    pub fn initialize_local_head(
         &mut self,
         experiment: &ExperimentHandle,
     ) -> anyhow::Result<HeadDescriptor>
     where
-        B: ProjectBackend,
-        P: RuntimeProject<B>,
+        P: project_family::P2pWorkload,
     {
         let assignment = SlotAssignmentState::from_experiment(experiment);
         self.persist_primary_assignment(&assignment)?;
@@ -1552,15 +1546,15 @@ pub mod prelude {
         MainnetHandle, MergeCandidate, MergePlan, MetricReport, MicroShardPlan, MicroShardPlanner,
         MicroShardPlannerConfig, Node, NodeBuilder, NodeConfig, NodeRuntimeState,
         NodeTelemetrySnapshot, P2pProjectFamily, P2pWorkload, PatchClass, PatchOutcome,
-        PatchSupport, PatchValue, PlannedLease, ProjectBackend, ReleaseManifest, ReleasePolicy,
-        ReputationDecision, ReputationEngine, ReputationObservation, ReputationPolicy,
-        ReputationState, RevisionCompatibility, RevisionSpec, RoleSet, RunningNode, RuntimePatch,
-        RuntimeStatus, SecurityError, SelectedWorkloadProject, ShardAwareSampler, ShardCache,
-        ShardCostModel, ShardFetchEntry, ShardFetchManifest, SingleWorkloadProjectFamily,
-        SlotAssignmentState, SlotRuntimeState, StorageConfig, StudySpec, SyncPlan, SyncRequest,
-        TelemetryHandle, TrainError, TrainingWindowOutcome, UpdateAuditReport, UpstreamAdapter,
-        ValidationOutcome, ValidatorPolicy, WindowCtx, WindowReport, WorkBudget, checkpoint,
-        dataloader, experiment, limits, materialize_aggregate_artifact_bytes, security,
+        PatchSupport, PatchValue, PlannedLease, ReleaseManifest, ReleasePolicy, ReputationDecision,
+        ReputationEngine, ReputationObservation, ReputationPolicy, ReputationState,
+        RevisionCompatibility, RevisionSpec, RoleSet, RunningNode, RuntimePatch, RuntimeStatus,
+        SecurityError, SelectedWorkloadProject, ShardAwareSampler, ShardCache, ShardCostModel,
+        ShardFetchEntry, ShardFetchManifest, SingleWorkloadProjectFamily, SlotAssignmentState,
+        SlotRuntimeState, StorageConfig, StudySpec, SyncPlan, SyncRequest, TelemetryHandle,
+        TrainError, TrainingWindowOutcome, UpdateAuditReport, UpstreamAdapter, ValidationOutcome,
+        ValidatorPolicy, WindowCtx, WindowReport, WorkBudget, checkpoint, dataloader, experiment,
+        limits, materialize_aggregate_artifact_bytes, security,
     };
     pub use burn_p2p_core::{
         ArtifactDescriptor, ArtifactId, ArtifactKind, AssignmentLease, CapabilityCard,

@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use burn_p2p::compat::{P2pProject, RuntimeProject};
 use burn_p2p::{
     ActiveServiceSet, AdminMode, ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind,
     AssignmentLease, BrowserMode, CachedMicroShard, CapabilityEstimate, ChunkingScheme,
@@ -17,9 +16,9 @@ use burn_p2p::{
     DatasetRegistration, DatasetSizing, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest,
     EvalSplit, ExperimentDirectory, ExperimentDirectoryAnnouncement, ExperimentDirectoryEntry,
     FsArtifactStore, IdentityConnector, LoginRequest, MetricReport, MetricValue, MetricsMode,
-    NodeCertificateAuthority, NodeConfig, NodeEnrollmentRequest, OverlayTopic, PatchOutcome,
-    PatchSupport, PortalMode, PrincipalClaims, PrincipalId, PrincipalSession, ProfileMode,
-    ProjectBackend, RuntimePatch, ShardFetchManifest, SocialMode, StaticIdentityConnector,
+    NodeCertificateAuthority, NodeConfig, NodeEnrollmentRequest, OverlayTopic, P2pWorkload,
+    PatchOutcome, PatchSupport, PortalMode, PrincipalClaims, PrincipalId, PrincipalSession,
+    ProfileMode, RuntimePatch, ShardFetchManifest, SocialMode, StaticIdentityConnector,
     StaticPrincipalRecord, TrainError, TrustedIssuer, WindowCtx, WindowReport,
 };
 #[cfg(feature = "auth-external")]
@@ -61,6 +60,12 @@ use libp2p_identity::Keypair;
 use serde::{Deserialize, Serialize};
 
 include!("burn-p2p-bootstrap/daemon_types.rs");
+include!("burn-p2p-bootstrap/auth_connectors.rs");
+include!("burn-p2p-bootstrap/capability_manifest.rs");
+include!("burn-p2p-bootstrap/browser_surface.rs");
+include!("burn-p2p-bootstrap/key_material.rs");
+include!("burn-p2p-bootstrap/synthetic_dataset.rs");
+include!("burn-p2p-bootstrap/auth_state.rs");
 include!("burn-p2p-bootstrap/routes.rs");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -103,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             ..runtime
         };
-        let daemon = plan.spawn_embedded_daemon::<_, SyntheticBootstrapBackend>(
+        let daemon = plan.spawn_embedded_daemon(
             SyntheticBootstrapProject {
                 dataset_root,
                 learning_rate: 0.1,

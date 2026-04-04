@@ -1,4 +1,4 @@
-//! Public facade for the burn_p2p runtime, configuration, and compatibility surface.
+//! Public facade for the burn_p2p runtime, configuration, and workload surface.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -11,21 +11,12 @@ use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, ClientReleaseManifest, ContentId, DatasetRegistration,
     DatasetSizing, EvalSplit, FsArtifactStore, GenesisSpec, MetricReport, MetricValue,
-    MicroShardPlannerConfig, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
-    ProjectFamilyId, RoleSet, RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily,
-    StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
-    WorkloadId,
-    compat::{P2pProject, RuntimeProject},
+    MicroShardPlannerConfig, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, ProjectFamilyId,
+    RoleSet, RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig,
+    SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport, WorkloadId,
 };
 use chrono::Utc;
 use semver::Version;
-
-#[derive(Clone, Debug)]
-struct SyntheticBackend;
-
-impl ProjectBackend for SyntheticBackend {
-    type Device = String;
-}
 
 #[derive(Clone, Debug)]
 struct SyntheticProject {
@@ -34,7 +25,8 @@ struct SyntheticProject {
     target_model: f64,
 }
 
-impl P2pProject<SyntheticBackend> for SyntheticProject {
+impl P2pWorkload for SyntheticProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -101,9 +93,7 @@ impl P2pProject<SyntheticBackend> for SyntheticProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticBackend> for SyntheticProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -245,9 +235,7 @@ impl RuntimeProject<SyntheticBackend> for SyntheticProject {
         }
         Ok(Some(weighted_sum / total_weight))
     }
-}
 
-impl P2pWorkload<SyntheticBackend> for SyntheticProject {
     fn supported_workload(&self) -> SupportedWorkload {
         synthetic_workload_manifest()
     }
@@ -321,7 +309,7 @@ fn main() -> anyhow::Result<()> {
         burn_p2p::RevisionId::new("rev-1"),
     );
 
-    let validator_family = SingleWorkloadProjectFamily::<SyntheticBackend, _>::new(
+    let validator_family = SingleWorkloadProjectFamily::new(
         synthetic_release_manifest(),
         SyntheticProject {
             dataset_root: data_root.clone(),
@@ -350,13 +338,13 @@ fn main() -> anyhow::Result<()> {
     let validator_addr = validator.telemetry().snapshot().listen_addresses[0].clone();
 
     let mut validator = validator;
-    let genesis_head = validator.initialize_local_head::<SyntheticBackend>(&experiment)?;
+    let genesis_head = validator.initialize_local_head(&experiment)?;
     println!(
         "validator published genesis head {}",
         genesis_head.head_id.as_str()
     );
 
-    let trainer_family = SingleWorkloadProjectFamily::<SyntheticBackend, _>::new(
+    let trainer_family = SingleWorkloadProjectFamily::new(
         synthetic_release_manifest(),
         SyntheticProject {
             dataset_root: data_root,
@@ -377,7 +365,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let mut trainer = trainer;
-    let training = trainer.train_window_once::<SyntheticBackend>(&experiment)?;
+    let training = trainer.train_window_once(&experiment)?;
     println!(
         "trainer published candidate head {} with loss {:?}",
         training.head.head_id.as_str(),
@@ -385,7 +373,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let validated = validator
-        .validate_candidates_once::<SyntheticBackend>(&experiment)?
+        .validate_candidates_once(&experiment)?
         .expect("validator should certify the trainer update");
     println!(
         "validator certified head {} from {}",

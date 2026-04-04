@@ -19,8 +19,9 @@ pub use dashboard::{
     CheckpointDagEdgeKind, CheckpointDagNode, CheckpointDagView, CostPerformancePoint, EmaFlowStep,
     EmaFlowView, ExperimentMigrationView, ExperimentVariantView, HeadPromotionTimelineEntry,
     MergeQueueEntry, MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
-    OperatorConsoleView, OverlayStatusView, ReducerUtilizationView, ShardAssignmentCell,
-    ShardAssignmentHeatmap, StudyBoardView, UiChannel, UiEventEnvelope, UiPayload,
+    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OperatorTransferView,
+    OverlayStatusView, ReducerUtilizationView, ShardAssignmentCell, ShardAssignmentHeatmap,
+    StudyBoardView, UiChannel, UiEventEnvelope, UiPayload,
 };
 
 #[cfg(test)]

@@ -34,21 +34,10 @@ The public model is family/workload oriented. A minimal integration looks like:
 
 ```rust
 use burn_p2p::{
-    GenesisSpec, NodeBuilder, ProjectBackend, SingleWorkloadProjectFamily,
-    StorageConfig,
+    GenesisSpec, NodeBuilder, SingleWorkloadProjectFamily, StorageConfig,
 };
 
-#[derive(Clone, Debug)]
-struct Backend;
-
-impl ProjectBackend for Backend {
-    type Device = String;
-}
-
-let family = SingleWorkloadProjectFamily::<Backend, _>::new(
-    release_manifest,
-    workload,
-)?;
+let family = SingleWorkloadProjectFamily::new(release_manifest, workload)?;
 
 let node = NodeBuilder::new(family)
     .with_mainnet(GenesisSpec {
@@ -64,9 +53,6 @@ let node = NodeBuilder::new(family)
 
 For a complete working example, use
 [`crates/burn_p2p/examples/family_workload_minimal.rs`](crates/burn_p2p/examples/family_workload_minimal.rs).
-
-Legacy compatibility layers still exist under `burn_p2p::compat`, but they are
-compatibility adapters, not the recommended entry point for new code.
 
 ## examples
 
@@ -101,9 +87,6 @@ Durable docs live under [`docs/README.md`](docs/README.md).
 
 Useful starting points:
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/downstream-burn-guide.md`](docs/downstream-burn-guide.md)
-- [`docs/multi-workload-guide.md`](docs/multi-workload-guide.md)
-- [`docs/browser-runtime-guide.md`](docs/browser-runtime-guide.md)
 - [`docs/operator-runbook.md`](docs/operator-runbook.md)
-
-For fast-moving implementation details, prefer the code and tests over prose.

@@ -38,7 +38,8 @@ use burn_p2p_security::{
 };
 use burn_p2p_swarm::{PeerObservation, RuntimeTransportPolicy, SwarmError, SwarmStats};
 use burn_p2p_ui::{
-    CheckpointDagView, EmaFlowView, OperatorConsoleView, ParticipantPortalView, ParticipantProfile,
+    CheckpointDagView, EmaFlowView, OperatorConsoleView, OperatorDiagnosticsView,
+    OperatorPeerDiagnosticView, OperatorTransferView, ParticipantPortalView, ParticipantProfile,
     ShardAssignmentHeatmap, StudyBoardView,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -662,7 +663,7 @@ impl SimulationRunner {
         let overlays = build_overlay_statuses(&spec, &windows, admin_state.peer_store.stats(None))?;
         let merge_queue = build_merge_queue_entries(&windows);
         let operator_console = OperatorConsoleView::new(
-            diagnostics.clone(),
+            operator_diagnostics_view(&diagnostics),
             overlays,
             merge_queue,
             authority_actions,
@@ -1411,6 +1412,69 @@ fn build_benchmark_samples(
             value: spec.peer_count as f64,
         },
     ]
+}
+
+fn operator_diagnostics_view(diagnostics: &BootstrapDiagnostics) -> OperatorDiagnosticsView {
+    OperatorDiagnosticsView {
+        network_id: diagnostics.network_id.clone(),
+        preset_label: format!("{:?}", diagnostics.preset),
+        active_services: diagnostics
+            .services
+            .iter()
+            .map(|service| format!("{service:?}"))
+            .collect(),
+        roles: diagnostics.roles.clone(),
+        connected_peers: diagnostics.swarm.connected_peers,
+        connected_peer_ids: diagnostics.swarm.connected_peer_ids.clone(),
+        observed_peers: diagnostics.swarm.observed_peers.clone(),
+        network_estimate: diagnostics.swarm.network_estimate.clone(),
+        pinned_heads: diagnostics.pinned_heads.clone(),
+        pinned_artifacts: diagnostics.pinned_artifacts.clone(),
+        accepted_receipts: diagnostics.accepted_receipts as usize,
+        certified_merges: diagnostics.certified_merges as usize,
+        in_flight_transfers: diagnostics
+            .in_flight_transfers
+            .iter()
+            .map(|transfer| OperatorTransferView {
+                artifact_id: transfer.artifact_id.clone(),
+                phase_label: format!("{:?}", transfer.phase),
+                source_peers: transfer.source_peers.clone(),
+                provider_peer_id: transfer.provider_peer_id.clone(),
+                completed_chunk_count: transfer.completed_chunks.len(),
+                total_chunk_count: transfer.descriptor.as_ref().map(|d| d.chunks.len()),
+                started_at: transfer.started_at,
+                updated_at: transfer.updated_at,
+            })
+            .collect(),
+        admitted_peers: diagnostics.admitted_peers.clone(),
+        peer_diagnostics: diagnostics
+            .peer_diagnostics
+            .iter()
+            .map(|peer| OperatorPeerDiagnosticView {
+                peer_id: peer.peer_id.clone(),
+                connected: peer.connected,
+                observed_at: peer.observed_at,
+                trust_level: peer.trust_level.clone(),
+                rejection_reason: peer.rejection_reason.clone(),
+                reputation_score: peer.reputation_score,
+                reputation_decision: peer.reputation_decision.clone(),
+                quarantined: peer.quarantined,
+                banned: peer.banned,
+            })
+            .collect(),
+        rejected_peers: diagnostics.rejected_peers.clone(),
+        quarantined_peers: diagnostics.quarantined_peers.clone(),
+        banned_peers: diagnostics.banned_peers.clone(),
+        minimum_revocation_epoch: diagnostics.minimum_revocation_epoch,
+        last_error: diagnostics.last_error.clone(),
+        node_state_label: format!("{:?}", diagnostics.node_state),
+        slot_state_labels: diagnostics
+            .slot_states
+            .iter()
+            .map(|state| format!("{state:?}"))
+            .collect(),
+        captured_at: diagnostics.captured_at,
+    }
 }
 
 fn apply_chaos_events(

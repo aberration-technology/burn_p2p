@@ -4,7 +4,7 @@ use burn_p2p::{
     ArtifactTargetKind, BrowserJoinPolicy, BrowserRole, ExperimentDirectoryEntry, ExperimentId,
     ExperimentScope, RevisionId, browser_join_policy_for_entry,
 };
-use burn_p2p_bootstrap::{BrowserDirectorySnapshot, BrowserPortalSnapshot};
+use burn_p2p_core::{BrowserDirectorySnapshot, BrowserPortalSnapshot};
 use burn_p2p_ui::{
     AuthPortalView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
     BrowserExperimentPickerView, ExperimentPickerView, ParticipantPortalView,

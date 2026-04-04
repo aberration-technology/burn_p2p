@@ -8,13 +8,12 @@ use std::{
 };
 
 use anyhow::Context;
-use burn_p2p::compat::{P2pProject, RuntimeProject};
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, DatasetRegistration, DatasetSizing, EvalSplit,
     FsArtifactStore, GenesisSpec, MainnetHandle, MetricReport, MetricValue, MicroShardPlanner,
-    MicroShardPlannerConfig, NodeBuilder, PatchOutcome, PatchSupport, PeerRole, PeerRoleSet,
-    ProjectBackend, RuntimePatch, ShardFetchManifest, StorageConfig, SwarmAddress, TrainError,
+    MicroShardPlannerConfig, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, PeerRole,
+    PeerRoleSet, RuntimePatch, ShardFetchManifest, StorageConfig, SwarmAddress, TrainError,
     UpstreamAdapter, WindowCtx, WindowReport,
 };
 use chrono::Utc;
@@ -237,20 +236,14 @@ pub struct SyntheticSoakSummary {
 }
 
 #[derive(Clone, Debug)]
-struct SyntheticRuntimeBackend;
-
-impl ProjectBackend for SyntheticRuntimeBackend {
-    type Device = String;
-}
-
-#[derive(Clone, Debug)]
 struct SyntheticRuntimeProject {
     dataset_root: PathBuf,
     learning_rate: f64,
     target_model: f64,
 }
 
-impl P2pProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
+impl P2pWorkload for SyntheticRuntimeProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -317,9 +310,7 @@ impl P2pProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -460,6 +451,21 @@ impl RuntimeProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
             return Ok(Some(*base_model));
         }
         Ok(Some(weighted_sum / total_weight))
+    }
+
+    fn supported_workload(&self) -> burn_p2p::SupportedWorkload {
+        burn_p2p::SupportedWorkload {
+            workload_id: burn_p2p::WorkloadId::new("synthetic-runtime"),
+            workload_name: "Synthetic Runtime".into(),
+            model_program_hash: burn_p2p::ContentId::new("synthetic-program"),
+            checkpoint_format_hash: burn_p2p::ContentId::new("synthetic-json"),
+            supported_revision_family: burn_p2p::ContentId::new("synthetic-revision-family"),
+            resource_class: "cpu".into(),
+        }
+    }
+
+    fn model_schema_hash(&self) -> burn_p2p::ContentId {
+        burn_p2p::ContentId::new("synthetic-schema")
     }
 }
 
@@ -639,7 +645,7 @@ fn run_validator_process(
     let head = node
         .restore_experiment_head(experiment)?
         .map(Ok)
-        .unwrap_or_else(|| node.initialize_local_head::<SyntheticRuntimeBackend>(experiment))?;
+        .unwrap_or_else(|| node.initialize_local_head(experiment))?;
     report.initialized_head_id = Some(head.head_id.to_string());
     refresh_report_counts(report, &config.storage_root)?;
     write_report(&config.report_path, report)?;
@@ -654,7 +660,7 @@ fn run_validator_process(
             return Ok(());
         }
 
-        match node.validate_candidates_once::<SyntheticRuntimeBackend>(experiment) {
+        match node.validate_candidates_once(experiment) {
             Ok(Some(outcome)) => {
                 report.merged_head_id = Some(outcome.merged_head.head_id.to_string());
                 report.observed_canonical_head_id = report.merged_head_id.clone();
@@ -770,7 +776,7 @@ fn train_window_once_with_retry(
     let deadline = Instant::now() + timeout;
     let mut last_transient_error = None;
     while Instant::now() < deadline {
-        match node.train_window_once::<SyntheticRuntimeBackend>(experiment) {
+        match node.train_window_once(experiment) {
             Ok(outcome) => return Ok(outcome),
             Err(error) if is_transient_runtime_error(&error) => {
                 last_transient_error = Some(error.to_string());

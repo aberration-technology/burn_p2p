@@ -201,3 +201,272 @@ pub struct EdgeServiceManifest {
     /// The generated at.
     pub generated_at: DateTime<Utc>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a trusted issuer status.
+pub struct TrustedIssuerStatus {
+    /// The issuer peer ID.
+    pub issuer_peer_id: PeerId,
+    /// The issuer public key hex.
+    pub issuer_public_key_hex: String,
+    /// The active for new certificates.
+    pub active_for_new_certificates: bool,
+    /// The accepted for admission.
+    pub accepted_for_admission: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a reenrollment status.
+pub struct ReenrollmentStatus {
+    /// The reason.
+    pub reason: String,
+    /// The rotated at.
+    pub rotated_at: Option<DateTime<Utc>>,
+    /// The legacy issuer peer IDs.
+    pub legacy_issuer_peer_ids: BTreeSet<PeerId>,
+    /// The login path.
+    pub login_path: String,
+    /// The enroll path.
+    pub enroll_path: String,
+    /// The trust bundle path.
+    pub trust_bundle_path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a trust bundle export.
+pub struct TrustBundleExport {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The project family ID.
+    pub project_family_id: ProjectFamilyId,
+    /// The required release train hash.
+    pub required_release_train_hash: ContentId,
+    #[serde(default)]
+    /// The allowed target artifact hashes.
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    /// The minimum revocation epoch.
+    pub minimum_revocation_epoch: RevocationEpoch,
+    /// The active issuer peer ID.
+    pub active_issuer_peer_id: PeerId,
+    /// The issuers.
+    pub issuers: Vec<TrustedIssuerStatus>,
+    /// The reenrollment.
+    pub reenrollment: Option<ReenrollmentStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported browser edge modes.
+pub enum BrowserEdgeMode {
+    /// Runs in minimal mode.
+    Minimal,
+    /// Runs in peer mode.
+    Peer,
+    /// Runs in full mode.
+    Full,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents browser-edge path bindings.
+pub struct BrowserEdgePaths {
+    /// The capabilities path.
+    pub capabilities_path: String,
+    /// The portal snapshot path.
+    pub portal_snapshot_path: String,
+    /// The directory path.
+    pub directory_path: String,
+    /// The heads path.
+    pub heads_path: String,
+    /// The signed directory path.
+    pub signed_directory_path: String,
+    /// The leaderboard path.
+    pub leaderboard_path: String,
+    /// The signed leaderboard path.
+    pub signed_leaderboard_path: String,
+    /// The receipt submit path.
+    pub receipt_submit_path: String,
+    /// The login path.
+    pub login_path: String,
+    /// The callback path.
+    pub callback_path: String,
+    /// The enroll path.
+    pub enroll_path: String,
+    /// The event stream path.
+    pub event_stream_path: String,
+    /// The metrics path.
+    pub metrics_path: String,
+    /// The metrics snapshot path.
+    pub metrics_snapshot_path: String,
+    /// The metrics ledger path prefix.
+    pub metrics_ledger_path: String,
+    /// The live metrics stream path.
+    pub metrics_live_path: String,
+    /// The latest live metrics frame path.
+    pub metrics_live_latest_path: String,
+    /// The metrics catchup path prefix.
+    pub metrics_catchup_path: String,
+    /// The candidate-focused metrics path prefix.
+    pub metrics_candidates_path: String,
+    /// The disagreement-focused metrics path prefix.
+    pub metrics_disagreements_path: String,
+    /// The peer-window distribution metrics path prefix.
+    pub metrics_peer_windows_path: String,
+    /// The head-scoped metrics path prefix.
+    pub metrics_heads_path: String,
+    /// The experiment-scoped metrics path prefix.
+    pub metrics_experiments_path: String,
+    /// The artifact alias path prefix.
+    pub artifacts_aliases_path: String,
+    /// The artifact live event stream path.
+    pub artifacts_live_path: String,
+    /// The latest artifact live event path.
+    pub artifacts_live_latest_path: String,
+    /// The run-scoped artifact history path prefix.
+    pub artifacts_runs_path: String,
+    /// The head-scoped artifact detail path prefix.
+    pub artifacts_heads_path: String,
+    /// The artifact export path.
+    pub artifacts_export_path: String,
+    /// The artifact job path prefix.
+    pub artifacts_export_jobs_path: String,
+    /// The artifact download-ticket path.
+    pub artifacts_download_ticket_path: String,
+    /// The artifact download path prefix.
+    pub artifacts_download_path: String,
+    /// The trust bundle path.
+    pub trust_bundle_path: String,
+    /// The reenrollment path.
+    pub reenrollment_path: String,
+}
+
+impl Default for BrowserEdgePaths {
+    fn default() -> Self {
+        Self {
+            capabilities_path: "/capabilities".into(),
+            portal_snapshot_path: "/portal/snapshot".into(),
+            directory_path: "/directory".into(),
+            heads_path: "/heads".into(),
+            signed_directory_path: "/directory/signed".into(),
+            leaderboard_path: "/leaderboard".into(),
+            signed_leaderboard_path: "/leaderboard/signed".into(),
+            receipt_submit_path: "/receipts/browser".into(),
+            login_path: "/login/static".into(),
+            callback_path: "/callback/static".into(),
+            enroll_path: "/enroll".into(),
+            event_stream_path: "/events".into(),
+            metrics_path: "/metrics".into(),
+            metrics_snapshot_path: "/metrics/snapshot".into(),
+            metrics_ledger_path: "/metrics/ledger".into(),
+            metrics_live_path: "/metrics/live".into(),
+            metrics_live_latest_path: "/metrics/live/latest".into(),
+            metrics_catchup_path: "/metrics/catchup".into(),
+            metrics_candidates_path: "/metrics/candidates".into(),
+            metrics_disagreements_path: "/metrics/disagreements".into(),
+            metrics_peer_windows_path: "/metrics/peer-windows".into(),
+            metrics_heads_path: "/metrics/heads".into(),
+            metrics_experiments_path: "/metrics/experiments".into(),
+            artifacts_aliases_path: "/artifacts/aliases".into(),
+            artifacts_live_path: "/artifacts/live".into(),
+            artifacts_live_latest_path: "/artifacts/live/latest".into(),
+            artifacts_runs_path: "/artifacts/runs".into(),
+            artifacts_heads_path: "/artifacts/heads".into(),
+            artifacts_export_path: "/artifacts/export".into(),
+            artifacts_export_jobs_path: "/artifacts/export".into(),
+            artifacts_download_ticket_path: "/artifacts/download-ticket".into(),
+            artifacts_download_path: "/artifacts/download".into(),
+            trust_bundle_path: "/trust".into(),
+            reenrollment_path: "/reenrollment".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a browser transport surface.
+pub struct BrowserTransportSurface {
+    /// The webrtc direct.
+    pub webrtc_direct: bool,
+    /// The WebTransport gateway.
+    pub webtransport_gateway: bool,
+    /// The WSS fallback.
+    pub wss_fallback: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a browser login provider.
+pub struct BrowserLoginProvider {
+    /// The label.
+    pub label: String,
+    /// The login path.
+    pub login_path: String,
+    /// The callback path.
+    pub callback_path: Option<String>,
+    /// The device path.
+    pub device_path: Option<String>,
+}
+
+/// Defines the browser leaderboard identity alias.
+pub type BrowserLeaderboardIdentity = LeaderboardIdentity;
+/// Defines the browser leaderboard entry alias.
+pub type BrowserLeaderboardEntry = LeaderboardEntry;
+/// Defines the browser leaderboard snapshot alias.
+pub type BrowserLeaderboardSnapshot = LeaderboardSnapshot;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Captures a snapshot of browser directory.
+pub struct BrowserDirectorySnapshot {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The generated at.
+    pub generated_at: DateTime<Utc>,
+    /// The entries.
+    pub entries: Vec<ExperimentDirectoryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Captures a browser-facing portal snapshot.
+///
+/// This stays intentionally lean enough for browser clients and shared edge
+/// consumers. Bootstrap-specific diagnostics stay in deployment-facing view
+/// models rather than this transport contract.
+pub struct BrowserPortalSnapshot {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The edge mode.
+    pub edge_mode: BrowserEdgeMode,
+    /// The browser mode.
+    pub browser_mode: BrowserMode,
+    /// The social mode.
+    pub social_mode: SocialMode,
+    /// The profile mode.
+    pub profile_mode: ProfileMode,
+    /// The transports.
+    pub transports: BrowserTransportSurface,
+    /// The paths.
+    pub paths: BrowserEdgePaths,
+    /// The auth enabled.
+    pub auth_enabled: bool,
+    /// The login providers.
+    pub login_providers: Vec<BrowserLoginProvider>,
+    /// The required release train hash.
+    pub required_release_train_hash: Option<ContentId>,
+    /// The allowed target artifact hashes.
+    pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    /// The directory.
+    pub directory: BrowserDirectorySnapshot,
+    /// The heads.
+    pub heads: Vec<HeadDescriptor>,
+    /// The leaderboard.
+    pub leaderboard: BrowserLeaderboardSnapshot,
+    /// The trust bundle.
+    pub trust_bundle: Option<TrustBundleExport>,
+    /// The captured at.
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a browser receipt submission response.
+pub struct BrowserReceiptSubmissionResponse {
+    /// The accepted receipt IDs.
+    pub accepted_receipt_ids: Vec<ContributionReceiptId>,
+    /// The pending receipt count.
+    pub pending_receipt_count: usize,
+}

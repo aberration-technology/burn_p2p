@@ -5,11 +5,11 @@ use burn_p2p::{
     LoginRequest, LoginStart, NetworkId, NodeCertificate, PeerId, PrincipalId, PrincipalSession,
     ProjectFamilyId, RevisionId,
 };
-use burn_p2p_bootstrap::{
-    BrowserDirectorySnapshot, BrowserLeaderboardSnapshot, BrowserPortalSnapshot,
-    BrowserReceiptSubmissionResponse, TrustBundleExport,
+use burn_p2p_core::{
+    ArtifactLiveEvent, BrowserDirectorySnapshot, BrowserLeaderboardSnapshot, BrowserPortalSnapshot,
+    BrowserReceiptSubmissionResponse, MetricsLiveEvent, SchemaEnvelope, SignedPayload,
+    TrustBundleExport,
 };
-use burn_p2p_core::{ArtifactLiveEvent, MetricsLiveEvent, SchemaEnvelope, SignedPayload};
 use burn_p2p_metrics::{
     MetricsCatchupBundle, MetricsSnapshot, PeerWindowDistributionDetail,
     PeerWindowDistributionSummary,

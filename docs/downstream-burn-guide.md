@@ -13,13 +13,9 @@ Treat `burn_p2p` as a runtime that asks your project for three things:
 
 The forward-facing model is:
 
-- `P2pWorkload<B>`
+- `P2pWorkload`
 - `P2pProjectFamily`
 - `NodeBuilder`
-
-The older `P2pProject` and `RuntimeProject` traits now live under
-`burn_p2p::compat`. The current type hierarchy still depends on them, but they
-should be viewed as compatibility shims rather than the conceptual entry point.
 
 ## Minimal Integration Flow
 
@@ -34,17 +30,14 @@ Example reference:
 
 ### 2. Implement the runtime hooks
 
-Today, a complete integration still implements:
+Today, a complete integration implements:
 
-- `ProjectBackend`
-- `compat::P2pProject<B>`
-- `compat::RuntimeProject<B>`
-- `P2pWorkload<B>`
+- `P2pWorkload`
 
 Practical guidance:
 
-- put the Burn-specific model/batch logic on `P2pProject`
-- put device, dataset, and checkpoint/materialization hooks on `RuntimeProject`
+- put Burn-specific model/batch logic on `P2pWorkload`
+- put `type Device`, dataset, and checkpoint/materialization hooks on `P2pWorkload`
 - put workload metadata and role support on `P2pWorkload`
 
 ## 3. Wrap the workload in a project family
@@ -52,7 +45,7 @@ Practical guidance:
 If you have one workload, use `SingleWorkloadProjectFamily`.
 
 ```rust
-let family = SingleWorkloadProjectFamily::<TinyBackend, _>::new(
+let family = SingleWorkloadProjectFamily::new(
     release_manifest,
     workload,
 );
@@ -107,9 +100,6 @@ integrations should document:
 
 ## Current Caveats
 
-- The conceptual forward path is `P2pProjectFamily` + `P2pWorkload`, but the
-  current concrete examples still implement `P2pProject` and `RuntimeProject`
-  because the trait hierarchy has not been fully collapsed yet.
 - The facade crate is still large, so browsing docs through the source can feel
   heavier than it should.
 - Browser and social surfaces are optional deployment services. They are not
@@ -131,7 +121,6 @@ integrations should document:
 This guide is the canonical downstream path for now, but it should evolve
 toward:
 
-- a thinner workload trait hierarchy so compatibility traits can stay entirely
-  internal
+- a thinner overall facade surface
 - a dedicated multi-workload guide
 - example compilation in CI as a hard gate

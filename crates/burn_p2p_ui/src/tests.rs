@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use burn_p2p_bootstrap::{BootstrapDiagnostics, BootstrapPreset, BootstrapService};
 use burn_p2p_core::{
     AggregateEnvelope, AggregateStats, AggregateTier, ArtifactId, AssignmentLease, AuthProvider,
     BrowserRole, ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
@@ -10,7 +9,7 @@ use burn_p2p_core::{
     PeerRole, PeerRoleSet, ReducerLoadReport, ReductionCertificate, RevisionId, RevocationEpoch,
     StudyId, WindowActivation, WindowId,
 };
-use burn_p2p_security::PeerTrustLevel;
+use burn_p2p_security::{PeerTrustLevel, ReputationDecision};
 use burn_p2p_swarm::{AlertNotice, AlertSeverity, OverlayChannel, OverlayTopic};
 use chrono::{Duration, Utc};
 
@@ -21,9 +20,9 @@ use crate::{
     EmaFlowView, ExperimentMigrationView, ExperimentPickerView, ExperimentVariantView,
     GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView, MergeQueueEntry,
     MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
-    OperatorConsoleView, OverlayStatusView, ParticipantPortalView, ParticipantProfile,
-    ReducerUtilizationView, ShardAssignmentHeatmap, StudyBoardView, TrustBadgeView, UiChannel,
-    UiEventEnvelope, UiPayload,
+    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView,
+    ParticipantPortalView, ParticipantProfile, ReducerUtilizationView, ShardAssignmentHeatmap,
+    StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
 };
 
 #[test]
@@ -221,24 +220,22 @@ fn heatmap_aggregates_microshards_by_peer() {
 #[test]
 fn operator_console_and_study_board_are_framework_neutral_contracts() {
     let now = Utc::now();
-    let diagnostics = BootstrapDiagnostics {
+    let diagnostics = OperatorDiagnosticsView {
         network_id: NetworkId::new("network"),
-        preset: BootstrapPreset::AllInOne,
-        services: BTreeSet::from([BootstrapService::Authority]),
+        preset_label: "AllInOne".into(),
+        active_services: vec!["Authority".into()],
         roles: PeerRoleSet::default_trainer(),
-        swarm: burn_p2p_swarm::SwarmStats {
+        connected_peers: 3,
+        connected_peer_ids: vec![PeerId::new("a"), PeerId::new("b"), PeerId::new("c")],
+        observed_peers: vec![PeerId::new("a"), PeerId::new("b"), PeerId::new("c")],
+        network_estimate: NetworkEstimate {
             connected_peers: 3,
-            connected_peer_ids: vec![PeerId::new("a"), PeerId::new("b"), PeerId::new("c")],
-            observed_peers: vec![PeerId::new("a"), PeerId::new("b"), PeerId::new("c")],
-            network_estimate: NetworkEstimate {
-                connected_peers: 3,
-                observed_peers: 3,
-                estimated_network_size: 4.0,
-                estimated_total_vram_bytes: Some(1),
-                estimated_total_flops: Some(2.0),
-                eta_lower_seconds: Some(10),
-                eta_upper_seconds: Some(20),
-            },
+            observed_peers: 3,
+            estimated_network_size: 4.0,
+            estimated_total_vram_bytes: Some(1),
+            estimated_total_flops: Some(2.0),
+            eta_lower_seconds: Some(10),
+            eta_upper_seconds: Some(20),
         },
         pinned_heads: BTreeSet::from([HeadId::new("head")]),
         pinned_artifacts: BTreeSet::from([ArtifactId::new("artifact")]),
@@ -246,14 +243,14 @@ fn operator_console_and_study_board_are_framework_neutral_contracts() {
         certified_merges: 2,
         in_flight_transfers: Vec::new(),
         admitted_peers: BTreeSet::from([PeerId::new("a"), PeerId::new("b")]),
-        peer_diagnostics: vec![burn_p2p_bootstrap::BootstrapPeerDiagnostic {
+        peer_diagnostics: vec![OperatorPeerDiagnosticView {
             peer_id: PeerId::new("a"),
             connected: true,
             observed_at: Some(now),
             trust_level: Some(PeerTrustLevel::PolicyCompliant),
             rejection_reason: None,
             reputation_score: Some(1.25),
-            reputation_decision: Some(burn_p2p_security::ReputationDecision::Allow),
+            reputation_decision: Some(ReputationDecision::Allow),
             quarantined: false,
             banned: false,
         }],
@@ -265,8 +262,8 @@ fn operator_console_and_study_board_are_framework_neutral_contracts() {
         banned_peers: BTreeSet::new(),
         minimum_revocation_epoch: Some(RevocationEpoch(3)),
         last_error: Some("peer rejected".into()),
-        node_state: burn_p2p_bootstrap::NodeRuntimeState::IdleReady,
-        slot_states: vec![burn_p2p_bootstrap::SlotRuntimeState::Unassigned],
+        node_state_label: "IdleReady".into(),
+        slot_state_labels: vec!["Unassigned".into()],
         captured_at: now,
     };
 

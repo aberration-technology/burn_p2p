@@ -1,14 +1,11 @@
-use std::marker::PhantomData;
-
 use semver::Version;
 
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ClientReleaseManifest,
     ContentId, EvalSplit, FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy,
     MetricReport, MetricValue, NetworkManifest, NodeBuilder, PatchOutcome, PatchSupport,
-    ProjectBackend, ProjectFamilyId, RevisionManifest, RuntimePatch, SupportedWorkload, WindowCtx,
-    WindowReport, WorkloadId,
-    compat::{P2pProject, RuntimeProject},
+    ProjectFamilyId, RevisionManifest, RuntimePatch, SupportedWorkload, WindowCtx, WindowReport,
+    WorkloadId,
 };
 
 /// Defines one executable workload inside a project family.
@@ -18,11 +15,107 @@ use crate::{
 /// usually implement this trait once per trainable model or execution flavor,
 /// then expose those workloads through a [`P2pProjectFamily`].
 ///
-/// This is the forward integration seam for new embeddings. The older
-/// [`crate::compat::RuntimeProject`] trait still underpins the execution
-/// callbacks, but callers should select workloads through the family/workload
-/// model rather than treating those compatibility traits as the public API.
-pub trait P2pWorkload<B: ProjectBackend>: RuntimeProject<B> {
+/// This is the forward integration seam for new embeddings.
+pub trait P2pWorkload {
+    /// Defines the device alias.
+    type Device;
+    /// Defines the model alias.
+    type Model;
+    /// Defines the batch alias.
+    type Batch;
+    /// Defines the window stats alias.
+    type WindowStats;
+
+    /// Initializes a model instance for the provided backend device.
+    fn init_model(&self, device: &Self::Device) -> Self::Model;
+
+    /// Benchmarks the workload and reports the runtime capability estimate.
+    fn benchmark(&self, model: &Self::Model, device: &Self::Device) -> crate::CapabilityEstimate;
+
+    /// Runs one training window for the leased batches.
+    fn train_window(
+        &self,
+        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
+    ) -> Result<WindowReport<Self::WindowStats>, crate::TrainError>;
+
+    /// Evaluates the model on the requested dataset split.
+    fn evaluate(&self, model: &Self::Model, split: EvalSplit) -> MetricReport;
+
+    /// Applies a runtime patch to the workload implementation.
+    fn apply_patch(&mut self, patch: &RuntimePatch) -> PatchOutcome;
+
+    /// Returns the patch classes accepted by the workload implementation.
+    fn supported_patch_classes(&self) -> PatchSupport;
+
+    /// Returns the runtime device used by the workload.
+    fn runtime_device(&self) -> Self::Device;
+
+    /// Returns the dataset registration used to plan microshards.
+    fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration>;
+
+    /// Builds the microshard plan for the registered dataset.
+    fn microshard_plan(
+        &self,
+        registration: &crate::DatasetRegistration,
+    ) -> anyhow::Result<crate::MicroShardPlan>;
+
+    /// Loads training batches for the lease from cached microshards.
+    fn load_batches(
+        &self,
+        lease: &AssignmentLease,
+        cached_microshards: &[CachedMicroShard],
+    ) -> anyhow::Result<Vec<Self::Batch>>;
+
+    /// Loads a model artifact from the artifact store into the runtime model representation.
+    fn load_model_artifact(
+        &self,
+        model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        store: &FsArtifactStore,
+        device: &Self::Device,
+    ) -> anyhow::Result<Self::Model>;
+
+    /// Materializes a model artifact into the checkpoint store.
+    fn materialize_model_artifact(
+        &self,
+        model: &Self::Model,
+        artifact_kind: ArtifactKind,
+        head_id: crate::HeadId,
+        base_head_id: Option<crate::HeadId>,
+        store: &FsArtifactStore,
+    ) -> anyhow::Result<ArtifactDescriptor>;
+
+    /// Returns receipt metrics for a completed training window.
+    fn contribution_metrics(
+        &self,
+        report: &WindowReport<Self::WindowStats>,
+    ) -> std::collections::BTreeMap<String, MetricValue>;
+
+    /// Returns the contribution weight used for receipt scoring.
+    fn contribution_weight(&self, _report: &WindowReport<Self::WindowStats>) -> f64 {
+        1.0
+    }
+
+    /// Optionally merges candidate models into one merged model.
+    fn merge_candidate_models(
+        &self,
+        _base_model: &Self::Model,
+        _candidates: &[MergeModelCandidate<'_, Self::Model>],
+        _policy: MergePolicy,
+    ) -> anyhow::Result<Option<Self::Model>> {
+        Ok(None)
+    }
+
+    /// Optionally applies single-root EMA after merge selection.
+    fn apply_single_root_ema(
+        &self,
+        _base_model: &Self::Model,
+        merged_model: Self::Model,
+        _policy: MergePolicy,
+    ) -> anyhow::Result<Self::Model> {
+        Ok(merged_model)
+    }
+
     /// Performs the supported workload operation.
     fn supported_workload(&self) -> SupportedWorkload;
 
@@ -85,10 +178,8 @@ pub trait P2pWorkload<B: ProjectBackend>: RuntimeProject<B> {
 /// directory entries can switch between workloads without forcing a full
 /// reconnect.
 pub trait P2pProjectFamily {
-    /// Defines the backend alias.
-    type Backend: ProjectBackend;
     /// Defines the workload alias.
-    type Workload: P2pWorkload<Self::Backend>;
+    type Workload: P2pWorkload;
 
     /// Performs the project family ID operation.
     fn project_family_id(&self) -> &ProjectFamilyId;
@@ -164,16 +255,14 @@ where
 ///
 /// This is the simplest way to migrate an existing Burn integration onto the
 /// family/workload model without building a custom workload registry.
-pub struct SingleWorkloadProjectFamily<B, W> {
+pub struct SingleWorkloadProjectFamily<W> {
     release_manifest: ClientReleaseManifest,
     workload: W,
-    _backend: PhantomData<fn() -> B>,
 }
 
-impl<B, W> SingleWorkloadProjectFamily<B, W>
+impl<W> SingleWorkloadProjectFamily<W>
 where
-    B: ProjectBackend,
-    W: P2pWorkload<B> + Clone,
+    W: P2pWorkload + Clone,
 {
     /// Creates a new value.
     pub fn new(release_manifest: ClientReleaseManifest, workload: W) -> anyhow::Result<Self> {
@@ -195,7 +284,6 @@ where
         Ok(Self {
             release_manifest,
             workload,
-            _backend: PhantomData,
         })
     }
 
@@ -210,12 +298,10 @@ where
     }
 }
 
-impl<B, W> P2pProjectFamily for SingleWorkloadProjectFamily<B, W>
+impl<W> P2pProjectFamily for SingleWorkloadProjectFamily<W>
 where
-    B: ProjectBackend,
-    W: P2pWorkload<B> + Clone,
+    W: P2pWorkload + Clone,
 {
-    type Backend = B;
     type Workload = W;
 
     fn project_family_id(&self) -> &ProjectFamilyId {
@@ -239,26 +325,26 @@ where
     }
 }
 
-impl<B, W> P2pProject<B> for SingleWorkloadProjectFamily<B, W>
+impl<W> P2pWorkload for SingleWorkloadProjectFamily<W>
 where
-    B: ProjectBackend,
-    W: P2pWorkload<B> + Clone,
+    W: P2pWorkload + Clone,
 {
+    type Device = W::Device;
     type Model = W::Model;
     type Batch = W::Batch;
     type WindowStats = W::WindowStats;
 
-    fn init_model(&self, device: &B::Device) -> Self::Model {
+    fn init_model(&self, device: &Self::Device) -> Self::Model {
         self.workload.init_model(device)
     }
 
-    fn benchmark(&self, model: &Self::Model, device: &B::Device) -> crate::CapabilityEstimate {
+    fn benchmark(&self, model: &Self::Model, device: &Self::Device) -> crate::CapabilityEstimate {
         self.workload.benchmark(model, device)
     }
 
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<B::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, crate::TrainError> {
         self.workload.train_window(ctx)
     }
@@ -274,14 +360,8 @@ where
     fn supported_patch_classes(&self) -> PatchSupport {
         self.workload.supported_patch_classes()
     }
-}
 
-impl<B, W> RuntimeProject<B> for SingleWorkloadProjectFamily<B, W>
-where
-    B: ProjectBackend,
-    W: P2pWorkload<B> + Clone,
-{
-    fn runtime_device(&self) -> B::Device {
+    fn runtime_device(&self) -> Self::Device {
         self.workload.runtime_device()
     }
 
@@ -309,7 +389,7 @@ where
         model: Self::Model,
         descriptor: &ArtifactDescriptor,
         store: &FsArtifactStore,
-        device: &B::Device,
+        device: &Self::Device,
     ) -> anyhow::Result<Self::Model> {
         self.workload
             .load_model_artifact(model, descriptor, store, device)
@@ -357,31 +437,36 @@ where
         self.workload
             .apply_single_root_ema(base_model, merged_model, policy)
     }
+
+    fn supported_workload(&self) -> SupportedWorkload {
+        self.workload.supported_workload()
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        self.workload.model_schema_hash()
+    }
 }
 
-impl<P> P2pProject<P::Backend> for SelectedWorkloadProject<P>
+impl<P> P2pWorkload for SelectedWorkloadProject<P>
 where
     P: P2pProjectFamily,
 {
-    type Model = <P::Workload as P2pProject<P::Backend>>::Model;
-    type Batch = <P::Workload as P2pProject<P::Backend>>::Batch;
-    type WindowStats = <P::Workload as P2pProject<P::Backend>>::WindowStats;
+    type Device = <P::Workload as P2pWorkload>::Device;
+    type Model = <P::Workload as P2pWorkload>::Model;
+    type Batch = <P::Workload as P2pWorkload>::Batch;
+    type WindowStats = <P::Workload as P2pWorkload>::WindowStats;
 
-    fn init_model(&self, device: &<P::Backend as ProjectBackend>::Device) -> Self::Model {
+    fn init_model(&self, device: &Self::Device) -> Self::Model {
         self.workload.init_model(device)
     }
 
-    fn benchmark(
-        &self,
-        model: &Self::Model,
-        device: &<P::Backend as ProjectBackend>::Device,
-    ) -> crate::CapabilityEstimate {
+    fn benchmark(&self, model: &Self::Model, device: &Self::Device) -> crate::CapabilityEstimate {
         self.workload.benchmark(model, device)
     }
 
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<<P::Backend as ProjectBackend>::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, crate::TrainError> {
         self.workload.train_window(ctx)
     }
@@ -397,13 +482,8 @@ where
     fn supported_patch_classes(&self) -> PatchSupport {
         self.workload.supported_patch_classes()
     }
-}
 
-impl<P> RuntimeProject<P::Backend> for SelectedWorkloadProject<P>
-where
-    P: P2pProjectFamily,
-{
-    fn runtime_device(&self) -> <P::Backend as ProjectBackend>::Device {
+    fn runtime_device(&self) -> Self::Device {
         self.workload.runtime_device()
     }
 
@@ -431,7 +511,7 @@ where
         model: Self::Model,
         descriptor: &ArtifactDescriptor,
         store: &FsArtifactStore,
-        device: &<P::Backend as ProjectBackend>::Device,
+        device: &Self::Device,
     ) -> anyhow::Result<Self::Model> {
         self.workload
             .load_model_artifact(model, descriptor, store, device)
@@ -478,6 +558,14 @@ where
     ) -> anyhow::Result<Self::Model> {
         self.workload
             .apply_single_root_ema(base_model, merged_model, policy)
+    }
+
+    fn supported_workload(&self) -> SupportedWorkload {
+        self.workload.supported_workload()
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        self.workload.model_schema_hash()
     }
 }
 
@@ -631,24 +719,16 @@ mod tests {
 
     use chrono::Utc;
 
-    use crate::compat::{P2pProject, RuntimeProject};
     use crate::{
         ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, CapabilityEstimate,
         ClientPlatform, ClientReleaseManifest, ContentId, DatasetRegistration, EvalSplit,
         ExperimentResourceRequirements, FsArtifactStore, MetricReport, MetricValue, NetworkId,
-        NetworkManifest, NodeBuilder, P2pProjectFamily, PatchOutcome, PatchSupport, ProjectBackend,
+        NetworkManifest, NodeBuilder, P2pProjectFamily, PatchOutcome, PatchSupport,
         ProjectFamilyId, RevisionId, RevisionManifest, RuntimePatch, SupportedWorkload,
         WindowActivation, WindowCtx, WindowReport, WorkloadId,
     };
 
     use super::{P2pWorkload, SingleWorkloadProjectFamily};
-
-    #[derive(Clone, Debug)]
-    struct TestBackend;
-
-    impl ProjectBackend for TestBackend {
-        type Device = ();
-    }
 
     #[derive(Clone, Debug)]
     struct TestWorkload {
@@ -670,7 +750,8 @@ mod tests {
         }
     }
 
-    impl P2pProject<TestBackend> for TestWorkload {
+    impl P2pWorkload for TestWorkload {
+        type Device = ();
         type Model = ();
         type Batch = ();
         type WindowStats = BTreeMap<String, MetricValue>;
@@ -714,9 +795,7 @@ mod tests {
                 cold: false,
             }
         }
-    }
 
-    impl RuntimeProject<TestBackend> for TestWorkload {
         fn runtime_device(&self) {}
 
         fn dataset_registration(&self) -> anyhow::Result<DatasetRegistration> {
@@ -765,9 +844,7 @@ mod tests {
         ) -> BTreeMap<String, MetricValue> {
             BTreeMap::new()
         }
-    }
 
-    impl P2pWorkload<TestBackend> for TestWorkload {
         fn supported_workload(&self) -> SupportedWorkload {
             self.workload_manifest()
         }
@@ -844,7 +921,7 @@ mod tests {
             resource_class: "cpu".into(),
         });
 
-        let error = SingleWorkloadProjectFamily::<TestBackend, _>::new(manifest, workload)
+        let error = SingleWorkloadProjectFamily::new(manifest, workload)
             .expect_err("manifest mismatch should be rejected");
         assert!(error.to_string().contains("manifest does not match"));
     }
@@ -857,8 +934,7 @@ mod tests {
             checkpoint_format_hash: ContentId::new("format-a"),
         };
         let manifest = release_manifest(workload.supported_workload());
-        let family =
-            SingleWorkloadProjectFamily::<TestBackend, _>::new(manifest, workload).expect("family");
+        let family = SingleWorkloadProjectFamily::new(manifest, workload).expect("family");
 
         let builder = NodeBuilder::new(family)
             .for_workload(WorkloadId::new("compiled"))
@@ -874,8 +950,7 @@ mod tests {
             checkpoint_format_hash: ContentId::new("format-a"),
         };
         let manifest = release_manifest(workload.supported_workload());
-        let family =
-            SingleWorkloadProjectFamily::<TestBackend, _>::new(manifest, workload).expect("family");
+        let family = SingleWorkloadProjectFamily::new(manifest, workload).expect("family");
         let mut wrong_network = network_manifest();
         wrong_network.project_family_id = ProjectFamilyId::new("family-b");
 
@@ -893,8 +968,7 @@ mod tests {
             checkpoint_format_hash: ContentId::new("format-a"),
         };
         let manifest = release_manifest(workload.supported_workload());
-        let family =
-            SingleWorkloadProjectFamily::<TestBackend, _>::new(manifest, workload).expect("family");
+        let family = SingleWorkloadProjectFamily::new(manifest, workload).expect("family");
         let network = network_manifest();
 
         let builder = NodeBuilder::new(family)
@@ -925,7 +999,6 @@ mod tests {
         }
 
         impl P2pProjectFamily for MultiWorkloadFamily {
-            type Backend = TestBackend;
             type Workload = TestWorkload;
 
             fn project_family_id(&self) -> &ProjectFamilyId {
@@ -979,8 +1052,7 @@ mod tests {
             checkpoint_format_hash: ContentId::new("format-a"),
         };
         let manifest = release_manifest(workload.supported_workload());
-        let family =
-            SingleWorkloadProjectFamily::<TestBackend, _>::new(manifest, workload).expect("family");
+        let family = SingleWorkloadProjectFamily::new(manifest, workload).expect("family");
 
         let node = NodeBuilder::new(family)
             .with_network(network_manifest())

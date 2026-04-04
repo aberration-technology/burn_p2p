@@ -911,7 +911,6 @@ name = "burn_p2p_browser"
 version = "0.21.0-pre.2"
 dependencies = [
  "burn_p2p",
- "burn_p2p_bootstrap",
  "burn_p2p_core",
  "burn_p2p_metrics",
  "burn_p2p_publish",
@@ -1131,7 +1130,6 @@ dependencies = [
 name = "burn_p2p_ui"
 version = "0.21.0-pre.2"
 dependencies = [
- "burn_p2p_bootstrap",
  "burn_p2p_core",
  "burn_p2p_experiment",
  "burn_p2p_security",

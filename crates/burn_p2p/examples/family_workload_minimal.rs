@@ -1,8 +1,6 @@
 //! Minimal family/workload-oriented integration example for a downstream Burn app.
 //!
 //! The forward-facing concepts are the workload, the project family, and the node builder.
-//! The legacy runtime traits still exist under `burn_p2p::compat` and are implemented below
-//! only because the current workload adapter layer still depends on them internally.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -10,27 +8,20 @@ use burn_p2p::{
     AssignmentLease, CachedMicroShard, CapabilityEstimate, ClientReleaseManifest, ContentId,
     DatasetManifest, DatasetRegistration, DatasetSizing, DatasetView, EvalSplit, FsArtifactStore,
     GenesisSpec, MetricReport, MetricValue, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport,
-    PeerRole, Precision, ProjectBackend, ProjectFamilyId, RevisionId, RuntimePatch,
-    SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter,
-    WindowCtx, WindowReport, WorkloadId,
-    compat::{P2pProject, RuntimeProject},
+    PeerRole, Precision, ProjectFamilyId, RevisionId, RuntimePatch, SingleWorkloadProjectFamily,
+    StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    WorkloadId,
 };
 use chrono::Utc;
 use semver::Version;
-
-#[derive(Clone, Debug)]
-struct ExampleBackend;
-
-impl ProjectBackend for ExampleBackend {
-    type Device = String;
-}
 
 #[derive(Clone, Debug)]
 struct ExampleWorkload {
     dataset_root: PathBuf,
 }
 
-impl P2pProject<ExampleBackend> for ExampleWorkload {
+impl P2pWorkload for ExampleWorkload {
+    type Device = String;
     type Model = f32;
     type Batch = f32;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -81,9 +72,7 @@ impl P2pProject<ExampleBackend> for ExampleWorkload {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<ExampleBackend> for ExampleWorkload {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -178,9 +167,7 @@ impl RuntimeProject<ExampleBackend> for ExampleWorkload {
     ) -> BTreeMap<String, MetricValue> {
         report.stats.clone()
     }
-}
 
-impl P2pWorkload<ExampleBackend> for ExampleWorkload {
     fn supported_workload(&self) -> SupportedWorkload {
         SupportedWorkload {
             workload_id: WorkloadId::new("minimal-workload"),
@@ -202,7 +189,7 @@ fn main() -> anyhow::Result<()> {
         dataset_root: std::env::temp_dir().join("burn-p2p-minimal-example"),
     };
     let supported_workload = workload.supported_workload();
-    let family = SingleWorkloadProjectFamily::<ExampleBackend, _>::new(
+    let family = SingleWorkloadProjectFamily::new(
         ClientReleaseManifest {
             project_family_id: ProjectFamilyId::new("minimal-family"),
             release_train_hash: ContentId::new("release-train-1"),

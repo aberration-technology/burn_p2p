@@ -372,20 +372,14 @@ fn default_external_principal_header() -> String {
 }
 
 #[derive(Clone, Debug)]
-struct SyntheticBootstrapBackend;
-
-impl ProjectBackend for SyntheticBootstrapBackend {
-    type Device = String;
-}
-
-#[derive(Clone, Debug)]
 struct SyntheticBootstrapProject {
     dataset_root: PathBuf,
     learning_rate: f64,
     target_model: f64,
 }
 
-impl P2pProject<SyntheticBootstrapBackend> for SyntheticBootstrapProject {
+impl P2pWorkload for SyntheticBootstrapProject {
+    type Device = String;
     type Model = f64;
     type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
@@ -452,9 +446,7 @@ impl P2pProject<SyntheticBootstrapBackend> for SyntheticBootstrapProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<SyntheticBootstrapBackend> for SyntheticBootstrapProject {
     fn runtime_device(&self) -> String {
         "cpu".into()
     }
@@ -597,6 +589,21 @@ impl RuntimeProject<SyntheticBootstrapBackend> for SyntheticBootstrapProject {
             return Ok(Some(*base_model));
         }
         Ok(Some(weighted_sum / total_weight))
+    }
+
+    fn supported_workload(&self) -> burn_p2p::SupportedWorkload {
+        burn_p2p::SupportedWorkload {
+            workload_id: burn_p2p::WorkloadId::new("bootstrap-synthetic"),
+            workload_name: "Bootstrap Synthetic".into(),
+            model_program_hash: ContentId::new("bootstrap-synthetic-program"),
+            checkpoint_format_hash: ContentId::new("synthetic-json"),
+            supported_revision_family: ContentId::new("bootstrap-synthetic-revision-family"),
+            resource_class: "cpu".into(),
+        }
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        ContentId::new("bootstrap-synthetic-schema")
     }
 }
 

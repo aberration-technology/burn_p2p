@@ -1,4 +1,4 @@
-//! Public facade for the burn_p2p runtime, configuration, and compatibility surface.
+//! Public facade for the burn_p2p runtime, configuration, and workload surface.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -17,10 +17,9 @@ use burn_p2p::{
     AssignmentLease, CachedMicroShard, CapabilityEstimate, ClientReleaseManifest, ContentId,
     DatasetRegistration, DatasetSizing, EvalSplit, FsArtifactStore, GenesisSpec, MergePolicy,
     MetricReport, MetricValue, NetworkManifest, NodeBuilder, P2pWorkload, PatchOutcome,
-    PatchSupport, ProjectBackend, ProjectFamilyId, RoleSet, RuntimePatch, ShardFetchManifest,
+    PatchSupport, ProjectFamilyId, RoleSet, RuntimePatch, ShardFetchManifest,
     SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainError, WindowCtx,
     WindowReport, WorkloadId,
-    compat::{P2pProject, RuntimeProject},
 };
 use chrono::Utc;
 use semver::Version;
@@ -62,24 +61,17 @@ fn shift_model<B: Backend>(model: TinyModel<B>, delta: f32) -> TinyModel<B> {
     model.map(&mut mapper)
 }
 
-impl ProjectBackend for TinyProject {
+impl P2pWorkload for TinyProject {
     type Device = <RuntimeBackend as Backend>::Device;
-}
-
-impl P2pProject<TinyProject> for TinyProject {
     type Model = TinyModel<RuntimeBackend>;
     type Batch = f32;
     type WindowStats = BTreeMap<String, MetricValue>;
 
-    fn init_model(&self, device: &<TinyProject as ProjectBackend>::Device) -> Self::Model {
+    fn init_model(&self, device: &Self::Device) -> Self::Model {
         TinyModel::<RuntimeBackend>::new(device)
     }
 
-    fn benchmark(
-        &self,
-        _model: &Self::Model,
-        _device: &<TinyProject as ProjectBackend>::Device,
-    ) -> CapabilityEstimate {
+    fn benchmark(&self, _model: &Self::Model, _device: &Self::Device) -> CapabilityEstimate {
         CapabilityEstimate {
             preferred_backends: vec!["ndarray".into()],
             work_units_per_second: 32.0,
@@ -89,7 +81,7 @@ impl P2pProject<TinyProject> for TinyProject {
 
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<<TinyProject as ProjectBackend>::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
         let batch_sum = ctx.batches.iter().copied().sum::<f32>() as f64;
         ctx.model = shift_model(ctx.model.clone(), (batch_sum as f32) / 100.0);
@@ -135,10 +127,8 @@ impl P2pProject<TinyProject> for TinyProject {
             cold: false,
         }
     }
-}
 
-impl RuntimeProject<TinyProject> for TinyProject {
-    fn runtime_device(&self) -> <TinyProject as ProjectBackend>::Device {
+    fn runtime_device(&self) -> Self::Device {
         <RuntimeBackend as Backend>::Device::default()
     }
 
@@ -206,7 +196,7 @@ impl RuntimeProject<TinyProject> for TinyProject {
         model: Self::Model,
         descriptor: &burn_p2p::ArtifactDescriptor,
         store: &FsArtifactStore,
-        device: &<TinyProject as ProjectBackend>::Device,
+        device: &Self::Device,
     ) -> anyhow::Result<Self::Model> {
         let _ = device;
         Ok(burn_p2p::burn::load_store_bytes_runtime_artifact::<
@@ -295,9 +285,7 @@ impl RuntimeProject<TinyProject> for TinyProject {
             self.ema_decay,
         )?)
     }
-}
 
-impl P2pWorkload<TinyProject> for TinyProject {
     fn supported_workload(&self) -> SupportedWorkload {
         tiny_workload_manifest()
     }
@@ -371,7 +359,7 @@ fn main() -> anyhow::Result<()> {
         burn_p2p::RevisionId::new("rev-1"),
     );
 
-    let validator_family = SingleWorkloadProjectFamily::<TinyProject, _>::new(
+    let validator_family = SingleWorkloadProjectFamily::new(
         tiny_release_manifest(),
         TinyProject {
             dataset_root: data_root.clone(),
@@ -399,13 +387,13 @@ fn main() -> anyhow::Result<()> {
     let validator_addr = validator.telemetry().snapshot().listen_addresses[0].clone();
 
     let mut validator = validator;
-    let genesis_head = validator.initialize_local_head::<TinyProject>(&experiment)?;
+    let genesis_head = validator.initialize_local_head(&experiment)?;
     println!(
         "validator published Burn genesis head {}",
         genesis_head.head_id.as_str()
     );
 
-    let trainer_family = SingleWorkloadProjectFamily::<TinyProject, _>::new(
+    let trainer_family = SingleWorkloadProjectFamily::new(
         tiny_release_manifest(),
         TinyProject {
             dataset_root: data_root,
@@ -425,7 +413,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let mut trainer = trainer;
-    let training = trainer.train_window_once::<TinyProject>(&experiment)?;
+    let training = trainer.train_window_once(&experiment)?;
     println!(
         "trainer published Burn candidate head {} with metrics {:?}",
         training.head.head_id.as_str(),
@@ -433,7 +421,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let validated = validator
-        .validate_candidates_once::<TinyProject>(&experiment)?
+        .validate_candidates_once(&experiment)?
         .expect("validator should certify the trainer update");
     println!(
         "validator certified Burn head {} from {}",

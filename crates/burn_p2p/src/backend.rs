@@ -92,12 +92,6 @@ pub struct WindowReport<T> {
     pub completed_at: DateTime<Utc>,
 }
 
-/// Backend marker trait used by the runtime/project seam.
-pub trait ProjectBackend {
-    /// Device type used by the backend implementation.
-    type Device;
-}
-
 #[derive(Clone, Copy, Debug)]
 /// One candidate model participating in a reducer/validator merge step.
 pub struct MergeModelCandidate<'a, M> {

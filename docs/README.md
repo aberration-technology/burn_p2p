@@ -1,49 +1,34 @@
 # Docs
 
-This folder intentionally keeps only durable docs.
+This folder keeps only docs that help someone integrate, run, or operate the
+code.
 
-Code, tests, examples, and release scripts are the source of truth for runtime
-behavior. Transient review snapshots, dated status reports, and one-off
-verification artifacts are not kept here.
+Code, tests, examples, deployment configs, and scripts are the source of
+truth. Historical notes, audit snapshots, release paperwork, dependency
+snapshots, and design diaries are intentionally not kept here.
 
-## Integration
+## Start Here
 
-- [downstream-burn-guide.md](downstream-burn-guide.md): embedding `burn_p2p`
-  into a Burn project
-- [multi-workload-guide.md](multi-workload-guide.md): project-family and
-  multi-workload integration
-- [browser-runtime-guide.md](browser-runtime-guide.md): browser worker/runtime
-  model and storage flow
-- [dataloader-adapters.md](dataloader-adapters.md): adapter shapes and dataset
-  registration
-- [dataloader-tuning.md](dataloader-tuning.md): planner/cache tuning guidance
-
-## Operations
-
-- [architecture.md](architecture.md): crate boundaries and main data flow
-- [operator-runbook.md](operator-runbook.md): bootstrap/operator deployment
-  guidance
-- [auth-setup-guide.md](auth-setup-guide.md): auth provider setup and trust
-  model
-- [runtime-events.md](runtime-events.md): runtime event/state taxonomy
-- [leaderboard-scoring.md](leaderboard-scoring.md): leaderboard scoring rules
-
-## Release
-
-- [PUBLISHING.md](PUBLISHING.md): release-prep workflow and verification matrix
-- [PUBLISH_MATRIX.md](PUBLISH_MATRIX.md): publishable crate set and rationale
-- [PUBLISH_ORDER.md](PUBLISH_ORDER.md): topological publish order
+- [ARCHITECTURE.md](ARCHITECTURE.md): stable crate boundaries, layering, and
+  major end-to-end flows
+- [downstream-burn-guide.md](downstream-burn-guide.md): integrating
+  `burn_p2p` into a Burn project
+- [operator-runbook.md](operator-runbook.md): deployment and operator guidance
 
 ## Code First
 
-For fast-moving or implementation-heavy areas, prefer the code directly:
+For implementation-heavy areas, prefer the code directly:
 
 - metrics: `crates/burn_p2p_core/src/schema/metrics.rs`,
   `crates/burn_p2p/src/metrics_runtime.rs`,
-  `crates/burn_p2p_metrics/src/lib.rs`
+  `crates/burn_p2p_metrics/src/`
 - artifact publication: `crates/burn_p2p_core/src/schema/publication.rs`,
-  `crates/burn_p2p_publish/src/lib.rs`
+  `crates/burn_p2p_publish/src/`
 - browser/device capability logic: `crates/burn_p2p_limits/src/lib.rs`,
+  `crates/burn_p2p_browser/src/`,
   `crates/burn_p2p_testkit/tests/browser_real_device.rs`
+- auth and admission: `crates/burn_p2p_security/src/`,
+  `crates/burn_p2p_auth_*/src/`
+- dataloader planning and cache/fetch flow: `crates/burn_p2p_dataloader/src/`
 - deployment examples: `crates/burn_p2p_bootstrap/examples/` and
   `deploy/compose/`

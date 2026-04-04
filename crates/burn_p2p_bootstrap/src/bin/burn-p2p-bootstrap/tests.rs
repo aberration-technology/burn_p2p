@@ -37,7 +37,7 @@ use burn_p2p_bootstrap::{
     BootstrapSpec,
 };
 use burn_p2p_browser::{
-    BrowserCapabilityReport, BrowserEnrollmentConfig, BrowserPortalClient,
+    BrowserCapabilityReport, BrowserEnrollmentConfig, BrowserPortalClient, BrowserPortalSnapshot,
     BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState, BrowserSessionState,
     BrowserTransportStatus, BrowserUiBindings, BrowserValidationPlan, BrowserWorkerCommand,
     BrowserWorkerEvent, BrowserWorkerIdentity, BrowserWorkerRuntime,
@@ -474,7 +474,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -688,7 +688,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -893,7 +893,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -1037,7 +1037,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -1192,7 +1192,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -3486,7 +3486,7 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
@@ -3993,7 +3993,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
@@ -4247,7 +4247,7 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: burn_p2p_bootstrap::BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
