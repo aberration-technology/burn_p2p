@@ -28,13 +28,18 @@ const BROWSER_MAX_BATCH_SIZE_KEY: &str = "burn_p2p.revision.browser.max_batch_si
 const BROWSER_RECOMMENDED_PRECISION_KEY: &str = "burn_p2p.revision.browser.recommended_precision";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents an experiment directory.
 pub struct ExperimentDirectory {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The generated at.
     pub generated_at: DateTime<Utc>,
+    /// The entries.
     pub entries: Vec<ExperimentDirectoryEntry>,
 }
 
 impl ExperimentDirectory {
+    /// Performs the visible to operation.
     pub fn visible_to(&self, scopes: &BTreeSet<ExperimentScope>) -> Vec<&ExperimentDirectoryEntry> {
         self.entries
             .iter()
@@ -42,12 +47,14 @@ impl ExperimentDirectory {
             .collect()
     }
 
+    /// Performs the find operation.
     pub fn find(&self, experiment_id: &ExperimentId) -> Option<&ExperimentDirectoryEntry> {
         self.entries
             .iter()
             .find(|entry| &entry.experiment_id == experiment_id)
     }
 
+    /// Performs the compatible with capability operation.
     pub fn compatible_with_capability(
         &self,
         capability: &CapabilityCard,
@@ -58,6 +65,7 @@ impl ExperimentDirectory {
             .collect()
     }
 
+    /// Performs the compatible with target artifact operation.
     pub fn compatible_with_target_artifact(
         &self,
         target: &ArtifactTargetKind,
@@ -68,6 +76,7 @@ impl ExperimentDirectory {
             .collect()
     }
 
+    /// Performs the browser eligible operation.
     pub fn browser_eligible(
         &self,
         role: BrowserRole,
@@ -80,31 +89,51 @@ impl ExperimentDirectory {
     }
 }
 
+/// Defines behavior for experiment directory access.
 pub trait ExperimentDirectoryAccess {
+    /// Returns whether the value is visible to.
     fn is_visible_to(&self, scopes: &BTreeSet<ExperimentScope>) -> bool;
+    /// Performs the permits scope operation.
     fn permits_scope(&self, scope: &ExperimentScope) -> bool;
 }
 
+/// Defines behavior for experiment directory policy ext.
 pub trait ExperimentDirectoryPolicyExt {
+    /// Performs the lag policy operation.
     fn lag_policy(&self) -> LagPolicy;
+    /// Performs the merge window miss policy operation.
     fn merge_window_miss_policy(&self) -> MergeWindowMissPolicy;
+    /// Performs the browser enabled operation.
     fn browser_enabled(&self) -> bool;
+    /// Performs the browser role policy operation.
     fn browser_role_policy(&self) -> BrowserRolePolicy;
+    /// Performs the browser visibility policy operation.
     fn browser_visibility_policy(&self) -> BrowserVisibilityPolicy;
+    /// Returns whether the value requires WebGPU.
     fn requires_webgpu(&self) -> bool;
+    /// Performs the max browser checkpoint bytes operation.
     fn max_browser_checkpoint_bytes(&self) -> Option<u64>;
+    /// Performs the max browser window secs operation.
     fn max_browser_window_secs(&self) -> Option<u64>;
+    /// Performs the max browser shard bytes operation.
     fn max_browser_shard_bytes(&self) -> Option<u64>;
+    /// Performs the max browser batch size operation.
     fn max_browser_batch_size(&self) -> Option<u32>;
+    /// Performs the recommended browser precision operation.
     fn recommended_browser_precision(&self) -> Option<Precision>;
+    /// Performs the browser role allowed operation.
     fn browser_role_allowed(&self, role: BrowserRole) -> bool;
+    /// Returns whether the value is browser eligible.
     fn is_browser_eligible(
         &self,
         role: BrowserRole,
         capabilities: &BTreeSet<BrowserCapability>,
     ) -> bool;
+    /// Returns whether the value is compatible with target artifact.
     fn is_compatible_with_target_artifact(&self, target: &ArtifactTargetKind) -> bool;
+    /// Returns whether the value is compatible with capability.
     fn is_compatible_with_capability(&self, capability: &CapabilityCard) -> bool;
+    /// Performs the apply revision policy operation.
     fn apply_revision_policy(&mut self, revision: &RevisionManifest);
 }
 

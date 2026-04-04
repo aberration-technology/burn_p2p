@@ -5,24 +5,41 @@ use semver::Version;
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ClientReleaseManifest,
     ContentId, EvalSplit, FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy,
-    MetricReport, MetricValue, NetworkManifest, NodeBuilder, P2pProject, PatchOutcome,
-    PatchSupport, ProjectBackend, ProjectFamilyId, RevisionManifest, RuntimePatch, RuntimeProject,
-    SupportedWorkload, WindowCtx, WindowReport, WorkloadId,
+    MetricReport, MetricValue, NetworkManifest, NodeBuilder, PatchOutcome, PatchSupport,
+    ProjectBackend, ProjectFamilyId, RevisionManifest, RuntimePatch, SupportedWorkload, WindowCtx,
+    WindowReport, WorkloadId,
+    compat::{P2pProject, RuntimeProject},
 };
 
+/// Defines one executable workload inside a project family.
+///
+/// A workload binds the Burn-facing training and evaluation hooks to a single
+/// `workload_id`, model schema hash, and checkpoint format. Downstream apps
+/// usually implement this trait once per trainable model or execution flavor,
+/// then expose those workloads through a [`P2pProjectFamily`].
+///
+/// This is the forward integration seam for new embeddings. The older
+/// [`crate::compat::RuntimeProject`] trait still underpins the execution
+/// callbacks, but callers should select workloads through the family/workload
+/// model rather than treating those compatibility traits as the public API.
 pub trait P2pWorkload<B: ProjectBackend>: RuntimeProject<B> {
+    /// Performs the supported workload operation.
     fn supported_workload(&self) -> SupportedWorkload;
 
+    /// Performs the model schema hash operation.
     fn model_schema_hash(&self) -> ContentId;
 
+    /// Performs the workload ID operation.
     fn workload_id(&self) -> WorkloadId {
         self.supported_workload().workload_id
     }
 
+    /// Performs the checkpoint format hash operation.
     fn checkpoint_format_hash(&self) -> ContentId {
         self.supported_workload().checkpoint_format_hash
     }
 
+    /// Verifies the revision.
     fn verify_revision(&self, revision: &RevisionManifest) -> anyhow::Result<()> {
         let workload = self.supported_workload();
 
@@ -60,22 +77,40 @@ pub trait P2pWorkload<B: ProjectBackend>: RuntimeProject<B> {
     }
 }
 
+/// Groups one or more compatible workloads under a single project family.
+///
+/// A family pins the public-facing compatibility identity for a downstream Burn
+/// application. Every workload returned by the family must match the same
+/// `project_family_id` and `client_release_manifest`, while experiment
+/// directory entries can switch between workloads without forcing a full
+/// reconnect.
 pub trait P2pProjectFamily {
+    /// Defines the backend alias.
     type Backend: ProjectBackend;
+    /// Defines the workload alias.
     type Workload: P2pWorkload<Self::Backend>;
 
+    /// Performs the project family ID operation.
     fn project_family_id(&self) -> &ProjectFamilyId;
 
+    /// Performs the client release manifest operation.
     fn client_release_manifest(&self) -> &ClientReleaseManifest;
 
+    /// Performs the supported workloads operation.
     fn supported_workloads(&self) -> &[SupportedWorkload] {
         &self.client_release_manifest().supported_workloads
     }
 
+    /// Performs the workload operation.
     fn workload(&self, workload_id: &WorkloadId) -> anyhow::Result<Self::Workload>;
 }
 
 #[derive(Clone, Debug)]
+/// Wraps a family together with one concrete selected workload.
+///
+/// This is the bridge type most downstream integrations actually run through:
+/// pick a family, select the compiled workload, then hand the selected project
+/// to [`crate::NodeBuilder`].
 pub struct SelectedWorkloadProject<P>
 where
     P: P2pProjectFamily,
@@ -89,6 +124,7 @@ impl<P> SelectedWorkloadProject<P>
 where
     P: P2pProjectFamily,
 {
+    /// Creates a new value.
     pub fn new(family: P, workload_id: WorkloadId) -> anyhow::Result<Self> {
         let workload = family.workload(&workload_id)?;
         Ok(Self {
@@ -98,18 +134,22 @@ where
         })
     }
 
+    /// Performs the selected workload ID operation.
     pub fn selected_workload_id(&self) -> &WorkloadId {
         &self.workload_id
     }
 
+    /// Performs the project family ID operation.
     pub fn project_family_id(&self) -> &ProjectFamilyId {
         self.family.project_family_id()
     }
 
+    /// Performs the client release manifest operation.
     pub fn client_release_manifest(&self) -> &ClientReleaseManifest {
         self.family.client_release_manifest()
     }
 
+    /// Performs the switch workload operation.
     pub fn switch_workload(&mut self, workload_id: impl Into<WorkloadId>) -> anyhow::Result<()> {
         let workload_id = workload_id.into();
         let workload = self.family.workload(&workload_id)?;
@@ -120,6 +160,10 @@ where
 }
 
 #[derive(Clone, Debug)]
+/// Convenience family wrapper for deployments that compile exactly one workload.
+///
+/// This is the simplest way to migrate an existing Burn integration onto the
+/// family/workload model without building a custom workload registry.
 pub struct SingleWorkloadProjectFamily<B, W> {
     release_manifest: ClientReleaseManifest,
     workload: W,
@@ -131,6 +175,7 @@ where
     B: ProjectBackend,
     W: P2pWorkload<B> + Clone,
 {
+    /// Creates a new value.
     pub fn new(release_manifest: ClientReleaseManifest, workload: W) -> anyhow::Result<Self> {
         if release_manifest.supported_workloads.len() != 1 {
             anyhow::bail!(
@@ -154,10 +199,12 @@ where
         })
     }
 
+    /// Performs the workload ID operation.
     pub fn workload_id(&self) -> WorkloadId {
         self.workload.workload_id()
     }
 
+    /// Consumes the value and returns the workload.
     pub fn into_workload(self) -> W {
         self.workload
     }
@@ -488,6 +535,7 @@ impl<P> NodeBuilder<P>
 where
     P: P2pProjectFamily,
 {
+    /// Returns a copy configured with the network.
     pub fn with_network(
         self,
         network_manifest: NetworkManifest,
@@ -527,6 +575,7 @@ where
         })
     }
 
+    /// Performs the for workload operation.
     pub fn for_workload(
         self,
         workload_id: impl Into<WorkloadId>,
@@ -555,6 +604,7 @@ impl<P> NodeBuilder<SelectedWorkloadProject<P>>
 where
     P: P2pProjectFamily,
 {
+    /// Returns a copy configured with the network.
     pub fn with_network(mut self, network_manifest: NetworkManifest) -> anyhow::Result<Self> {
         let release_manifest = self.project.client_release_manifest().clone();
         let project_family_id = self.project.project_family_id().clone();
@@ -581,13 +631,14 @@ mod tests {
 
     use chrono::Utc;
 
+    use crate::compat::{P2pProject, RuntimeProject};
     use crate::{
         ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, CapabilityEstimate,
         ClientPlatform, ClientReleaseManifest, ContentId, DatasetRegistration, EvalSplit,
         ExperimentResourceRequirements, FsArtifactStore, MetricReport, MetricValue, NetworkId,
-        NetworkManifest, NodeBuilder, P2pProject, P2pProjectFamily, PatchOutcome, PatchSupport,
-        ProjectBackend, ProjectFamilyId, RevisionId, RevisionManifest, RuntimePatch,
-        RuntimeProject, SupportedWorkload, WindowActivation, WindowCtx, WindowReport, WorkloadId,
+        NetworkManifest, NodeBuilder, P2pProjectFamily, PatchOutcome, PatchSupport, ProjectBackend,
+        ProjectFamilyId, RevisionId, RevisionManifest, RuntimePatch, SupportedWorkload,
+        WindowActivation, WindowCtx, WindowReport, WorkloadId,
     };
 
     use super::{P2pWorkload, SingleWorkloadProjectFamily};

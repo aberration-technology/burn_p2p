@@ -18,132 +18,210 @@ use crate::{AdmissionDecision, AuditFinding};
 pub use static_connector::{StaticIdentityConnector, StaticPrincipalRecord};
 
 #[derive(Debug, thiserror::Error)]
+/// Enumerates the supported auth error values.
 pub enum AuthError {
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("failed to sign payload: {0}")]
+    /// Uses the signing variant.
     Signing(String),
     #[error("failed to decode public key: {0}")]
+    /// Uses the public key decode variant.
     PublicKeyDecode(String),
     #[error("failed to decode signature hex: {0}")]
+    /// Uses the signature decode variant.
     SignatureDecode(String),
     #[error("unknown login: {0}")]
+    /// Uses the unknown login variant.
     UnknownLogin(ContentId),
     #[error("state mismatch")]
+    /// Uses the state mismatch variant.
     StateMismatch,
     #[error("login expired: {0}")]
+    /// Uses the login expired variant.
     LoginExpired(ContentId),
     #[error("session expired: {0}")]
+    /// Uses the session expired variant.
     SessionExpired(ContentId),
     #[error("unknown principal: {0}")]
+    /// Uses the unknown principal variant.
     UnknownPrincipal(PrincipalId),
     #[error("provider callback is missing a principal and no provider code exchange succeeded")]
+    /// Uses the missing provider principal variant.
     MissingProviderPrincipal,
     #[error("provider callback is missing an authorization or device code")]
+    /// Uses the missing provider code variant.
     MissingProviderCode,
     #[error("provider exchange failed: {0}")]
+    /// Uses the provider exchange variant.
     ProviderExchange(String),
     #[error("provider userinfo fetch failed: {0}")]
+    /// Uses the provider user info variant.
     ProviderUserInfo(String),
     #[error("provider refresh failed: {0}")]
+    /// Uses the provider refresh variant.
     ProviderRefresh(String),
     #[error("provider revoke failed: {0}")]
+    /// Uses the provider revoke variant.
     ProviderRevoke(String),
     #[error("untrusted issuer: {0}")]
+    /// Uses the untrusted issuer variant.
     UntrustedIssuer(PeerId),
     #[error("network not granted: {0}")]
+    /// Uses the network not granted variant.
     NetworkNotGranted(NetworkId),
     #[error("project family mismatch: expected {expected}, found {found}")]
+    /// Uses the project family mismatch variant.
     ProjectFamilyMismatch {
+        /// The expected.
         expected: ProjectFamilyId,
+        /// The found.
         found: ProjectFamilyId,
     },
     #[error("release train hash mismatch: expected {expected}, found {found}")]
+    /// Uses the release train hash mismatch variant.
     ReleaseTrainHashMismatch {
+        /// The expected.
         expected: ContentId,
+        /// The found.
         found: ContentId,
     },
     #[error("scope not granted: {0:?}")]
+    /// Uses the scope not granted variant.
     ScopeNotGranted(ExperimentScope),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a login request.
 pub struct LoginRequest {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The principal hint.
     pub principal_hint: Option<String>,
+    /// The requested scopes.
     pub requested_scopes: BTreeSet<ExperimentScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a login start.
 pub struct LoginStart {
+    /// The login ID.
     pub login_id: ContentId,
+    /// The provider.
     pub provider: AuthProvider,
+    /// The state.
     pub state: String,
+    /// The authorize URL.
     pub authorize_url: Option<String>,
+    /// The expires at.
     pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a callback payload.
 pub struct CallbackPayload {
+    /// The login ID.
     pub login_id: ContentId,
+    /// The state.
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The principal ID.
     pub principal_id: Option<PrincipalId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The provider code.
     pub provider_code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a principal claims.
 pub struct PrincipalClaims {
+    /// The principal ID.
     pub principal_id: PrincipalId,
+    /// The provider.
     pub provider: AuthProvider,
+    /// The display name.
     pub display_name: String,
+    /// The org memberships.
     pub org_memberships: BTreeSet<String>,
+    /// The group memberships.
     pub group_memberships: BTreeSet<String>,
+    /// The granted roles.
     pub granted_roles: PeerRoleSet,
+    /// The granted scopes.
     pub granted_scopes: BTreeSet<ExperimentScope>,
+    /// The custom claims.
     pub custom_claims: BTreeMap<String, String>,
+    /// The issued at.
     pub issued_at: DateTime<Utc>,
+    /// The expires at.
     pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a principal session.
 pub struct PrincipalSession {
+    /// The session ID.
     pub session_id: ContentId,
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The claims.
     pub claims: PrincipalClaims,
+    /// The issued at.
     pub issued_at: DateTime<Utc>,
+    /// The expires at.
     pub expires_at: DateTime<Utc>,
 }
 
+/// Defines behavior for identity connector.
 pub trait IdentityConnector {
+    /// Begins the login flow.
     fn begin_login(&self, req: LoginRequest) -> Result<LoginStart, AuthError>;
+    /// Completes the login flow.
     fn complete_login(&self, callback: CallbackPayload) -> Result<PrincipalSession, AuthError>;
+    /// Performs the refresh operation.
     fn refresh(&self, session: &PrincipalSession) -> Result<PrincipalSession, AuthError>;
+    /// Fetches the claims.
     fn fetch_claims(&self, session: &PrincipalSession) -> Result<PrincipalClaims, AuthError>;
+    /// Performs the revoke operation.
     fn revoke(&self, _session: &PrincipalSession) -> Result<(), AuthError> {
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a node enrollment request.
 pub struct NodeEnrollmentRequest {
+    /// The session.
     pub session: PrincipalSession,
+    /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    /// The release train hash.
     pub release_train_hash: ContentId,
+    /// The target artifact hash.
     pub target_artifact_hash: ContentId,
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The peer public key hex.
     pub peer_public_key_hex: String,
+    /// The granted roles.
     pub granted_roles: PeerRoleSet,
+    /// The requested scopes.
     pub requested_scopes: BTreeSet<ExperimentScope>,
+    /// The client policy hash.
     pub client_policy_hash: Option<ContentId>,
+    /// The serial.
     pub serial: u64,
+    /// The not before.
     pub not_before: DateTime<Utc>,
+    /// The not after.
     pub not_after: DateTime<Utc>,
+    /// The revocation epoch.
     pub revocation_epoch: RevocationEpoch,
 }
 
 #[derive(Clone, Debug)]
+/// Represents a node certificate authority.
 pub struct NodeCertificateAuthority {
     network_id: NetworkId,
     project_family_id: ProjectFamilyId,
@@ -155,6 +233,7 @@ pub struct NodeCertificateAuthority {
 }
 
 impl NodeCertificateAuthority {
+    /// Creates a new value.
     pub fn new(
         network_id: NetworkId,
         project_family_id: ProjectFamilyId,
@@ -175,16 +254,19 @@ impl NodeCertificateAuthority {
         })
     }
 
+    /// Performs the issuer peer ID operation.
     pub fn issuer_peer_id(&self) -> PeerId {
         PeerId::new(
             libp2p_identity::PeerId::from_public_key(&self.issuer_keypair.public()).to_string(),
         )
     }
 
+    /// Performs the issuer public key hex operation.
     pub fn issuer_public_key_hex(&self) -> &str {
         &self.issuer_public_key_hex
     }
 
+    /// Issues the certificate.
     pub fn issue_certificate(
         &self,
         request: NodeEnrollmentRequest,
@@ -233,6 +315,7 @@ impl NodeCertificateAuthority {
             .map_err(AuthError::from)
     }
 
+    /// Performs the create peer auth envelope operation.
     pub fn create_peer_auth_envelope(
         &self,
         node_keypair: &Keypair,
@@ -254,43 +337,69 @@ impl NodeCertificateAuthority {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a trusted issuer.
 pub struct TrustedIssuer {
+    /// The issuer peer ID.
     pub issuer_peer_id: PeerId,
+    /// The issuer public key hex.
     pub issuer_public_key_hex: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures the admission policy.
 pub struct AdmissionPolicy {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    /// The required release train hash.
     pub required_release_train_hash: ContentId,
+    /// The allowed target artifact hashes.
     pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    /// The trusted issuers.
     pub trusted_issuers: BTreeMap<PeerId, TrustedIssuer>,
+    /// The minimum revocation epoch.
     pub minimum_revocation_epoch: RevocationEpoch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported peer trust level values.
 pub enum PeerTrustLevel {
+    /// Uses the transport authenticated variant.
     TransportAuthenticated,
+    /// Uses the network authenticated variant.
     NetworkAuthenticated,
+    /// Uses the scope authorized variant.
     ScopeAuthorized,
+    /// Uses the policy compliant variant.
     PolicyCompliant,
+    /// Uses the reputable variant.
     Reputable,
+    /// Uses the privileged variant.
     Privileged,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Reports peer admission details.
 pub struct PeerAdmissionReport {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The principal ID.
     pub principal_id: PrincipalId,
+    /// The requested scopes.
     pub requested_scopes: BTreeSet<ExperimentScope>,
+    /// The trust level.
     pub trust_level: PeerTrustLevel,
+    /// The issuer peer ID.
     pub issuer_peer_id: PeerId,
+    /// The findings.
     pub findings: Vec<AuditFinding>,
+    /// The verified at.
     pub verified_at: DateTime<Utc>,
 }
 
 impl PeerAdmissionReport {
+    /// Performs the decision operation.
     pub fn decision(&self) -> AdmissionDecision {
         if self.findings.is_empty() {
             AdmissionDecision::Allow
@@ -301,6 +410,7 @@ impl PeerAdmissionReport {
 }
 
 impl AdmissionPolicy {
+    /// Verifies the peer auth.
     pub fn verify_peer_auth(
         &self,
         envelope: &PeerAuthEnvelope,
@@ -447,6 +557,7 @@ fn sign_envelope<T: serde::Serialize>(
     })
 }
 
+/// Performs the create peer auth envelope operation.
 pub fn create_peer_auth_envelope(
     node_keypair: &Keypair,
     certificate: NodeCertificate,

@@ -1,3 +1,4 @@
+//! Bootstrap, edge, and operator-facing services for burn_p2p deployments.
 use std::{
     collections::BTreeMap,
     fs,
@@ -6,14 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use burn_p2p::compat::{P2pProject, RuntimeProject};
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, ClientReleaseManifest, ContentId, DatasetRegistration,
     DatasetSizing, EvalSplit, FsArtifactStore, MetricReport, MetricValue, MicroShardPlanner,
-    MicroShardPlannerConfig, P2pProject, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
-    ProjectFamilyId, RuntimePatch, RuntimeProject, ShardFetchManifest, SingleWorkloadProjectFamily,
-    StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
-    WorkloadId,
+    MicroShardPlannerConfig, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
+    ProjectFamilyId, RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig,
+    SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport, WorkloadId,
 };
 use burn_p2p_bootstrap::{
     ActiveExperiment, AdminApiPlan, ArchivePlan, AuthorityPlan, BootstrapEmbeddedDaemonConfig,
@@ -346,6 +347,7 @@ fn main() -> anyhow::Result<()> {
                 network_manifest: None,
                 client_release_manifest: Some(demo_release_manifest()),
                 selected_workload_id: Some(demo_workload_manifest().workload_id),
+                metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
             },

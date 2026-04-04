@@ -8,29 +8,38 @@ use std::{
 };
 
 use anyhow::Context;
+use burn_p2p::compat::{P2pProject, RuntimeProject};
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, DatasetRegistration, DatasetSizing, EvalSplit,
     FsArtifactStore, GenesisSpec, MainnetHandle, MetricReport, MetricValue, MicroShardPlanner,
-    MicroShardPlannerConfig, NodeBuilder, P2pProject, PatchOutcome, PatchSupport, PeerRole,
-    PeerRoleSet, ProjectBackend, RuntimePatch, RuntimeProject, ShardFetchManifest, StorageConfig,
-    SwarmAddress, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    MicroShardPlannerConfig, NodeBuilder, PatchOutcome, PatchSupport, PeerRole, PeerRoleSet,
+    ProjectBackend, RuntimePatch, ShardFetchManifest, StorageConfig, SwarmAddress, TrainError,
+    UpstreamAdapter, WindowCtx, WindowReport,
 };
 use chrono::Utc;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported synthetic process modes.
 pub enum SyntheticProcessMode {
+    /// Runs in validator mode.
     Validator,
+    /// Allows trainer behavior.
     Trainer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a synthetic experiment scope.
 pub struct SyntheticExperimentScope {
+    /// The network ID.
     pub network_id: String,
+    /// The study ID.
     pub study_id: String,
+    /// The experiment ID.
     pub experiment_id: String,
+    /// The revision ID.
     pub revision_id: String,
 }
 
@@ -46,26 +55,44 @@ impl Default for SyntheticExperimentScope {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Configures synthetic process.
 pub struct SyntheticProcessConfig {
+    /// The mode.
     pub mode: SyntheticProcessMode,
+    /// The scope.
     pub scope: SyntheticExperimentScope,
+    /// The storage root.
     pub storage_root: PathBuf,
+    /// The dataset root.
     pub dataset_root: PathBuf,
+    /// The report path.
     pub report_path: PathBuf,
+    /// The shutdown sentinel.
     pub shutdown_sentinel: Option<PathBuf>,
+    /// The bootstrap peers.
     pub bootstrap_peers: Vec<SwarmAddress>,
+    /// The listen addresses.
     pub listen_addresses: Vec<SwarmAddress>,
+    /// The persist identity.
     pub persist_identity: bool,
+    /// The learning rate.
     pub learning_rate: f64,
+    /// The target model.
     pub target_model: f64,
+    /// The startup timeout secs.
     pub startup_timeout_secs: u64,
+    /// The poll interval ms.
     pub poll_interval_ms: u64,
+    /// The sync timeout secs.
     pub sync_timeout_secs: u64,
+    /// The merge wait timeout secs.
     pub merge_wait_timeout_secs: u64,
+    /// The window count.
     pub window_count: u32,
 }
 
 impl SyntheticProcessConfig {
+    /// Performs the validator operation.
     pub fn validator(
         storage_root: impl Into<PathBuf>,
         dataset_root: impl Into<PathBuf>,
@@ -83,14 +110,15 @@ impl SyntheticProcessConfig {
             persist_identity: true,
             learning_rate: 1.0,
             target_model: 10.0,
-            startup_timeout_secs: 10,
+            startup_timeout_secs: 15,
             poll_interval_ms: 50,
-            sync_timeout_secs: 10,
-            merge_wait_timeout_secs: 10,
+            sync_timeout_secs: 15,
+            merge_wait_timeout_secs: 15,
             window_count: 1,
         }
     }
 
+    /// Performs the trainer operation.
     pub fn trainer(
         storage_root: impl Into<PathBuf>,
         dataset_root: impl Into<PathBuf>,
@@ -109,39 +137,60 @@ impl SyntheticProcessConfig {
             persist_identity: false,
             learning_rate: 1.0,
             target_model: 10.0,
-            startup_timeout_secs: 10,
+            startup_timeout_secs: 15,
             poll_interval_ms: 50,
-            sync_timeout_secs: 10,
-            merge_wait_timeout_secs: 10,
+            sync_timeout_secs: 15,
+            merge_wait_timeout_secs: 15,
             window_count: 1,
         }
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Reports synthetic process details.
 pub struct SyntheticProcessReport {
+    /// The status.
     pub status: String,
+    /// The local peer ID.
     pub local_peer_id: Option<String>,
+    /// The listen addresses.
     pub listen_addresses: Vec<String>,
+    /// The initialized head ID.
     pub initialized_head_id: Option<String>,
+    /// The synced head ID.
     pub synced_head_id: Option<String>,
+    /// The trained head ID.
     pub trained_head_id: Option<String>,
+    /// The trained parent head ID.
     pub trained_parent_head_id: Option<String>,
+    /// The observed canonical head ID.
     pub observed_canonical_head_id: Option<String>,
+    /// The merged head ID.
     pub merged_head_id: Option<String>,
+    /// The receipt count.
     pub receipt_count: usize,
+    /// The merge count.
     pub merge_count: usize,
+    /// The error.
     pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures synthetic soak.
 pub struct SyntheticSoakConfig {
+    /// The root.
     pub root: PathBuf,
+    /// The trainer count.
     pub trainer_count: u32,
+    /// The trainer window count.
     pub trainer_window_count: u32,
+    /// The startup timeout secs.
     pub startup_timeout_secs: u64,
+    /// The poll interval ms.
     pub poll_interval_ms: u64,
+    /// The sync timeout secs.
     pub sync_timeout_secs: u64,
+    /// The merge wait timeout secs.
     pub merge_wait_timeout_secs: u64,
 }
 
@@ -163,16 +212,27 @@ impl Default for SyntheticSoakConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Summarizes the synthetic soak.
 pub struct SyntheticSoakSummary {
+    /// The validator report.
     pub validator_report: SyntheticProcessReport,
+    /// The trainer reports.
     pub trainer_reports: Vec<SyntheticProcessReport>,
+    /// The trainer count.
     pub trainer_count: u32,
+    /// The trainer window count.
     pub trainer_window_count: u32,
+    /// The completed rounds.
     pub completed_rounds: u32,
+    /// The trainer process count.
     pub trainer_process_count: usize,
+    /// The total receipts.
     pub total_receipts: usize,
+    /// The total merges.
     pub total_merges: usize,
+    /// The elapsed millis.
     pub elapsed_millis: u128,
+    /// The root.
     pub root: PathBuf,
 }
 
@@ -403,6 +463,7 @@ impl RuntimeProject<SyntheticRuntimeBackend> for SyntheticRuntimeProject {
     }
 }
 
+/// Performs the create synthetic runtime dataset operation.
 pub fn create_synthetic_runtime_dataset(root: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(root)?;
     let project = SyntheticRuntimeProject {
@@ -435,6 +496,7 @@ pub fn create_synthetic_runtime_dataset(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Performs the run synthetic process node operation.
 pub fn run_synthetic_process_node(
     config: &SyntheticProcessConfig,
 ) -> anyhow::Result<SyntheticProcessReport> {
@@ -867,6 +929,7 @@ fn count_json_files(dir: &Path, include: impl Fn(&str) -> bool) -> anyhow::Resul
     Ok(count)
 }
 
+/// Performs the run synthetic process soak operation.
 pub fn run_synthetic_process_soak(
     config: &SyntheticSoakConfig,
     node_binary: &Path,

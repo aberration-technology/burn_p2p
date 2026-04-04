@@ -1,3 +1,4 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 use std::{path::PathBuf, process::Command};
 
 use tempfile::tempdir;
@@ -65,7 +66,6 @@ fn bootstrap_tree(features: &str) -> anyhow::Result<String> {
 }
 
 #[test]
-#[ignore = "run explicitly to validate the supported deployment profile matrix"]
 fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()> {
     let features = "admin-http,metrics,auth-static";
     check_bootstrap_profile(features)?;
@@ -88,7 +88,6 @@ fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()
 }
 
 #[test]
-#[ignore = "run explicitly to validate the supported deployment profile matrix"]
 fn enterprise_sso_profile_builds_with_oidc_and_portal_only() -> anyhow::Result<()> {
     let features = "admin-http,metrics,portal,rbac,auth-oidc";
     check_bootstrap_profile(features)?;
@@ -109,7 +108,6 @@ fn enterprise_sso_profile_builds_with_oidc_and_portal_only() -> anyhow::Result<(
 }
 
 #[test]
-#[ignore = "run explicitly to validate the supported deployment profile matrix"]
 fn community_web_profile_builds_with_browser_and_social() -> anyhow::Result<()> {
     let features = "admin-http,metrics,portal,browser-edge,rbac,auth-github,social";
     check_bootstrap_profile(features)?;
@@ -124,7 +122,6 @@ fn community_web_profile_builds_with_browser_and_social() -> anyhow::Result<()> 
 }
 
 #[test]
-#[ignore = "run explicitly to validate the supported deployment profile matrix"]
 fn mixed_native_browser_profile_builds_without_social() -> anyhow::Result<()> {
     let features = "admin-http,metrics,portal,browser-edge,auth-static";
     check_bootstrap_profile(features)?;

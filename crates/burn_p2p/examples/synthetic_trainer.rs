@@ -1,3 +1,4 @@
+//! Public facade for the burn_p2p runtime, configuration, and compatibility surface.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -10,10 +11,11 @@ use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, ClientReleaseManifest, ContentId, DatasetRegistration,
     DatasetSizing, EvalSplit, FsArtifactStore, GenesisSpec, MetricReport, MetricValue,
-    MicroShardPlannerConfig, NodeBuilder, P2pProject, P2pWorkload, PatchOutcome, PatchSupport,
-    ProjectBackend, ProjectFamilyId, RoleSet, RuntimePatch, RuntimeProject, ShardFetchManifest,
-    SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter,
-    WindowCtx, WindowReport, WorkloadId,
+    MicroShardPlannerConfig, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, ProjectBackend,
+    ProjectFamilyId, RoleSet, RuntimePatch, ShardFetchManifest, SingleWorkloadProjectFamily,
+    StorageConfig, SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    WorkloadId,
+    compat::{P2pProject, RuntimeProject},
 };
 use chrono::Utc;
 use semver::Version;

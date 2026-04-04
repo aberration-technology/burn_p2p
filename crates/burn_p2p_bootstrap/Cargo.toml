@@ -4,11 +4,21 @@ description = "Bootstrap and admin composition boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
 
 [features]
 default = [
   "admin-http",
   "metrics",
+  "metrics-indexer",
+  "artifact-publish",
+  "artifact-download",
+  "artifact-fs",
   "portal",
   "browser-edge",
   "rbac",
@@ -20,6 +30,11 @@ default = [
 ]
 admin-http = []
 metrics = []
+metrics-indexer = ["metrics", "dep:burn_p2p_metrics"]
+artifact-publish = ["dep:burn_p2p_publish"]
+artifact-download = ["artifact-publish"]
+artifact-fs = ["artifact-publish", "burn_p2p_publish/fs"]
+artifact-s3 = ["artifact-publish", "burn_p2p_publish/s3", "dep:reqwest"]
 portal = ["dep:burn_p2p_portal", "burn_p2p_portal/interactive"]
 browser-edge = ["portal", "burn_p2p_portal/browser-join"]
 rbac = []
@@ -32,17 +47,19 @@ social = ["dep:burn_p2p_social"]
 
 [dependencies]
 anyhow.workspace = true
-burn_p2p = { path = "../burn_p2p" }
-burn_p2p_auth_external = { path = "../burn_p2p_auth_external", optional = true }
-burn_p2p_auth_github = { path = "../burn_p2p_auth_github", optional = true }
-burn_p2p_auth_oidc = { path = "../burn_p2p_auth_oidc", optional = true }
-burn_p2p_auth_oauth = { path = "../burn_p2p_auth_oauth", optional = true }
-burn_p2p_portal = { path = "../burn_p2p_portal", optional = true, default-features = false }
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
-burn_p2p_security = { path = "../burn_p2p_security" }
-burn_p2p_social = { path = "../burn_p2p_social", optional = true, default-features = false, features = ["profiles", "leaderboards", "badges"] }
-burn_p2p_swarm = { path = "../burn_p2p_swarm" }
+burn_p2p.workspace = true
+burn_p2p_auth_external = { workspace = true, optional = true }
+burn_p2p_auth_github = { workspace = true, optional = true }
+burn_p2p_auth_oidc = { workspace = true, optional = true }
+burn_p2p_auth_oauth = { workspace = true, optional = true }
+burn_p2p_portal = { workspace = true, optional = true, default-features = false }
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
+burn_p2p_metrics = { workspace = true, optional = true }
+burn_p2p_publish = { version = "=0.21.0-pre.2", path = "../burn_p2p_publish", optional = true, default-features = false }
+burn_p2p_security.workspace = true
+burn_p2p_social = { workspace = true, optional = true, default-features = false, features = ["profiles", "leaderboards", "badges"] }
+burn_p2p_swarm.workspace = true
 chrono.workspace = true
 hex.workspace = true
 libp2p-identity = "0.2.13"
@@ -51,9 +68,11 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking"], optional = true }
 
 [dev-dependencies]
-burn_p2p_browser = { path = "../burn_p2p_browser" }
+burn_p2p_browser.workspace = true
+burn_p2p_checkpoint.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tempfile.workspace = true
 tokio = { version = "1", features = ["net", "rt", "time"] }

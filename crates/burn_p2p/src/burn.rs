@@ -16,25 +16,40 @@ pub use burn_p2p_engine::{
 };
 
 #[derive(Clone, Debug)]
+/// Represents a record bytes runtime artifact options.
 pub struct RecordBytesRuntimeArtifactOptions {
+    /// The artifact kind.
     pub artifact_kind: ArtifactKind,
+    /// The head ID.
     pub head_id: HeadId,
+    /// The base head ID.
     pub base_head_id: Option<HeadId>,
+    /// The format.
     pub format: BurnRecordBytesFormat,
+    /// The precision.
     pub precision: BurnRecordPrecision,
+    /// The chunking.
     pub chunking: ChunkingScheme,
 }
 
 #[derive(Clone, Debug)]
+/// Represents a store bytes runtime artifact options.
 pub struct StoreBytesRuntimeArtifactOptions {
+    /// The artifact kind.
     pub artifact_kind: ArtifactKind,
+    /// The head ID.
     pub head_id: HeadId,
+    /// The base head ID.
     pub base_head_id: Option<HeadId>,
+    /// The format.
     pub format: BurnStoreFormat,
+    /// The declared precision.
     pub declared_precision: Precision,
+    /// The chunking.
     pub chunking: ChunkingScheme,
 }
 
+/// Performs the load record bytes runtime artifact operation.
 pub fn load_record_bytes_runtime_artifact<B, M>(
     module: M,
     descriptor: &ArtifactDescriptor,
@@ -51,6 +66,7 @@ where
     load_record_bytes::<B, M>(module, bytes, format, precision, device)
 }
 
+/// Performs the materialize record bytes runtime artifact operation.
 pub fn materialize_record_bytes_runtime_artifact<B, M>(
     module: M,
     store: &FsArtifactStore,
@@ -73,6 +89,7 @@ where
     Ok(artifact.descriptor)
 }
 
+/// Performs the load store bytes runtime artifact operation.
 pub fn load_store_bytes_runtime_artifact<B, M>(
     mut module: M,
     descriptor: &ArtifactDescriptor,
@@ -88,6 +105,7 @@ where
     Ok(module)
 }
 
+/// Performs the materialize store bytes runtime artifact operation.
 pub fn materialize_store_bytes_runtime_artifact<B, M>(
     module: &M,
     store: &FsArtifactStore,

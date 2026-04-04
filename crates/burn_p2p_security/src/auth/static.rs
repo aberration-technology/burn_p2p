@@ -11,8 +11,11 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a static principal record.
 pub struct StaticPrincipalRecord {
+    /// The claims.
     pub claims: PrincipalClaims,
+    /// The allowed networks.
     pub allowed_networks: BTreeSet<NetworkId>,
 }
 
@@ -26,6 +29,7 @@ struct PendingLogin {
 }
 
 #[derive(Debug)]
+/// Represents a static identity connector.
 pub struct StaticIdentityConnector {
     authority_name: String,
     session_ttl: Duration,
@@ -34,6 +38,7 @@ pub struct StaticIdentityConnector {
 }
 
 impl StaticIdentityConnector {
+    /// Creates a new value.
     pub fn new(
         authority_name: impl Into<String>,
         session_ttl: Duration,

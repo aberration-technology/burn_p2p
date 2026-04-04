@@ -12,18 +12,28 @@ use thiserror::Error;
 use crate::{ExperimentOverlaySet, OverlayTopic};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a peer observation.
 pub struct PeerObservation {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The connected.
     pub connected: bool,
+    /// The addresses.
     pub addresses: BTreeSet<crate::SwarmAddress>,
+    /// The capability card.
     pub capability_card: Option<CapabilityCard>,
+    /// The telemetry.
     pub telemetry: Option<TelemetrySummary>,
+    /// The estimated FLOPs.
     pub estimated_flops: Option<f64>,
+    /// The observed at.
     pub observed_at: DateTime<Utc>,
+    /// The tags.
     pub tags: BTreeSet<String>,
 }
 
 impl PeerObservation {
+    /// Creates a new value.
     pub fn new(peer_id: PeerId, observed_at: DateTime<Utc>) -> Self {
         Self {
             peer_id,
@@ -37,11 +47,13 @@ impl PeerObservation {
         }
     }
 
+    /// Returns a copy configured with the capability card.
     pub fn with_capability_card(mut self, capability_card: CapabilityCard) -> Self {
         self.capability_card = Some(capability_card);
         self
     }
 
+    /// Returns a copy configured with the telemetry.
     pub fn with_telemetry(mut self, telemetry: TelemetrySummary) -> Self {
         self.estimated_flops = extract_flops_estimate(&telemetry.metrics);
         self.telemetry = Some(telemetry);
@@ -50,15 +62,18 @@ impl PeerObservation {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Represents a peer store.
 pub struct PeerStore {
     peers: BTreeMap<PeerId, PeerObservation>,
 }
 
 impl PeerStore {
+    /// Performs the upsert operation.
     pub fn upsert(&mut self, observation: PeerObservation) {
         self.peers.insert(observation.peer_id.clone(), observation);
     }
 
+    /// Performs the mark connection operation.
     pub fn mark_connection(
         &mut self,
         peer_id: PeerId,
@@ -78,18 +93,22 @@ impl PeerStore {
             });
     }
 
+    /// Performs the get operation.
     pub fn get(&self, peer_id: &PeerId) -> Option<&PeerObservation> {
         self.peers.get(peer_id)
     }
 
+    /// Performs the observations operation.
     pub fn observations(&self) -> impl Iterator<Item = &PeerObservation> {
         self.peers.values()
     }
 
+    /// Performs the observed peer IDs operation.
     pub fn observed_peer_ids(&self) -> Vec<PeerId> {
         self.peers.keys().cloned().collect()
     }
 
+    /// Performs the connected peer IDs operation.
     pub fn connected_peer_ids(&self) -> Vec<PeerId> {
         self.peers
             .iter()
@@ -97,6 +116,7 @@ impl PeerStore {
             .collect()
     }
 
+    /// Performs the stats operation.
     pub fn stats(&self, remaining_work_units: Option<u64>) -> SwarmStats {
         let connected_peer_ids = self.connected_peer_ids();
         let observed_peer_ids = self.observed_peer_ids();
@@ -196,27 +216,41 @@ impl PeerStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Summarizes swarm statistics.
 pub struct SwarmStats {
+    /// The connected peers.
     pub connected_peers: u32,
+    /// The connected peer IDs.
     pub connected_peer_ids: Vec<PeerId>,
+    /// The observed peers.
     pub observed_peers: Vec<PeerId>,
+    /// The network estimate.
     pub network_estimate: NetworkEstimate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a migration plan.
 pub struct MigrationPlan {
+    /// The activation.
     pub activation: WindowActivation,
+    /// The required client capabilities.
     pub required_client_capabilities: BTreeSet<String>,
+    /// The leave topics.
     pub leave_topics: Vec<OverlayTopic>,
+    /// The join topics.
     pub join_topics: Vec<OverlayTopic>,
+    /// The fetch base head ID.
     pub fetch_base_head_id: Option<HeadId>,
+    /// The drain current window.
     pub drain_current_window: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a migration coordinator.
 pub struct MigrationCoordinator;
 
 impl MigrationCoordinator {
+    /// Performs the should activate operation.
     pub fn should_activate(
         current_window: burn_p2p_core::WindowId,
         activation: &WindowActivation,
@@ -224,6 +258,7 @@ impl MigrationCoordinator {
         current_window >= activation.activation_window
     }
 
+    /// Performs the plan overlay transition operation.
     pub fn plan_overlay_transition(
         current: &ExperimentOverlaySet,
         next: &ExperimentOverlaySet,
@@ -254,26 +289,40 @@ impl MigrationCoordinator {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
+/// Enumerates the supported swarm error values.
 pub enum SwarmError {
     #[error("invalid swarm address `{0}`")]
+    /// Uses the invalid address variant.
     InvalidAddress(String),
     #[error("invalid peer id `{0}`")]
+    /// Uses the invalid peer ID variant.
     InvalidPeerId(String),
     #[error("invalid protocol id `{0}`")]
+    /// Uses the invalid protocol ID variant.
     InvalidProtocolId(String),
     #[error("runtime error: {0}")]
+    /// Uses the runtime variant.
     Runtime(String),
     #[error("request failure: {0}")]
+    /// Uses the request variant.
     Request(String),
     #[error("timed out waiting for {0}")]
+    /// Uses the timed out variant.
     TimedOut(&'static str),
     #[error("{reason}")]
-    InvalidOverlayChannel { reason: &'static str },
+    /// Uses the invalid overlay channel variant.
+    InvalidOverlayChannel {
+        /// The reason.
+        reason: &'static str,
+    },
     #[error("listen error: {0}")]
+    /// Uses the listen variant.
     Listen(String),
     #[error("dial error: {0}")]
+    /// Uses the dial variant.
     Dial(String),
     #[error("pubsub error: {0}")]
+    /// Uses the pubsub variant.
     Pubsub(String),
 }
 

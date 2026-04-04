@@ -4,6 +4,12 @@ description = "Optional social and leaderboard service boundary crate for burn_p
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
 
 [features]
 default = ["profiles", "leaderboards", "badges"]
@@ -13,7 +19,7 @@ badges = []
 team-rollups = ["profiles"]
 
 [dependencies]
-burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_core.workspace = true
 chrono.workspace = true
 serde.workspace = true
 

@@ -10,8 +10,16 @@ use serde::{Deserialize, Serialize};
 use crate::spec::{ExperimentSpec, RevisionSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported topology error values.
 pub enum TopologyError {
-    NotEnoughReducers { required: usize, available: usize },
+    /// Uses the not enough reducers variant.
+    NotEnoughReducers {
+        /// The required.
+        required: usize,
+        /// The available.
+        available: usize,
+    },
+    /// Uses the nested EMA not allowed variant.
     NestedEmaNotAllowed,
 }
 
@@ -30,6 +38,7 @@ fn rendezvous_score(
     .expect("rendezvous score")
 }
 
+/// Validates the merge topology.
 pub fn validate_merge_topology(
     merge_policy: &MergePolicy,
     topology_policy: &MergeTopologyPolicy,
@@ -53,6 +62,7 @@ pub fn validate_merge_topology(
     Ok(())
 }
 
+/// Performs the open merge window operation.
 pub fn open_merge_window(
     experiment: &ExperimentSpec,
     revision: &RevisionSpec,
@@ -91,6 +101,7 @@ pub fn open_merge_window(
     })
 }
 
+/// Performs the assign reducers operation.
 pub fn assign_reducers(
     merge_window: &MergeWindowState,
     source_peer_id: &PeerId,
@@ -153,6 +164,7 @@ pub fn assign_reducers(
     })
 }
 
+/// Performs the repair reducer candidates operation.
 pub fn repair_reducer_candidates(
     assignment: &ReducerAssignment,
     unavailable_reducers: &BTreeSet<PeerId>,

@@ -1,3 +1,4 @@
+//! OAuth-backed identity connector implementations for burn_p2p.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -11,9 +12,11 @@ use burn_p2p_security::{
 use chrono::Duration;
 
 #[derive(Debug)]
+/// Represents an o auth identity connector.
 pub struct OAuthIdentityConnector(ProviderMappedIdentityConnector);
 
 impl OAuthIdentityConnector {
+    /// Creates a new value.
     pub fn new(
         provider: impl Into<String>,
         session_ttl: Duration,
@@ -30,16 +33,19 @@ impl OAuthIdentityConnector {
         ))
     }
 
+    /// Returns a copy configured with the exchange URL.
     pub fn with_exchange_url(mut self, exchange_url: Option<String>) -> Self {
         self.0 = self.0.with_exchange_url(exchange_url);
         self
     }
 
+    /// Returns a copy configured with the token URL.
     pub fn with_token_url(mut self, token_url: Option<String>) -> Self {
         self.0 = self.0.with_token_url(token_url);
         self
     }
 
+    /// Returns a copy configured with the client credentials.
     pub fn with_client_credentials(
         mut self,
         client_id: Option<String>,
@@ -49,16 +55,19 @@ impl OAuthIdentityConnector {
         self
     }
 
+    /// Returns a copy configured with the userinfo URL.
     pub fn with_userinfo_url(mut self, userinfo_url: Option<String>) -> Self {
         self.0 = self.0.with_userinfo_url(userinfo_url);
         self
     }
 
+    /// Returns a copy configured with the refresh URL.
     pub fn with_refresh_url(mut self, refresh_url: Option<String>) -> Self {
         self.0 = self.0.with_refresh_url(refresh_url);
         self
     }
 
+    /// Returns a copy configured with the revoke URL.
     pub fn with_revoke_url(mut self, revoke_url: Option<String>) -> Self {
         self.0 = self.0.with_revoke_url(revoke_url);
         self

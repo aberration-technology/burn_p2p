@@ -10,15 +10,23 @@ pub(crate) struct PersistedControlPlaneState {
     pub lease_announcements: Vec<LeaseAnnouncement>,
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
+    #[serde(default)]
+    pub metrics_announcements: Vec<MetricsAnnouncement>,
 }
 
 impl PersistedControlPlaneState {
     fn from_snapshot(snapshot: &ControlPlaneSnapshot) -> Self {
+        let mut bounded_snapshot = ControlPlaneSnapshot {
+            metrics_announcements: snapshot.metrics_announcements.clone(),
+            ..ControlPlaneSnapshot::default()
+        };
+        bounded_snapshot.clamp_metrics_announcements();
         Self {
             control_announcements: snapshot.control_announcements.clone(),
             lease_announcements: snapshot.lease_announcements.clone(),
             auth_announcements: snapshot.auth_announcements.clone(),
             directory_announcements: snapshot.directory_announcements.clone(),
+            metrics_announcements: bounded_snapshot.metrics_announcements,
         }
     }
 
@@ -27,6 +35,8 @@ impl PersistedControlPlaneState {
         snapshot.lease_announcements = self.lease_announcements;
         snapshot.auth_announcements = self.auth_announcements;
         snapshot.directory_announcements = self.directory_announcements;
+        snapshot.metrics_announcements = self.metrics_announcements;
+        snapshot.clamp_metrics_announcements();
     }
 
     fn apply_to_shell(self, shell: &mut ControlPlaneShell) {
@@ -42,6 +52,9 @@ impl PersistedControlPlaneState {
         for announcement in self.directory_announcements {
             shell.publish_directory(announcement);
         }
+        for announcement in self.metrics_announcements {
+            shell.publish_metrics(announcement);
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -49,6 +62,7 @@ impl PersistedControlPlaneState {
             && self.lease_announcements.is_empty()
             && self.auth_announcements.is_empty()
             && self.directory_announcements.is_empty()
+            && self.metrics_announcements.is_empty()
     }
 }
 
@@ -2361,6 +2375,23 @@ pub(crate) fn run_control_plane(
                         .expect("telemetry state lock should not be poisoned");
                     sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                     reconcile_live_revocation_policy(&mut auth, &mut snapshot, storage.as_ref());
+                }
+                Ok(RuntimeCommand::PublishMetrics(announcement)) => {
+                    let overlay = announcement.overlay.clone();
+                    let _ = shell.subscribe_topic(overlay.clone());
+                    shell.publish_metrics(announcement.clone());
+                    if let Err(error) =
+                        shell.publish_pubsub(overlay, PubsubPayload::Metrics(announcement))
+                    {
+                        let mut snapshot = state
+                            .lock()
+                            .expect("telemetry state lock should not be poisoned");
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = state
+                        .lock()
+                        .expect("telemetry state lock should not be poisoned");
+                    sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                 }
                 Ok(RuntimeCommand::PublishArtifact { descriptor, chunks }) => {
                     shell.publish_artifact(descriptor, chunks);

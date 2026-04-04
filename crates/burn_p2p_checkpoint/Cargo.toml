@@ -4,11 +4,15 @@ description = "Internal checkpoint, artifact, and merge boundary crate for burn_
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
 chrono.workspace = true
 multihash.workspace = true
 serde.workspace = true

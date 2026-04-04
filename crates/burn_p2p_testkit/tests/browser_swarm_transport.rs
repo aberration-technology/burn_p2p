@@ -1,3 +1,4 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -11,10 +12,10 @@ use burn_p2p::{
 };
 use burn_p2p_bootstrap::{BrowserDirectorySnapshot, BrowserLeaderboardSnapshot};
 use burn_p2p_browser::{
-    BrowserCapabilityReport, BrowserGpuSupport, BrowserJoinStage, BrowserRuntimeConfig,
-    BrowserRuntimeRole, BrowserRuntimeState, BrowserSessionState, BrowserTrainingBudget,
-    BrowserTrainingPlan, BrowserTransportKind, BrowserTransportStatus, BrowserValidationPlan,
-    BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
+    BrowserCapabilityReport, BrowserGpuSupport, BrowserJoinStage, BrowserMetricsSyncState,
+    BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState, BrowserSessionState,
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTransportKind, BrowserTransportStatus,
+    BrowserValidationPlan, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
 use burn_p2p_core::{SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload};
 use burn_p2p_swarm::{
@@ -401,6 +402,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
         signed_directory(directory.clone()),
         &heads,
         Some(signed_leaderboard(&network_id)),
+        BrowserMetricsSyncState::default(),
         runtime.transport.clone(),
         Some(&session),
     );
@@ -538,6 +540,7 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
         signed_directory(directory.clone()),
         &heads,
         Some(signed_leaderboard(&network_id)),
+        BrowserMetricsSyncState::default(),
         runtime.transport.clone(),
         Some(&session),
     );

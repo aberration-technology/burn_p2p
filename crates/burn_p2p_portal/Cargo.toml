@@ -4,6 +4,12 @@ description = "Optional reference portal/product surface for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
 
 [features]
 default = ["readonly"]

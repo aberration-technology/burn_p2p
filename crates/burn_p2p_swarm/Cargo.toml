@@ -4,10 +4,15 @@ description = "Swarm/runtime boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
 chrono.workspace = true
 futures = "0.3"
 libp2p = { version = "0.56.0", default-features = false, features = ["macros", "plaintext", "request-response", "yamux"] }

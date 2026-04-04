@@ -4,7 +4,11 @@ description = "Internal shared schemas, IDs, and deterministic encodings for bur
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 ciborium.workspace = true

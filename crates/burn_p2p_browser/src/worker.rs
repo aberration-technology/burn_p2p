@@ -4,7 +4,8 @@ use burn_p2p::{
     ArtifactId, BrowserRole, ContentId, ContributionReceipt, ContributionReceiptId, ExperimentId,
     HeadDescriptor, HeadId, MetricValue, PeerId, RevisionId, StudyId,
 };
-use burn_p2p_core::{SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{MetricsLiveEvent, SchemaEnvelope, SignedPayload};
+use burn_p2p_metrics::MetricsCatchupBundle;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -17,15 +18,82 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Captures optional metrics state carried alongside one browser edge sync.
+pub struct BrowserMetricsSyncState {
+    /// Catchup bundles that seed the browser-side metrics cache.
+    pub catchup_bundles: Vec<MetricsCatchupBundle>,
+    /// The latest live event observed by the browser client.
+    pub live_event: Option<MetricsLiveEvent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Represents a browser worker runtime.
 pub struct BrowserWorkerRuntime {
+    /// The config.
     pub config: Option<BrowserRuntimeConfig>,
+    /// The state.
     pub state: Option<BrowserRuntimeState>,
+    /// The capability.
     pub capability: Option<BrowserCapabilityReport>,
+    /// The transport.
     pub transport: BrowserTransportStatus,
+    /// The storage.
     pub storage: BrowserStorageSnapshot,
 }
 
 impl BrowserWorkerRuntime {
+    fn is_duplicate_metrics_event(&self, event: &MetricsLiveEvent) -> bool {
+        self.storage
+            .last_metrics_live_event
+            .as_ref()
+            .map(|previous| {
+                previous.network_id == event.network_id
+                    && previous.kind == event.kind
+                    && previous.cursors == event.cursors
+            })
+            .unwrap_or(false)
+    }
+
+    fn assignment_metrics_head(&self, event: &MetricsLiveEvent) -> Option<HeadId> {
+        let assignment = self.storage.active_assignment.as_ref()?;
+        event
+            .cursors
+            .iter()
+            .find(|cursor| {
+                cursor.experiment_id == assignment.experiment_id
+                    && cursor.revision_id == assignment.revision_id
+            })
+            .and_then(|cursor| cursor.latest_head_id.clone())
+    }
+
+    /// Applies one metrics-only sync update without requiring a full edge
+    /// directory or head refresh.
+    pub fn apply_metrics_sync_state(
+        &mut self,
+        metrics: BrowserMetricsSyncState,
+    ) -> Vec<BrowserWorkerEvent> {
+        let previous_storage = self.storage.clone();
+        let mut events = Vec::new();
+
+        if !metrics.catchup_bundles.is_empty() {
+            self.storage
+                .remember_metrics_catchup(metrics.catchup_bundles);
+        }
+        if let Some(event) = metrics.live_event {
+            events.extend(self.apply_metrics_live_event(event));
+        }
+        if self.storage != previous_storage
+            && !events
+                .iter()
+                .any(|event| matches!(event, BrowserWorkerEvent::StorageUpdated(_)))
+        {
+            events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
+                self.storage.clone(),
+            )));
+        }
+        events
+    }
+
     fn runtime_role_from_browser_role(role: BrowserRole) -> crate::BrowserRuntimeRole {
         match role {
             BrowserRole::PortalViewer => crate::BrowserRuntimeRole::PortalViewer,
@@ -255,6 +323,7 @@ impl BrowserWorkerRuntime {
         ))
     }
 
+    /// Performs the start operation.
     pub fn start(
         config: BrowserRuntimeConfig,
         capability: BrowserCapabilityReport,
@@ -275,6 +344,7 @@ impl BrowserWorkerRuntime {
         runtime
     }
 
+    /// Performs the stop operation.
     pub fn stop(&mut self) {
         self.config = None;
         self.state = None;
@@ -283,10 +353,12 @@ impl BrowserWorkerRuntime {
         self.storage.clear_assignment();
     }
 
+    /// Performs the remember session operation.
     pub fn remember_session(&mut self, session: BrowserSessionState) {
         self.storage.remember_session(session);
     }
 
+    /// Performs the select experiment operation.
     pub fn select_experiment(
         &mut self,
         experiment_id: ExperimentId,
@@ -311,6 +383,7 @@ impl BrowserWorkerRuntime {
         }
     }
 
+    /// Performs the suspend operation.
     pub fn suspend(&mut self) {
         if let Some(state) = self.state.as_ref() {
             self.state = Some(BrowserRuntimeState::BackgroundSuspended {
@@ -320,6 +393,7 @@ impl BrowserWorkerRuntime {
         }
     }
 
+    /// Performs the resume operation.
     pub fn resume(&mut self) {
         let Some(config) = self.config.as_ref() else {
             return;
@@ -340,6 +414,7 @@ impl BrowserWorkerRuntime {
         self.refresh_transport_selection();
     }
 
+    /// Performs the apply directory snapshot operation.
     pub fn apply_directory_snapshot(
         &mut self,
         directory: &BrowserDirectorySnapshot,
@@ -475,6 +550,7 @@ impl BrowserWorkerRuntime {
         self.refresh_transport_selection();
     }
 
+    /// Performs the apply head snapshot operation.
     pub fn apply_head_snapshot(&mut self, heads: &[HeadDescriptor]) -> Option<HeadId> {
         let matched_head_id = self
             .current_assignment_head(heads)
@@ -514,11 +590,13 @@ impl BrowserWorkerRuntime {
         matched_head_id
     }
 
+    /// Performs the apply edge sync operation.
     pub fn apply_edge_sync(
         &mut self,
         signed_directory: SignedPayload<SchemaEnvelope<BrowserDirectorySnapshot>>,
         heads: &[HeadDescriptor],
         signed_leaderboard: Option<SignedPayload<SchemaEnvelope<BrowserLeaderboardSnapshot>>>,
+        metrics: BrowserMetricsSyncState,
         transport: BrowserTransportStatus,
         session: Option<&BrowserSessionState>,
     ) -> Vec<BrowserWorkerEvent> {
@@ -530,6 +608,13 @@ impl BrowserWorkerRuntime {
         self.storage.remember_directory_snapshot(signed_directory);
         if let Some(snapshot) = signed_leaderboard {
             self.storage.remember_leaderboard_snapshot(snapshot);
+        }
+        if !metrics.catchup_bundles.is_empty() {
+            self.storage
+                .remember_metrics_catchup(metrics.catchup_bundles);
+        }
+        if let Some(event) = metrics.live_event {
+            self.storage.remember_metrics_live_event(event);
         }
         self.apply_directory_snapshot(&directory, session);
         let active_head_id = self.apply_head_snapshot(heads);
@@ -558,11 +643,34 @@ impl BrowserWorkerRuntime {
         events
     }
 
+    /// Applies one live metrics event to the browser runtime and storage.
+    pub fn apply_metrics_live_event(&mut self, event: MetricsLiveEvent) -> Vec<BrowserWorkerEvent> {
+        if self.is_duplicate_metrics_event(&event) {
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        let updated_head = self
+            .assignment_metrics_head(&event)
+            .filter(|head_id| self.storage.last_head_id.as_ref() != Some(head_id));
+        self.storage.remember_metrics_live_event(event.clone());
+        if let Some(head_id) = updated_head {
+            self.storage.remember_head(head_id.clone());
+            events.push(BrowserWorkerEvent::HeadUpdated { head_id });
+        }
+        events.push(BrowserWorkerEvent::MetricsUpdated(Box::new(event)));
+        events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
+            self.storage.clone(),
+        )));
+        events
+    }
+
+    /// Performs the update transport status operation.
     pub fn update_transport_status(&mut self, transport: BrowserTransportStatus) {
         self.transport = transport;
         self.refresh_transport_selection();
     }
 
+    /// Performs the apply command operation.
     pub fn apply_command(
         &mut self,
         command: BrowserWorkerCommand,
@@ -620,6 +728,9 @@ impl BrowserWorkerRuntime {
                     pending_receipts,
                 });
             }
+            BrowserWorkerCommand::ApplyMetricsLiveEvent(event) => {
+                return self.apply_metrics_live_event(*event);
+            }
         }
 
         if self.state != previous_state
@@ -645,6 +756,7 @@ impl BrowserWorkerRuntime {
         events
     }
 
+    /// Performs the refresh transport selection operation.
     pub fn refresh_transport_selection(&mut self) {
         let Some(config) = self.config.as_ref() else {
             self.transport.active = None;

@@ -1,3 +1,4 @@
+//! Checkpoint manifests, artifact storage, and head reconstruction helpers.
 #![forbid(unsafe_code)]
 
 use std::{
@@ -17,82 +18,134 @@ use multihash::Multihash;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Public APIs for store.
 pub mod store;
 
 pub use store::{FsArtifactStore, GarbageCollectionReport};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Enumerates the supported checkpoint error values.
 pub enum CheckpointError {
     #[error("artifact already exists: {0}")]
+    /// Uses the duplicate artifact variant.
     DuplicateArtifact(ArtifactId),
     #[error("head already exists: {0}")]
+    /// Uses the duplicate head variant.
     DuplicateHead(HeadId),
     #[error("artifact not found: {0}")]
+    /// Uses the unknown artifact variant.
     UnknownArtifact(ArtifactId),
     #[error("head not found: {0}")]
+    /// Uses the unknown head variant.
     UnknownHead(HeadId),
     #[error("parent head not found: {0}")]
+    /// Uses the missing parent head variant.
     MissingParentHead(HeadId),
     #[error("head {head_id} references artifact {artifact_id} with incompatible head binding")]
+    /// Uses the head artifact mismatch variant.
     HeadArtifactMismatch {
+        /// The head ID.
         head_id: HeadId,
+        /// The artifact ID.
         artifact_id: ArtifactId,
     },
     #[error("delta artifact {artifact_id} must reference base head {expected_base_head_id}")]
+    /// Uses the delta base head mismatch variant.
     DeltaBaseHeadMismatch {
+        /// The artifact ID.
         artifact_id: ArtifactId,
+        /// The expected base head ID.
         expected_base_head_id: HeadId,
     },
     #[error("merge candidate contains no contribution receipts")]
+    /// Uses the empty merge candidate variant.
     EmptyMergeCandidate,
     #[error("receipt {receipt_id} points at unknown artifact {artifact_id}")]
+    /// Uses the unknown contribution artifact variant.
     UnknownContributionArtifact {
+        /// The receipt ID.
         receipt_id: ContributionReceiptId,
+        /// The artifact ID.
         artifact_id: ArtifactId,
     },
     #[error("receipt {receipt_id} has non-positive accepted weight")]
-    NonPositiveContributionWeight { receipt_id: ContributionReceiptId },
-    #[error("receipt {receipt_id} targets a different base head")]
-    MixedBaseHead {
+    /// Uses the non positive contribution weight variant.
+    NonPositiveContributionWeight {
+        /// The receipt ID.
         receipt_id: ContributionReceiptId,
+    },
+    #[error("receipt {receipt_id} targets a different base head")]
+    /// Uses the mixed base head variant.
+    MixedBaseHead {
+        /// The receipt ID.
+        receipt_id: ContributionReceiptId,
+        /// The expected.
         expected: HeadId,
+        /// The found.
         found: HeadId,
     },
     #[error("receipt {receipt_id} uses a different study/experiment/revision tuple")]
-    MixedContributionScope { receipt_id: ContributionReceiptId },
+    /// Uses the mixed contribution scope variant.
+    MixedContributionScope {
+        /// The receipt ID.
+        receipt_id: ContributionReceiptId,
+    },
     #[error("EMA decay must be in the inclusive range [0.0, 1.0]")]
+    /// Uses the invalid EMA decay variant.
     InvalidEmaDecay,
     #[error("chunk size must be greater than zero")]
+    /// Uses the invalid chunk size variant.
     InvalidChunkSize,
     #[error("chunk {chunk_id} length mismatch: expected {expected} bytes, found {found} bytes")]
+    /// Uses the chunk length mismatch variant.
     ChunkLengthMismatch {
+        /// The chunk ID.
         chunk_id: ChunkId,
+        /// The expected.
         expected: u64,
+        /// The found.
         found: u64,
     },
     #[error("chunk {chunk_id} hash mismatch")]
-    ChunkHashMismatch { chunk_id: ChunkId },
+    /// Uses the chunk hash mismatch variant.
+    ChunkHashMismatch {
+        /// The chunk ID.
+        chunk_id: ChunkId,
+    },
     #[error("artifact {artifact_id} root hash mismatch after materialization")]
-    ArtifactRootHashMismatch { artifact_id: ArtifactId },
+    /// Uses the artifact root hash mismatch variant.
+    ArtifactRootHashMismatch {
+        /// The artifact ID.
+        artifact_id: ArtifactId,
+    },
     #[error(
         "artifact {artifact_id} length mismatch: expected {expected} bytes, found {found} bytes"
     )]
+    /// Uses the artifact length mismatch variant.
     ArtifactLengthMismatch {
+        /// The artifact ID.
         artifact_id: ArtifactId,
+        /// The expected.
         expected: u64,
+        /// The found.
         found: u64,
     },
     #[error("i/o error: {0}")]
+    /// Uses the io variant.
     Io(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Represents a checkpoint catalog.
 pub struct CheckpointCatalog {
+    /// The artifacts.
     pub artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
+    /// The heads.
     pub heads: BTreeMap<HeadId, HeadDescriptor>,
 }
 
 impl CheckpointCatalog {
+    /// Performs the insert artifact operation.
     pub fn insert_artifact(
         &mut self,
         artifact: ArtifactDescriptor,
@@ -106,6 +159,7 @@ impl CheckpointCatalog {
         Ok(self.artifacts.get(&artifact_id).expect("inserted artifact"))
     }
 
+    /// Performs the insert head operation.
     pub fn insert_head(
         &mut self,
         head: HeadDescriptor,
@@ -148,6 +202,7 @@ impl CheckpointCatalog {
         Ok(self.heads.get(&head_id).expect("inserted head"))
     }
 
+    /// Performs the artifact operation.
     pub fn artifact(
         &self,
         artifact_id: &ArtifactId,
@@ -157,12 +212,14 @@ impl CheckpointCatalog {
             .ok_or_else(|| CheckpointError::UnknownArtifact(artifact_id.clone()))
     }
 
+    /// Performs the head operation.
     pub fn head(&self, head_id: &HeadId) -> Result<&HeadDescriptor, CheckpointError> {
         self.heads
             .get(head_id)
             .ok_or_else(|| CheckpointError::UnknownHead(head_id.clone()))
     }
 
+    /// Performs the head chain operation.
     pub fn head_chain(&self, head_id: &HeadId) -> Result<Vec<HeadDescriptor>, CheckpointError> {
         let mut chain = Vec::new();
         let mut cursor = self.head(head_id)?.clone();
@@ -183,6 +240,7 @@ impl CheckpointCatalog {
         Ok(chain)
     }
 
+    /// Performs the lineage operation.
     pub fn lineage(
         &self,
         head_id: &HeadId,
@@ -202,6 +260,7 @@ impl CheckpointCatalog {
         })
     }
 
+    /// Performs the plan sync operation.
     pub fn plan_sync(&self, request: SyncRequest) -> Result<SyncPlan, CheckpointError> {
         let chain = self.head_chain(&request.target_head_id)?;
         let mut missing_heads = Vec::new();
@@ -233,6 +292,7 @@ impl CheckpointCatalog {
         })
     }
 
+    /// Performs the plan merge operation.
     pub fn plan_merge(&self, candidate: MergeCandidate) -> Result<MergePlan, CheckpointError> {
         if candidate.contributions.is_empty() {
             return Err(CheckpointError::EmptyMergeCandidate);
@@ -333,22 +393,33 @@ impl CheckpointCatalog {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a checkpoint lineage.
 pub struct CheckpointLineage {
+    /// The target head ID.
     pub target_head_id: HeadId,
+    /// The heads.
     pub heads: Vec<HeadDescriptor>,
+    /// The artifacts.
     pub artifacts: Vec<ArtifactDescriptor>,
+    /// The policy.
     pub policy: MergePolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a sync request.
 pub struct SyncRequest {
+    /// The target head ID.
     pub target_head_id: HeadId,
+    /// The local heads.
     pub local_heads: BTreeSet<HeadId>,
+    /// The local artifacts.
     pub local_artifacts: BTreeSet<ArtifactId>,
+    /// The local chunks.
     pub local_chunks: BTreeSet<ChunkId>,
 }
 
 impl SyncRequest {
+    /// Performs the empty operation.
     pub fn empty(target_head_id: HeadId) -> Self {
         Self {
             target_head_id,
@@ -360,14 +431,20 @@ impl SyncRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a sync plan.
 pub struct SyncPlan {
+    /// The target head ID.
     pub target_head_id: HeadId,
+    /// The missing heads.
     pub missing_heads: Vec<HeadId>,
+    /// The missing artifacts.
     pub missing_artifacts: Vec<ArtifactId>,
+    /// The missing chunks.
     pub missing_chunks: Vec<ChunkId>,
 }
 
 impl SyncPlan {
+    /// Returns whether the value is complete.
     pub fn is_complete(&self) -> bool {
         self.missing_heads.is_empty()
             && self.missing_artifacts.is_empty()
@@ -376,64 +453,105 @@ impl SyncPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge candidate.
 pub struct MergeCandidate {
+    /// The study ID.
     pub study_id: burn_p2p_core::StudyId,
+    /// The experiment ID.
     pub experiment_id: burn_p2p_core::ExperimentId,
+    /// The revision ID.
     pub revision_id: burn_p2p_core::RevisionId,
+    /// The base head ID.
     pub base_head_id: HeadId,
+    /// The policy.
     pub policy: MergePolicy,
+    /// The contributions.
     pub contributions: Vec<ContributionReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge plan.
 pub struct MergePlan {
+    /// The study ID.
     pub study_id: burn_p2p_core::StudyId,
+    /// The experiment ID.
     pub experiment_id: burn_p2p_core::ExperimentId,
+    /// The revision ID.
     pub revision_id: burn_p2p_core::RevisionId,
+    /// The base head ID.
     pub base_head_id: HeadId,
+    /// The policy.
     pub policy: MergePolicy,
+    /// The contribution receipt IDs.
     pub contribution_receipt_ids: Vec<ContributionReceiptId>,
+    /// The artifact IDs.
     pub artifact_ids: Vec<ArtifactId>,
+    /// The total weight.
     pub total_weight: f64,
+    /// The aggregated numeric metrics.
     pub aggregated_numeric_metrics: BTreeMap<String, f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents an aggregate artifact input.
 pub struct AggregateArtifactInput {
+    /// The peer ID.
     pub peer_id: burn_p2p_core::PeerId,
+    /// The artifact ID.
     pub artifact_id: ArtifactId,
+    /// The sample weight.
     pub sample_weight: f64,
+    /// The quality weight.
     pub quality_weight: f64,
+    /// The receipt IDs.
     pub receipt_ids: Vec<ContributionReceiptId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents an aggregate artifact record.
 pub struct AggregateArtifactRecord {
+    /// The aggregate ID.
     pub aggregate_id: ContentId,
+    /// The study ID.
     pub study_id: burn_p2p_core::StudyId,
+    /// The experiment ID.
     pub experiment_id: burn_p2p_core::ExperimentId,
+    /// The revision ID.
     pub revision_id: burn_p2p_core::RevisionId,
+    /// The base head ID.
     pub base_head_id: HeadId,
+    /// The policy.
     pub policy: MergePolicy,
+    /// The aggregate stats.
     pub aggregate_stats: burn_p2p_core::AggregateStats,
+    /// The merge plan.
     pub merge_plan: MergePlan,
+    /// The inputs.
     pub inputs: Vec<AggregateArtifactInput>,
+    /// The created at.
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents an aggregate artifact bytes.
 pub struct AggregateArtifactBytes {
+    /// The descriptor.
     pub descriptor: ArtifactDescriptor,
+    /// The bytes.
     pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents an EMA flow.
 pub struct EmaFlow {
+    /// The decay.
     pub decay: f64,
+    /// The included heads.
     pub included_heads: Vec<HeadId>,
 }
 
 impl EmaFlow {
+    /// Creates a new value.
     pub fn new(decay: f64) -> Result<Self, CheckpointError> {
         if !(0.0..=1.0).contains(&decay) {
             return Err(CheckpointError::InvalidEmaDecay);
@@ -445,6 +563,7 @@ impl EmaFlow {
         })
     }
 
+    /// Performs the include certified head operation.
     pub fn include_certified_head(&mut self, head_id: HeadId) {
         if !self.included_heads.contains(&head_id) {
             self.included_heads.push(head_id);
@@ -453,7 +572,9 @@ impl EmaFlow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a chunking scheme.
 pub struct ChunkingScheme {
+    /// The chunk size bytes.
     pub chunk_size_bytes: u64,
 }
 
@@ -466,6 +587,7 @@ impl Default for ChunkingScheme {
 }
 
 impl ChunkingScheme {
+    /// Creates a new value.
     pub fn new(chunk_size_bytes: u64) -> Result<Self, CheckpointError> {
         if chunk_size_bytes == 0 {
             return Err(CheckpointError::InvalidChunkSize);
@@ -476,16 +598,24 @@ impl ChunkingScheme {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents an artifact build spec.
 pub struct ArtifactBuildSpec {
+    /// The kind.
     pub kind: ArtifactKind,
+    /// The head ID.
     pub head_id: Option<HeadId>,
+    /// The base head ID.
     pub base_head_id: Option<HeadId>,
+    /// The precision.
     pub precision: Precision,
+    /// The model schema hash.
     pub model_schema_hash: ContentId,
+    /// The record format.
     pub record_format: String,
 }
 
 impl ArtifactBuildSpec {
+    /// Creates a new value.
     pub fn new(
         kind: ArtifactKind,
         precision: Precision,
@@ -502,17 +632,20 @@ impl ArtifactBuildSpec {
         }
     }
 
+    /// Returns a copy configured with the head.
     pub fn with_head(mut self, head_id: HeadId) -> Self {
         self.head_id = Some(head_id);
         self
     }
 
+    /// Returns a copy configured with the base head.
     pub fn with_base_head(mut self, base_head_id: HeadId) -> Self {
         self.base_head_id = Some(base_head_id);
         self
     }
 }
 
+/// Builds the artifact descriptor from bytes.
 pub fn build_artifact_descriptor_from_bytes(
     spec: &ArtifactBuildSpec,
     bytes: impl AsRef<[u8]>,
@@ -521,6 +654,7 @@ pub fn build_artifact_descriptor_from_bytes(
     build_artifact_descriptor_from_reader(spec, Cursor::new(bytes.as_ref()), chunking)
 }
 
+/// Builds the artifact descriptor from reader.
 pub fn build_artifact_descriptor_from_reader(
     spec: &ArtifactBuildSpec,
     reader: impl Read,
@@ -529,6 +663,7 @@ pub fn build_artifact_descriptor_from_reader(
     stream_artifact_from_reader(spec, reader, chunking, |_chunk, _bytes| Ok(()))
 }
 
+/// Builds the artifact descriptor from file.
 pub fn build_artifact_descriptor_from_file(
     spec: &ArtifactBuildSpec,
     path: impl AsRef<Path>,
@@ -538,6 +673,7 @@ pub fn build_artifact_descriptor_from_file(
     build_artifact_descriptor_from_reader(spec, BufReader::new(file), chunking)
 }
 
+/// Performs the materialize aggregate artifact bytes operation.
 pub fn materialize_aggregate_artifact_bytes(
     record: &AggregateArtifactRecord,
     chunking: ChunkingScheme,

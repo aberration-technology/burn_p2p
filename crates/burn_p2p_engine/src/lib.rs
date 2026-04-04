@@ -1,3 +1,4 @@
+//! Internal engine integration helpers for burn-backed workloads.
 #![forbid(unsafe_code)]
 
 use std::{collections::BTreeMap, path::PathBuf};
@@ -27,32 +28,45 @@ pub use burn::train::{
 };
 
 #[derive(Debug, thiserror::Error)]
+/// Enumerates the supported engine error values.
 pub enum EngineError {
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("checkpoint error: {0}")]
+    /// Uses the checkpoint variant.
     Checkpoint(#[from] CheckpointError),
     #[error("burn recorder error: {0}")]
+    /// Uses the recorder variant.
     Recorder(String),
     #[error("burnpack store error: {0}")]
+    /// Uses the burnpack variant.
     Burnpack(String),
     #[error("safetensors store error: {0}")]
+    /// Uses the safetensors variant.
     Safetensors(String),
     #[error("tensor snapshot error: {0}")]
+    /// Uses the tensor snapshot variant.
     TensorSnapshot(String),
     #[error("tensor data error: {0}")]
+    /// Uses the tensor data variant.
     TensorData(String),
     #[error("module merge error: {0}")]
+    /// Uses the module merge variant.
     ModuleMerge(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported burn record precision values.
 pub enum BurnRecordPrecision {
+    /// Uses the full variant.
     Full,
+    /// Uses the half variant.
     Half,
 }
 
 impl BurnRecordPrecision {
+    /// Returns the checkpoint precision view.
     pub fn as_checkpoint_precision(self) -> Precision {
         match self {
             Self::Full => Precision::Fp32,
@@ -62,16 +76,24 @@ impl BurnRecordPrecision {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported burn record file format values.
 pub enum BurnRecordFileFormat {
+    /// Uses the bin variant.
     Bin,
+    /// Uses the bin gz variant.
     BinGz,
+    /// Uses the pretty JSON variant.
     PrettyJson,
+    /// Uses the JSON gz variant.
     JsonGz,
+    /// Uses the named mpk variant.
     NamedMpk,
+    /// Uses the named mpk gz variant.
     NamedMpkGz,
 }
 
 impl BurnRecordFileFormat {
+    /// Performs the file extension operation.
     pub fn file_extension(self) -> &'static str {
         match self {
             Self::Bin => "bin",
@@ -83,6 +105,7 @@ impl BurnRecordFileFormat {
         }
     }
 
+    /// Performs the record format name operation.
     pub fn record_format_name(self) -> &'static str {
         match self {
             Self::Bin => "burn-record:bin",
@@ -96,12 +119,16 @@ impl BurnRecordFileFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported burn record bytes format values.
 pub enum BurnRecordBytesFormat {
+    /// Uses the bin variant.
     Bin,
+    /// Uses the named mpk variant.
     NamedMpk,
 }
 
 impl BurnRecordBytesFormat {
+    /// Performs the record format name operation.
     pub fn record_format_name(self) -> &'static str {
         match self {
             Self::Bin => "burn-record:bytes-bin",
@@ -111,12 +138,16 @@ impl BurnRecordBytesFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported burn store format values.
 pub enum BurnStoreFormat {
+    /// Uses the burnpack variant.
     Burnpack,
+    /// Uses the safetensors variant.
     Safetensors,
 }
 
 impl BurnStoreFormat {
+    /// Performs the file extension operation.
     pub fn file_extension(self) -> &'static str {
         match self {
             Self::Burnpack => "bpk",
@@ -124,6 +155,7 @@ impl BurnStoreFormat {
         }
     }
 
+    /// Performs the record format name operation.
     pub fn record_format_name(self) -> &'static str {
         match self {
             Self::Burnpack => "burn-store:burnpack",
@@ -133,70 +165,109 @@ impl BurnStoreFormat {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported burn tensor kinds.
 pub enum BurnTensorKind {
+    /// Uses the float kind.
     Float,
+    /// Uses the int kind.
     Int,
+    /// Uses the bool kind.
     Bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a burn module parameter.
 pub struct BurnModuleParameter {
+    /// The path.
     pub path: String,
+    /// The param ID.
     pub param_id: String,
+    /// The kind.
     pub kind: BurnTensorKind,
+    /// The shape.
     pub shape: Vec<usize>,
+    /// The num elements.
     pub num_elements: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a burn module inventory.
 pub struct BurnModuleInventory {
+    /// The parameter count.
     pub parameter_count: usize,
+    /// The total scalar parameters.
     pub total_scalar_parameters: usize,
+    /// The parameters.
     pub parameters: Vec<BurnModuleParameter>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a burn artifact bytes.
 pub struct BurnArtifactBytes {
+    /// The descriptor.
     pub descriptor: ArtifactDescriptor,
+    /// The bytes.
     pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a burn artifact file.
 pub struct BurnArtifactFile {
+    /// The descriptor.
     pub descriptor: ArtifactDescriptor,
+    /// The path.
     pub path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
+/// Represents a burn artifact options.
 pub struct BurnArtifactOptions {
+    /// The artifact kind.
     pub artifact_kind: ArtifactKind,
+    /// The head ID.
     pub head_id: Option<HeadId>,
+    /// The base head ID.
     pub base_head_id: Option<HeadId>,
+    /// The chunking.
     pub chunking: ChunkingScheme,
 }
 
 #[derive(Clone, Debug)]
+/// Represents a record artifact file options.
 pub struct RecordArtifactFileOptions {
+    /// The base path.
     pub base_path: PathBuf,
+    /// The format.
     pub format: BurnRecordFileFormat,
+    /// The precision.
     pub precision: BurnRecordPrecision,
+    /// The artifact.
     pub artifact: BurnArtifactOptions,
 }
 
 #[derive(Clone, Debug)]
+/// Represents a store artifact file options.
 pub struct StoreArtifactFileOptions {
+    /// The base path.
     pub base_path: PathBuf,
+    /// The format.
     pub format: BurnStoreFormat,
+    /// The declared precision.
     pub declared_precision: Precision,
+    /// The artifact.
     pub artifact: BurnArtifactOptions,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Represents a burn merge candidate.
 pub struct BurnMergeCandidate<'a, M> {
+    /// The module.
     pub module: &'a M,
+    /// The weight.
     pub weight: f64,
 }
 
+/// Defines behavior for burn module target.
 pub trait BurnModuleTarget<B: Backend>: Module<B> + ModuleSnapshot<B> {}
 
 impl<B: Backend, M> BurnModuleTarget<B> for M where M: Module<B> + ModuleSnapshot<B> {}
@@ -257,6 +328,7 @@ macro_rules! with_precision_settings {
     }};
 }
 
+/// Performs the inspect module operation.
 pub fn inspect_module<B, M>(module: &M) -> BurnModuleInventory
 where
     B: Backend,
@@ -299,6 +371,7 @@ where
             });
         }
 
+        /// Performs the visit bool operation.
         fn visit_bool<const D: usize>(&mut self, param: &Param<Tensor<B, D, Bool>>) {
             let tensor = param.val();
             self.parameters.push(BurnModuleParameter {
@@ -371,6 +444,7 @@ where
     }
 }
 
+/// Performs the module schema hash operation.
 pub fn module_schema_hash<B, M>(module: &M) -> Result<ContentId, EngineError>
 where
     B: Backend,
@@ -393,6 +467,7 @@ where
     Ok(ContentId::derive(&shape_only)?)
 }
 
+/// Performs the merge weighted mean modules operation.
 pub fn merge_weighted_mean_modules<B, M>(
     base_module: &M,
     candidates: &[BurnMergeCandidate<'_, M>],
@@ -444,6 +519,7 @@ where
     replace_float_tensors::<B, M>(base_module, replacements).map(Some)
 }
 
+/// Performs the apply root EMA modules operation.
 pub fn apply_root_ema_modules<B, M>(
     base_module: &M,
     merged_module: &M,
@@ -623,6 +699,7 @@ where
     Ok(merged)
 }
 
+/// Performs the save record file operation.
 pub fn save_record_file<B, M>(
     module: M,
     base_path: impl Into<PathBuf>,
@@ -668,6 +745,7 @@ where
     })
 }
 
+/// Performs the load record file operation.
 pub fn load_record_file<B, M>(
     module: M,
     base_path: impl Into<PathBuf>,
@@ -716,6 +794,7 @@ where
     })
 }
 
+/// Performs the encode record bytes operation.
 pub fn encode_record_bytes<B, M>(
     module: M,
     format: BurnRecordBytesFormat,
@@ -737,6 +816,7 @@ where
     })
 }
 
+/// Performs the load record bytes operation.
 pub fn load_record_bytes<B, M>(
     module: M,
     bytes: Vec<u8>,
@@ -764,6 +844,7 @@ where
     })
 }
 
+/// Performs the save store file operation.
 pub fn save_store_file<B, M>(
     module: &M,
     base_path: impl Into<PathBuf>,
@@ -793,6 +874,7 @@ where
     Ok(path)
 }
 
+/// Performs the load store file operation.
 pub fn load_store_file<B, M>(
     module: &mut M,
     path: impl Into<PathBuf>,
@@ -822,6 +904,7 @@ where
     Ok(())
 }
 
+/// Performs the encode store bytes operation.
 pub fn encode_store_bytes<B, M>(module: &M, format: BurnStoreFormat) -> Result<Vec<u8>, EngineError>
 where
     B: Backend,
@@ -850,6 +933,7 @@ where
     }
 }
 
+/// Performs the load store bytes operation.
 pub fn load_store_bytes<B, M>(
     module: &mut M,
     bytes: Vec<u8>,
@@ -877,6 +961,7 @@ where
     Ok(())
 }
 
+/// Performs the materialize record file artifact operation.
 pub fn materialize_record_file_artifact<B, M>(
     module: M,
     options: RecordArtifactFileOptions,
@@ -909,6 +994,7 @@ where
     Ok(BurnArtifactFile { descriptor, path })
 }
 
+/// Performs the materialize record bytes artifact operation.
 pub fn materialize_record_bytes_artifact<B, M>(
     module: M,
     format: BurnRecordBytesFormat,
@@ -940,6 +1026,7 @@ where
     Ok(BurnArtifactBytes { descriptor, bytes })
 }
 
+/// Performs the materialize store file artifact operation.
 pub fn materialize_store_file_artifact<B, M>(
     module: &M,
     options: StoreArtifactFileOptions,
@@ -972,6 +1059,7 @@ where
     Ok(BurnArtifactFile { descriptor, path })
 }
 
+/// Performs the materialize store bytes artifact operation.
 pub fn materialize_store_bytes_artifact<B, M>(
     module: &M,
     format: BurnStoreFormat,

@@ -14,76 +14,130 @@ use crate::spec::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents an activation target.
 pub struct ActivationTarget {
+    /// The activation.
     pub activation: WindowActivation,
+    /// The required client capabilities.
     pub required_client_capabilities: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Enumerates the supported experiment control command values.
 pub enum ExperimentControlCommand {
+    /// Uses the create study variant.
     CreateStudy {
+        /// The study.
         study: StudySpec,
     },
+    /// Uses the create experiment variant.
     CreateExperiment {
+        /// The experiment.
         experiment: Box<ExperimentSpec>,
+        /// The revision.
         revision: Box<RevisionSpec>,
     },
+    /// Uses the patch experiment variant.
     PatchExperiment {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The revision ID.
         revision_id: RevisionId,
+        /// The patch.
         patch: RuntimePatch,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the pause experiment variant.
     PauseExperiment {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The reason.
         reason: Option<String>,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the resume experiment variant.
     ResumeExperiment {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the promote head variant.
     PromoteHead {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The revision ID.
         revision_id: RevisionId,
+        /// The head ID.
         head_id: HeadId,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the rollback head variant.
     RollbackHead {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The revision ID.
         revision_id: RevisionId,
+        /// The head ID.
         head_id: HeadId,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the reassign cohort variant.
     ReassignCohort {
+        /// The study ID.
         study_id: StudyId,
+        /// The experiment ID.
         experiment_id: ExperimentId,
+        /// The cohort.
         cohort: String,
+        /// The peer IDs.
         peer_ids: Vec<PeerId>,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the revoke peer variant.
     RevokePeer {
+        /// The peer ID.
         peer_id: PeerId,
+        /// The minimum revocation epoch.
         minimum_revocation_epoch: RevocationEpoch,
+        /// The reason.
         reason: String,
     },
+    /// Uses the quarantine peer variant.
     QuarantinePeer {
+        /// The peer ID.
         peer_id: PeerId,
+        /// The reason.
         reason: String,
+        /// The target.
         target: ActivationTarget,
     },
+    /// Uses the pardon peer variant.
     PardonPeer {
+        /// The peer ID.
         peer_id: PeerId,
+        /// The target.
         target: ActivationTarget,
     },
 }
 
 impl ExperimentControlCommand {
+    /// Performs the activation operation.
     pub fn activation(&self) -> Option<&ActivationTarget> {
         match self {
             Self::CreateStudy { .. } | Self::CreateExperiment { .. } | Self::RevokePeer { .. } => {
@@ -102,12 +156,16 @@ impl ExperimentControlCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Wraps the experiment control with transport metadata.
 pub struct ExperimentControlEnvelope {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The command.
     pub command: ExperimentControlCommand,
 }
 
 impl ExperimentControlEnvelope {
+    /// Consumes the value and returns the signed cert.
     pub fn into_signed_cert(
         self,
         signer: burn_p2p_core::SignatureMetadata,
@@ -144,19 +202,30 @@ impl ExperimentControlEnvelope {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Captures experiment control state.
 pub struct ExperimentControlState {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The study ID.
     pub study_id: StudyId,
+    /// The experiment ID.
     pub experiment_id: ExperimentId,
+    /// The current revision ID.
     pub current_revision_id: RevisionId,
+    /// The current dataset view ID.
     pub current_dataset_view_id: DatasetViewId,
+    /// The current merge policy.
     pub current_merge_policy: MergePolicy,
+    /// The paused.
     pub paused: bool,
+    /// The scheduled commands.
     pub scheduled_commands: BTreeMap<WindowId, Vec<ExperimentControlCommand>>,
+    /// The updated at.
     pub updated_at: DateTime<Utc>,
 }
 
 impl ExperimentControlState {
+    /// Performs the stage command operation.
     pub fn stage_command(
         &mut self,
         command: ExperimentControlCommand,
@@ -171,34 +240,49 @@ impl ExperimentControlState {
         Ok(())
     }
 
+    /// Returns whether the value supports patch.
     pub fn supports_patch(&self, patch_support: PatchSupport, patch_class: PatchClass) -> bool {
         patch_support.supports(patch_class)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported stage error values.
 pub enum StageError {
+    /// Uses the missing activation variant.
     MissingActivation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Captures a snapshot of experiment.
 pub struct ExperimentSnapshot {
+    /// The study.
     pub study: StudySpec,
+    /// The experiment.
     pub experiment: ExperimentSpec,
+    /// The revision.
     pub revision: RevisionSpec,
+    /// The control state.
     pub control_state: ExperimentControlState,
+    /// The metadata.
     pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a patch plan.
 pub struct PatchPlan {
+    /// The patch.
     pub patch: RuntimePatch,
+    /// The target revision ID.
     pub target_revision_id: RevisionId,
+    /// The target window.
     pub target_window: WindowActivation,
+    /// The notes.
     pub notes: BTreeMap<String, String>,
 }
 
 impl PatchPlan {
+    /// Performs the content hash operation.
     pub fn content_hash(&self) -> Result<ContentId, burn_p2p_core::SchemaError> {
         self.content_id()
     }

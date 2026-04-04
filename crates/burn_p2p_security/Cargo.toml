@@ -4,10 +4,15 @@ description = "Security and validator-policy boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
 chrono.workspace = true
 hex.workspace = true
 libp2p-identity = { version = "0.2.13", features = ["ed25519", "peerid", "rand"] }

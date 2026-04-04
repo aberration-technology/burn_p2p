@@ -1,3 +1,5 @@
+//! Swarm transport, control-plane, and overlay helpers for burn_p2p.
+#![allow(missing_docs)]
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{
@@ -349,6 +351,7 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
             .collect(),
         auth_announcements: Vec::new(),
         directory_announcements: vec![directory_announcement(16)],
+        metrics_announcements: Vec::new(),
     }
 }
 

@@ -4,13 +4,21 @@ description = "Browser runtime glue, worker bridge, and portal bindings for burn
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
 
 [dependencies]
-burn_p2p = { path = "../burn_p2p" }
-burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap" }
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_swarm = { path = "../burn_p2p_swarm" }
-burn_p2p_ui = { path = "../burn_p2p_ui" }
+burn_p2p.workspace = true
+burn_p2p_bootstrap.workspace = true
+burn_p2p_core.workspace = true
+burn_p2p_metrics.workspace = true
+burn_p2p_publish = { version = "=0.21.0-pre.2", path = "../burn_p2p_publish" }
+burn_p2p_swarm.workspace = true
+burn_p2p_ui.workspace = true
 chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 semver.workspace = true
@@ -20,6 +28,9 @@ thiserror.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["net", "rt", "time"] }
 
 [lints]
 workspace = true

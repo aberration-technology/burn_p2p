@@ -1,3 +1,5 @@
+//! Checkpoint manifests, artifact storage, and head reconstruction helpers.
+#![allow(missing_docs)]
 use std::{collections::BTreeMap, io::Cursor};
 
 use burn_p2p_checkpoint::{

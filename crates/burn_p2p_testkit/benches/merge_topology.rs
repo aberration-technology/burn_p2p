@@ -1,3 +1,5 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
+#![allow(missing_docs)]
 use burn_p2p_core::{MergeStrategy, MergeTopologyPolicy};
 use burn_p2p_testkit::merge_topology::{MergeTopologySimConfig, simulate_merge_topology};
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};

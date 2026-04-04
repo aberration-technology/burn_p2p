@@ -1,3 +1,4 @@
+//! Capability and budget evaluation helpers for runtime placement decisions.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
@@ -10,29 +11,42 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
+/// Enumerates the supported limits error values.
 pub enum LimitsError {
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("target window seconds must be greater than zero")]
+    /// Uses the invalid target window variant.
     InvalidTargetWindow,
     #[error("observed throughput window seconds must be greater than zero")]
+    /// Uses the invalid observed window variant.
     InvalidObservedWindow,
     #[error("work units per second must be non-negative")]
+    /// Uses the invalid work rate variant.
     InvalidWorkRate,
     #[error("observed throughput smoothing must be within 0.0..=1.0")]
+    /// Uses the invalid observed smoothing variant.
     InvalidObservedSmoothing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported local backend values.
 pub enum LocalBackend {
+    /// Uses the cuda variant.
     Cuda,
+    /// Uses the wgpu variant.
     Wgpu,
+    /// Uses the ndarray variant.
     Ndarray,
+    /// Uses the CPU variant.
     Cpu,
+    /// Uses the custom variant.
     Custom(String),
 }
 
 impl LocalBackend {
+    /// Returns the name view.
     pub fn as_name(&self) -> &str {
         match self {
             Self::Cuda => "cuda",
@@ -55,29 +69,50 @@ impl LocalBackend {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a capability probe.
 pub struct CapabilityProbe {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The platform.
     pub platform: ClientPlatform,
+    /// The available backends.
     pub available_backends: Vec<LocalBackend>,
+    /// The device memory bytes.
     pub device_memory_bytes: Option<u64>,
+    /// The system memory bytes.
     pub system_memory_bytes: u64,
+    /// The disk bytes.
     pub disk_bytes: u64,
+    /// The upload mbps.
     pub upload_mbps: f32,
+    /// The download mbps.
     pub download_mbps: f32,
+    /// The persistence.
     pub persistence: PersistenceClass,
+    /// The attestation level.
     pub attestation_level: AttestationLevel,
+    /// The work units per second.
     pub work_units_per_second: f64,
+    /// The benchmark hash.
     pub benchmark_hash: Option<ContentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Configures the limit policy.
 pub struct LimitPolicy {
+    /// The target window seconds.
     pub target_window_seconds: u64,
+    /// The browser target window seconds.
     pub browser_target_window_seconds: u64,
+    /// The archive min disk bytes.
     pub archive_min_disk_bytes: u64,
+    /// The relay helper min upload mbps.
     pub relay_helper_min_upload_mbps: f32,
+    /// The reducer min work units per second.
     pub reducer_min_work_units_per_second: f64,
+    /// The validator min attestation.
     pub validator_min_attestation: AttestationLevel,
+    /// The observed throughput smoothing.
     pub observed_throughput_smoothing: f64,
 }
 
@@ -96,33 +131,49 @@ impl Default for LimitPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a work budget.
 pub struct WorkBudget {
+    /// The target window seconds.
     pub target_window_seconds: u64,
+    /// The budget work units.
     pub budget_work_units: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents an observed throughput update.
 pub struct ObservedThroughputUpdate {
+    /// The measured work units.
     pub measured_work_units: u64,
+    /// The elapsed seconds.
     pub elapsed_seconds: u64,
+    /// The completed windows.
     pub completed_windows: u32,
+    /// The sampled at.
     pub sampled_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a limit profile.
 pub struct LimitProfile {
+    /// The card.
     pub card: CapabilityCard,
+    /// The estimate.
     pub estimate: CapabilityEstimate,
+    /// The recommended roles.
     pub recommended_roles: PeerRoleSet,
+    /// The recommended budget.
     pub recommended_budget: WorkBudget,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Represents a capability calibrator.
 pub struct CapabilityCalibrator {
+    /// The policy.
     pub policy: LimitPolicy,
 }
 
 impl CapabilityCalibrator {
+    /// Creates a new value.
     pub fn new(policy: LimitPolicy) -> Result<Self, LimitsError> {
         if policy.target_window_seconds == 0 || policy.browser_target_window_seconds == 0 {
             return Err(LimitsError::InvalidTargetWindow);
@@ -134,6 +185,7 @@ impl CapabilityCalibrator {
         Ok(Self { policy })
     }
 
+    /// Performs the calibrate operation.
     pub fn calibrate(
         &self,
         probe: CapabilityProbe,
@@ -196,6 +248,7 @@ impl CapabilityCalibrator {
         })
     }
 
+    /// Performs the rebudget operation.
     pub fn rebudget(
         &self,
         profile: &LimitProfile,
@@ -215,6 +268,7 @@ impl CapabilityCalibrator {
         self.calibrate(probe, observed.sampled_at)
     }
 
+    /// Performs the recalibrate profile operation.
     pub fn recalibrate_profile(
         &self,
         profile: &LimitProfile,
@@ -225,6 +279,7 @@ impl CapabilityCalibrator {
     }
 }
 
+/// Performs the probe from profile operation.
 pub fn probe_from_profile(profile: &LimitProfile) -> CapabilityProbe {
     probe_from_card(&profile.card, profile.card.work_units_per_second)
 }
@@ -260,6 +315,7 @@ fn backend_from_name(name: &str) -> LocalBackend {
     }
 }
 
+/// Performs the corrected work units per second operation.
 pub fn corrected_work_units_per_second(
     baseline_work_units_per_second: f64,
     observed: &ObservedThroughputUpdate,
@@ -279,6 +335,7 @@ pub fn corrected_work_units_per_second(
     Ok(((1.0 - smoothing) * baseline_work_units_per_second) + (smoothing * observed_rate))
 }
 
+/// Performs the backend preference order operation.
 pub fn backend_preference_order<'a>(
     backends: impl IntoIterator<Item = &'a LocalBackend>,
 ) -> Vec<String> {
@@ -298,6 +355,7 @@ pub fn backend_preference_order<'a>(
         .collect()
 }
 
+/// Performs the recommended capability classes operation.
 pub fn recommended_capability_classes(
     probe: &CapabilityProbe,
     policy: &LimitPolicy,
@@ -341,6 +399,7 @@ pub fn recommended_capability_classes(
     classes
 }
 
+/// Performs the recommended roles operation.
 pub fn recommended_roles(
     probe: &CapabilityProbe,
     classes: &BTreeSet<CapabilityClass>,
@@ -385,6 +444,7 @@ pub fn recommended_roles(
     PeerRoleSet { roles }
 }
 
+/// Performs the recommended budget operation.
 pub fn recommended_budget(probe: &CapabilityProbe, policy: &LimitPolicy) -> WorkBudget {
     let target_window_seconds = match probe.platform {
         ClientPlatform::Browser => policy

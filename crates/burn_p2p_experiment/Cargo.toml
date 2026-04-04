@@ -4,13 +4,17 @@ description = "Internal study, experiment, revision, and control-plane schemas f
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 chrono.workspace = true
 semver.workspace = true
 serde.workspace = true
-burn_p2p_core = { path = "../burn_p2p_core" }
+burn_p2p_core.workspace = true
 
 [lints]
 workspace = true

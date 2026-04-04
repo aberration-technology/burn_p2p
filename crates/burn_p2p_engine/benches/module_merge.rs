@@ -1,3 +1,5 @@
+//! Internal engine integration helpers for burn-backed workloads.
+#![allow(missing_docs)]
 use burn::{
     backend::NdArray,
     module::{Module, ModuleMapper, Param},

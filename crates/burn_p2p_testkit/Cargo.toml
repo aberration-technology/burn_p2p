@@ -4,6 +4,7 @@ description = "Simulation and QA boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 anyhow.workspace = true
@@ -26,8 +27,13 @@ thiserror.workspace = true
 
 [dev-dependencies]
 burn_p2p_browser = { path = "../burn_p2p_browser" }
+burn_p2p_metrics = { path = "../burn_p2p_metrics" }
 criterion.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "browser_path"
+harness = false
 
 [[bench]]
 name = "merge_topology"

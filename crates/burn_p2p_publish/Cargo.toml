@@ -1,0 +1,39 @@
+[package]
+name = "burn_p2p_publish"
+description = "Optional checkpoint aliasing, publication, and download orchestration for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
+
+[features]
+default = ["fs", "lazy-export"]
+fs = []
+s3 = ["dep:reqwest", "dep:hmac", "dep:sha2", "dep:url", "dep:percent-encoding", "dep:hex"]
+lazy-export = []
+eager-export = []
+
+[dependencies]
+burn_p2p_checkpoint.workspace = true
+burn_p2p_core.workspace = true
+chrono.workspace = true
+hex = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+percent-encoding = { version = "2.3", optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.10", optional = true }
+thiserror.workspace = true
+url = { version = "2.5", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

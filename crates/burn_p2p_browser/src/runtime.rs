@@ -7,15 +7,22 @@ use serde::{Deserialize, Serialize};
 use crate::BrowserTransportPolicy;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported browser runtime roles.
 pub enum BrowserRuntimeRole {
+    /// Uses the portal viewer variant.
     PortalViewer,
+    /// Uses the browser observer variant.
     BrowserObserver,
+    /// Uses the browser verifier variant.
     BrowserVerifier,
+    /// Uses the browser trainer wgpu variant.
     BrowserTrainerWgpu,
+    /// Uses the browser fallback variant.
     BrowserFallback,
 }
 
 impl BrowserRuntimeRole {
+    /// Returns the browser role view.
     pub fn as_browser_role(&self) -> BrowserRole {
         match self {
             Self::PortalViewer => BrowserRole::PortalViewer,
@@ -28,46 +35,69 @@ impl BrowserRuntimeRole {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported browser join stage values.
 pub enum BrowserJoinStage {
+    /// Uses the authenticating variant.
     Authenticating,
+    /// Uses the enrolling variant.
     Enrolling,
+    /// Uses the directory sync variant.
     DirectorySync,
+    /// Uses the head sync variant.
     HeadSync,
+    /// Uses the transport connect variant.
     TransportConnect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported browser runtime states.
 pub enum BrowserRuntimeState {
+    /// Uses the portal only variant.
     PortalOnly,
+    /// Uses the joining variant.
     Joining {
+        /// The role.
         role: BrowserRuntimeRole,
+        /// The stage.
         stage: BrowserJoinStage,
     },
+    /// Allows observer behavior.
     Observer,
+    /// Allows verifier behavior.
     Verifier,
+    /// Allows trainer behavior.
     Trainer,
+    /// Uses the background suspended variant.
     BackgroundSuspended {
+        /// The role.
         role: Option<BrowserRuntimeRole>,
     },
+    /// Uses the catchup variant.
     Catchup {
+        /// The role.
         role: BrowserRuntimeRole,
     },
+    /// Uses the blocked variant.
     Blocked {
+        /// The reason.
         reason: String,
     },
 }
 
 impl BrowserRuntimeState {
+    /// Performs the joining operation.
     pub fn joining(role: BrowserRuntimeRole, stage: BrowserJoinStage) -> Self {
         Self::Joining { role, stage }
     }
 
+    /// Performs the blocked operation.
     pub fn blocked(reason: impl Into<String>) -> Self {
         Self::Blocked {
             reason: reason.into(),
         }
     }
 
+    /// Performs the active role operation.
     pub fn active_role(&self) -> Option<BrowserRuntimeRole> {
         match self {
             Self::PortalOnly => Some(BrowserRuntimeRole::PortalViewer),
@@ -81,6 +111,7 @@ impl BrowserRuntimeState {
         }
     }
 
+    /// Returns whether the value requires peer transport.
     pub fn requires_peer_transport(&self) -> bool {
         matches!(
             self,
@@ -92,6 +123,7 @@ impl BrowserRuntimeState {
         )
     }
 
+    /// Creates a value from the join policy.
     pub fn from_join_policy(
         policy: &BrowserJoinPolicy,
         preferred_role: BrowserRuntimeRole,
@@ -113,20 +145,32 @@ impl BrowserRuntimeState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures browser runtime.
 pub struct BrowserRuntimeConfig {
+    /// The edge base URL.
     pub edge_base_url: String,
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The release train hash.
     pub release_train_hash: ContentId,
+    /// The target artifact ID.
     pub target_artifact_id: String,
+    /// The target artifact hash.
     pub target_artifact_hash: ContentId,
+    /// The receipt submit path.
     pub receipt_submit_path: String,
+    /// The role.
     pub role: BrowserRuntimeRole,
+    /// The transport.
     pub transport: BrowserTransportPolicy,
+    /// The selected experiment.
     pub selected_experiment: Option<ExperimentId>,
+    /// The selected revision.
     pub selected_revision: Option<RevisionId>,
 }
 
 impl BrowserRuntimeConfig {
+    /// Creates a new value.
     pub fn new(
         edge_base_url: impl Into<String>,
         network_id: NetworkId,

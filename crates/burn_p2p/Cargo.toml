@@ -4,6 +4,11 @@ description = "Stable public facade for peer-to-peer Burn training orchestration
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 anyhow.workspace = true
@@ -15,14 +20,14 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
-burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
-burn_p2p_engine = { path = "../burn_p2p_engine", optional = true }
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_dataloader = { path = "../burn_p2p_dataloader" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
-burn_p2p_limits = { path = "../burn_p2p_limits" }
-burn_p2p_security = { path = "../burn_p2p_security" }
-burn_p2p_swarm = { path = "../burn_p2p_swarm" }
+burn_p2p_checkpoint.workspace = true
+burn_p2p_engine = { workspace = true, optional = true }
+burn_p2p_core.workspace = true
+burn_p2p_dataloader.workspace = true
+burn_p2p_experiment.workspace = true
+burn_p2p_limits.workspace = true
+burn_p2p_security.workspace = true
+burn_p2p_swarm.workspace = true
 
 [features]
 default = []

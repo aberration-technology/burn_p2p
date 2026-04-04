@@ -4,11 +4,17 @@ description = "Optional OIDC auth connector for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = false
 
 [dependencies]
-burn_p2p_auth_external = { path = "../burn_p2p_auth_external" }
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_security = { path = "../burn_p2p_security" }
+burn_p2p_auth_external.workspace = true
+burn_p2p_core.workspace = true
+burn_p2p_security.workspace = true
 chrono.workspace = true
 
 [lints]

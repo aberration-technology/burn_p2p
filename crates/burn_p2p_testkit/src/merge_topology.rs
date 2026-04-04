@@ -14,9 +14,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported bandwidth class values.
 pub enum BandwidthClass {
+    /// Uses the slow variant.
     Slow,
+    /// Uses the medium variant.
     Medium,
+    /// Uses the fast variant.
     Fast,
 }
 
@@ -31,21 +35,37 @@ impl BandwidthClass {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Configures merge topology sim.
 pub struct MergeTopologySimConfig {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The study ID.
     pub study_id: StudyId,
+    /// The experiment ID.
     pub experiment_id: ExperimentId,
+    /// The revision ID.
     pub revision_id: RevisionId,
+    /// The peer count.
     pub peer_count: u32,
+    /// The reducer pool size.
     pub reducer_pool_size: u16,
+    /// The validator count.
     pub validator_count: u16,
+    /// The delta bytes.
     pub delta_bytes: u64,
+    /// The chunk size bytes.
     pub chunk_size_bytes: u64,
+    /// The simultaneous finish fraction.
     pub simultaneous_finish_fraction: f64,
+    /// The malicious peer fraction.
     pub malicious_peer_fraction: f64,
+    /// The churn rate.
     pub churn_rate: f64,
+    /// The cache hit rate.
     pub cache_hit_rate: f64,
+    /// The merge policy.
     pub merge_policy: MergePolicy,
+    /// The topology policy.
     pub topology_policy: MergeTopologyPolicy,
 }
 
@@ -72,37 +92,66 @@ impl Default for MergeTopologySimConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge topology metrics.
 pub struct MergeTopologyMetrics {
+    /// The total bytes sent.
     pub total_bytes_sent: u128,
+    /// The busiest peer bytes.
     pub busiest_peer_bytes: u128,
+    /// The p50 merge completion ms.
     pub p50_merge_completion_ms: u64,
+    /// The p95 merge completion ms.
     pub p95_merge_completion_ms: u64,
+    /// The p99 merge completion ms.
     pub p99_merge_completion_ms: u64,
+    /// The certified head latency ms.
     pub certified_head_latency_ms: u64,
+    /// The head diffusion p50 ms.
     pub head_diffusion_p50_ms: u64,
+    /// The head diffusion p90 ms.
     pub head_diffusion_p90_ms: u64,
+    /// The head diffusion p99 ms.
     pub head_diffusion_p99_ms: u64,
+    /// The duplicate transfer ratio.
     pub duplicate_transfer_ratio: f64,
+    /// The raw update drops.
     pub raw_update_drops: u32,
+    /// The late arrivals.
     pub late_arrivals: u32,
+    /// The reducer overload rate.
     pub reducer_overload_rate: f64,
+    /// The validator backlog depth.
     pub validator_backlog_depth: u32,
+    /// The accepted sample coverage.
     pub accepted_sample_coverage: f64,
+    /// The update staleness ms.
     pub update_staleness_ms: u64,
+    /// The merge skew.
     pub merge_skew: f64,
+    /// The malicious acceptance rate.
     pub malicious_acceptance_rate: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge topology simulation.
 pub struct MergeTopologySimulation {
+    /// The strategy.
     pub strategy: MergeStrategy,
+    /// The config.
     pub config: MergeTopologySimConfig,
+    /// The merge window.
     pub merge_window: MergeWindowState,
+    /// The updates.
     pub updates: Vec<UpdateAnnounce>,
+    /// The assignments.
     pub assignments: Vec<ReducerAssignment>,
+    /// The aggregates.
     pub aggregates: Vec<AggregateEnvelope>,
+    /// The reduction certificate.
     pub reduction_certificate: ReductionCertificate,
+    /// The reducer load.
     pub reducer_load: Vec<ReducerLoadReport>,
+    /// The metrics.
     pub metrics: MergeTopologyMetrics,
 }
 
@@ -404,6 +453,454 @@ fn make_metrics(input: MetricsInput<'_>) -> MergeTopologyMetrics {
     }
 }
 
+#[derive(Default)]
+struct StrategySimulation {
+    io: BTreeMap<PeerId, u128>,
+    assignments: Vec<ReducerAssignment>,
+    aggregates: Vec<AggregateEnvelope>,
+    reducer_load: Vec<ReducerLoadReport>,
+    certified_head_latency_ms: u64,
+    peer_completion_times: Vec<u64>,
+    duplicate_transfer_ratio: f64,
+    merge_skew: f64,
+}
+
+fn empty_accumulator() -> AggregateAccumulator {
+    AggregateAccumulator {
+        weighted_delta_sum: 0.0,
+        weight_sum: 0.0,
+        quality_sum: 0.0,
+        accepted_updates: 0,
+        duplicate_updates: 0,
+        late_updates: 0,
+        max_norm: 0.0,
+    }
+}
+
+fn simulate_global_broadcast(
+    config: &MergeTopologySimConfig,
+    validators: &[PeerId],
+    accepted_peers: &[&SimulatedPeer],
+    active_updates: usize,
+) -> StrategySimulation {
+    let validator = validators[0].clone();
+    let mut outcome = StrategySimulation::default();
+
+    for peer in accepted_peers {
+        let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
+        outcome.certified_head_latency_ms = outcome.certified_head_latency_ms.max(arrival);
+        outcome.peer_completion_times.push(arrival);
+        for other in accepted_peers {
+            if other.peer_id != peer.peer_id {
+                record_transfer(
+                    &mut outcome.io,
+                    &peer.peer_id,
+                    &other.peer_id,
+                    config.delta_bytes,
+                );
+            }
+        }
+        record_transfer(
+            &mut outcome.io,
+            &peer.peer_id,
+            &validator,
+            config.delta_bytes,
+        );
+    }
+    outcome.certified_head_latency_ms += validator_overhead_ms(active_updates);
+    outcome.duplicate_transfer_ratio = ((active_updates * active_updates.saturating_sub(1)) as f64
+        / active_updates as f64)
+        .max(1.0);
+    outcome
+}
+
+fn simulate_central_reducer(
+    config: &MergeTopologySimConfig,
+    merge_window: &MergeWindowState,
+    reducers: &[PeerId],
+    validators: &[PeerId],
+    accepted_peers: &[&SimulatedPeer],
+    active_updates: usize,
+    raw_update_drops: u32,
+) -> StrategySimulation {
+    let reducer = reducers[0].clone();
+    let mut outcome = StrategySimulation::default();
+    let mut reducer_acc = empty_accumulator();
+
+    for peer in accepted_peers {
+        let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
+        outcome.certified_head_latency_ms = outcome.certified_head_latency_ms.max(arrival);
+        outcome.peer_completion_times.push(arrival);
+        record_transfer(&mut outcome.io, &peer.peer_id, &reducer, config.delta_bytes);
+        reducer_acc.push(
+            peer.delta_value,
+            peer.sample_weight,
+            peer.quality_weight,
+            peer.delta_value.abs(),
+        );
+    }
+
+    outcome.certified_head_latency_ms += validator_overhead_ms(active_updates);
+    outcome.reducer_load.push(ReducerLoadReport {
+        peer_id: reducer.clone(),
+        window_id: merge_window.window_id,
+        assigned_leaf_updates: active_updates as u32,
+        assigned_aggregate_inputs: active_updates as u32,
+        ingress_bytes: u128::from(config.delta_bytes) * active_updates as u128,
+        egress_bytes: u128::from(config.delta_bytes),
+        duplicate_transfer_ratio: 0.0,
+        overload_ratio: active_updates as f64 / 8.0,
+        reported_at: Utc::now(),
+    });
+    outcome.aggregates.push(AggregateEnvelope {
+        aggregate_id: ContentId::derive(&("central", merge_window.window_id.0)).expect("aggregate"),
+        study_id: config.study_id.clone(),
+        experiment_id: config.experiment_id.clone(),
+        revision_id: config.revision_id.clone(),
+        window_id: merge_window.window_id,
+        base_head_id: merge_window.base_head_id.clone(),
+        aggregate_artifact_id: ArtifactId::new("aggregate-central"),
+        tier: AggregateTier::RootCandidate,
+        reducer_peer_id: reducer,
+        contributor_peers: accepted_peers
+            .iter()
+            .map(|peer| peer.peer_id.clone())
+            .collect(),
+        child_aggregate_ids: Vec::new(),
+        stats: AggregateStats {
+            accepted_updates: reducer_acc.accepted_updates,
+            duplicate_updates: 0,
+            dropped_updates: raw_update_drops,
+            late_updates: 0,
+            sum_sample_weight: reducer_acc.weight_sum,
+            sum_quality_weight: reducer_acc.quality_sum,
+            sum_weighted_delta_norm: reducer_acc.weighted_delta_sum.abs(),
+            max_update_norm: reducer_acc.max_norm,
+            accepted_sample_coverage: 1.0,
+        },
+        providers: vec![validators[0].clone()],
+        published_at: Utc::now(),
+    });
+
+    outcome
+}
+
+fn simulate_gossip(
+    config: &MergeTopologySimConfig,
+    validators: &[PeerId],
+    accepted_peers: &[&SimulatedPeer],
+    active_updates: usize,
+    fanout: usize,
+) -> StrategySimulation {
+    let validator = validators[0].clone();
+    let mut outcome = StrategySimulation::default();
+
+    for peer in accepted_peers {
+        let mut path_latency = peer.finish_ms;
+        let recipients = accepted_peers
+            .iter()
+            .filter(|other| other.peer_id != peer.peer_id)
+            .take(fanout)
+            .map(|other| other.peer_id.clone())
+            .collect::<Vec<_>>();
+        for recipient in recipients {
+            record_transfer(
+                &mut outcome.io,
+                &peer.peer_id,
+                &recipient,
+                config.delta_bytes,
+            );
+            path_latency += transfer_ms(config.delta_bytes, peer.bandwidth);
+        }
+        record_transfer(
+            &mut outcome.io,
+            &peer.peer_id,
+            &validator,
+            config.delta_bytes,
+        );
+        path_latency += transfer_ms(config.delta_bytes, peer.bandwidth);
+        outcome.peer_completion_times.push(path_latency);
+        outcome.certified_head_latency_ms = outcome.certified_head_latency_ms.max(path_latency);
+    }
+
+    outcome.certified_head_latency_ms += validator_overhead_ms(active_updates + fanout);
+    outcome.duplicate_transfer_ratio = fanout as f64;
+    outcome
+}
+
+fn simulate_tree(
+    config: &MergeTopologySimConfig,
+    merge_window: &MergeWindowState,
+    validators: &[PeerId],
+    accepted_peers: &[&SimulatedPeer],
+    active_updates: usize,
+    raw_update_drops: u32,
+) -> StrategySimulation {
+    let fanin = usize::from(config.topology_policy.upper_fanin.max(2));
+    let mut outcome = StrategySimulation::default();
+    let mut layer = accepted_peers
+        .iter()
+        .map(|peer| {
+            outcome.peer_completion_times.push(peer.finish_ms);
+            let mut acc = empty_accumulator();
+            acc.push(
+                peer.delta_value,
+                peer.sample_weight,
+                peer.quality_weight,
+                peer.delta_value.abs(),
+            );
+            (
+                peer.peer_id.clone(),
+                peer.finish_ms,
+                acc,
+                vec![peer.peer_id.clone()],
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut tier = 0;
+    while layer.len() > 1 {
+        let mut next = Vec::new();
+        for chunk in layer.chunks(fanin) {
+            let owner = chunk[0].0.clone();
+            let mut ready_at = chunk[0].1;
+            let mut combined = chunk[0].2.clone();
+            let mut contributors = chunk[0].3.clone();
+            for (peer_id, child_ready, acc, child_contributors) in &chunk[1..] {
+                record_transfer(&mut outcome.io, peer_id, &owner, config.delta_bytes);
+                ready_at = ready_at
+                    .max(*child_ready + transfer_ms(config.delta_bytes, BandwidthClass::Medium));
+                combined.combine(acc);
+                contributors.extend(child_contributors.iter().cloned());
+            }
+            next.push((owner.clone(), ready_at + 10, combined, contributors.clone()));
+            tier += 1;
+        }
+        layer = next;
+    }
+
+    let (reducer_peer_id, ready_at, acc, contributors) = layer.pop().expect("root layer");
+    outcome.certified_head_latency_ms = ready_at + validator_overhead_ms(active_updates);
+    outcome.aggregates.push(AggregateEnvelope {
+        aggregate_id: ContentId::derive(&(reducer_peer_id.as_str(), "tree")).expect("agg"),
+        study_id: config.study_id.clone(),
+        experiment_id: config.experiment_id.clone(),
+        revision_id: config.revision_id.clone(),
+        window_id: merge_window.window_id,
+        base_head_id: merge_window.base_head_id.clone(),
+        aggregate_artifact_id: ArtifactId::new(format!("aggregate-tree-{tier}")),
+        tier: AggregateTier::RootCandidate,
+        reducer_peer_id: reducer_peer_id.clone(),
+        contributor_peers: contributors,
+        child_aggregate_ids: Vec::new(),
+        stats: AggregateStats {
+            accepted_updates: acc.accepted_updates,
+            duplicate_updates: 0,
+            dropped_updates: raw_update_drops,
+            late_updates: 0,
+            sum_sample_weight: acc.weight_sum,
+            sum_quality_weight: acc.quality_sum,
+            sum_weighted_delta_norm: acc.weighted_delta_sum.abs(),
+            max_update_norm: acc.max_norm,
+            accepted_sample_coverage: 1.0,
+        },
+        providers: vec![validators[0].clone()],
+        published_at: Utc::now(),
+    });
+    outcome.merge_skew = tier as f64 / active_updates.max(1) as f64;
+    outcome
+}
+
+fn simulate_replicated_topology(
+    config: &MergeTopologySimConfig,
+    merge_window: &MergeWindowState,
+    reducers: &[PeerId],
+    validators: &[PeerId],
+    accepted_peers: &[&SimulatedPeer],
+    active_updates: usize,
+    raw_update_drops: u32,
+) -> StrategySimulation {
+    let mut outcome = StrategySimulation::default();
+    let mut reducer_buckets = BTreeMap::<PeerId, Vec<&SimulatedPeer>>::new();
+
+    for peer in accepted_peers {
+        let assignment =
+            assign_reducers(merge_window, &peer.peer_id, reducers).expect("reducer assignment");
+        for reducer in &assignment.assigned_reducers {
+            reducer_buckets
+                .entry(reducer.clone())
+                .or_default()
+                .push(peer);
+            record_transfer(&mut outcome.io, &peer.peer_id, reducer, config.delta_bytes);
+        }
+        outcome.assignments.push(assignment);
+    }
+
+    outcome.duplicate_transfer_ratio = config.topology_policy.reducer_replication as f64 - 1.0;
+    let mut leaf_nodes = Vec::new();
+    for (reducer, bucket) in &reducer_buckets {
+        let mut ready_at = 0_u64;
+        let mut accumulator = AggregateAccumulator {
+            duplicate_updates: bucket.len().saturating_sub(
+                bucket
+                    .iter()
+                    .map(|peer| peer.peer_id.clone())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+            ) as u32,
+            ..empty_accumulator()
+        };
+        for peer in bucket {
+            let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
+            ready_at = ready_at.max(arrival);
+            accumulator.push(
+                peer.delta_value,
+                peer.sample_weight,
+                peer.quality_weight,
+                peer.delta_value.abs(),
+            );
+        }
+        let overload_ratio =
+            bucket.len() as f64 / f64::from(config.topology_policy.target_leaf_cohort.max(1));
+        outcome.reducer_load.push(ReducerLoadReport {
+            peer_id: reducer.clone(),
+            window_id: merge_window.window_id,
+            assigned_leaf_updates: bucket.len() as u32,
+            assigned_aggregate_inputs: 0,
+            ingress_bytes: u128::from(config.delta_bytes) * bucket.len() as u128,
+            egress_bytes: u128::from(config.delta_bytes),
+            duplicate_transfer_ratio: outcome.duplicate_transfer_ratio,
+            overload_ratio,
+            reported_at: Utc::now(),
+        });
+        let aggregate_id = ContentId::derive(&(
+            merge_window.merge_window_id.as_str(),
+            reducer.as_str(),
+            "leaf",
+        ))
+        .expect("aggregate id");
+        outcome.aggregates.push(AggregateEnvelope {
+            aggregate_id: aggregate_id.clone(),
+            study_id: config.study_id.clone(),
+            experiment_id: config.experiment_id.clone(),
+            revision_id: config.revision_id.clone(),
+            window_id: merge_window.window_id,
+            base_head_id: merge_window.base_head_id.clone(),
+            aggregate_artifact_id: ArtifactId::new(format!("aggregate-leaf-{}", reducer.as_str())),
+            tier: AggregateTier::Leaf,
+            reducer_peer_id: reducer.clone(),
+            contributor_peers: bucket.iter().map(|peer| peer.peer_id.clone()).collect(),
+            child_aggregate_ids: Vec::new(),
+            stats: AggregateStats {
+                accepted_updates: accumulator.accepted_updates,
+                duplicate_updates: accumulator.duplicate_updates,
+                dropped_updates: raw_update_drops,
+                late_updates: 0,
+                sum_sample_weight: accumulator.weight_sum,
+                sum_quality_weight: accumulator.quality_sum,
+                sum_weighted_delta_norm: accumulator.weighted_delta_sum.abs(),
+                max_update_norm: accumulator.max_norm,
+                accepted_sample_coverage: bucket.len() as f64 / active_updates.max(1) as f64,
+            },
+            providers: vec![reducer.clone()],
+            published_at: Utc::now(),
+        });
+        leaf_nodes.push((reducer.clone(), ready_at + 10, accumulator, aggregate_id));
+    }
+
+    leaf_nodes.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
+    let upper_fanin = usize::from(config.topology_policy.upper_fanin.max(1));
+    let mut upper_nodes = Vec::new();
+    for chunk in leaf_nodes.chunks(upper_fanin) {
+        let owner = chunk[0].0.clone();
+        let mut ready_at = chunk[0].1;
+        let mut accumulator = chunk[0].2.clone();
+        let mut child_ids = vec![chunk[0].3.clone()];
+        for (reducer, child_ready, child_acc, aggregate_id) in &chunk[1..] {
+            record_transfer(&mut outcome.io, reducer, &owner, config.delta_bytes);
+            ready_at = ready_at
+                .max(*child_ready + transfer_ms(config.delta_bytes, BandwidthClass::Medium));
+            accumulator.combine(child_acc);
+            child_ids.push(aggregate_id.clone());
+        }
+        upper_nodes.push((
+            owner.clone(),
+            ready_at + 10,
+            accumulator.clone(),
+            child_ids.clone(),
+        ));
+        outcome.aggregates.push(AggregateEnvelope {
+            aggregate_id: ContentId::derive(&(owner.as_str(), "upper", &child_ids))
+                .expect("upper id"),
+            study_id: config.study_id.clone(),
+            experiment_id: config.experiment_id.clone(),
+            revision_id: config.revision_id.clone(),
+            window_id: merge_window.window_id,
+            base_head_id: merge_window.base_head_id.clone(),
+            aggregate_artifact_id: ArtifactId::new(format!("aggregate-upper-{}", owner.as_str())),
+            tier: if matches!(
+                config.topology_policy.strategy,
+                MergeStrategy::MicrocohortReducePlusValidatorPromotion
+            ) {
+                AggregateTier::RootCandidate
+            } else {
+                AggregateTier::Upper
+            },
+            reducer_peer_id: owner,
+            contributor_peers: Vec::new(),
+            child_aggregate_ids: child_ids,
+            stats: AggregateStats {
+                accepted_updates: accumulator.accepted_updates,
+                duplicate_updates: accumulator.duplicate_updates,
+                dropped_updates: raw_update_drops,
+                late_updates: 0,
+                sum_sample_weight: accumulator.weight_sum,
+                sum_quality_weight: accumulator.quality_sum,
+                sum_weighted_delta_norm: accumulator.weighted_delta_sum.abs(),
+                max_update_norm: accumulator.max_norm,
+                accepted_sample_coverage: accumulator.accepted_updates as f64
+                    / active_updates.max(1) as f64,
+            },
+            providers: vec![validators[0].clone()],
+            published_at: Utc::now(),
+        });
+    }
+
+    let root_accumulator = combine_balanced(
+        upper_nodes
+            .iter()
+            .map(|(_, _, acc, _)| acc.clone())
+            .collect::<Vec<_>>(),
+    );
+    outcome.certified_head_latency_ms = upper_nodes
+        .iter()
+        .map(|(_, ready_at, _, _)| *ready_at)
+        .max()
+        .unwrap_or(0)
+        + validator_overhead_ms(upper_nodes.len());
+    outcome
+        .peer_completion_times
+        .extend(accepted_peers.iter().map(|peer| {
+            outcome
+                .certified_head_latency_ms
+                .saturating_sub(peer.finish_ms)
+        }));
+    outcome.merge_skew = if reducer_buckets.is_empty() {
+        0.0
+    } else {
+        let mean = active_updates as f64 / reducer_buckets.len() as f64;
+        reducer_buckets
+            .values()
+            .map(|bucket| ((bucket.len() as f64) - mean).abs())
+            .sum::<f64>()
+            / reducer_buckets.len() as f64
+    };
+    let _ = root_accumulator;
+
+    outcome
+}
+
+/// Performs the simulate merge topology operation.
 pub fn simulate_merge_topology(
     config: MergeTopologySimConfig,
 ) -> Result<MergeTopologySimulation, burn_p2p_core::SchemaError> {
@@ -421,10 +918,6 @@ pub fn simulate_merge_topology(
     )?;
     let updates = build_update_announces(&config, &peers, &merge_window);
 
-    let mut io = BTreeMap::<PeerId, u128>::new();
-    let mut assignments = Vec::new();
-    let mut aggregates = Vec::new();
-    let mut reducer_load = Vec::new();
     let raw_update_drops = peers.iter().filter(|peer| peer.churned).count() as u32;
     let active_updates = updates.len();
     let accepted_peers = peers
@@ -432,402 +925,48 @@ pub fn simulate_merge_topology(
         .filter(|peer| !peer.churned)
         .collect::<Vec<_>>();
     let malicious_accepted = accepted_peers.iter().filter(|peer| peer.malicious).count() as u32;
-
-    let mut certified_head_latency_ms = 0;
-    let mut peer_completion_times = Vec::new();
-    let mut duplicate_transfer_ratio = 0.0;
     let late_arrivals = 0_u32;
-    let mut merge_skew = 0.0;
-
-    match config.topology_policy.strategy {
+    let outcome = match config.topology_policy.strategy {
         MergeStrategy::GlobalBroadcastBaseline => {
-            let validator = validators[0].clone();
-            for peer in &accepted_peers {
-                let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
-                certified_head_latency_ms = certified_head_latency_ms.max(arrival);
-                peer_completion_times.push(arrival);
-                for other in &accepted_peers {
-                    if other.peer_id != peer.peer_id {
-                        record_transfer(&mut io, &peer.peer_id, &other.peer_id, config.delta_bytes);
-                    }
-                }
-                record_transfer(&mut io, &peer.peer_id, &validator, config.delta_bytes);
-            }
-            certified_head_latency_ms += validator_overhead_ms(active_updates);
-            duplicate_transfer_ratio = ((active_updates * active_updates.saturating_sub(1)) as f64
-                / active_updates as f64)
-                .max(1.0);
+            simulate_global_broadcast(&config, &validators, &accepted_peers, active_updates)
         }
-        MergeStrategy::CentralReducerBaseline => {
-            let reducer = reducers[0].clone();
-            let mut reducer_acc = AggregateAccumulator {
-                weighted_delta_sum: 0.0,
-                weight_sum: 0.0,
-                quality_sum: 0.0,
-                accepted_updates: 0,
-                duplicate_updates: 0,
-                late_updates: 0,
-                max_norm: 0.0,
-            };
-            for peer in &accepted_peers {
-                let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
-                certified_head_latency_ms = certified_head_latency_ms.max(arrival);
-                peer_completion_times.push(arrival);
-                record_transfer(&mut io, &peer.peer_id, &reducer, config.delta_bytes);
-                reducer_acc.push(
-                    peer.delta_value,
-                    peer.sample_weight,
-                    peer.quality_weight,
-                    peer.delta_value.abs(),
-                );
-            }
-            certified_head_latency_ms += validator_overhead_ms(active_updates);
-            reducer_load.push(ReducerLoadReport {
-                peer_id: reducer.clone(),
-                window_id: merge_window.window_id,
-                assigned_leaf_updates: active_updates as u32,
-                assigned_aggregate_inputs: active_updates as u32,
-                ingress_bytes: u128::from(config.delta_bytes) * active_updates as u128,
-                egress_bytes: u128::from(config.delta_bytes),
-                duplicate_transfer_ratio: 0.0,
-                overload_ratio: active_updates as f64 / 8.0,
-                reported_at: Utc::now(),
-            });
-            aggregates.push(AggregateEnvelope {
-                aggregate_id: ContentId::derive(&("central", merge_window.window_id.0))
-                    .expect("aggregate"),
-                study_id: config.study_id.clone(),
-                experiment_id: config.experiment_id.clone(),
-                revision_id: config.revision_id.clone(),
-                window_id: merge_window.window_id,
-                base_head_id: merge_window.base_head_id.clone(),
-                aggregate_artifact_id: ArtifactId::new("aggregate-central"),
-                tier: AggregateTier::RootCandidate,
-                reducer_peer_id: reducer,
-                contributor_peers: accepted_peers
-                    .iter()
-                    .map(|peer| peer.peer_id.clone())
-                    .collect(),
-                child_aggregate_ids: Vec::new(),
-                stats: AggregateStats {
-                    accepted_updates: reducer_acc.accepted_updates,
-                    duplicate_updates: 0,
-                    dropped_updates: raw_update_drops,
-                    late_updates: 0,
-                    sum_sample_weight: reducer_acc.weight_sum,
-                    sum_quality_weight: reducer_acc.quality_sum,
-                    sum_weighted_delta_norm: reducer_acc.weighted_delta_sum.abs(),
-                    max_update_norm: reducer_acc.max_norm,
-                    accepted_sample_coverage: 1.0,
-                },
-                providers: vec![validators[0].clone()],
-                published_at: Utc::now(),
-            });
+        MergeStrategy::CentralReducerBaseline => simulate_central_reducer(
+            &config,
+            &merge_window,
+            &reducers,
+            &validators,
+            &accepted_peers,
+            active_updates,
+            raw_update_drops,
+        ),
+        MergeStrategy::RandomPeerGossip => {
+            simulate_gossip(&config, &validators, &accepted_peers, active_updates, 3)
         }
-        MergeStrategy::RandomPeerGossip | MergeStrategy::KRegularGossip => {
-            let fanout = if matches!(
-                config.topology_policy.strategy,
-                MergeStrategy::RandomPeerGossip
-            ) {
-                3_usize
-            } else {
-                4_usize
-            };
-            let validator = validators[0].clone();
-            for peer in &accepted_peers {
-                let mut path_latency = peer.finish_ms;
-                let recipients = accepted_peers
-                    .iter()
-                    .filter(|other| other.peer_id != peer.peer_id)
-                    .take(fanout)
-                    .map(|other| other.peer_id.clone())
-                    .collect::<Vec<_>>();
-                for recipient in recipients {
-                    record_transfer(&mut io, &peer.peer_id, &recipient, config.delta_bytes);
-                    path_latency += transfer_ms(config.delta_bytes, peer.bandwidth);
-                }
-                record_transfer(&mut io, &peer.peer_id, &validator, config.delta_bytes);
-                path_latency += transfer_ms(config.delta_bytes, peer.bandwidth);
-                peer_completion_times.push(path_latency);
-                certified_head_latency_ms = certified_head_latency_ms.max(path_latency);
-            }
-            certified_head_latency_ms += validator_overhead_ms(active_updates + fanout);
-            duplicate_transfer_ratio = fanout as f64;
+        MergeStrategy::KRegularGossip => {
+            simulate_gossip(&config, &validators, &accepted_peers, active_updates, 4)
         }
-        MergeStrategy::FixedTreeReduce | MergeStrategy::RotatingRendezvousTree => {
-            let fanin = usize::from(config.topology_policy.upper_fanin.max(2));
-            let mut layer = accepted_peers
-                .iter()
-                .map(|peer| {
-                    peer_completion_times.push(peer.finish_ms);
-                    let mut acc = AggregateAccumulator {
-                        weighted_delta_sum: 0.0,
-                        weight_sum: 0.0,
-                        quality_sum: 0.0,
-                        accepted_updates: 0,
-                        duplicate_updates: 0,
-                        late_updates: 0,
-                        max_norm: 0.0,
-                    };
-                    acc.push(
-                        peer.delta_value,
-                        peer.sample_weight,
-                        peer.quality_weight,
-                        peer.delta_value.abs(),
-                    );
-                    (
-                        peer.peer_id.clone(),
-                        peer.finish_ms,
-                        acc,
-                        vec![peer.peer_id.clone()],
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            let mut tier = 0;
-            while layer.len() > 1 {
-                let mut next = Vec::new();
-                for chunk in layer.chunks(fanin) {
-                    let owner = chunk[0].0.clone();
-                    let mut ready_at = chunk[0].1;
-                    let mut combined = chunk[0].2.clone();
-                    let mut contributors = chunk[0].3.clone();
-                    for (peer_id, child_ready, acc, child_contributors) in &chunk[1..] {
-                        record_transfer(&mut io, peer_id, &owner, config.delta_bytes);
-                        ready_at = ready_at.max(
-                            *child_ready + transfer_ms(config.delta_bytes, BandwidthClass::Medium),
-                        );
-                        combined.combine(acc);
-                        contributors.extend(child_contributors.iter().cloned());
-                    }
-                    next.push((owner.clone(), ready_at + 10, combined, contributors.clone()));
-                    tier += 1;
-                }
-                layer = next;
-            }
-
-            let (reducer_peer_id, ready_at, acc, contributors) = layer.pop().expect("root layer");
-            certified_head_latency_ms = ready_at + validator_overhead_ms(active_updates);
-            aggregates.push(AggregateEnvelope {
-                aggregate_id: ContentId::derive(&(reducer_peer_id.as_str(), "tree")).expect("agg"),
-                study_id: config.study_id.clone(),
-                experiment_id: config.experiment_id.clone(),
-                revision_id: config.revision_id.clone(),
-                window_id: merge_window.window_id,
-                base_head_id: merge_window.base_head_id.clone(),
-                aggregate_artifact_id: ArtifactId::new(format!("aggregate-tree-{tier}")),
-                tier: AggregateTier::RootCandidate,
-                reducer_peer_id: reducer_peer_id.clone(),
-                contributor_peers: contributors,
-                child_aggregate_ids: Vec::new(),
-                stats: AggregateStats {
-                    accepted_updates: acc.accepted_updates,
-                    duplicate_updates: 0,
-                    dropped_updates: raw_update_drops,
-                    late_updates: 0,
-                    sum_sample_weight: acc.weight_sum,
-                    sum_quality_weight: acc.quality_sum,
-                    sum_weighted_delta_norm: acc.weighted_delta_sum.abs(),
-                    max_update_norm: acc.max_norm,
-                    accepted_sample_coverage: 1.0,
-                },
-                providers: vec![validators[0].clone()],
-                published_at: Utc::now(),
-            });
-            merge_skew = tier as f64 / active_updates.max(1) as f64;
-        }
+        MergeStrategy::FixedTreeReduce | MergeStrategy::RotatingRendezvousTree => simulate_tree(
+            &config,
+            &merge_window,
+            &validators,
+            &accepted_peers,
+            active_updates,
+            raw_update_drops,
+        ),
         MergeStrategy::ReplicatedRendezvousDag
         | MergeStrategy::LocalGossipPlusPeriodicGlobal
-        | MergeStrategy::MicrocohortReducePlusValidatorPromotion => {
-            let mut reducer_buckets = BTreeMap::<PeerId, Vec<&SimulatedPeer>>::new();
-            for peer in &accepted_peers {
-                let assignment = assign_reducers(&merge_window, &peer.peer_id, &reducers)
-                    .expect("reducer assignment");
-                for reducer in &assignment.assigned_reducers {
-                    reducer_buckets
-                        .entry(reducer.clone())
-                        .or_default()
-                        .push(peer);
-                    record_transfer(&mut io, &peer.peer_id, reducer, config.delta_bytes);
-                }
-                assignments.push(assignment);
-            }
+        | MergeStrategy::MicrocohortReducePlusValidatorPromotion => simulate_replicated_topology(
+            &config,
+            &merge_window,
+            &reducers,
+            &validators,
+            &accepted_peers,
+            active_updates,
+            raw_update_drops,
+        ),
+    };
 
-            duplicate_transfer_ratio = config.topology_policy.reducer_replication as f64 - 1.0;
-            let mut leaf_nodes = Vec::new();
-            for (reducer, bucket) in &reducer_buckets {
-                let mut ready_at = 0_u64;
-                let mut accumulator = AggregateAccumulator {
-                    weighted_delta_sum: 0.0,
-                    weight_sum: 0.0,
-                    quality_sum: 0.0,
-                    accepted_updates: 0,
-                    duplicate_updates: bucket.len().saturating_sub(
-                        bucket
-                            .iter()
-                            .map(|peer| peer.peer_id.clone())
-                            .collect::<BTreeSet<_>>()
-                            .len(),
-                    ) as u32,
-                    late_updates: 0,
-                    max_norm: 0.0,
-                };
-                for peer in bucket {
-                    let arrival = peer.finish_ms + transfer_ms(config.delta_bytes, peer.bandwidth);
-                    ready_at = ready_at.max(arrival);
-                    accumulator.push(
-                        peer.delta_value,
-                        peer.sample_weight,
-                        peer.quality_weight,
-                        peer.delta_value.abs(),
-                    );
-                }
-                let overload_ratio = bucket.len() as f64
-                    / f64::from(config.topology_policy.target_leaf_cohort.max(1));
-                reducer_load.push(ReducerLoadReport {
-                    peer_id: reducer.clone(),
-                    window_id: merge_window.window_id,
-                    assigned_leaf_updates: bucket.len() as u32,
-                    assigned_aggregate_inputs: 0,
-                    ingress_bytes: u128::from(config.delta_bytes) * bucket.len() as u128,
-                    egress_bytes: u128::from(config.delta_bytes),
-                    duplicate_transfer_ratio,
-                    overload_ratio,
-                    reported_at: Utc::now(),
-                });
-                let aggregate_id = ContentId::derive(&(
-                    merge_window.merge_window_id.as_str(),
-                    reducer.as_str(),
-                    "leaf",
-                ))
-                .expect("aggregate id");
-                aggregates.push(AggregateEnvelope {
-                    aggregate_id: aggregate_id.clone(),
-                    study_id: config.study_id.clone(),
-                    experiment_id: config.experiment_id.clone(),
-                    revision_id: config.revision_id.clone(),
-                    window_id: merge_window.window_id,
-                    base_head_id: merge_window.base_head_id.clone(),
-                    aggregate_artifact_id: ArtifactId::new(format!(
-                        "aggregate-leaf-{}",
-                        reducer.as_str()
-                    )),
-                    tier: AggregateTier::Leaf,
-                    reducer_peer_id: reducer.clone(),
-                    contributor_peers: bucket.iter().map(|peer| peer.peer_id.clone()).collect(),
-                    child_aggregate_ids: Vec::new(),
-                    stats: AggregateStats {
-                        accepted_updates: accumulator.accepted_updates,
-                        duplicate_updates: accumulator.duplicate_updates,
-                        dropped_updates: raw_update_drops,
-                        late_updates: 0,
-                        sum_sample_weight: accumulator.weight_sum,
-                        sum_quality_weight: accumulator.quality_sum,
-                        sum_weighted_delta_norm: accumulator.weighted_delta_sum.abs(),
-                        max_update_norm: accumulator.max_norm,
-                        accepted_sample_coverage: bucket.len() as f64
-                            / active_updates.max(1) as f64,
-                    },
-                    providers: vec![reducer.clone()],
-                    published_at: Utc::now(),
-                });
-                leaf_nodes.push((reducer.clone(), ready_at + 10, accumulator, aggregate_id));
-            }
-
-            leaf_nodes.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
-            let upper_fanin = usize::from(config.topology_policy.upper_fanin.max(1));
-            let mut upper_nodes = Vec::new();
-            for chunk in leaf_nodes.chunks(upper_fanin) {
-                let owner = chunk[0].0.clone();
-                let mut ready_at = chunk[0].1;
-                let mut accumulator = chunk[0].2.clone();
-                let mut child_ids = vec![chunk[0].3.clone()];
-                for (reducer, child_ready, child_acc, aggregate_id) in &chunk[1..] {
-                    record_transfer(&mut io, reducer, &owner, config.delta_bytes);
-                    ready_at = ready_at.max(
-                        *child_ready + transfer_ms(config.delta_bytes, BandwidthClass::Medium),
-                    );
-                    accumulator.combine(child_acc);
-                    child_ids.push(aggregate_id.clone());
-                }
-                upper_nodes.push((
-                    owner.clone(),
-                    ready_at + 10,
-                    accumulator.clone(),
-                    child_ids.clone(),
-                ));
-                aggregates.push(AggregateEnvelope {
-                    aggregate_id: ContentId::derive(&(owner.as_str(), "upper", &child_ids))
-                        .expect("upper id"),
-                    study_id: config.study_id.clone(),
-                    experiment_id: config.experiment_id.clone(),
-                    revision_id: config.revision_id.clone(),
-                    window_id: merge_window.window_id,
-                    base_head_id: merge_window.base_head_id.clone(),
-                    aggregate_artifact_id: ArtifactId::new(format!(
-                        "aggregate-upper-{}",
-                        owner.as_str()
-                    )),
-                    tier: if matches!(
-                        config.topology_policy.strategy,
-                        MergeStrategy::MicrocohortReducePlusValidatorPromotion
-                    ) {
-                        AggregateTier::RootCandidate
-                    } else {
-                        AggregateTier::Upper
-                    },
-                    reducer_peer_id: owner,
-                    contributor_peers: Vec::new(),
-                    child_aggregate_ids: child_ids,
-                    stats: AggregateStats {
-                        accepted_updates: accumulator.accepted_updates,
-                        duplicate_updates: accumulator.duplicate_updates,
-                        dropped_updates: raw_update_drops,
-                        late_updates: 0,
-                        sum_sample_weight: accumulator.weight_sum,
-                        sum_quality_weight: accumulator.quality_sum,
-                        sum_weighted_delta_norm: accumulator.weighted_delta_sum.abs(),
-                        max_update_norm: accumulator.max_norm,
-                        accepted_sample_coverage: accumulator.accepted_updates as f64
-                            / active_updates.max(1) as f64,
-                    },
-                    providers: vec![validators[0].clone()],
-                    published_at: Utc::now(),
-                });
-            }
-
-            let root_accumulator = combine_balanced(
-                upper_nodes
-                    .iter()
-                    .map(|(_, _, acc, _)| acc.clone())
-                    .collect::<Vec<_>>(),
-            );
-            certified_head_latency_ms = upper_nodes
-                .iter()
-                .map(|(_, ready_at, _, _)| *ready_at)
-                .max()
-                .unwrap_or(0)
-                + validator_overhead_ms(upper_nodes.len());
-            peer_completion_times.extend(
-                accepted_peers
-                    .iter()
-                    .map(|peer| certified_head_latency_ms.saturating_sub(peer.finish_ms)),
-            );
-            merge_skew = if reducer_buckets.is_empty() {
-                0.0
-            } else {
-                let mean = active_updates as f64 / reducer_buckets.len() as f64;
-                reducer_buckets
-                    .values()
-                    .map(|bucket| ((bucket.len() as f64) - mean).abs())
-                    .sum::<f64>()
-                    / reducer_buckets.len() as f64
-            };
-            let _ = root_accumulator;
-        }
-    }
-
-    let total_bytes_sent = io.values().copied().sum::<u128>() / 2;
+    let total_bytes_sent = outcome.io.values().copied().sum::<u128>() / 2;
     let accepted_sample_coverage = if config.peer_count == 0 {
         0.0
     } else {
@@ -835,7 +974,11 @@ pub fn simulate_merge_topology(
     };
     let update_staleness_ms = accepted_peers
         .iter()
-        .map(|peer| certified_head_latency_ms.saturating_sub(peer.finish_ms))
+        .map(|peer| {
+            outcome
+                .certified_head_latency_ms
+                .saturating_sub(peer.finish_ms)
+        })
         .max()
         .unwrap_or(0);
     let reduction_certificate = ReductionCertificate {
@@ -848,7 +991,8 @@ pub fn simulate_merge_topology(
         revision_id: config.revision_id.clone(),
         window_id: merge_window.window_id,
         base_head_id: merge_window.base_head_id.clone(),
-        aggregate_id: aggregates
+        aggregate_id: outcome
+            .aggregates
             .last()
             .map(|aggregate| aggregate.aggregate_id.clone())
             .unwrap_or_else(|| ContentId::new("aggregate-root")),
@@ -858,21 +1002,21 @@ pub fn simulate_merge_topology(
         issued_at: Utc::now(),
     };
     let metrics = make_metrics(MetricsInput {
-        certified_head_latency_ms,
-        peer_completion_times: if peer_completion_times.is_empty() {
+        certified_head_latency_ms: outcome.certified_head_latency_ms,
+        peer_completion_times: if outcome.peer_completion_times.is_empty() {
             vec![0]
         } else {
-            peer_completion_times
+            outcome.peer_completion_times.clone()
         },
-        io: &io,
+        io: &outcome.io,
         total_bytes_sent,
-        duplicate_transfer_ratio,
+        duplicate_transfer_ratio: outcome.duplicate_transfer_ratio,
         raw_update_drops,
         late_arrivals,
-        reducer_load: &reducer_load,
+        reducer_load: &outcome.reducer_load,
         accepted_sample_coverage,
         update_staleness_ms,
-        merge_skew,
+        merge_skew: outcome.merge_skew,
         malicious_acceptance_rate: if accepted_peers.is_empty() {
             0.0
         } else {
@@ -886,10 +1030,10 @@ pub fn simulate_merge_topology(
         config,
         merge_window,
         updates,
-        assignments,
-        aggregates,
+        assignments: outcome.assignments,
+        aggregates: outcome.aggregates,
         reduction_certificate,
-        reducer_load,
+        reducer_load: outcome.reducer_load,
         metrics,
     })
 }
@@ -1034,6 +1178,55 @@ mod tests {
         assert!(
             microcohort.metrics.certified_head_latency_ms
                 <= gossip.metrics.certified_head_latency_ms
+        );
+    }
+
+    #[test]
+    fn degraded_network_matrix_increases_drop_and_overload_under_storm_conditions() {
+        let steady = simulate_merge_topology(MergeTopologySimConfig {
+            peer_count: 48,
+            reducer_pool_size: 8,
+            simultaneous_finish_fraction: 0.35,
+            churn_rate: 0.02,
+            cache_hit_rate: 0.35,
+            ..MergeTopologySimConfig::default()
+        })
+        .expect("steady");
+        let storm = simulate_merge_topology(MergeTopologySimConfig {
+            peer_count: 48,
+            reducer_pool_size: 4,
+            simultaneous_finish_fraction: 0.9,
+            churn_rate: 0.30,
+            cache_hit_rate: 0.05,
+            ..MergeTopologySimConfig::default()
+        })
+        .expect("storm");
+
+        assert!(storm.metrics.raw_update_drops >= steady.metrics.raw_update_drops);
+        assert!(storm.metrics.reducer_overload_rate >= steady.metrics.reducer_overload_rate);
+        assert!(storm.metrics.accepted_sample_coverage <= steady.metrics.accepted_sample_coverage);
+    }
+
+    #[test]
+    fn degraded_network_thresholds_remain_serviceable_under_heavy_faults() {
+        let stressed = simulate_merge_topology(MergeTopologySimConfig {
+            peer_count: 64,
+            reducer_pool_size: 4,
+            validator_count: 2,
+            simultaneous_finish_fraction: 0.85,
+            churn_rate: 0.25,
+            cache_hit_rate: 0.1,
+            malicious_peer_fraction: 0.0,
+            ..MergeTopologySimConfig::default()
+        })
+        .expect("stressed");
+
+        assert!(stressed.metrics.accepted_sample_coverage >= 0.55);
+        assert!(stressed.metrics.malicious_acceptance_rate <= 0.05);
+        assert!(stressed.metrics.reducer_overload_rate <= 1.0);
+        assert!(
+            stressed.metrics.certified_head_latency_ms
+                <= (stressed.config.topology_policy.window_duration_secs as u64 * 1000) * 2
         );
     }
 }

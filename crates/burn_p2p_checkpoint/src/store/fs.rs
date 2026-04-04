@@ -14,47 +14,58 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Represents a fs artifact store.
 pub struct FsArtifactStore {
     root: PathBuf,
 }
 
 impl FsArtifactStore {
+    /// Creates a new value.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
+    /// Performs the root operation.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Performs the state dir operation.
     pub fn state_dir(&self) -> PathBuf {
         self.root.join("state")
     }
 
+    /// Performs the artifacts dir operation.
     pub fn artifacts_dir(&self) -> PathBuf {
         self.root.join("artifacts")
     }
 
+    /// Performs the chunks dir operation.
     pub fn chunks_dir(&self) -> PathBuf {
         self.artifacts_dir().join("chunks")
     }
 
+    /// Performs the manifests dir operation.
     pub fn manifests_dir(&self) -> PathBuf {
         self.artifacts_dir().join("manifests")
     }
 
+    /// Performs the pins dir operation.
     pub fn pins_dir(&self) -> PathBuf {
         self.artifacts_dir().join("pins")
     }
 
+    /// Performs the receipts dir operation.
     pub fn receipts_dir(&self) -> PathBuf {
         self.root.join("receipts")
     }
 
+    /// Performs the heads dir operation.
     pub fn heads_dir(&self) -> PathBuf {
         self.root.join("heads")
     }
 
+    /// Performs the ensure layout operation.
     pub fn ensure_layout(&self) -> Result<(), CheckpointError> {
         for path in [
             self.root.clone(),
@@ -72,34 +83,41 @@ impl FsArtifactStore {
         Ok(())
     }
 
+    /// Performs the chunk path operation.
     pub fn chunk_path(&self, chunk_id: &ChunkId) -> PathBuf {
         self.chunks_dir()
             .join(format!("{}.chunk", chunk_id.as_str()))
     }
 
+    /// Performs the manifest path operation.
     pub fn manifest_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.manifests_dir()
             .join(format!("{}.json", artifact_id.as_str()))
     }
 
+    /// Performs the head pin path operation.
     pub fn head_pin_path(&self, head_id: &HeadId) -> PathBuf {
         self.pins_dir()
             .join(format!("head-{}.pin", head_id.as_str()))
     }
 
+    /// Performs the artifact pin path operation.
     pub fn artifact_pin_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.pins_dir()
             .join(format!("artifact-{}.pin", artifact_id.as_str()))
     }
 
+    /// Returns whether the value has chunk.
     pub fn has_chunk(&self, chunk_id: &ChunkId) -> bool {
         self.chunk_path(chunk_id).exists()
     }
 
+    /// Returns whether the value has manifest.
     pub fn has_manifest(&self, artifact_id: &ArtifactId) -> bool {
         self.manifest_path(artifact_id).exists()
     }
 
+    /// Performs the store manifest operation.
     pub fn store_manifest(
         &self,
         artifact: &ArtifactDescriptor,
@@ -112,6 +130,7 @@ impl FsArtifactStore {
         Ok(path)
     }
 
+    /// Performs the load manifest operation.
     pub fn load_manifest(
         &self,
         artifact_id: &ArtifactId,
@@ -121,6 +140,7 @@ impl FsArtifactStore {
         serde_json::from_slice(&bytes).map_err(|error| CheckpointError::Io(error.to_string()))
     }
 
+    /// Performs the store chunk bytes operation.
     pub fn store_chunk_bytes(
         &self,
         descriptor: &ChunkDescriptor,
@@ -137,6 +157,7 @@ impl FsArtifactStore {
         Ok(path)
     }
 
+    /// Performs the load chunk bytes operation.
     pub fn load_chunk_bytes(
         &self,
         descriptor: &ChunkDescriptor,
@@ -147,11 +168,13 @@ impl FsArtifactStore {
         Ok(bytes)
     }
 
+    /// Performs the pin head operation.
     pub fn pin_head(&self, head_id: &HeadId) -> Result<(), CheckpointError> {
         self.ensure_layout()?;
         atomic_write(self.head_pin_path(head_id), head_id.as_str().as_bytes())
     }
 
+    /// Performs the pin artifact operation.
     pub fn pin_artifact(&self, artifact_id: &ArtifactId) -> Result<(), CheckpointError> {
         self.ensure_layout()?;
         atomic_write(
@@ -160,14 +183,17 @@ impl FsArtifactStore {
         )
     }
 
+    /// Performs the pinned heads operation.
     pub fn pinned_heads(&self) -> Result<BTreeSet<HeadId>, CheckpointError> {
         self.read_pins("head-", HeadId::new)
     }
 
+    /// Performs the pinned artifacts operation.
     pub fn pinned_artifacts(&self) -> Result<BTreeSet<ArtifactId>, CheckpointError> {
         self.read_pins("artifact-", ArtifactId::new)
     }
 
+    /// Performs the store artifact reader operation.
     pub fn store_artifact_reader(
         &self,
         spec: &ArtifactBuildSpec,
@@ -183,6 +209,7 @@ impl FsArtifactStore {
         Ok(descriptor)
     }
 
+    /// Performs the store prebuilt artifact bytes operation.
     pub fn store_prebuilt_artifact_bytes(
         &self,
         descriptor: &ArtifactDescriptor,
@@ -229,6 +256,7 @@ impl FsArtifactStore {
         Ok(())
     }
 
+    /// Performs the store artifact file operation.
     pub fn store_artifact_file(
         &self,
         spec: &ArtifactBuildSpec,
@@ -239,6 +267,7 @@ impl FsArtifactStore {
         self.store_artifact_reader(spec, BufReader::new(file), chunking)
     }
 
+    /// Performs the materialize artifact bytes operation.
     pub fn materialize_artifact_bytes(
         &self,
         artifact: &ArtifactDescriptor,
@@ -262,6 +291,7 @@ impl FsArtifactStore {
         Ok(bytes)
     }
 
+    /// Performs the garbage collect operation.
     pub fn garbage_collect(&self) -> Result<GarbageCollectionReport, CheckpointError> {
         self.ensure_layout()?;
         let pinned_artifacts = self.pinned_artifacts()?;
@@ -369,8 +399,11 @@ impl FsArtifactStore {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Reports garbage collection details.
 pub struct GarbageCollectionReport {
+    /// The removed manifests.
     pub removed_manifests: Vec<ArtifactId>,
+    /// The removed chunks.
     pub removed_chunks: Vec<ChunkId>,
 }
 

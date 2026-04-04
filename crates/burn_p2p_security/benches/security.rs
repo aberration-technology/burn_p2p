@@ -1,3 +1,5 @@
+//! Security, admission, identity, and release-policy primitives for burn_p2p.
+#![allow(missing_docs)]
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{

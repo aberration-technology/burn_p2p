@@ -1,5 +1,7 @@
+//! Security, admission, identity, and release-policy primitives for burn_p2p.
 #![forbid(unsafe_code)]
 
+/// Authentication and session helpers.
 pub mod auth;
 
 pub use auth::{
@@ -21,33 +23,50 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
+/// Enumerates the supported security error values.
 pub enum SecurityError {
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("auth error: {0}")]
+    /// Uses the auth variant.
     Auth(#[from] auth::AuthError),
     #[error("release policy must include at least one allowed protocol requirement")]
+    /// Uses the empty protocol requirements variant.
     EmptyProtocolRequirements,
     #[error("reputation thresholds must satisfy allow >= quarantine >= ban")]
+    /// Uses the invalid reputation thresholds variant.
     InvalidReputationThresholds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes the release.
 pub struct ReleaseManifest {
+    /// The release ID.
     pub release_id: ContentId,
+    /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    /// The release train hash.
     pub release_train_hash: ContentId,
+    /// The target artifact hash.
     pub target_artifact_hash: ContentId,
+    /// The version.
     pub version: Version,
+    /// The protocol version.
     pub protocol_version: Version,
+    /// The build hash.
     pub build_hash: ContentId,
+    /// The project hash.
     pub project_hash: Option<ContentId>,
+    /// The features.
     pub features: BTreeSet<String>,
+    /// The published at.
     pub published_at: DateTime<Utc>,
 }
 
 impl ReleaseManifest {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new value.
     pub fn new(
         project_family_id: ProjectFamilyId,
         release_train_hash: ContentId,
@@ -86,26 +105,43 @@ impl ReleaseManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes the client.
 pub struct ClientManifest {
+    /// The manifest ID.
     pub manifest_id: ContentId,
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    /// The release train hash.
     pub release_train_hash: ContentId,
+    /// The target artifact hash.
     pub target_artifact_hash: ContentId,
+    /// The target artifact ID.
     pub target_artifact_id: String,
+    /// The client version.
     pub client_version: Version,
+    /// The protocol version.
     pub protocol_version: Version,
+    /// The build hash.
     pub build_hash: ContentId,
+    /// The project hash.
     pub project_hash: Option<ContentId>,
+    /// The feature set.
     pub feature_set: BTreeSet<String>,
+    /// The platform.
     pub platform: ClientPlatform,
+    /// The binary hash.
     pub binary_hash: Option<ContentId>,
+    /// The WASM hash.
     pub wasm_hash: Option<ContentId>,
+    /// The declared at.
     pub declared_at: DateTime<Utc>,
 }
 
 impl ClientManifest {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new value.
     pub fn new(
         peer_id: PeerId,
         project_family_id: ProjectFamilyId,
@@ -160,28 +196,45 @@ impl ClientManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a challenge response.
 pub struct ChallengeResponse {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The nonce hash.
     pub nonce_hash: ContentId,
+    /// The response hash.
     pub response_hash: ContentId,
+    /// The answered at.
     pub answered_at: DateTime<Utc>,
+    /// The signature.
     pub signature: SignatureMetadata,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures the release policy.
 pub struct ReleasePolicy {
+    /// The required project family ID.
     pub required_project_family_id: Option<ProjectFamilyId>,
+    /// The required release train hash.
     pub required_release_train_hash: Option<ContentId>,
+    /// The allowed target artifact hashes.
     pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    /// The minimum client version.
     pub minimum_client_version: Version,
+    /// The allowed protocol versions.
     pub allowed_protocol_versions: Vec<VersionReq>,
+    /// The approved build hashes.
     pub approved_build_hashes: BTreeSet<ContentId>,
+    /// The required project hash.
     pub required_project_hash: Option<ContentId>,
+    /// The allowed features.
     pub allowed_features: Option<BTreeSet<String>>,
+    /// The banned features.
     pub banned_features: BTreeSet<String>,
 }
 
 impl ReleasePolicy {
+    /// Creates a new value.
     pub fn new(
         minimum_client_version: Version,
         allowed_protocol_versions: Vec<VersionReq>,
@@ -347,6 +400,7 @@ impl ReleasePolicy {
         }
     }
 
+    /// Performs the evaluate client operation.
     pub fn evaluate_client(&self, manifest: &ClientManifest) -> AdmissionDecision {
         if self.client_matches_policy(manifest) {
             return AdmissionDecision::Allow;
@@ -361,11 +415,17 @@ impl ReleasePolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge evidence requirement.
 pub struct MergeEvidenceRequirement {
+    /// The minimum attestation level.
     pub minimum_attestation_level: AttestationLevel,
+    /// The minimum reputation score.
     pub minimum_reputation_score: f64,
+    /// The require data receipt.
     pub require_data_receipt: bool,
+    /// The require challenge response.
     pub require_challenge_response: bool,
+    /// The require holdout metrics.
     pub require_holdout_metrics: bool,
 }
 
@@ -382,27 +442,40 @@ impl Default for MergeEvidenceRequirement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a merge evidence.
 pub struct MergeEvidence {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The client manifest.
     pub client_manifest: ClientManifest,
+    /// The capability card.
     pub capability_card: CapabilityCard,
+    /// The challenge response.
     pub challenge_response: Option<ChallengeResponse>,
+    /// The data receipt.
     pub data_receipt: Option<DataReceipt>,
+    /// The holdout metrics.
     pub holdout_metrics: BTreeMap<String, MetricValue>,
+    /// The reputation score.
     pub reputation_score: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Configures the validator policy.
 pub struct ValidatorPolicy {
+    /// The release policy.
     pub release_policy: ReleasePolicy,
+    /// The evidence requirement.
     pub evidence_requirement: MergeEvidenceRequirement,
 }
 
 impl ValidatorPolicy {
+    /// Performs the evaluate admission operation.
     pub fn evaluate_admission(&self, manifest: &ClientManifest) -> AdmissionDecision {
         self.release_policy.evaluate_client(manifest)
     }
 
+    /// Performs the audit data receipt operation.
     pub fn audit_data_receipt(
         &self,
         lease: &AssignmentLease,
@@ -448,6 +521,7 @@ impl ValidatorPolicy {
         }
     }
 
+    /// Performs the audit update receipt operation.
     pub fn audit_update_receipt(
         &self,
         receipt: &ContributionReceipt,
@@ -474,6 +548,7 @@ impl ValidatorPolicy {
         }
     }
 
+    /// Performs the evaluate merge evidence operation.
     pub fn evaluate_merge_evidence(
         &self,
         receipt: &ContributionReceipt,
@@ -543,13 +618,21 @@ impl ValidatorPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Configures the reputation policy.
 pub struct ReputationPolicy {
+    /// The allow threshold.
     pub allow_threshold: f64,
+    /// The quarantine threshold.
     pub quarantine_threshold: f64,
+    /// The ban threshold.
     pub ban_threshold: f64,
+    /// The accepted work reward.
     pub accepted_work_reward: f64,
+    /// The warning penalty.
     pub warning_penalty: f64,
+    /// The failure penalty.
     pub failure_penalty: f64,
+    /// The decay factor.
     pub decay_factor: f64,
 }
 
@@ -568,18 +651,28 @@ impl Default for ReputationPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Captures reputation state.
 pub struct ReputationState {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The score.
     pub score: f64,
+    /// The accepted work.
     pub accepted_work: u64,
+    /// The warning count.
     pub warning_count: u64,
+    /// The failure count.
     pub failure_count: u64,
+    /// The last control cert ID.
     pub last_control_cert_id: Option<ControlCertId>,
+    /// The last merge cert ID.
     pub last_merge_cert_id: Option<MergeCertId>,
+    /// The last updated at.
     pub last_updated_at: DateTime<Utc>,
 }
 
 impl ReputationState {
+    /// Creates a new value.
     pub fn new(peer_id: PeerId, now: DateTime<Utc>) -> Self {
         Self {
             peer_id,
@@ -595,27 +688,40 @@ impl ReputationState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported reputation decision values.
 pub enum ReputationDecision {
+    /// Uses the allow variant.
     Allow,
+    /// Uses the quarantine variant.
     Quarantine,
+    /// Uses the ban variant.
     Ban,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a reputation observation.
 pub struct ReputationObservation {
+    /// The accepted work units.
     pub accepted_work_units: u64,
+    /// The warning count.
     pub warning_count: u32,
+    /// The failure count.
     pub failure_count: u32,
+    /// The last control cert ID.
     pub last_control_cert_id: Option<ControlCertId>,
+    /// The last merge cert ID.
     pub last_merge_cert_id: Option<MergeCertId>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Represents a reputation engine.
 pub struct ReputationEngine {
+    /// The policy.
     pub policy: ReputationPolicy,
 }
 
 impl ReputationEngine {
+    /// Creates a new value.
     pub fn new(policy: ReputationPolicy) -> Result<Self, SecurityError> {
         if policy.allow_threshold < policy.quarantine_threshold
             || policy.quarantine_threshold < policy.ban_threshold
@@ -626,6 +732,7 @@ impl ReputationEngine {
         Ok(Self { policy })
     }
 
+    /// Performs the apply operation.
     pub fn apply(
         &self,
         state: &mut ReputationState,
@@ -647,6 +754,7 @@ impl ReputationEngine {
         self.decision(state.score)
     }
 
+    /// Performs the decision operation.
     pub fn decision(&self, score: f64) -> ReputationDecision {
         if score <= self.policy.ban_threshold {
             ReputationDecision::Ban
@@ -659,124 +767,206 @@ impl ReputationEngine {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Enumerates the supported audit finding values.
 pub enum AuditFinding {
+    /// Uses the client version too old variant.
     ClientVersionTooOld {
+        /// The minimum.
         minimum: Version,
+        /// The found.
         found: Version,
     },
+    /// Uses the protocol version mismatch variant.
     ProtocolVersionMismatch {
+        /// The found.
         found: Version,
     },
+    /// Uses the build hash not approved variant.
     BuildHashNotApproved(ContentId),
+    /// Uses the project hash mismatch variant.
     ProjectHashMismatch {
+        /// The expected.
         expected: Option<ContentId>,
+        /// The found.
         found: Option<ContentId>,
     },
+    /// Uses the project family mismatch variant.
     ProjectFamilyMismatch {
+        /// The expected.
         expected: Option<ProjectFamilyId>,
+        /// The found.
         found: ProjectFamilyId,
     },
+    /// Uses the release train hash mismatch variant.
     ReleaseTrainHashMismatch {
+        /// The expected.
         expected: Option<ContentId>,
+        /// The found.
         found: ContentId,
     },
+    /// Uses the target artifact hash mismatch variant.
     TargetArtifactHashMismatch {
+        /// The expected.
         expected: Option<BTreeSet<ContentId>>,
+        /// The found.
         found: ContentId,
     },
+    /// Uses the unsupported feature variant.
     UnsupportedFeature(String),
+    /// Uses the banned feature variant.
     BannedFeature(String),
+    /// Uses the peer mismatch variant.
     PeerMismatch {
+        /// The expected.
         expected: PeerId,
+        /// The found.
         found: PeerId,
     },
+    /// Uses the transport peer mismatch variant.
     TransportPeerMismatch {
+        /// The expected.
         expected: PeerId,
+        /// The found.
         found: PeerId,
     },
+    /// Uses the certificate peer mismatch variant.
     CertificatePeerMismatch {
+        /// The expected.
         expected: PeerId,
+        /// The found.
         found: PeerId,
     },
+    /// Uses the network mismatch variant.
     NetworkMismatch {
+        /// The expected.
         expected: NetworkId,
+        /// The found.
         found: NetworkId,
     },
+    /// Uses the certificate not yet valid variant.
     CertificateNotYetValid {
+        /// The not before.
         not_before: DateTime<Utc>,
     },
+    /// Uses the certificate expired variant.
     CertificateExpired {
+        /// The not after.
         not_after: DateTime<Utc>,
     },
+    /// Uses the revocation epoch stale variant.
     RevocationEpochStale {
+        /// The minimum.
         minimum: RevocationEpoch,
+        /// The found.
         found: RevocationEpoch,
     },
+    /// Uses the scope not authorized variant.
     ScopeNotAuthorized(ExperimentScope),
+    /// Uses the invalid certificate signature variant.
     InvalidCertificateSignature,
+    /// Uses the invalid challenge signature variant.
     InvalidChallengeSignature,
+    /// Uses the lease mismatch variant.
     LeaseMismatch {
+        /// The expected.
         expected: burn_p2p_core::LeaseId,
+        /// The found.
         found: burn_p2p_core::LeaseId,
     },
+    /// Uses the base head mismatch variant.
     BaseHeadMismatch {
+        /// The expected.
         expected: HeadId,
+        /// The found.
         found: HeadId,
     },
+    /// Uses the receipt outside lease window variant.
     ReceiptOutsideLeaseWindow,
+    /// Uses the unexpected microshards variant.
     UnexpectedMicroshards(Vec<burn_p2p_core::MicroShardId>),
+    /// Uses the non positive accepted weight variant.
     NonPositiveAcceptedWeight,
+    /// Uses the non finite metric variant.
     NonFiniteMetric(String),
+    /// Uses the missing data receipt variant.
     MissingDataReceipt,
+    /// Uses the missing challenge response variant.
     MissingChallengeResponse,
+    /// Uses the missing holdout metrics variant.
     MissingHoldoutMetrics,
+    /// Uses the insufficient attestation variant.
     InsufficientAttestation {
+        /// The required.
         required: AttestationLevel,
+        /// The found.
         found: AttestationLevel,
     },
+    /// Uses the reputation too low variant.
     ReputationTooLow {
+        /// The minimum.
         minimum: f64,
+        /// The found.
         found: f64,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Enumerates the supported admission decision values.
 pub enum AdmissionDecision {
+    /// Uses the allow variant.
     Allow,
+    /// Uses the quarantine variant.
     Quarantine(Vec<AuditFinding>),
+    /// Uses the reject variant.
     Reject(Vec<AuditFinding>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Enumerates the supported merge evidence decision values.
 pub enum MergeEvidenceDecision {
+    /// Uses the eligible variant.
     Eligible,
+    /// Uses the insufficient variant.
     Insufficient(Vec<AuditFinding>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Reports data audit details.
 pub struct DataAuditReport {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The lease ID.
     pub lease_id: burn_p2p_core::LeaseId,
+    /// The findings.
     pub findings: Vec<AuditFinding>,
+    /// The audited at.
     pub audited_at: DateTime<Utc>,
 }
 
 impl DataAuditReport {
+    /// Performs the passed operation.
     pub fn passed(&self) -> bool {
         self.findings.is_empty()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Reports update audit details.
 pub struct UpdateAuditReport {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The contribution receipt ID.
     pub contribution_receipt_id: burn_p2p_core::ContributionReceiptId,
+    /// The artifact ID.
     pub artifact_id: burn_p2p_core::ArtifactId,
+    /// The findings.
     pub findings: Vec<AuditFinding>,
+    /// The audited at.
     pub audited_at: DateTime<Utc>,
 }
 
 impl UpdateAuditReport {
+    /// Performs the passed operation.
     pub fn passed(&self) -> bool {
         self.findings.is_empty()
     }

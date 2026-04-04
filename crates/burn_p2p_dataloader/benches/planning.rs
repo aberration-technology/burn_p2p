@@ -1,3 +1,5 @@
+//! Shard leasing, dataset fetching, and cache helpers for burn_p2p workloads.
+#![allow(missing_docs)]
 use burn_p2p_core::{
     DatasetId, DatasetView, DatasetViewId, ExperimentId, NetworkId, PeerId, RevisionId, StudyId,
     WindowId,

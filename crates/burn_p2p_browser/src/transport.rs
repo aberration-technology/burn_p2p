@@ -2,16 +2,24 @@ use burn_p2p::{RuntimeTransportPolicy, TransportKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported browser transport kinds.
 pub enum BrowserTransportKind {
+    /// Uses the web rtc direct kind.
     WebRtcDirect,
+    /// Uses the web transport kind.
     WebTransport,
+    /// Uses the WSS fallback kind.
     WssFallback,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures the browser transport policy.
 pub struct BrowserTransportPolicy {
+    /// The preferred.
     pub preferred: Vec<BrowserTransportKind>,
+    /// The observer fallback.
     pub observer_fallback: BrowserTransportKind,
+    /// The allow suspend resume.
     pub allow_suspend_resume: bool,
 }
 
@@ -68,11 +76,17 @@ impl From<RuntimeTransportPolicy> for BrowserTransportPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a browser transport status.
 pub struct BrowserTransportStatus {
+    /// The active.
     pub active: Option<BrowserTransportKind>,
+    /// The webrtc direct enabled.
     pub webrtc_direct_enabled: bool,
+    /// The WebTransport enabled.
     pub webtransport_enabled: bool,
+    /// The WSS fallback enabled.
     pub wss_fallback_enabled: bool,
+    /// The last error.
     pub last_error: Option<String>,
 }
 
@@ -89,6 +103,7 @@ impl Default for BrowserTransportStatus {
 }
 
 impl BrowserTransportStatus {
+    /// Performs the supports operation.
     pub fn supports(&self, kind: &BrowserTransportKind) -> bool {
         match kind {
             BrowserTransportKind::WebRtcDirect => self.webrtc_direct_enabled,
@@ -97,6 +112,7 @@ impl BrowserTransportStatus {
         }
     }
 
+    /// Performs the recommended transport operation.
     pub fn recommended_transport(
         &self,
         policy: &BrowserTransportPolicy,

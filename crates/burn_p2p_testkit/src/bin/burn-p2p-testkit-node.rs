@@ -1,3 +1,4 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 use std::{env, fs, path::PathBuf};
 
 use burn_p2p_testkit::multiprocess::{

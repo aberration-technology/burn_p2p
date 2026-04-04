@@ -1,3 +1,4 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 use std::{path::PathBuf, process::Command};
 
 use tempfile::tempdir;
@@ -36,7 +37,6 @@ fn run_browser_matrix_step(args: &[&str]) -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "run explicitly to validate the wasm browser matrix"]
 fn browser_crate_compiles_for_wasm_target() -> anyhow::Result<()> {
     run_browser_matrix_step(&[
         "check",
@@ -50,7 +50,6 @@ fn browser_crate_compiles_for_wasm_target() -> anyhow::Result<()> {
 }
 
 #[test]
-#[ignore = "run explicitly to validate the wasm browser matrix"]
 fn browser_supporting_crates_compile_for_wasm_target() -> anyhow::Result<()> {
     run_browser_matrix_step(&[
         "check",

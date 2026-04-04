@@ -1,3 +1,4 @@
+//! Shard leasing, dataset fetching, and cache helpers for burn_p2p workloads.
 #![forbid(unsafe_code)]
 
 use std::{
@@ -15,74 +16,118 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
+/// Enumerates the supported dataloader error values.
 pub enum DataloaderError {
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("i/o error: {0}")]
+    /// Uses the io variant.
     Io(String),
     #[error("http error: {0}")]
+    /// Uses the HTTP variant.
     Http(String),
     #[error("target microshard bytes must be greater than zero")]
+    /// Uses the invalid target microshard bytes variant.
     InvalidTargetMicroshardBytes,
     #[error("lease duration seconds must be greater than zero")]
+    /// Uses the invalid lease duration variant.
     InvalidLeaseDuration,
     #[error("budget work units must be greater than zero")]
+    /// Uses the invalid budget variant.
     InvalidBudget,
     #[error("no microshards are available for planning")]
+    /// Uses the no microshards variant.
     NoMicroshards,
     #[error("fetch manifest is missing entry for microshard {0}")]
+    /// Uses the missing fetch entry variant.
     MissingFetchEntry(MicroShardId),
     #[error("leased microshard {0} was not found in the microshard plan")]
+    /// Uses the unknown leased micro shard variant.
     UnknownLeasedMicroShard(MicroShardId),
     #[error("cached microshard {microshard_id} failed hash verification")]
-    HashMismatch { microshard_id: MicroShardId },
+    /// Uses the hash mismatch variant.
+    HashMismatch {
+        /// The microshard ID.
+        microshard_id: MicroShardId,
+    },
     #[error("adapter {0:?} is not supported by the disk cache fetch path")]
+    /// Uses the unsupported adapter variant.
     UnsupportedAdapter(UpstreamAdapter),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the supported upstream adapter values.
 pub enum UpstreamAdapter {
+    /// Uses the hf variant.
     Hf {
+        /// The dataset.
         dataset: String,
+        /// The config.
         config: Option<String>,
+        /// The split.
         split: String,
+        /// The streaming.
         streaming: bool,
+        /// The num shards.
         num_shards: Option<u32>,
     },
+    /// Uses the HTTP variant.
     Http {
+        /// The base URL.
         base_url: String,
     },
+    /// Uses the local variant.
     Local {
+        /// The root.
         root: String,
     },
+    /// Uses the s3 variant.
     S3 {
+        /// The bucket.
         bucket: String,
+        /// The prefix.
         prefix: String,
     },
+    /// Exposes the private setting.
     Private {
+        /// The scheme.
         scheme: String,
+        /// The locator.
         locator: String,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a dataset registration.
 pub struct DatasetRegistration {
+    /// The manifest.
     pub manifest: DatasetManifest,
+    /// The view.
     pub view: DatasetView,
+    /// The upstream.
     pub upstream: UpstreamAdapter,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a dataset sizing.
 pub struct DatasetSizing {
+    /// The total examples.
     pub total_examples: u64,
+    /// The total tokens.
     pub total_tokens: u64,
+    /// The total bytes.
     pub total_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures micro shard planner.
 pub struct MicroShardPlannerConfig {
+    /// The target microshard bytes.
     pub target_microshard_bytes: u64,
+    /// The min microshards.
     pub min_microshards: u32,
+    /// The max microshards.
     pub max_microshards: u32,
 }
 
@@ -97,18 +142,25 @@ impl Default for MicroShardPlannerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a micro shard plan.
 pub struct MicroShardPlan {
+    /// The dataset view.
     pub dataset_view: DatasetView,
+    /// The sizing.
     pub sizing: DatasetSizing,
+    /// The microshards.
     pub microshards: Vec<MicroShard>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a micro shard planner.
 pub struct MicroShardPlanner {
+    /// The config.
     pub config: MicroShardPlannerConfig,
 }
 
 impl MicroShardPlanner {
+    /// Creates a new value.
     pub fn new(config: MicroShardPlannerConfig) -> Result<Self, DataloaderError> {
         if config.target_microshard_bytes == 0 {
             return Err(DataloaderError::InvalidTargetMicroshardBytes);
@@ -117,6 +169,7 @@ impl MicroShardPlanner {
         Ok(Self { config })
     }
 
+    /// Performs the plan operation.
     pub fn plan(
         &self,
         dataset_view: &DatasetView,
@@ -161,10 +214,15 @@ impl MicroShardPlanner {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a shard cost model.
 pub struct ShardCostModel {
+    /// The tokens per work unit.
     pub tokens_per_work_unit: u64,
+    /// The examples per work unit.
     pub examples_per_work_unit: u64,
+    /// The bytes per work unit.
     pub bytes_per_work_unit: u64,
+    /// The minimum work units.
     pub minimum_work_units: u64,
 }
 
@@ -180,6 +238,7 @@ impl Default for ShardCostModel {
 }
 
 impl ShardCostModel {
+    /// Performs the estimate work units operation.
     pub fn estimate_work_units(&self, microshard: &MicroShard) -> u64 {
         let token_units = ceil_div(
             microshard.estimated_tokens.max(1),
@@ -202,9 +261,13 @@ impl ShardCostModel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures lease planner.
 pub struct LeasePlannerConfig {
+    /// The lease duration seconds.
     pub lease_duration_seconds: i64,
+    /// The max microshards per lease.
     pub max_microshards_per_lease: usize,
+    /// The cost model.
     pub cost_model: ShardCostModel,
 }
 
@@ -219,27 +282,40 @@ impl Default for LeasePlannerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a lease selection.
 pub struct LeaseSelection {
+    /// The microshards.
     pub microshards: Vec<MicroShard>,
+    /// The budget work units.
     pub budget_work_units: u64,
+    /// The estimated work units.
     pub estimated_work_units: u64,
+    /// The estimated examples.
     pub estimated_examples: u64,
+    /// The estimated tokens.
     pub estimated_tokens: u64,
+    /// The estimated bytes.
     pub estimated_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a planned lease.
 pub struct PlannedLease {
+    /// The lease.
     pub lease: AssignmentLease,
+    /// The selection.
     pub selection: LeaseSelection,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a lease planner.
 pub struct LeasePlanner {
+    /// The config.
     pub config: LeasePlannerConfig,
 }
 
 impl LeasePlanner {
+    /// Creates a new value.
     pub fn new(config: LeasePlannerConfig) -> Result<Self, DataloaderError> {
         if config.lease_duration_seconds <= 0 {
             return Err(DataloaderError::InvalidLeaseDuration);
@@ -248,6 +324,7 @@ impl LeasePlanner {
         Ok(Self { config })
     }
 
+    /// Performs the select microshards operation.
     pub fn select_microshards(
         &self,
         peer_id: &PeerId,
@@ -313,6 +390,7 @@ impl LeasePlanner {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Performs the plan lease operation.
     pub fn plan_lease(
         &self,
         network_id: NetworkId,
@@ -387,11 +465,13 @@ impl LeasePlanner {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a lease cache.
 pub struct LeaseCache {
     leases_by_window: BTreeMap<WindowId, BTreeMap<PeerId, AssignmentLease>>,
 }
 
 impl LeaseCache {
+    /// Performs the insert operation.
     pub fn insert(&mut self, lease: AssignmentLease) -> Option<AssignmentLease> {
         self.leases_by_window
             .entry(lease.window_id)
@@ -399,10 +479,12 @@ impl LeaseCache {
             .insert(lease.peer_id.clone(), lease)
     }
 
+    /// Performs the get operation.
     pub fn get(&self, window_id: WindowId, peer_id: &PeerId) -> Option<&AssignmentLease> {
         self.leases_by_window.get(&window_id)?.get(peer_id)
     }
 
+    /// Performs the leases for window operation.
     pub fn leases_for_window(
         &self,
         window_id: WindowId,
@@ -410,6 +492,7 @@ impl LeaseCache {
         self.leases_by_window.get(&window_id)
     }
 
+    /// Performs the evict before operation.
     pub fn evict_before(&mut self, earliest_window: WindowId) -> usize {
         let original_len = self.leases_by_window.len();
         self.leases_by_window
@@ -419,12 +502,14 @@ impl LeaseCache {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a shard aware sampler.
 pub struct ShardAwareSampler {
     ordered_microshards: Vec<MicroShardId>,
     next_index: usize,
 }
 
 impl ShardAwareSampler {
+    /// Creates a value from the lease.
     pub fn from_lease(lease: &AssignmentLease) -> Result<Self, DataloaderError> {
         let mut ordered_scored = lease
             .microshards
@@ -453,10 +538,12 @@ impl ShardAwareSampler {
         })
     }
 
+    /// Performs the ordered microshards operation.
     pub fn ordered_microshards(&self) -> &[MicroShardId] {
         &self.ordered_microshards
     }
 
+    /// Performs the next microshard operation.
     pub fn next_microshard(&mut self) -> Option<&MicroShardId> {
         let microshard = self.ordered_microshards.get(self.next_index)?;
         self.next_index += 1;
@@ -465,13 +552,18 @@ impl ShardAwareSampler {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a data receipt builder.
 pub struct DataReceiptBuilder {
+    /// The disposition.
     pub disposition: WorkDisposition,
+    /// The examples processed.
     pub examples_processed: u64,
+    /// The tokens processed.
     pub tokens_processed: u64,
 }
 
 impl DataReceiptBuilder {
+    /// Performs the accepted operation.
     pub fn accepted(examples_processed: u64, tokens_processed: u64) -> Self {
         Self {
             disposition: WorkDisposition::Accepted,
@@ -480,6 +572,7 @@ impl DataReceiptBuilder {
         }
     }
 
+    /// Performs the build operation.
     pub fn build(
         &self,
         lease: &AssignmentLease,
@@ -513,27 +606,38 @@ impl DataReceiptBuilder {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a shard fetch entry.
 pub struct ShardFetchEntry {
+    /// The microshard ID.
     pub microshard_id: MicroShardId,
+    /// The ordinal.
     pub ordinal: u32,
+    /// The locator.
     pub locator: String,
+    /// The content hash.
     pub content_hash: ContentId,
+    /// The bytes len.
     pub bytes_len: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes the shard fetch.
 pub struct ShardFetchManifest {
+    /// The dataset view ID.
     pub dataset_view_id: burn_p2p_core::DatasetViewId,
+    /// The entries.
     pub entries: Vec<ShardFetchEntry>,
 }
 
 impl ShardFetchManifest {
+    /// Performs the entry for microshard operation.
     pub fn entry_for_microshard(&self, microshard_id: &MicroShardId) -> Option<&ShardFetchEntry> {
         self.entries
             .iter()
             .find(|entry| &entry.microshard_id == microshard_id)
     }
 
+    /// Creates a value from the microshards.
     pub fn from_microshards(
         dataset_view: &DatasetView,
         microshards: &[MicroShard],
@@ -561,42 +665,55 @@ impl ShardFetchManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a cached micro shard.
 pub struct CachedMicroShard {
+    /// The microshard.
     pub microshard: MicroShard,
+    /// The path.
     pub path: PathBuf,
+    /// The content hash.
     pub content_hash: ContentId,
+    /// The bytes len.
     pub bytes_len: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a shard cache.
 pub struct ShardCache {
+    /// The root.
     pub root: PathBuf,
 }
 
 impl ShardCache {
+    /// Creates a new value.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
+    /// Performs the ensure layout operation.
     pub fn ensure_layout(&self, dataset_view: &DatasetView) -> Result<PathBuf, DataloaderError> {
         let path = self.dataset_dir(dataset_view);
         fs::create_dir_all(&path).map_err(|error| DataloaderError::Io(error.to_string()))?;
         Ok(path)
     }
 
+    /// Performs the dataset dir operation.
     pub fn dataset_dir(&self, dataset_view: &DatasetView) -> PathBuf {
         self.root.join(dataset_view.dataset_view_id.as_str())
     }
 
+    /// Performs the manifest path operation.
     pub fn manifest_path(&self, dataset_view: &DatasetView) -> PathBuf {
         self.dataset_dir(dataset_view).join("fetch-manifest.json")
     }
 
+    /// Performs the shard path operation.
     pub fn shard_path(&self, dataset_view: &DatasetView, microshard: &MicroShard) -> PathBuf {
         self.dataset_dir(dataset_view)
             .join(format!("{:05}.bin", microshard.ordinal))
     }
 
+    /// Performs the store fetch manifest operation.
     pub fn store_fetch_manifest(
         &self,
         dataset_view: &DatasetView,
@@ -610,6 +727,7 @@ impl ShardCache {
         Ok(path)
     }
 
+    /// Performs the load fetch manifest operation.
     pub fn load_fetch_manifest(
         &self,
         dataset_view: &DatasetView,
@@ -619,6 +737,7 @@ impl ShardCache {
         serde_json::from_slice(&bytes).map_err(|error| DataloaderError::Io(error.to_string()))
     }
 
+    /// Fetches the lease microshards.
     pub fn fetch_lease_microshards(
         &self,
         registration: &DatasetRegistration,
@@ -666,6 +785,7 @@ impl ShardCache {
             .collect()
     }
 
+    /// Performs the evict except operation.
     pub fn evict_except(
         &self,
         dataset_view: &DatasetView,
@@ -807,6 +927,7 @@ fn http_get_bytes(url: String) -> Result<Vec<u8>, DataloaderError> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a cached micro shard loader.
 pub struct CachedMicroShardLoader {
     dataset_view: DatasetView,
     registration: DatasetRegistration,
@@ -815,6 +936,7 @@ pub struct CachedMicroShardLoader {
 }
 
 impl CachedMicroShardLoader {
+    /// Creates a new value.
     pub fn new(
         registration: DatasetRegistration,
         microshard_plan: MicroShardPlan,
@@ -843,11 +965,16 @@ impl<B> BurnDataLoaderAdapter<B> for CachedMicroShardLoader {
     }
 }
 
+/// Defines behavior for burn data loader adapter.
 pub trait BurnDataLoaderAdapter<B> {
+    /// Defines the batch alias.
     type Batch;
+    /// Defines the error alias.
     type Error;
 
+    /// Performs the dataset view operation.
     fn dataset_view(&self) -> &DatasetView;
+    /// Performs the load lease operation.
     fn load_lease(&mut self, lease: &AssignmentLease) -> Result<Vec<Self::Batch>, Self::Error>;
 }
 
@@ -1029,6 +1156,41 @@ mod tests {
                 .sum::<u64>(),
             250
         );
+    }
+
+    #[test]
+    fn planner_clamps_skewed_large_dataset_to_maximum_microshards() {
+        let planner = MicroShardPlanner::new(MicroShardPlannerConfig {
+            target_microshard_bytes: 4 * 1024 * 1024,
+            min_microshards: 8,
+            max_microshards: 64,
+        })
+        .expect("planner");
+
+        let plan = planner
+            .plan(
+                &dataset_view(),
+                DatasetSizing {
+                    total_examples: 512,
+                    total_tokens: 128 * 1024 * 1024,
+                    total_bytes: 8 * 1024 * 1024 * 1024,
+                },
+            )
+            .expect("plan");
+
+        assert_eq!(plan.microshards.len(), 64);
+        assert_eq!(
+            plan.microshards
+                .iter()
+                .map(|microshard| microshard.estimated_bytes)
+                .sum::<u64>(),
+            8 * 1024 * 1024 * 1024
+        );
+        assert!(plan.microshards.iter().all(|microshard| {
+            microshard.estimated_examples > 0
+                && microshard.estimated_tokens > 0
+                && microshard.estimated_bytes > 0
+        }));
     }
 
     #[test]
@@ -1362,5 +1524,98 @@ mod tests {
         let _ = server.join();
 
         assert_eq!(hits.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn cache_pressure_evict_except_preserves_only_active_microshards() {
+        let upstream_dir = tempdir().expect("upstream dir");
+        let cache_dir = tempdir().expect("cache dir");
+        let plan = MicroShardPlanner::new(MicroShardPlannerConfig {
+            target_microshard_bytes: 4,
+            min_microshards: 16,
+            max_microshards: 16,
+        })
+        .expect("planner")
+        .plan(
+            &dataset_view(),
+            DatasetSizing {
+                total_examples: 512,
+                total_tokens: 512,
+                total_bytes: 512,
+            },
+        )
+        .expect("plan");
+        let bytes_for_ordinal = |ordinal| format!("pressure-shard-{ordinal}").into_bytes();
+        let manifest = ShardFetchManifest::from_microshards(
+            &plan.dataset_view,
+            &plan.microshards,
+            bytes_for_ordinal,
+        );
+        fs::write(
+            upstream_dir.path().join("fetch-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        for entry in &manifest.entries {
+            fs::write(
+                upstream_dir.path().join(&entry.locator),
+                bytes_for_ordinal(entry.ordinal),
+            )
+            .expect("write shard");
+        }
+
+        let registration = make_registration(UpstreamAdapter::Local {
+            root: upstream_dir.path().display().to_string(),
+        });
+        let lease = LeasePlanner::new(LeasePlannerConfig {
+            max_microshards_per_lease: 16,
+            ..LeasePlannerConfig::default()
+        })
+        .expect("lease planner")
+        .plan_lease(
+            burn_p2p_core::NetworkId::new("net-1"),
+            burn_p2p_core::StudyId::new("study-1"),
+            burn_p2p_core::ExperimentId::new("exp-1"),
+            burn_p2p_core::RevisionId::new("rev-1"),
+            &plan.dataset_view,
+            burn_p2p_core::PeerId::new("peer-1"),
+            WindowId(3),
+            Utc::now(),
+            4096,
+            &plan.microshards,
+        )
+        .expect("lease")
+        .lease;
+        let cache = ShardCache::new(cache_dir.path());
+
+        let fetched = cache
+            .fetch_lease_microshards(&registration, &plan, &lease)
+            .expect("fetch lease");
+        assert_eq!(fetched.len(), plan.microshards.len());
+
+        let keep = lease
+            .microshards
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed = cache
+            .evict_except(&plan.dataset_view, &keep)
+            .expect("evict except");
+
+        assert_eq!(removed, plan.microshards.len() - keep.len());
+        let dataset_dir = cache.dataset_dir(&plan.dataset_view);
+        let remaining_bin_count = fs::read_dir(&dataset_dir)
+            .expect("read dataset dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| ext == "bin")
+            })
+            .count();
+        assert_eq!(remaining_bin_count, keep.len());
     }
 }

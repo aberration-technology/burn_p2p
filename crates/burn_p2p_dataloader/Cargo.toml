@@ -4,10 +4,15 @@ description = "Dataset planning and lease-assignment boundary crate for burn_p2p
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
 chrono.workspace = true
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

@@ -4,14 +4,18 @@ description = "Internal Burn execution engine boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 burn.workspace = true
 burn-store.workspace = true
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
+burn_p2p_core.workspace = true
+burn_p2p_checkpoint.workspace = true
+burn_p2p_experiment.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

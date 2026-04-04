@@ -1,6 +1,9 @@
+//! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 #![forbid(unsafe_code)]
 
+/// Public APIs for merge topology.
 pub mod merge_topology;
+/// Public APIs for multiprocess.
 pub mod multiprocess;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,76 +47,118 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+/// Enumerates the supported testkit error values.
 pub enum TestkitError {
     #[error("bootstrap error: {0}")]
+    /// Uses the bootstrap variant.
     Bootstrap(#[from] burn_p2p_bootstrap::BootstrapError),
     #[error("checkpoint error: {0}")]
+    /// Uses the checkpoint variant.
     Checkpoint(#[from] burn_p2p_checkpoint::CheckpointError),
     #[error("dataloader error: {0}")]
+    /// Uses the dataloader variant.
     Dataloader(#[from] DataloaderError),
     #[error("limits error: {0}")]
+    /// Uses the limits variant.
     Limits(#[from] LimitsError),
     #[error("schema error: {0}")]
+    /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
     #[error("security error: {0}")]
+    /// Uses the security variant.
     Security(#[from] SecurityError),
     #[error("swarm error: {0}")]
+    /// Uses the swarm variant.
     Swarm(#[from] SwarmError),
     #[error("invalid protocol requirement `{0}`")]
+    /// Uses the invalid protocol requirement variant.
     InvalidProtocolRequirement(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported peer fixture modes.
 pub enum PeerFixtureMode {
+    /// Runs in honest native mode.
     HonestNative,
+    /// Runs in honest browser mode.
     HonestBrowser,
+    /// Runs in malicious mode.
     Malicious(MaliciousBehavior),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported malicious behavior values.
 pub enum MaliciousBehavior {
+    /// Uses the stale base head variant.
     StaleBaseHead,
+    /// Uses the wrong base head variant.
     WrongBaseHead,
+    /// Uses the out of lease work variant.
     OutOfLeaseWork,
+    /// Uses the non finite metric variant.
     NonFiniteMetric,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a browser harness.
 pub struct BrowserHarness {
+    /// The peer IDs.
     pub peer_ids: Vec<PeerId>,
+    /// The transport policy.
     pub transport_policy: RuntimeTransportPolicy,
+    /// The cache namespace.
     pub cache_namespace: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a chaos event.
 pub struct ChaosEvent {
+    /// The window ID.
     pub window_id: WindowId,
+    /// The fault.
     pub fault: FaultType,
+    /// The peer ID.
     pub peer_id: Option<PeerId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported fault type values.
 pub enum FaultType {
+    /// Uses the peer churn variant.
     PeerChurn,
+    /// Uses the partition variant.
     Partition,
+    /// Uses the slow peer variant.
     SlowPeer,
+    /// Uses the relay loss variant.
     RelayLoss,
+    /// Uses the stale head variant.
     StaleHead,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a benchmark sample.
 pub struct BenchmarkSample {
+    /// The name.
     pub name: String,
+    /// The unit.
     pub unit: String,
+    /// The value.
     pub value: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a synthetic artifact scale.
 pub struct SyntheticArtifactScale {
+    /// The label.
     pub label: String,
+    /// The bytes len.
     pub bytes_len: u64,
+    /// The chunk size bytes.
     pub chunk_size_bytes: u64,
+    /// The precision.
     pub precision: Precision,
+    /// The record format.
     pub record_format: String,
 }
 
@@ -130,8 +175,11 @@ impl Default for SyntheticArtifactScale {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a synthetic artifact generator.
 pub struct SyntheticArtifactGenerator {
+    /// The scale.
     pub scale: SyntheticArtifactScale,
+    /// The model schema hash.
     pub model_schema_hash: ContentId,
 }
 
@@ -145,6 +193,7 @@ impl Default for SyntheticArtifactGenerator {
 }
 
 impl SyntheticArtifactGenerator {
+    /// Performs the bytes for label operation.
     pub fn bytes_for_label(&self, label: &str) -> Vec<u8> {
         let seed = multibyte_seed(label, &self.scale.label);
         (0..self.scale.bytes_len as usize)
@@ -152,6 +201,7 @@ impl SyntheticArtifactGenerator {
             .collect()
     }
 
+    /// Builds the descriptor.
     pub fn build_descriptor(
         &self,
         kind: ArtifactKind,
@@ -185,31 +235,54 @@ impl SyntheticArtifactGenerator {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a peer fixture.
 pub struct PeerFixture {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The mode.
     pub mode: PeerFixtureMode,
+    /// The limit profile.
     pub limit_profile: LimitProfile,
+    /// The client manifest.
     pub client_manifest: ClientManifest,
+    /// The challenge response.
     pub challenge_response: Option<ChallengeResponse>,
+    /// The reputation state.
     pub reputation_state: ReputationState,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a simulation spec.
 pub struct SimulationSpec {
+    /// The network ID.
     pub network_id: NetworkId,
+    /// The study ID.
     pub study_id: StudyId,
+    /// The experiment ID.
     pub experiment_id: ExperimentId,
+    /// The revision ID.
     pub revision_id: RevisionId,
+    /// The bootstrap preset.
     pub bootstrap_preset: BootstrapPreset,
+    /// The peer count.
     pub peer_count: u32,
+    /// The browser peer count.
     pub browser_peer_count: u32,
+    /// The window count.
     pub window_count: u32,
+    /// The dataset sizing.
     pub dataset_sizing: DatasetSizing,
+    /// The microshard config.
     pub microshard_config: MicroShardPlannerConfig,
+    /// The lease config.
     pub lease_config: LeasePlannerConfig,
+    /// The limit policy.
     pub limit_policy: LimitPolicy,
+    /// The artifact scale.
     pub artifact_scale: SyntheticArtifactScale,
+    /// The malicious peers.
     pub malicious_peers: BTreeMap<PeerId, MaliciousBehavior>,
+    /// The chaos events.
     pub chaos_events: Vec<ChaosEvent>,
 }
 
@@ -240,52 +313,90 @@ impl Default for SimulationSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a rejected update.
 pub struct RejectedUpdate {
+    /// The peer ID.
     pub peer_id: PeerId,
+    /// The behavior.
     pub behavior: Option<MaliciousBehavior>,
+    /// The findings.
     pub findings: Vec<AuditFinding>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a simulated window.
 pub struct SimulatedWindow {
+    /// The window ID.
     pub window_id: WindowId,
+    /// The telemetry.
     pub telemetry: Vec<burn_p2p_core::TelemetrySummary>,
+    /// The accepted receipts.
     pub accepted_receipts: Vec<ContributionReceipt>,
+    /// The merge certificate.
     pub merge_certificate: Option<MergeCertificate>,
+    /// The data audits.
     pub data_audits: Vec<DataAuditReport>,
+    /// The update audits.
     pub update_audits: Vec<UpdateAuditReport>,
+    /// The rejected updates.
     pub rejected_updates: Vec<RejectedUpdate>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a simulation outcome.
 pub struct SimulationOutcome {
+    /// The spec.
     pub spec: SimulationSpec,
+    /// The bootstrap plan.
     pub bootstrap_plan: BootstrapPlan,
+    /// The browser harness.
     pub browser_harness: BrowserHarness,
+    /// The peer fixtures.
     pub peer_fixtures: Vec<PeerFixture>,
+    /// The dataset manifest.
     pub dataset_manifest: DatasetManifest,
+    /// The dataset view.
     pub dataset_view: DatasetView,
+    /// The microshard plan.
     pub microshard_plan: MicroShardPlan,
+    /// The lease cache.
     pub lease_cache: LeaseCache,
+    /// The checkpoint catalog.
     pub checkpoint_catalog: CheckpointCatalog,
+    /// The windows.
     pub windows: Vec<SimulatedWindow>,
+    /// The diagnostics.
     pub diagnostics: BootstrapDiagnostics,
+    /// The operator console.
     pub operator_console: OperatorConsoleView,
+    /// The participant portals.
     pub participant_portals: Vec<ParticipantPortalView>,
+    /// The study board.
     pub study_board: StudyBoardView,
+    /// The checkpoint DAG.
     pub checkpoint_dag: CheckpointDagView,
+    /// The EMA flow.
     pub ema_flow: EmaFlowView,
+    /// The heatmap.
     pub heatmap: ShardAssignmentHeatmap,
+    /// The benchmark samples.
     pub benchmark_samples: Vec<BenchmarkSample>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a simulation runner.
 pub struct SimulationRunner {
+    /// The calibrator.
     pub calibrator: CapabilityCalibrator,
+    /// The microshard planner.
     pub microshard_planner: MicroShardPlanner,
+    /// The lease planner.
     pub lease_planner: LeasePlanner,
+    /// The validator policy.
     pub validator_policy: ValidatorPolicy,
+    /// The reputation engine.
     pub reputation_engine: ReputationEngine,
+    /// The artifact generator.
     pub artifact_generator: SyntheticArtifactGenerator,
 }
 
@@ -307,6 +418,7 @@ impl Default for SimulationRunner {
 }
 
 impl SimulationRunner {
+    /// Creates a value from the spec.
     pub fn from_spec(spec: &SimulationSpec) -> Result<Self, TestkitError> {
         let calibrator = CapabilityCalibrator::new(spec.limit_policy.clone())?;
         let microshard_planner = MicroShardPlanner::new(spec.microshard_config.clone())?;
@@ -332,6 +444,7 @@ impl SimulationRunner {
         })
     }
 
+    /// Performs the run operation.
     pub fn run(&self, spec: SimulationSpec) -> Result<SimulationOutcome, TestkitError> {
         let started_at = Utc::now();
         let bootstrap_plan = self.bootstrap_plan(&spec, started_at)?;
@@ -1352,10 +1465,15 @@ mod tests {
     use std::collections::BTreeSet;
 
     use burn_p2p_core::{
-        ExperimentId, HeadId, MetricValue, NetworkId, PeerId, StudyId, WindowActivation, WindowId,
+        BackendClass, ContentId, DatasetViewId, ExperimentId, HeadEvalReport, HeadEvalStatus,
+        HeadId, LeaseId, MetricTrustClass, MetricValue, NetworkId, PeerId, PeerRole,
+        PeerWindowMetrics, PeerWindowStatus, ReducerCohortMetrics, ReducerCohortStatus, RevisionId,
+        StudyId, WindowActivation, WindowId, WorkloadId,
     };
     use burn_p2p_experiment::ActivationTarget;
+    use burn_p2p_metrics::{DerivedMetricKind, MetricsIndexer, MetricsIndexerConfig};
     use burn_p2p_swarm::{ExperimentOverlaySet, MigrationCoordinator, OverlayChannel};
+    use chrono::{Duration, Utc};
 
     use super::{
         ChaosEvent, FaultType, MaliciousBehavior, SimulationRunner, SimulationSpec,
@@ -1673,8 +1791,8 @@ mod tests {
             Some(HeadId::new("serve-head-5")),
         );
 
-        assert_eq!(overlay_change.leave_topics.len(), 4);
-        assert_eq!(overlay_change.join_topics.len(), 4);
+        assert_eq!(overlay_change.leave_topics.len(), 5);
+        assert_eq!(overlay_change.join_topics.len(), 5);
         assert!(overlay_change.drain_current_window);
         assert_eq!(
             overlay_change.required_client_capabilities,
@@ -1762,5 +1880,184 @@ mod tests {
                         })
                 })
         );
+    }
+
+    #[test]
+    fn metrics_indexer_surfaces_lag_and_desync_signals_for_branchy_windows() {
+        let mut indexer = MetricsIndexer::new(MetricsIndexerConfig {
+            stale_head_lag_threshold_steps: 4,
+            ledger_segment_entry_limit: 8,
+            ..MetricsIndexerConfig::default()
+        });
+        let started_at = Utc::now();
+        indexer.ingest_head_eval_report(HeadEvalReport {
+            network_id: NetworkId::new("network-sim"),
+            experiment_id: ExperimentId::new("exp-sim"),
+            revision_id: RevisionId::new("rev-sim"),
+            workload_id: WorkloadId::new("workload-sim"),
+            head_id: HeadId::new("head-base"),
+            base_head_id: None,
+            eval_protocol_id: ContentId::new("eval-sim"),
+            evaluator_set_id: ContentId::new("eval-set-sim"),
+            metric_values: std::collections::BTreeMap::from([(
+                "loss".into(),
+                MetricValue::Float(0.22),
+            )]),
+            sample_count: 512,
+            dataset_view_id: DatasetViewId::new("view-sim"),
+            started_at,
+            finished_at: started_at + Duration::seconds(1),
+            trust_class: MetricTrustClass::Canonical,
+            status: HeadEvalStatus::Completed,
+            signature_bundle: Vec::new(),
+        });
+        indexer.ingest_peer_window_metrics(PeerWindowMetrics {
+            network_id: NetworkId::new("network-sim"),
+            experiment_id: ExperimentId::new("exp-sim"),
+            revision_id: RevisionId::new("rev-sim"),
+            workload_id: WorkloadId::new("workload-sim"),
+            dataset_view_id: DatasetViewId::new("view-sim"),
+            peer_id: PeerId::new("peer-a"),
+            principal_id: None,
+            lease_id: LeaseId::new("lease-a"),
+            base_head_id: HeadId::new("head-base"),
+            window_started_at: started_at + Duration::seconds(5),
+            window_finished_at: started_at + Duration::seconds(15),
+            attempted_tokens_or_samples: 200,
+            accepted_tokens_or_samples: Some(200),
+            local_train_loss_mean: Some(0.30),
+            local_train_loss_last: Some(0.28),
+            grad_or_delta_norm: Some(1.0),
+            optimizer_step_count: 10,
+            compute_time_ms: 8_000,
+            data_fetch_time_ms: 600,
+            publish_latency_ms: 120,
+            head_lag_at_start: 1,
+            head_lag_at_finish: 1,
+            backend_class: BackendClass::Cpu,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        });
+        indexer.ingest_peer_window_metrics(PeerWindowMetrics {
+            network_id: NetworkId::new("network-sim"),
+            experiment_id: ExperimentId::new("exp-sim"),
+            revision_id: RevisionId::new("rev-sim"),
+            workload_id: WorkloadId::new("workload-sim"),
+            dataset_view_id: DatasetViewId::new("view-sim"),
+            peer_id: PeerId::new("peer-b"),
+            principal_id: None,
+            lease_id: LeaseId::new("lease-b"),
+            base_head_id: HeadId::new("head-base"),
+            window_started_at: started_at + Duration::seconds(15),
+            window_finished_at: started_at + Duration::seconds(24),
+            attempted_tokens_or_samples: 150,
+            accepted_tokens_or_samples: Some(150),
+            local_train_loss_mean: Some(0.34),
+            local_train_loss_last: Some(0.31),
+            grad_or_delta_norm: Some(1.3),
+            optimizer_step_count: 8,
+            compute_time_ms: 7_500,
+            data_fetch_time_ms: 700,
+            publish_latency_ms: 150,
+            head_lag_at_start: 5,
+            head_lag_at_finish: 6,
+            backend_class: BackendClass::BrowserWgpu,
+            role: PeerRole::BrowserTrainerWgpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        });
+        indexer.ingest_reducer_cohort_metrics(ReducerCohortMetrics {
+            network_id: NetworkId::new("network-sim"),
+            experiment_id: ExperimentId::new("exp-sim"),
+            revision_id: RevisionId::new("rev-sim"),
+            workload_id: WorkloadId::new("workload-sim"),
+            dataset_view_id: DatasetViewId::new("view-sim"),
+            merge_window_id: ContentId::new("window-a"),
+            reducer_group_id: ContentId::new("reducers-a"),
+            captured_at: started_at + Duration::seconds(26),
+            base_head_id: HeadId::new("head-base"),
+            candidate_head_id: Some(HeadId::new("head-candidate-a")),
+            received_updates: 4,
+            accepted_updates: 3,
+            rejected_updates: 1,
+            sum_weight: 2.4,
+            accepted_tokens_or_samples: 280,
+            staleness_mean: 1.8,
+            staleness_max: 6.0,
+            window_close_delay_ms: 220,
+            cohort_duration_ms: 5_000,
+            aggregate_norm: 1.2,
+            reducer_load: 0.7,
+            ingress_bytes: 6_144,
+            egress_bytes: 2_048,
+            replica_agreement: Some(0.9),
+            late_arrival_count: Some(1),
+            missing_peer_count: Some(0),
+            rejection_reasons: std::collections::BTreeMap::from([("late".into(), 1)]),
+            status: ReducerCohortStatus::Closed,
+        });
+        indexer.ingest_reducer_cohort_metrics(ReducerCohortMetrics {
+            network_id: NetworkId::new("network-sim"),
+            experiment_id: ExperimentId::new("exp-sim"),
+            revision_id: RevisionId::new("rev-sim"),
+            workload_id: WorkloadId::new("workload-sim"),
+            dataset_view_id: DatasetViewId::new("view-sim"),
+            merge_window_id: ContentId::new("window-b"),
+            reducer_group_id: ContentId::new("reducers-a"),
+            captured_at: started_at + Duration::seconds(27),
+            base_head_id: HeadId::new("head-base"),
+            candidate_head_id: Some(HeadId::new("head-candidate-b")),
+            received_updates: 5,
+            accepted_updates: 2,
+            rejected_updates: 3,
+            sum_weight: 1.9,
+            accepted_tokens_or_samples: 70,
+            staleness_mean: 2.4,
+            staleness_max: 7.0,
+            window_close_delay_ms: 640,
+            cohort_duration_ms: 6_000,
+            aggregate_norm: 1.5,
+            reducer_load: 0.9,
+            ingress_bytes: 8_192,
+            egress_bytes: 4_096,
+            replica_agreement: Some(0.4),
+            late_arrival_count: Some(2),
+            missing_peer_count: Some(1),
+            rejection_reasons: std::collections::BTreeMap::from([
+                ("late".into(), 2),
+                ("stale".into(), 1),
+            ]),
+            status: ReducerCohortStatus::Inconsistent,
+        });
+
+        let derived =
+            indexer.derive_metrics(&ExperimentId::new("exp-sim"), &RevisionId::new("rev-sim"));
+        let metric_value = |kind: DerivedMetricKind| {
+            derived
+                .iter()
+                .find(|point| point.metric == kind)
+                .map(|point| point.value)
+                .expect("derived metric point")
+        };
+
+        assert_eq!(metric_value(DerivedMetricKind::StaleWorkFraction), 0.5);
+        assert_eq!(metric_value(DerivedMetricKind::MeanHeadLag), 3.5);
+        assert_eq!(metric_value(DerivedMetricKind::MaxHeadLag), 6.0);
+        assert_eq!(
+            metric_value(DerivedMetricKind::ReducerReplicaAgreement),
+            0.65
+        );
+        assert_eq!(metric_value(DerivedMetricKind::MergeWindowSkew), 640.0);
+        assert_eq!(metric_value(DerivedMetricKind::CandidateBranchFactor), 2.0);
+        assert_eq!(metric_value(DerivedMetricKind::HeadAdoptionLagP50), 4_000.0);
+        assert_eq!(
+            metric_value(DerivedMetricKind::HeadAdoptionLagP90),
+            14_000.0
+        );
+        assert!(derived.iter().any(|point| {
+            point.metric == DerivedMetricKind::RejectionRatioByReason
+                && point.series_label.as_deref() == Some("late")
+        }));
     }
 }

@@ -1,3 +1,5 @@
+//! Capability and budget evaluation helpers for runtime placement decisions.
+#![allow(missing_docs)]
 use burn_p2p_core::{AttestationLevel, ClientPlatform, PeerId, PersistenceClass};
 use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, LimitPolicy, LocalBackend, ObservedThroughputUpdate,
