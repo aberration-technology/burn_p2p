@@ -8,14 +8,14 @@ start with `P2pProjectFamily`, `P2pWorkload`, and `NodeBuilder`.
 
 ```toml
 [dependencies]
-burn_p2p = "=0.21.0-pre.2"
+burn_p2p = "=0.21.0-pre.3"
 ```
 
 for the Burn-backed runtime path and examples:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.2", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.3", features = ["burn"] }
 ```
 
 ## usage
