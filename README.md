@@ -1,13 +1,8 @@
 # burn_p2p 🔥🤝
 
-`burn_p2p` is the stable public facade for peer-to-peer Burn training
-orchestration.
+`burn_p2p` is the public entrypoint for peer-to-peer Burn training.
 
-The intended path is:
-
-- `P2pProjectFamily`
-- `P2pWorkload`
-- `NodeBuilder`
+start with `P2pProjectFamily`, `P2pWorkload`, and `NodeBuilder`.
 
 ## install
 
@@ -16,8 +11,7 @@ The intended path is:
 burn_p2p = "=0.21.0-pre.2"
 ```
 
-If you want the Burn-backed runtime facade and examples, enable the `burn`
-feature:
+for the Burn-backed runtime path and examples:
 
 ```toml
 [dependencies]
@@ -26,7 +20,7 @@ burn_p2p = { version = "=0.21.0-pre.2", features = ["burn"] }
 
 ## usage
 
-The public model is family/workload oriented. A minimal integration looks like:
+the model is family/workload first:
 
 ```rust
 use burn_p2p::{
@@ -47,7 +41,7 @@ let node = NodeBuilder::new(family)
     .spawn()?;
 ```
 
-For a complete working example, use
+full example:
 [`crates/burn_p2p/examples/family_workload_minimal.rs`](crates/burn_p2p/examples/family_workload_minimal.rs).
 
 ## examples
@@ -63,9 +57,9 @@ cargo run -p burn_p2p --example synthetic_trainer
 cargo run -p burn_p2p --example burn_ndarray_runtime --features burn
 ```
 
-## companion crates
+## other crates
 
-Operator and platform-specific surfaces also exist for:
+there are also companion crates for:
 
 - bootstrap and operator surfaces
 - browser workers and edge clients
@@ -73,8 +67,8 @@ Operator and platform-specific surfaces also exist for:
 - metrics indexing and portal rendering
 - auth and social integrations
 
-Start integrations from `burn_p2p`; reach for the companion crates only when
-you are explicitly building deployment, browser, or operator flows.
+start from `burn_p2p`. reach for the others only when you are building
+deployment, browser, or operator flows.
 
 ## docs
 
