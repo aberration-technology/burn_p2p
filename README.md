@@ -3,15 +3,11 @@
 `burn_p2p` is the stable public facade for peer-to-peer Burn training
 orchestration.
 
-The forward path is:
+The intended path is:
 
 - `P2pProjectFamily`
 - `P2pWorkload`
 - `NodeBuilder`
-
-The repository also contains browser, bootstrap, portal, metrics, publish, auth,
-and other operator-facing workspace crates, but new downstream integrations
-should start from `burn_p2p`.
 
 ## install
 
@@ -67,10 +63,9 @@ cargo run -p burn_p2p --example synthetic_trainer
 cargo run -p burn_p2p --example burn_ndarray_runtime --features burn
 ```
 
-## workspace shape
+## companion crates
 
-This repository includes more than the crates.io facade crate. The workspace also
-contains internal or operator-oriented companions for:
+Operator and platform-specific surfaces also exist for:
 
 - bootstrap and operator surfaces
 - browser workers and edge clients
@@ -78,14 +73,10 @@ contains internal or operator-oriented companions for:
 - metrics indexing and portal rendering
 - auth and social integrations
 
-Those crates are useful inside the workspace, but they are not the primary
-starting point for downstream consumers.
+Start integrations from `burn_p2p`; reach for the companion crates only when
+you are explicitly building deployment, browser, or operator flows.
 
 ## docs
-
-Durable docs live under [`docs/README.md`](docs/README.md).
-
-Useful starting points:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/downstream-burn-guide.md`](docs/downstream-burn-guide.md)
