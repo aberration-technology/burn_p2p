@@ -110,6 +110,19 @@ pub struct MergeModelCandidate<'a, M> {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Timing details captured for one completed training window.
+pub struct TrainingWindowTiming {
+    /// Timestamp when the runtime started preparing and executing the window.
+    pub window_started_at: DateTime<Utc>,
+    /// Timestamp when the backend training loop finished.
+    pub completed_at: DateTime<Utc>,
+    /// Time spent fetching leased dataset shards before training.
+    pub data_fetch_time_ms: u64,
+    /// Time spent publishing the resulting update after training completed.
+    pub publish_latency_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 /// Result of one completed training window.
 pub struct TrainingWindowOutcome<T> {
     /// Assigned lease that was executed.
@@ -120,6 +133,8 @@ pub struct TrainingWindowOutcome<T> {
     pub artifact: ArtifactDescriptor,
     /// Accepted contribution receipt.
     pub contribution: ContributionReceipt,
+    /// Runtime timing details for the window.
+    pub timing: TrainingWindowTiming,
     /// Backend-specific window report.
     pub report: WindowReport<T>,
 }

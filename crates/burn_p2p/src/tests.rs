@@ -4972,6 +4972,10 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
             .expect("trainer window");
         trainer_outcomes.push(outcome);
     }
+    assert_ne!(
+        trainer_outcomes[0].lease.microshards, trainer_outcomes[1].lease.microshards,
+        "same-window trainers should avoid already-announced shard assignments when alternatives exist",
+    );
 
     wait_for(
         Duration::from_secs(5),

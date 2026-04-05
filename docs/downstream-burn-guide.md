@@ -10,8 +10,8 @@ switch to a separate training stack. Start from:
 
 1. keep your burn `TrainStep` / `InferenceStep` model
 2. build `burn::train::Learner::new(model, optimizer, scheduler)`
-3. wrap it with `burn_p2p::burn::from_learner(...)`
-4. add a batch source
+3. keep using burn train / eval dataloaders
+4. wrap it with `burn_p2p::burn::from_loaders(...)`
 5. call `.trainer(...)` or `.validator(...)`
 
 translation is:
@@ -20,9 +20,10 @@ translation is:
 - your learner stays `Learner::new(model, optimizer, scheduler)`
 - your batch type stays the burn train input
 - your loss and optimizer step stay inside burn `TrainStep`
-- your simplest training input path lives in `.with_batches(...)`
+- your canonical loader path lives in burn `TrainLoader` / `ValidLoader`, exposed here as train/eval loaders
 - your evaluation metrics can live in `.with_evaluate(...)`
-- your shard-backed dataset path can live in `.with_dataset(...)` and `.with_load_batches(...)`
+- your shard-backed train dataset can usually live in `BurnShardedDataset` plus `.with_sharded_dataset(...)`
+- low-level shard hooks still exist, but now live behind `burn_p2p::burn::advanced`
 - the adapter handles the window loop, checkpoint load/save, schema hashing, merge defaults,
   local dataset plumbing, neutral fallback validation metrics, and optional root ema
 
@@ -49,18 +50,19 @@ Example reference:
 ### 2. Add the runtime hooks
 
 For Burn-native projects, the recommended integration point is now
-`burn_p2p::burn::from_learner(...)`.
+`burn_p2p::burn::from_loaders(...)`.
 
 Practical guidance:
 
 - keep your forward pass, loss fn, and optimizer step in burn `TrainStep`
 - start from `Learner::new(model, optimizer, scheduler)`
-- use `.with_batches(...)` when the learner can use a local dataset path as-is
-- use `.with_local_dataset(...)` when that simple path needs a custom dataset label or sizing
-- use `.with_assignment_batches(...)` when batch selection depends on the p2p assignment lease
-- add `.with_evaluate(...)` when you want real validation metrics
-- add `.with_dataset(...)` and `.with_load_batches(...)` when you already have shard-backed data
+- pass burn `TrainLoader` / `ValidLoader` directly when they already exist
+- add `.with_sharded_dataset(...)` when the train dataset should be fetched lease-by-lease by native or browser/wasm peers
+- use `.with_train_loader(...)` when only the training loader is available
+- use `.with_eval_loader(...)` when only the evaluation loader is available
+- add `.with_evaluate(...)` when validator or trainer should emit real validation metrics
 - use `.with_step_metrics(...)` / `.with_window_metrics(...)` for extra metric rows
+- use `burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt` only when you need local batch closures or fully custom shard hooks
 
 The adapter fills in:
 
@@ -85,31 +87,93 @@ Use `P2pWorkload` directly only for non-Burn or fully custom runtimes.
 The Burn-native happy path is:
 
 ```rust
-let trainer = burn_p2p::burn::from_learner(
+let trainer = burn_p2p::burn::from_loaders(
     Learner::new(model, optimizer, scheduler),
     device,
+    train_loader,
+    eval_loader,
 )
-.with_batches(|device| {
-    build_training_batches(device)
-})
+.trainer(release_manifest, supported_workload)?;
+```
+
+If the train dataset should be p2p-distributed, keep the same loader entry and
+add the shard helper:
+
+```rust
+let train_dataset = burn_p2p::burn::BurnShardedDataset::write_local(
+    "./target/train-shards",
+    &train_records,
+    burn_p2p::burn::BurnShardedDatasetConfig::new("train").with_microshards(8),
+)?;
+
+let trainer = burn_p2p::burn::from_loaders(
+    Learner::new(model, optimizer, scheduler),
+    device,
+    train_loader,
+    eval_loader,
+)
+.with_sharded_dataset(train_dataset, train_batcher, 32)
 .trainer(release_manifest, supported_workload)?;
 ```
 
 `.trainer(...)` returns the normal `NodeBuilder`, already wrapped around a
 single-workload Burn family.
 
-Use `.validator(...)` for the authority / validator / archive side.
+Validator-only path is simpler:
+
+```rust
+let validator = burn_p2p::burn::from_learner(
+    Learner::new(model, optimizer, scheduler),
+    device,
+)
+.with_eval_loader(eval_loader)
+.with_evaluate(|model, split| evaluate(model, split))
+.validator(release_manifest, supported_workload)?;
+```
+
+`.validator(...)` does not need a train loader unless the same local node also
+trains.
 
 Use `.connect(BurnTarget::Custom(...), ...)` when you want a custom role set.
+
+Non-training custom roles can stay minimal:
+
+```rust
+let viewer = burn_p2p::burn::from_learner(
+    Learner::new(model, optimizer, scheduler),
+    device,
+)
+.connect(
+    burn_p2p::burn::BurnTarget::Custom(
+        burn_p2p::PeerRoleSet::new([
+            burn_p2p::PeerRole::PortalViewer,
+            burn_p2p::PeerRole::BrowserObserver,
+        ]),
+    ),
+    release_manifest,
+    supported_workload,
+)?;
+```
 
 Use `.trainer_with_config(...)`, `.validator_with_config(...)`, or
 `.connect_with_config(...)` when you want to override artifact format, chunking,
 or merge behavior.
 
-If you already have a real dataset registration and shard path, swap the simple
-hook for:
+If browser or wasm peers should fetch the same assigned shards over http, point
+the prepared dataset at an http origin:
 
 ```rust
+let browser_train_dataset = train_dataset
+    .clone()
+    .with_http_upstream("https://edge.example/datasets/train");
+```
+
+If you already have a real dataset registration and custom shard path, drop to
+the advanced hooks:
+
+```rust
+use burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt;
+
 .with_evaluate(|model, split| evaluate(model, split))
 .with_dataset(dataset_registration, microshard_plan)
 .with_load_batches(|lease, cached_microshards, device| {
@@ -117,18 +181,31 @@ hook for:
 })
 ```
 
+If your project has no burn dataloader yet, the low-friction fallback is:
+
+```rust
+use burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt;
+
+let trainer = burn_p2p::burn::from_learner(
+    Learner::new(model, optimizer, scheduler),
+    device,
+)
+.with_batches(|device| build_training_batches(device))
+.trainer(release_manifest, supported_workload)?;
+```
+
 shared ui/auth contract now looks like:
 
-- browser runtime builds `burn_p2p_ui::NodeAppClientView` through `BrowserAppController`
+- browser runtime builds `burn_p2p_views::NodeAppClientView` through `BrowserAppController`
 - native runtime builds the same contract through `RunningNode::app_view(...)`
 - headless/native auth uses `burn_p2p::PortalAuthClient`
-- `burn_p2p_portal` now renders the same dioxus component tree on web and native hosts
+- `burn_p2p_app` now renders the same dioxus component tree on web and native hosts
 
 current host situation:
 
 - shared typed app state is common
 - browser host is the wasm `web-client` entry
-- native host is `burn_p2p_portal::launch_node_app(...)` behind `desktop-client`
+- native host is `burn_p2p_app::launch_node_app(...)` behind `desktop-client`
 - linux desktop builds need gtk/webkit pkg-config libs
 
 If you want full manual control, you can still use `SingleWorkloadProjectFamily`.

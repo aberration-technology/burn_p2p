@@ -60,14 +60,14 @@ the user-facing runtime path:
 - `burn_p2p_metrics`
 - `burn_p2p_publish`
 - `burn_p2p_social`
-- `burn_p2p_portal`
+- `burn_p2p_app`
 - `burn_p2p_browser`
 - auth connector crates:
   - `burn_p2p_auth_external`
   - `burn_p2p_auth_github`
   - `burn_p2p_auth_oidc`
   - `burn_p2p_auth_oauth`
-- `burn_p2p_ui`
+- `burn_p2p_views`
 
 These are optional read-model, operator, browser, or product-facing
 companions. They should stay off the training-critical path.
@@ -97,9 +97,9 @@ browser-path, deployment-profile, and multiprocess verification.
 | `burn_p2p_metrics` | no | metrics indexer and read model | `burn_p2p_core` |
 | `burn_p2p_publish` | no | artifact aliasing/export/download | `burn_p2p_checkpoint`, `burn_p2p_core` |
 | `burn_p2p_social` | no | leaderboard/profile/badge services | `burn_p2p_core` |
-| `burn_p2p_portal` | no | reference HTML rendering surface | - |
+| `burn_p2p_app` | no | reference HTML rendering surface | - |
 | `burn_p2p_browser` | no | browser client, worker, and portal bindings | `burn_p2p`, `burn_p2p_core`, `burn_p2p_swarm`, optional service crates |
-| `burn_p2p_ui` | no | typed presentation/view contracts | `burn_p2p_core` plus some higher-level deps today |
+| `burn_p2p_views` | no | typed presentation/view contracts | `burn_p2p_core` plus some higher-level deps today |
 | `burn_p2p_bootstrap` | no | deployment composition root | runtime + optional services |
 | `burn_p2p_testkit` | no | simulation and regression harness | nearly whole workspace |
 
@@ -178,9 +178,9 @@ These are known architectural cleanup targets, not bugs:
      some deeper internal cleanup across remaining feature/service glue
 
 The earlier `burn_p2p_browser -> burn_p2p_bootstrap` and
-`burn_p2p_ui -> burn_p2p_bootstrap` layering smells have been repaired by
+`burn_p2p_views -> burn_p2p_bootstrap` layering smells have been repaired by
 moving shared browser-edge/trust contracts into `burn_p2p_core` and keeping
-presentation-owned diagnostics contracts inside `burn_p2p_ui`.
+presentation-owned diagnostics contracts inside `burn_p2p_views`.
 
 ## Verification anchor
 

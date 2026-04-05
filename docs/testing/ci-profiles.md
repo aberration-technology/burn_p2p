@@ -40,6 +40,15 @@ PR CI stays lean:
 - publication and metrics smoke only in the dedicated services workflow when
   those paths change
 
+Integration CI adds broader product-shape coverage:
+
+- mixed native/browser E2E
+- downstream mnist sanity with browser runtime drills, browser captures,
+  Playwright, live browser burn/webgpu execution, latency-shaped shard fetch,
+  reconnect recovery, lease-scoped http shard checks, and adversarial annex
+  checks
+- bounded multiprocess stress
+
 Nightly absorbs heavier work:
 
 - adversarial matrix by policy and attack family

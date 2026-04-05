@@ -9,7 +9,7 @@ pub(crate) fn handle_browser_post_route(
     if (request.method.as_str(), request.path.as_str()) != ("POST", "/receipts/browser") {
         return Ok(false);
     }
-    if !browser_edge_enabled(current_config) {
+    if !browser_join_enabled(current_config) {
         write_response(
             stream,
             "404 Not Found",
@@ -21,7 +21,7 @@ pub(crate) fn handle_browser_post_route(
     let auth = context
         .auth_state
         .as_ref()
-        .ok_or("auth portal is not configured")?;
+        .ok_or("browser-edge auth is not configured")?;
     let session = request
         .headers
         .get("x-session-id")
@@ -243,7 +243,7 @@ pub(crate) fn execute_admin_action(
             let auth = context
                 .auth_state
                 .as_ref()
-                .ok_or("auth portal is not configured")?;
+                .ok_or("browser-edge auth is not configured")?;
             let result = rotate_authority_material(
                 auth,
                 &context.state,
@@ -290,7 +290,7 @@ pub(crate) fn execute_admin_action(
             let auth = context
                 .auth_state
                 .as_ref()
-                .ok_or("auth portal is not configured")?;
+                .ok_or("browser-edge auth is not configured")?;
             let result = rollout_auth_policy(
                 &context.plan,
                 auth,
@@ -334,7 +334,7 @@ pub(crate) fn execute_admin_action(
             let auth = context
                 .auth_state
                 .as_ref()
-                .ok_or("auth portal is not configured")?;
+                .ok_or("browser-edge auth is not configured")?;
             let result = retire_trusted_issuers(auth, &context.state, &issuer_peer_ids)?;
             let mut config_guard = context
                 .config
@@ -362,7 +362,7 @@ pub(crate) fn execute_admin_action(
             let auth = context
                 .auth_state
                 .as_ref()
-                .ok_or("auth portal is not configured")?;
+                .ok_or("browser-edge auth is not configured")?;
             Ok(burn_p2p_bootstrap::AdminResult::TrustBundle(Some(
                 current_trust_bundle(auth, &context.state),
             )))

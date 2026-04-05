@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "portal", feature = "artifact-publish"))]
+#[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 pub(crate) fn handle_portal_artifact_route(
     stream: &mut TcpStream,
     context: &HttpServerContext,
@@ -10,12 +10,12 @@ pub(crate) fn handle_portal_artifact_route(
     if request.method != "GET" || !request.path.starts_with("/portal/artifacts/") {
         return Ok(false);
     }
-    if !portal_route_enabled(current_config) {
+    if !browser_edge_route_enabled(current_config) {
         write_response(
             stream,
             "404 Not Found",
             "text/plain; charset=utf-8",
-            b"portal disabled".to_vec(),
+            b"browser edge disabled".to_vec(),
         )?;
         return Ok(true);
     }
@@ -105,7 +105,7 @@ pub(crate) fn handle_portal_artifact_route(
     Ok(false)
 }
 
-#[cfg(any(not(feature = "portal"), not(feature = "artifact-publish")))]
+#[cfg(any(not(feature = "browser-edge"), not(feature = "artifact-publish")))]
 pub(crate) fn handle_portal_artifact_route(
     _stream: &mut TcpStream,
     _context: &HttpServerContext,

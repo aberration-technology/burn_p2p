@@ -28,13 +28,12 @@ burn_p2p_experiment.workspace = true
 burn_p2p_limits.workspace = true
 burn_p2p_security.workspace = true
 burn_p2p_swarm.workspace = true
-burn_p2p_ui.workspace = true
+burn_p2p_views.workspace = true
 thiserror.workspace = true
 
 [features]
 default = []
 burn = ["dep:burn", "dep:burn_p2p_engine"]
-browser = []
 
 [dev-dependencies]
 tempfile.workspace = true

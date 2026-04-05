@@ -30,7 +30,7 @@
   },
   "http_bind_addr": "127.0.0.1:8792",
   "optional_services": {
-    "portal_enabled": true,
+    "browser_edge_enabled": true,
     "browser_mode": "Verifier",
     "social_mode": "Disabled",
     "profile_mode": "Disabled"

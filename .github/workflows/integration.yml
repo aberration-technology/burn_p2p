@@ -15,11 +15,11 @@ on:
       - "crates/burn_p2p_core/**"
       - "crates/burn_p2p_engine/**"
       - "crates/burn_p2p_metrics/**"
-      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_app/**"
       - "crates/burn_p2p_publish/**"
       - "crates/burn_p2p_swarm/**"
       - "crates/burn_p2p_testkit/**"
-      - "crates/burn_p2p_ui/**"
+      - "crates/burn_p2p_views/**"
       - "docs/testing/**"
   push:
     branches:
@@ -37,11 +37,11 @@ on:
       - "crates/burn_p2p_core/**"
       - "crates/burn_p2p_engine/**"
       - "crates/burn_p2p_metrics/**"
-      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_app/**"
       - "crates/burn_p2p_publish/**"
       - "crates/burn_p2p_swarm/**"
       - "crates/burn_p2p_testkit/**"
-      - "crates/burn_p2p_ui/**"
+      - "crates/burn_p2p_views/**"
       - "docs/testing/**"
   workflow_dispatch:
 

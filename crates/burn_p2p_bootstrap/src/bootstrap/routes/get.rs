@@ -63,12 +63,13 @@ pub(crate) fn handle_get_route(
             write_json(stream, &bundle)?;
         }
         ("GET", "/portal/snapshot") => {
-            if !portal_route_enabled(current_config) && !browser_edge_enabled(current_config) {
+            if !browser_edge_route_enabled(current_config) && !browser_join_enabled(current_config)
+            {
                 write_response(
                     stream,
                     "404 Not Found",
                     "text/plain; charset=utf-8",
-                    b"browser portal disabled".to_vec(),
+                    b"browser edge disabled".to_vec(),
                 )?;
                 return Ok(true);
             }
@@ -96,7 +97,8 @@ pub(crate) fn handle_get_route(
             write_json(stream, &leaderboard)?;
         }
         ("GET", "/directory/signed") => {
-            if !portal_route_enabled(current_config) && !browser_edge_enabled(current_config) {
+            if !browser_edge_route_enabled(current_config) && !browser_join_enabled(current_config)
+            {
                 write_response(
                     stream,
                     "404 Not Found",
@@ -179,7 +181,9 @@ pub(crate) fn handle_get_route(
             write_json(stream, &reducer_load)?;
         }
         ("GET", "/revocations") => {
-            let auth = auth_state.as_ref().ok_or("auth portal is not configured")?;
+            let auth = auth_state
+                .as_ref()
+                .ok_or("browser-edge auth is not configured")?;
             let response = RevocationResponse {
                 network_id: plan.network_id().clone(),
                 minimum_revocation_epoch: current_revocation_epoch(auth, state),
@@ -205,12 +209,16 @@ pub(crate) fn handle_get_route(
             write_json(stream, &entries)?;
         }
         ("GET", "/trust") => {
-            let auth = auth_state.as_ref().ok_or("auth portal is not configured")?;
+            let auth = auth_state
+                .as_ref()
+                .ok_or("browser-edge auth is not configured")?;
             let trust_bundle = current_trust_bundle(auth, state);
             write_json(stream, &trust_bundle)?;
         }
         ("GET", "/reenrollment") => {
-            let auth = auth_state.as_ref().ok_or("auth portal is not configured")?;
+            let auth = auth_state
+                .as_ref()
+                .ok_or("browser-edge auth is not configured")?;
             let trust_bundle = current_trust_bundle(auth, state);
             write_json(stream, &trust_bundle.reenrollment)?;
         }

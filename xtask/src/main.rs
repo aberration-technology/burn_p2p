@@ -11,10 +11,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Context;
-use artifacts::{ArtifactLayout, copy_dir_all, copy_files_with_extension};
+use anyhow::{Context, ensure};
+use artifacts::{ArtifactLayout, copy_dir_all, copy_files_with_extension_tree};
 use burn_p2p::{PeerId, WindowId};
 use burn_p2p_core::{AggregationStrategy, RobustnessPolicy};
+use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_security::{FeatureLayer, aggregate_updates_with_policy, extract_feature_sketch};
 use burn_p2p_testkit::{
     ChaosEvent, FaultType, SimulationRunner, SimulationSpec,
@@ -25,8 +26,12 @@ use burn_p2p_testkit::{
     browser_app_assets::build_browser_app_web_assets,
     multiprocess::SyntheticSoakConfig,
     multiprocess::run_synthetic_process_soak,
-    portal_capture::write_portal_capture_bundle,
+    portal_capture::{
+        BrowserPortalCaptureSpec, PortalCaptureInteraction, PortalCaptureViewport,
+        write_browser_portal_capture_bundle, write_portal_capture_bundle,
+    },
 };
+use burn_p2p_views::BrowserAppSurface;
 use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
@@ -35,31 +40,80 @@ use cli::{
 };
 use profile::Profile;
 use runner::{StepRecord, Workspace, command_available};
+use serde::Deserialize;
 use serde_json::json;
-use tempfile::TempDir;
 
-const PUBLISH_CRATES: &[(&str, &str)] = &[
-    ("burn_p2p_core", "crates/burn_p2p_core"),
-    ("burn_p2p_experiment", "crates/burn_p2p_experiment"),
-    ("burn_p2p_checkpoint", "crates/burn_p2p_checkpoint"),
-    ("burn_p2p_limits", "crates/burn_p2p_limits"),
-    ("burn_p2p_dataloader", "crates/burn_p2p_dataloader"),
-    ("burn_p2p_security", "crates/burn_p2p_security"),
-    ("burn_p2p_swarm", "crates/burn_p2p_swarm"),
-    ("burn_p2p_engine", "crates/burn_p2p_engine"),
-    ("burn_p2p_auth_external", "crates/burn_p2p_auth_external"),
-    ("burn_p2p_auth_github", "crates/burn_p2p_auth_github"),
-    ("burn_p2p_auth_oidc", "crates/burn_p2p_auth_oidc"),
-    ("burn_p2p_auth_oauth", "crates/burn_p2p_auth_oauth"),
-    ("burn_p2p_metrics", "crates/burn_p2p_metrics"),
-    ("burn_p2p_publish", "crates/burn_p2p_publish"),
-    ("burn_p2p_social", "crates/burn_p2p_social"),
-    ("burn_p2p_ui", "crates/burn_p2p_ui"),
-    ("burn_p2p", "crates/burn_p2p"),
-    ("burn_p2p_browser", "crates/burn_p2p_browser"),
-    ("burn_p2p_portal", "crates/burn_p2p_portal"),
-    ("burn_p2p_bootstrap", "crates/burn_p2p_bootstrap"),
+const PUBLISH_CRATES: &[&str] = &[
+    "burn_p2p_core",
+    "burn_p2p_experiment",
+    "burn_p2p_checkpoint",
+    "burn_p2p_limits",
+    "burn_p2p_dataloader",
+    "burn_p2p_security",
+    "burn_p2p_swarm",
+    "burn_p2p_engine",
+    "burn_p2p_auth_external",
+    "burn_p2p_auth_github",
+    "burn_p2p_auth_oidc",
+    "burn_p2p_auth_oauth",
+    "burn_p2p_metrics",
+    "burn_p2p_publish",
+    "burn_p2p_social",
+    "burn_p2p_views",
+    "burn_p2p",
+    "burn_p2p_browser",
+    "burn_p2p_app",
+    "burn_p2p_bootstrap",
 ];
+
+#[derive(Debug, Deserialize)]
+struct MnistRunExportFile {
+    browser_scenarios: Vec<MnistBrowserScenario>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MnistBrowserScenario {
+    slug: String,
+    title: String,
+    description: String,
+    default_surface: BrowserAppSurface,
+    snapshot: burn_p2p::BrowserPortalSnapshot,
+    metrics_catchup: Vec<MetricsCatchupBundle>,
+    #[serde(default)]
+    runtime_states: Vec<String>,
+    #[serde(default)]
+    interactions: Vec<PortalCaptureInteraction>,
+    #[serde(default)]
+    viewport: Option<PortalCaptureViewport>,
+}
+
+fn mnist_adversarial_correctness_summary() -> serde_json::Value {
+    let policy = RobustnessPolicy::balanced();
+    let attacks = [
+        AdversarialAttack::Replay,
+        AdversarialAttack::FreeRider,
+        AdversarialAttack::NanInf,
+        AdversarialAttack::LateFlood,
+    ];
+    let reports = attacks
+        .into_iter()
+        .map(|attack| {
+            let report = run_scenario(policy.clone(), attack.clone(), 12, 0.20);
+            json!({
+                "attack": format!("{attack:?}"),
+                "attack_success_rate": report.attack_success_rate,
+                "malicious_update_acceptance_rate": report.malicious_update_acceptance_rate,
+                "benign_false_rejection_rate": report.benign_false_rejection_rate,
+                "quarantine_precision": report.quarantine_precision,
+                "quarantine_recall": report.quarantine_recall,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "preset": "balanced",
+        "reports": reports,
+    })
+}
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -77,6 +131,7 @@ fn main() -> anyhow::Result<()> {
         Command::E2e { command } => match command {
             E2eCommand::Smoke(args) => run_e2e_smoke(&workspace, args.common),
             E2eCommand::Mixed(args) => run_e2e_mixed(&workspace, args.common),
+            E2eCommand::Mnist(args) => run_e2e_mnist(&workspace, args.common),
             E2eCommand::Services(args) => run_e2e_services(&workspace, args.common),
         },
         Command::Browser { command } => match command {
@@ -432,7 +487,7 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
                 "burn_p2p_bootstrap",
                 "--no-default-features",
                 "--features",
-                "admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,portal,browser-edge,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social",
+                "admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,browser-edge,browser-join,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social",
                 "--all-targets",
                 "--",
                 "-D",
@@ -467,7 +522,7 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
                 "burn_p2p_bootstrap",
                 "--no-default-features",
                 "--features",
-                "admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,portal,browser-edge,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social",
+                "admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,browser-edge,browser-join,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social",
             ],
         ),
         ("test-docs", vec!["test", "--workspace", "--doc"]),
@@ -486,7 +541,7 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
     } else {
         Vec::new()
     };
-    for (crate_name, _) in PUBLISH_CRATES {
+    for crate_name in PUBLISH_CRATES {
         let mut args_vec = vec![
             "package".to_owned(),
             "--list".to_owned(),
@@ -502,18 +557,12 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
         )?);
     }
 
-    let local_patch_dry_run = env::var("LOCAL_PATCH_DRY_RUN")
-        .ok()
-        .map(|value| value == "1")
-        .unwrap_or(allow_dirty);
-    for (crate_name, crate_path) in PUBLISH_CRATES.iter() {
-        steps.push(run_publish_dry_run(
+    for crate_name in PUBLISH_CRATES {
+        steps.push(run_package_archive(
             workspace,
             &artifacts,
             crate_name,
-            crate_path,
             &package_flags,
-            local_patch_dry_run,
         )?);
     }
 
@@ -679,6 +728,314 @@ fn run_e2e_mixed(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         args.profile,
         &steps,
         json!({ "kind": "e2e-mixed" }),
+        args.keep_artifacts,
+    )
+}
+
+fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
+    let artifacts = ArtifactLayout::create(&workspace.root, "e2e-mnist", args.profile)?;
+    let envs = BTreeMap::new();
+    let demo_root = artifacts.root.join("mnist-demo");
+    let steps = vec![workspace.run_cargo(
+        &artifacts,
+        "mnist-demo",
+        &[
+            "run",
+            "--manifest-path",
+            "examples/mnist_p2p_demo/Cargo.toml",
+            "--bin",
+            "mnist_p2p_demo",
+            "--",
+            "--output",
+            demo_root.display().to_string().as_str(),
+        ],
+        &envs,
+    )?];
+
+    let summary_path = demo_root.join("summary.json");
+    let summary: serde_json::Value = serde_json::from_slice(
+        &fs::read(&summary_path)
+            .with_context(|| format!("failed to read {}", summary_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", summary_path.display()))?;
+    let correctness_path = demo_root.join("correctness.json");
+    let correctness: serde_json::Value = serde_json::from_slice(
+        &fs::read(&correctness_path)
+            .with_context(|| format!("failed to read {}", correctness_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", correctness_path.display()))?;
+    let export_path = demo_root.join("browser-export.json");
+    let export: MnistRunExportFile = serde_json::from_slice(
+        &fs::read(&export_path)
+            .with_context(|| format!("failed to read {}", export_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", export_path.display()))?;
+    ensure!(
+        correctness
+            .get("baseline_outperformed_low_lr")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not show baseline experiment outperforming low-lr variant",
+    );
+    ensure!(
+        correctness
+            .get("late_joiner_synced_checkpoint")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo late joiner did not sync the accepted checkpoint",
+    );
+    ensure!(
+        correctness
+            .get("shard_assignments_are_distinct")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not assign distinct shards to concurrent baseline trainers",
+    );
+    ensure!(
+        correctness
+            .pointer("/browser_dataset_access/fetch_manifest_requested")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo browser dataset probe did not request fetch-manifest.json",
+    );
+    ensure!(
+        correctness
+            .pointer("/browser_dataset_access/fetched_only_leased_shards")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo browser dataset probe fetched shards outside the active lease",
+    );
+    ensure!(
+        correctness
+            .pointer("/browser_dataset_access/shards_distributed_over_p2p")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+        "mnist demo browser dataset probe reported shard transport over the p2p overlay",
+    );
+    ensure!(
+        correctness
+            .pointer("/assessment/live_native_training")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not report live native training",
+    );
+    ensure!(
+        correctness
+            .pointer("/assessment/browser_runtime_roles_exercised")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not exercise browser runtime roles",
+    );
+    ensure!(
+        correctness
+            .pointer("/resilience/trainer_restart_reconnected")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo trainer restart drill did not reconnect",
+    );
+    ensure!(
+        correctness
+            .pointer("/resilience/trainer_restart_resumed_training")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo trainer restart drill did not resume training",
+    );
+    artifacts.write_json("metrics/mnist-summary.json", &summary)?;
+    artifacts.write_json("metrics/mnist-correctness.json", &correctness)?;
+
+    let browser_bundle = artifacts.root.join("playwright-bundle");
+    fs::create_dir_all(&browser_bundle)?;
+    build_browser_app_web_assets(browser_bundle.join("assets"))
+        .context("failed to build browser app wasm assets")?;
+    let capture_specs = export
+        .browser_scenarios
+        .into_iter()
+        .map(|scenario| BrowserPortalCaptureSpec {
+            slug: scenario.slug,
+            title: scenario.title,
+            description: scenario.description,
+            default_surface: scenario.default_surface,
+            snapshot: scenario.snapshot,
+            metrics_catchup: scenario.metrics_catchup,
+            runtime_states: scenario.runtime_states,
+            interactions: scenario.interactions,
+            viewport: scenario.viewport,
+        })
+        .collect::<Vec<_>>();
+    let manifest = write_browser_portal_capture_bundle(&browser_bundle, &capture_specs)
+        .context("failed to write mnist portal capture bundle")?;
+    artifacts.write_json("configs/portal-manifest.json", &manifest)?;
+
+    let capture_envs = portal_capture_envs(args.profile, false);
+    let mut steps = steps;
+    steps.push(
+        workspace.run_node(
+            &artifacts,
+            "portal-playwright-capture",
+            &[
+                "crates/burn_p2p_testkit/scripts/portal_playwright_capture.mjs",
+                browser_bundle
+                    .join("manifest.json")
+                    .display()
+                    .to_string()
+                    .as_str(),
+            ],
+            &capture_envs,
+        )?,
+    );
+
+    let bundle_artifacts = artifacts.root.join("playwright");
+    copy_dir_all(&browser_bundle, &bundle_artifacts)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "png", &artifacts.screenshots)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
+
+    let leased_microshards = correctness
+        .pointer("/trainer_leases/0/microshards")
+        .and_then(serde_json::Value::as_array)
+        .context("mnist demo correctness summary missing first trainer lease microshards")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .context("mnist trainer lease microshard id should be a string")
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let browser_probe_root = artifacts.root.join("browser-wasm-probe");
+    let browser_probe_assets = browser_probe_root.join("assets");
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-browser-probe-assets",
+        &[
+            "run",
+            "--manifest-path",
+            "examples/mnist_p2p_demo/Cargo.toml",
+            "--bin",
+            "mnist_browser_probe_assets",
+            "--",
+            "--output",
+            browser_probe_assets.display().to_string().as_str(),
+        ],
+        &envs,
+    )?);
+    let browser_probe_config = json!({
+        "asset_root": browser_probe_assets.display().to_string(),
+        "dataset_root": demo_root.join("dataset").display().to_string(),
+        "artifact_root": browser_probe_root.display().to_string(),
+        "leased_microshards": leased_microshards,
+        "batch_size": 32,
+        "learning_rate": 1.0e-3,
+        "max_train_batches": 3,
+        "profiles": [
+            {
+                "slug": "fast",
+                "latency_ms": 0,
+                "bandwidth_bytes_per_sec": 0,
+            },
+            {
+                "slug": "slow",
+                "latency_ms": 150,
+                "bandwidth_bytes_per_sec": 262144,
+            }
+        ],
+    });
+    artifacts.write_json("configs/mnist-browser-probe.json", &browser_probe_config)?;
+    steps.push(
+        workspace.run_node(
+            &artifacts,
+            "mnist-browser-wasm-probe",
+            &[
+                "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
+                artifacts
+                    .root
+                    .join("configs/mnist-browser-probe.json")
+                    .display()
+                    .to_string()
+                    .as_str(),
+            ],
+            &capture_envs,
+        )?,
+    );
+    copy_files_with_extension_tree(&browser_probe_root, "png", &artifacts.screenshots)?;
+    copy_files_with_extension_tree(&browser_probe_root, "zip", &artifacts.playwright_traces)?;
+    let browser_probe_summary_path = browser_probe_root.join("browser-wasm/summary.json");
+    let browser_probe_summary: serde_json::Value = serde_json::from_slice(
+        &fs::read(&browser_probe_summary_path)
+            .with_context(|| format!("failed to read {}", browser_probe_summary_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", browser_probe_summary_path.display()))?;
+    let adversarial_correctness = mnist_adversarial_correctness_summary();
+    ensure!(
+        browser_probe_summary
+            .pointer("/browser_execution/live_browser_training")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist browser wasm probe did not execute live burn training in the browser",
+    );
+    ensure!(
+        browser_probe_summary
+            .pointer("/browser_execution/browser_latency_emulated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist browser wasm probe did not run with a latency-shaped dataset profile",
+    );
+    ensure!(
+        browser_probe_summary
+            .pointer("/browser_execution/slower_profile_increased_total_time")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist browser wasm probe did not show higher total time under the slower latency profile",
+    );
+    for profile in browser_probe_summary
+        .get("profiles")
+        .and_then(serde_json::Value::as_array)
+        .context("mnist browser wasm probe summary missing profiles")?
+    {
+        ensure!(
+            profile
+                .get("fetch_manifest_requested")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+            "mnist browser wasm probe profile never requested fetch-manifest.json",
+        );
+        ensure!(
+            profile
+                .get("fetched_only_leased_shards")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+            "mnist browser wasm probe fetched shards outside the leased set",
+        );
+    }
+    for attack in adversarial_correctness
+        .get("reports")
+        .and_then(serde_json::Value::as_array)
+        .context("mnist adversarial correctness summary missing reports")?
+    {
+        ensure!(
+            attack
+                .get("malicious_update_acceptance_rate")
+                .and_then(serde_json::Value::as_f64)
+                == Some(0.0),
+            "mnist adversarial correctness annex accepted a malicious update",
+        );
+    }
+
+    finalize_run(
+        &artifacts,
+        "e2e-mnist",
+        args.profile,
+        &steps,
+        json!({
+            "kind": "e2e-mnist",
+            "demo_root": demo_root.display().to_string(),
+            "bundle_root": bundle_artifacts.display().to_string(),
+            "summary": summary,
+            "correctness": correctness,
+            "browser_wasm_probe": browser_probe_summary,
+            "correctness_annex": {
+                "adversarial": adversarial_correctness,
+            },
+        }),
         args.keep_artifacts,
     )
 }
@@ -936,6 +1293,22 @@ fn run_adversarial_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Resu
     )
 }
 
+fn portal_capture_envs(profile: Profile, headed: bool) -> BTreeMap<String, String> {
+    let mut envs = BTreeMap::new();
+    let headed = headed || !profile.settings().headless;
+    envs.insert(
+        "BURN_P2P_PLAYWRIGHT_HEADED".into(),
+        if headed { "1" } else { "0" }.into(),
+    );
+    if let Some(chrome) = resolve_chrome_path() {
+        envs.insert(
+            "BURN_P2P_PLAYWRIGHT_CHROME".into(),
+            chrome.display().to_string(),
+        );
+    }
+    envs
+}
+
 fn run_browser_smoke(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result<()> {
     let artifacts = ArtifactLayout::create(&workspace.root, "browser-smoke", args.common.profile)?;
     let mut steps = Vec::new();
@@ -971,18 +1344,7 @@ fn run_browser_smoke(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result
         .context("failed to write portal capture bundle")?;
     artifacts.write_json("configs/portal-manifest.json", &manifest)?;
 
-    let mut envs = BTreeMap::new();
-    let headed = args.headed || !args.common.profile.settings().headless;
-    envs.insert(
-        "BURN_P2P_PLAYWRIGHT_HEADED".into(),
-        if headed { "1" } else { "0" }.into(),
-    );
-    if let Some(chrome) = resolve_chrome_path() {
-        envs.insert(
-            "BURN_P2P_PLAYWRIGHT_CHROME".into(),
-            chrome.display().to_string(),
-        );
-    }
+    let envs = portal_capture_envs(args.common.profile, args.headed);
     steps.push(
         workspace.run_node(
             &artifacts,
@@ -1001,8 +1363,8 @@ fn run_browser_smoke(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result
 
     let bundle_artifacts = artifacts.root.join("playwright");
     copy_dir_all(&browser_bundle, &bundle_artifacts)?;
-    copy_files_with_extension(&bundle_artifacts, "png", &artifacts.screenshots)?;
-    copy_files_with_extension(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "png", &artifacts.screenshots)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
 
     finalize_run(
         &artifacts,
@@ -1052,18 +1414,7 @@ fn run_browser_trainer(workspace: &Workspace, args: BrowserArgs) -> anyhow::Resu
     let manifest = write_portal_capture_bundle(&browser_bundle)
         .context("failed to write portal capture bundle")?;
     artifacts.write_json("configs/portal-manifest.json", &manifest)?;
-    let mut capture_envs = BTreeMap::new();
-    let headed = args.headed || !args.common.profile.settings().headless;
-    capture_envs.insert(
-        "BURN_P2P_PLAYWRIGHT_HEADED".into(),
-        if headed { "1" } else { "0" }.into(),
-    );
-    if let Some(chrome) = resolve_chrome_path() {
-        capture_envs.insert(
-            "BURN_P2P_PLAYWRIGHT_CHROME".into(),
-            chrome.display().to_string(),
-        );
-    }
+    let capture_envs = portal_capture_envs(args.common.profile, args.headed);
     steps.push(
         workspace.run_node(
             &artifacts,
@@ -1081,8 +1432,8 @@ fn run_browser_trainer(workspace: &Workspace, args: BrowserArgs) -> anyhow::Resu
     );
     let bundle_artifacts = artifacts.root.join("playwright");
     copy_dir_all(&browser_bundle, &bundle_artifacts)?;
-    copy_files_with_extension(&bundle_artifacts, "png", &artifacts.screenshots)?;
-    copy_files_with_extension(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "png", &artifacts.screenshots)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
 
     finalize_run(
         &artifacts,
@@ -1148,12 +1499,12 @@ fn run_browser_real(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result<
         ],
         &envs,
     )?];
-    copy_files_with_extension(
+    copy_files_with_extension_tree(
         &artifacts.root.join("real-browser"),
         "png",
         &artifacts.screenshots,
     )?;
-    copy_files_with_extension(
+    copy_files_with_extension_tree(
         &artifacts.root.join("real-browser"),
         "zip",
         &artifacts.playwright_traces,
@@ -1535,11 +1886,22 @@ fn run_ci_integration(workspace: &Workspace, args: CiArgs) -> anyhow::Result<()>
         Profile::CiIntegration,
         args.keep_artifacts,
         &[
+            ("setup-browser", vec!["setup", "browser"]),
             (
                 "e2e-mixed",
                 vec![
                     "e2e",
                     "mixed",
+                    "--profile",
+                    "ci-integration",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "e2e-mnist",
+                vec![
+                    "e2e",
+                    "mnist",
                     "--profile",
                     "ci-integration",
                     "--keep-artifacts",
@@ -1753,57 +2115,25 @@ fn extract_nested_artifact_dir(
         .map(str::to_owned))
 }
 
-fn run_publish_dry_run(
+fn run_package_archive(
     workspace: &Workspace,
     artifacts: &ArtifactLayout,
     crate_name: &str,
-    crate_path: &str,
     package_flags: &[String],
-    local_patch_dry_run: bool,
 ) -> anyhow::Result<StepRecord> {
-    let mut envs = BTreeMap::new();
-    let mut temp_home_guard = None::<TempDir>;
-    if local_patch_dry_run {
-        let temp_home = tempfile::tempdir()?;
-        let config_path = temp_home.path().join("config.toml");
-        let mut config = String::new();
-        let patch_targets = PUBLISH_CRATES
-            .iter()
-            .filter(|(patched_name, _)| *patched_name != crate_name)
-            .collect::<Vec<_>>();
-        if !patch_targets.is_empty() {
-            config.push_str("[patch.crates-io]\n");
-            for (patched_name, patched_path) in patch_targets {
-                config.push_str(&format!(
-                    "{patched_name} = {{ path = \"{}\" }}\n",
-                    workspace.root.join(patched_path).display()
-                ));
-            }
-        }
-        fs::write(&config_path, config)?;
-        envs.insert("CARGO_HOME".into(), temp_home.path().display().to_string());
-        artifacts.write_text(
-            &format!("configs/publish-home-{crate_name}.toml"),
-            fs::read_to_string(&config_path)?,
-        )?;
-        temp_home_guard = Some(temp_home);
-    }
     let mut args = vec![
-        "publish".to_owned(),
-        "--dry-run".to_owned(),
+        "package".to_owned(),
+        "--no-verify".to_owned(),
         "-p".to_owned(),
         crate_name.to_owned(),
     ];
     args.extend(package_flags.iter().cloned());
-    let step = workspace.run_cargo(
+    workspace.run_cargo(
         artifacts,
-        &format!("publish-dry-run-{crate_name}"),
+        &format!("package-archive-{crate_name}"),
         &args,
-        &envs,
-    )?;
-    drop(temp_home_guard);
-    let _ = crate_path;
-    Ok(step)
+        &BTreeMap::new(),
+    )
 }
 
 fn finalize_run(

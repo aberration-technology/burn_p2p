@@ -34,6 +34,20 @@ Mixed native/browser smoke:
 cargo xtask e2e mixed
 ```
 
+Downstream MNIST sanity:
+
+```bash
+cargo xtask e2e mnist
+```
+
+This runs the standalone `examples/mnist_p2p_demo` crate on one machine,
+builds browser portal captures, runs Playwright, and writes a summary proving
+real shard assignment, checkpoint sync, custom metrics, and baseline-vs-low-lr
+experiment behavior. it also asserts lease-scoped browser http shard fetch,
+live browser burn/webgpu wasm execution, latency-shaped browser dataset fetch,
+browser runtime role drills, adversarial annex checks, and trainer restart
+recovery.
+
 Publication and metrics smoke:
 
 ```bash
@@ -116,6 +130,7 @@ Optional thin `just` wrappers:
 ```bash
 just check
 just e2e
+just e2e-mnist
 just e2e-mixed
 just e2e-services
 just browser-smoke

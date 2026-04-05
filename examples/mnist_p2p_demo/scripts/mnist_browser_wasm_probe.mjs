@@ -1,0 +1,394 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { pathToFileURL } from "node:url";
+
+const HEADLESS = process.env.BURN_P2P_PLAYWRIGHT_HEADED === "1" ? false : true;
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePath(urlPath) {
+  return urlPath.replace(/^\/+/, "");
+}
+
+function loadConfig() {
+  const configPath = process.argv[2];
+  if (!configPath) {
+    throw new Error("usage: node mnist_browser_wasm_probe.mjs /abs/path/to/config.json");
+  }
+  return JSON.parse(fs.readFileSync(configPath, "utf8"));
+}
+
+async function loadPlaywright() {
+  try {
+    return await import("playwright");
+  } catch {
+    const npxRoot = path.join(os.homedir(), ".npm", "_npx");
+    const candidates = fs
+      .readdirSync(npxRoot)
+      .map((entry) => path.join(npxRoot, entry, "node_modules", "playwright", "index.mjs"))
+      .filter((candidate) => fs.existsSync(candidate))
+      .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+    if (candidates.length === 0) {
+      throw new Error("playwright package not found");
+    }
+    return await import(pathToFileURL(candidates[0]).href);
+  }
+}
+
+function resolveExecutable(envVar, candidates) {
+  const explicit = process.env[envVar];
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function profileForPath(config, pathname) {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "profile") {
+    return null;
+  }
+  const slug = parts[1];
+  return config.profiles.find((profile) => profile.slug === slug) ?? null;
+}
+
+function datasetPathForRequest(pathname) {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "profile" || parts[2] !== "dataset") {
+    return null;
+  }
+  return parts.slice(3).join("/");
+}
+
+async function writeProfiledBody(response, bytes, profile) {
+  await sleep(profile.latency_ms);
+  response.writeHead(200, {
+    "content-type": bytes.path?.endsWith(".json") ? "application/json" : "application/octet-stream",
+    "cache-control": "no-store",
+    "content-length": bytes.data.length,
+  });
+  if (!profile.bandwidth_bytes_per_sec || profile.bandwidth_bytes_per_sec <= 0) {
+    response.end(bytes.data);
+    return;
+  }
+
+  const chunkSize = Math.max(16 * 1024, Math.floor(profile.bandwidth_bytes_per_sec / 8));
+  const delayMs = Math.max(
+    5,
+    Math.round((chunkSize / profile.bandwidth_bytes_per_sec) * 1_000),
+  );
+  let offset = 0;
+  while (offset < bytes.data.length) {
+    response.write(bytes.data.subarray(offset, offset + chunkSize));
+    offset += chunkSize;
+    if (offset < bytes.data.length) {
+      await sleep(delayMs);
+    }
+  }
+  response.end();
+}
+
+async function startServer(config) {
+  const requestLog = new Map(config.profiles.map((profile) => [profile.slug, []]));
+  const server = http.createServer(async (request, response) => {
+    try {
+      const url = new URL(request.url, "http://127.0.0.1");
+      const pathname = url.pathname;
+      const profile = profileForPath(config, pathname);
+      if (profile) {
+        const relativeDatasetPath = datasetPathForRequest(pathname);
+        if (!relativeDatasetPath) {
+          response.writeHead(404);
+          response.end("missing dataset path");
+          return;
+        }
+        requestLog.get(profile.slug).push(relativeDatasetPath);
+        const diskPath = path.join(config.dataset_root, relativeDatasetPath);
+        if (!fs.existsSync(diskPath)) {
+          response.writeHead(404);
+          response.end("missing dataset file");
+          return;
+        }
+        await writeProfiledBody(
+          response,
+          { path: relativeDatasetPath, data: fs.readFileSync(diskPath) },
+          profile,
+        );
+        return;
+      }
+
+      const relativeAssetPath = normalizePath(pathname || "index.html") || "index.html";
+      const assetPath = path.join(
+        config.asset_root,
+        relativeAssetPath === "" ? "index.html" : relativeAssetPath,
+      );
+      if (!fs.existsSync(assetPath) || fs.statSync(assetPath).isDirectory()) {
+        response.writeHead(404);
+        response.end("missing asset");
+        return;
+      }
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-type": assetPath.endsWith(".html")
+          ? "text/html; charset=utf-8"
+          : assetPath.endsWith(".js")
+            ? "text/javascript; charset=utf-8"
+            : assetPath.endsWith(".wasm")
+              ? "application/wasm"
+              : "application/octet-stream",
+      });
+      response.end(fs.readFileSync(assetPath));
+    } catch (error) {
+      response.writeHead(500);
+      response.end(String(error));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  return {
+    requestLog,
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function runProfile(page, profile, config, requestLog, origin) {
+  const datasetBaseUrl = `${origin}/profile/${profile.slug}/dataset`;
+  const result = await Promise.race([
+    page.evaluate(async (probeConfig) => {
+      const startedAt = performance.now();
+      const manifestStartedAt = performance.now();
+      const manifest = await fetch(`${probeConfig.datasetBaseUrl}/fetch-manifest.json`).then((response) => {
+        if (!response.ok) {
+          throw new Error(`manifest fetch failed: ${response.status}`);
+        }
+        return response.json();
+      });
+      const manifestFetchTimeMs = performance.now() - manifestStartedAt;
+      const requestedEntries = manifest.entries.filter((entry) =>
+        probeConfig.leasedMicroshardIds.includes(entry.microshard_id),
+      );
+      const trainRecords = [];
+      const requestedPaths = [];
+      const shardStartedAt = performance.now();
+      for (const entry of requestedEntries) {
+        requestedPaths.push(entry.locator);
+        const records = await fetch(`${probeConfig.datasetBaseUrl}/${entry.locator}`).then((response) => {
+          if (!response.ok) {
+            throw new Error(`shard fetch failed: ${response.status}`);
+          }
+          return response.json();
+        });
+        trainRecords.push(...records);
+      }
+      const shardFetchTimeMs = performance.now() - shardStartedAt;
+      const evalStartedAt = performance.now();
+      const evalRecords = await fetch(`${probeConfig.datasetBaseUrl}/eval-records.json`).then((response) => {
+        if (!response.ok) {
+          throw new Error(`eval fetch failed: ${response.status}`);
+        }
+        return response.json();
+      });
+      const evalFetchTimeMs = performance.now() - evalStartedAt;
+      const wasmResult = await window.runBrowserMnistProbe({
+        train_records: trainRecords,
+        eval_records: evalRecords,
+        batch_size: probeConfig.batchSize,
+        learning_rate: probeConfig.learningRate,
+        max_train_batches: probeConfig.maxTrainBatches,
+      });
+      return {
+        manifestFetchTimeMs,
+        shardFetchTimeMs,
+        evalFetchTimeMs,
+        requestedPaths,
+        trainRecordCount: trainRecords.length,
+        evalRecordCount: evalRecords.length,
+        wasmResult,
+        totalPageTimeMs: performance.now() - startedAt,
+      };
+    }, {
+      datasetBaseUrl,
+      leasedMicroshardIds: config.leased_microshards,
+      batchSize: config.batch_size,
+      learningRate: config.learning_rate,
+      maxTrainBatches: config.max_train_batches,
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`browser mnist profile ${profile.slug} timed out`)), 45_000),
+    ),
+  ]);
+  const loggedPaths = requestLog.get(profile.slug) ?? [];
+  const shardRequests = loggedPaths.filter(
+    (entry) => entry !== "fetch-manifest.json" && entry !== "eval-records.json",
+  );
+  return {
+    slug: profile.slug,
+    latency_ms: profile.latency_ms,
+    bandwidth_bytes_per_sec: profile.bandwidth_bytes_per_sec,
+    dataset_base_url: datasetBaseUrl,
+    fetch_manifest_requested: loggedPaths.includes("fetch-manifest.json"),
+    requested_paths: loggedPaths,
+    fetched_only_leased_shards:
+      JSON.stringify(shardRequests) === JSON.stringify(result.requestedPaths),
+    fetch_timings_ms: {
+      manifest: Number(result.manifestFetchTimeMs.toFixed(3)),
+      shards: Number(result.shardFetchTimeMs.toFixed(3)),
+      eval: Number(result.evalFetchTimeMs.toFixed(3)),
+    },
+    train_record_count: result.trainRecordCount,
+    eval_record_count: result.evalRecordCount,
+    wasm: result.wasmResult,
+    total_page_time_ms: Number(result.totalPageTimeMs.toFixed(3)),
+  };
+}
+
+async function main() {
+  const config = loadConfig();
+  const { chromium } = await loadPlaywright();
+  const chromeExecutable = resolveExecutable("BURN_P2P_CHROME_BIN", [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ]);
+  const server = await startServer(config);
+  const consoleMessages = [];
+  const browser = await chromium.launch({
+    headless: HEADLESS,
+    executablePath: chromeExecutable ?? undefined,
+    args: ["--enable-unsafe-webgpu", "--use-angle=swiftshader"],
+  });
+  let context = null;
+  let page = null;
+  try {
+    context = await browser.newContext();
+    if (config.artifact_root) {
+      ensureDir(config.artifact_root);
+      await context.tracing.start({ screenshots: true, snapshots: true });
+    }
+    page = await context.newPage();
+    page.on("console", (message) => {
+      consoleMessages.push({ type: message.type(), text: message.text() });
+    });
+    page.on("pageerror", (error) => {
+      consoleMessages.push({ type: "pageerror", text: String(error?.message ?? error) });
+    });
+    page.on("requestfailed", (request) => {
+      consoleMessages.push({
+        type: "requestfailed",
+        text: `${request.method()} ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
+      });
+    });
+    await page.goto(`${server.origin}/index.html`);
+    await page.waitForFunction(() => typeof window.runBrowserMnistProbe === "function", {
+      timeout: 15_000,
+    });
+
+    const browserRuntime = await page.evaluate(async () => {
+      const hasGpu = !!navigator.gpu;
+      let adapterAvailable = false;
+      let adapterError = null;
+      try {
+        const adapter = hasGpu
+          ? await Promise.race([
+              navigator.gpu.requestAdapter(),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("adapter-timeout")), 5_000),
+              ),
+            ])
+          : null;
+        adapterAvailable = !!adapter;
+      } catch (error) {
+        adapterError = String(error?.message ?? error);
+      }
+      return {
+        userAgent: navigator.userAgent,
+        hasGpu,
+        adapterAvailable,
+        adapterError,
+      };
+    });
+
+    const profiles = [];
+    for (const profile of config.profiles) {
+      profiles.push(await runProfile(page, profile, config, server.requestLog, server.origin));
+    }
+
+    const summary = {
+      measured_at: new Date().toISOString(),
+      origin: server.origin,
+      leased_microshards: config.leased_microshards,
+      browser_runtime: browserRuntime,
+      profiles,
+      browser_execution: {
+        live_browser_training: profiles.every((profile) => profile.wasm?.backend === "burn-webgpu-wasm"),
+        browser_latency_emulated: profiles.some((profile) => profile.latency_ms > 0),
+        slower_profile_increased_total_time:
+          profiles.length < 2
+            ? true
+            : profiles[profiles.length - 1].total_page_time_ms > profiles[0].total_page_time_ms,
+      },
+    };
+
+    if (config.artifact_root) {
+      const browserDir = path.join(config.artifact_root, "browser-wasm");
+      ensureDir(browserDir);
+      await page.screenshot({ path: path.join(browserDir, "screenshot.png"), fullPage: true });
+      await context.tracing.stop({ path: path.join(browserDir, "trace.zip") });
+      fs.writeFileSync(
+        path.join(browserDir, "console.json"),
+        `${JSON.stringify(consoleMessages, null, 2)}\n`,
+      );
+      fs.writeFileSync(
+        path.join(browserDir, "summary.json"),
+        `${JSON.stringify(summary, null, 2)}\n`,
+      );
+    }
+    console.log(JSON.stringify(summary, null, 2));
+  } catch (error) {
+    if (config.artifact_root) {
+      const browserDir = path.join(config.artifact_root, "browser-wasm");
+      ensureDir(browserDir);
+      if (page) {
+        try {
+          await page.screenshot({ path: path.join(browserDir, "failure.png"), fullPage: true });
+        } catch {}
+      }
+      if (context) {
+        try {
+          await context.tracing.stop({ path: path.join(browserDir, "trace.zip") });
+        } catch {}
+      }
+      fs.writeFileSync(
+        path.join(browserDir, "console.json"),
+        `${JSON.stringify(consoleMessages, null, 2)}\n`,
+      );
+      fs.writeFileSync(path.join(browserDir, "error.txt"), `${String(error?.stack ?? error)}\n`);
+    }
+    throw error;
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

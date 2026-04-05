@@ -11,8 +11,12 @@ snapshots, and design diaries are intentionally not kept here.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): stable crate boundaries, layering, and
   major end-to-end flows
+- [features.md](features.md): feature flags, crate composition, and common
+  dependency shapes
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
   `burn_p2p` into a Burn project
+- [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
+  multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance
 - [testing/local-dev.md](testing/local-dev.md): local-first smoke, browser,
   stress, and publish-readiness commands

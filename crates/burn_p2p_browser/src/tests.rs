@@ -600,7 +600,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
     assert!(browser_picker.entries[0].allowed);
     assert_eq!(
         browser_picker.entries[0].recommended_state,
-        burn_p2p_ui::BrowserExperimentPickerState::Verifier
+        burn_p2p_views::BrowserExperimentPickerState::Verifier
     );
     assert_eq!(
         browser_picker.entries[0].recommended_role,
@@ -623,7 +623,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
     assert!(unauthorized_picker.entries[0].allowed);
     assert_eq!(
         unauthorized_picker.entries[0].recommended_state,
-        burn_p2p_ui::BrowserExperimentPickerState::Verifier
+        burn_p2p_views::BrowserExperimentPickerState::Verifier
     );
     assert_eq!(
         unauthorized_picker.entries[0].recommended_role,
@@ -2795,7 +2795,10 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     let model = BrowserAppModel::from_runtime(runtime);
     let view = model.view(&BrowserUiBindings::new("https://edge.example"));
 
-    assert_eq!(view.default_surface, burn_p2p_ui::BrowserAppSurface::Train);
+    assert_eq!(
+        view.default_surface,
+        burn_p2p_views::BrowserAppSurface::Train
+    );
     assert_eq!(view.runtime_label, "train");
     assert!(view.capability_summary.contains("train"));
     assert!(view.session_label.contains("principal-browser"));
@@ -2825,6 +2828,12 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     assert_eq!(view.training.pending_receipts, 1);
     assert_eq!(view.training.optimizer_steps, Some(10));
     assert_eq!(view.training.accepted_samples, Some(180));
+    assert_eq!(view.training.slice_target_samples, Some(200));
+    assert_eq!(view.training.slice_remaining_samples, Some(20));
+    assert_eq!(
+        view.training.slice_status.as_str(),
+        "1 microshard cached · 20 left in slice"
+    );
     assert_eq!(view.training.last_loss.as_deref(), Some("0.3000"));
     assert_eq!(view.training.publish_latency_ms, Some(250));
     assert_eq!(
@@ -2922,7 +2931,7 @@ fn browser_app_model_applies_worker_events_to_local_state() {
 
     assert_eq!(
         view.default_surface,
-        burn_p2p_ui::BrowserAppSurface::Validate
+        burn_p2p_views::BrowserAppSurface::Validate
     );
     assert_eq!(view.runtime_label, "validate");
     assert!(view.capability_summary.contains("validate"));

@@ -19,7 +19,7 @@ use burn_p2p_security::{
     PeerAdmissionReport, PeerTrustLevel, ReputationDecision, ReputationEngine, ReputationState,
 };
 use burn_p2p_swarm::{PeerStore, SwarmStats};
-use burn_p2p_ui::RobustnessPanelView;
+use burn_p2p_views::RobustnessPanelView;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

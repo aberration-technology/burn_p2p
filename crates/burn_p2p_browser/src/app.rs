@@ -2,10 +2,10 @@ use burn_p2p::{
     BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, RevisionId,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
-use burn_p2p_ui::{
+use burn_p2p_views::{
     BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppLeaderboardPreview,
-    BrowserAppNetworkView, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
-    BrowserAppViewerView,
+    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppSurface, BrowserAppTrainingView,
+    BrowserAppValidationView, BrowserAppViewerView,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -253,6 +253,9 @@ impl BrowserAppModel {
         let metrics_bundle = active_metrics_bundle(&self.runtime, selected_experiment.as_ref());
         let latest_peer_window = metrics_bundle.and_then(latest_peer_window_metrics);
         let latest_eval = metrics_bundle.and_then(latest_head_eval_report);
+        let validation_metric_preview = latest_eval
+            .map(|report| metric_preview(&report.metric_values))
+            .unwrap_or_default();
         let validate_available = selected_experiment
             .as_ref()
             .is_some_and(|experiment| experiment.validate_available);
@@ -311,6 +314,7 @@ impl BrowserAppModel {
                     .and_then(|result| result.emitted_receipt_id.as_ref())
                     .map(|receipt_id| receipt_id.as_str().to_owned()),
                 evaluation_summary: latest_eval.map(eval_summary),
+                metric_preview: validation_metric_preview,
             },
             training: BrowserAppTrainingView {
                 train_available,
@@ -322,6 +326,7 @@ impl BrowserAppModel {
                         assignment.revision_id.as_str()
                     )
                 }),
+                slice_status: training_slice_status(&runtime_state, storage, latest_peer_window),
                 latest_head_id: storage
                     .last_head_id
                     .as_ref()
@@ -338,6 +343,13 @@ impl BrowserAppModel {
                 optimizer_steps: latest_peer_window.map(|metrics| metrics.optimizer_step_count),
                 accepted_samples: latest_peer_window
                     .and_then(|metrics| metrics.accepted_tokens_or_samples),
+                slice_target_samples: latest_peer_window
+                    .map(|metrics| metrics.attempted_tokens_or_samples),
+                slice_remaining_samples: latest_peer_window.and_then(|metrics| {
+                    metrics.accepted_tokens_or_samples.map(|accepted| {
+                        metrics.attempted_tokens_or_samples.saturating_sub(accepted)
+                    })
+                }),
                 last_loss: latest_peer_window
                     .and_then(|metrics| {
                         metrics
@@ -843,6 +855,35 @@ fn metric_value_label(value: &MetricValue) -> String {
     }
 }
 
+fn metric_preview(
+    metrics: &std::collections::BTreeMap<String, MetricValue>,
+) -> Vec<BrowserAppMetricPreview> {
+    let mut preferred = ["accuracy", "loss", "train_loss_mean", "digit_zero_accuracy"]
+        .into_iter()
+        .filter_map(|key| {
+            metrics.get(key).map(|value| BrowserAppMetricPreview {
+                label: key.to_owned(),
+                value: metric_value_label(value),
+            })
+        })
+        .collect::<Vec<_>>();
+    let preferred_labels = preferred
+        .iter()
+        .map(|preview| preview.label.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let remaining = metrics
+        .iter()
+        .filter(|(key, _)| !preferred_labels.contains(key.as_str()))
+        .take(4usize.saturating_sub(preferred.len()))
+        .map(|(key, value)| BrowserAppMetricPreview {
+            label: key.clone(),
+            value: metric_value_label(value),
+        });
+    preferred.extend(remaining);
+    preferred
+}
+
 fn training_throughput_summary(metrics: &burn_p2p_core::PeerWindowMetrics) -> Option<String> {
     metrics.accepted_tokens_or_samples.and_then(|accepted| {
         if metrics.compute_time_ms == 0 {
@@ -877,9 +918,9 @@ fn default_surface(state: &BrowserRuntimeState) -> BrowserAppSurface {
 
 fn runtime_label(state: &BrowserRuntimeState) -> String {
     match state {
-        BrowserRuntimeState::PortalOnly => "viewer".into(),
+        BrowserRuntimeState::PortalOnly => "portal".into(),
         BrowserRuntimeState::Joining { role, .. } => format!("joining {}", role_label(role)),
-        BrowserRuntimeState::Observer => "viewer".into(),
+        BrowserRuntimeState::Observer => "observe".into(),
         BrowserRuntimeState::Verifier => "validate".into(),
         BrowserRuntimeState::Trainer => "train".into(),
         BrowserRuntimeState::BackgroundSuspended { role } => role
@@ -893,38 +934,47 @@ fn runtime_label(state: &BrowserRuntimeState) -> String {
 
 fn runtime_detail(state: &BrowserRuntimeState, storage: &BrowserStorageSnapshot) -> String {
     match state {
-        BrowserRuntimeState::PortalOnly => "Heads and standings.".into(),
-        BrowserRuntimeState::Joining { stage, .. } => join_stage_label(stage).into(),
-        BrowserRuntimeState::Observer => "Heads and standings.".into(),
+        BrowserRuntimeState::PortalOnly => "signed snapshots only".into(),
+        BrowserRuntimeState::Joining { stage, role } => {
+            join_stage_detail(stage, role, storage).into()
+        }
+        BrowserRuntimeState::Observer => "watching heads and standings".into(),
         BrowserRuntimeState::Verifier => storage
             .last_head_id
             .as_ref()
-            .map(|head_id| format!("Reviewing {}", head_id.as_str()))
-            .unwrap_or_else(|| "Ready to validate.".into()),
-        BrowserRuntimeState::Trainer => storage
-            .active_assignment
-            .as_ref()
-            .map(|assignment| {
-                format!(
-                    "{}/{}",
-                    assignment.experiment_id.as_str(),
-                    assignment.revision_id.as_str()
-                )
-            })
-            .unwrap_or_else(|| "Ready to train.".into()),
-        BrowserRuntimeState::BackgroundSuspended { .. } => "Paused.".into(),
-        BrowserRuntimeState::Catchup { .. } => "Catching up.".into(),
+            .map(|head_id| format!("reviewing {}", head_id.as_str()))
+            .unwrap_or_else(|| "waiting for a checkpoint".into()),
+        BrowserRuntimeState::Trainer => training_slice_status(state, storage, None),
+        BrowserRuntimeState::BackgroundSuspended { .. } => "paused".into(),
+        BrowserRuntimeState::Catchup { role } => match role {
+            BrowserRuntimeRole::BrowserTrainerWgpu => "catching up before training".into(),
+            BrowserRuntimeRole::BrowserVerifier => "catching up before validation".into(),
+            _ => "catching up".into(),
+        },
         BrowserRuntimeState::Blocked { reason } => reason.clone(),
     }
 }
 
-fn join_stage_label(stage: &crate::BrowserJoinStage) -> &'static str {
+fn join_stage_detail(
+    stage: &crate::BrowserJoinStage,
+    role: &BrowserRuntimeRole,
+    storage: &BrowserStorageSnapshot,
+) -> &'static str {
     match stage {
-        crate::BrowserJoinStage::Authenticating => "authenticating",
-        crate::BrowserJoinStage::Enrolling => "enrolling",
-        crate::BrowserJoinStage::DirectorySync => "directory sync",
-        crate::BrowserJoinStage::HeadSync => "head sync",
-        crate::BrowserJoinStage::TransportConnect => "transport connect",
+        crate::BrowserJoinStage::Authenticating => "checking browser auth",
+        crate::BrowserJoinStage::Enrolling => "enrolling local browser identity",
+        crate::BrowserJoinStage::DirectorySync => "loading visible revisions",
+        crate::BrowserJoinStage::HeadSync => match role {
+            BrowserRuntimeRole::BrowserTrainerWgpu | BrowserRuntimeRole::BrowserVerifier
+                if storage.last_head_id.is_none() =>
+            {
+                "waiting for the first checkpoint"
+            }
+            BrowserRuntimeRole::BrowserTrainerWgpu => "syncing checkpoint before training",
+            BrowserRuntimeRole::BrowserVerifier => "syncing checkpoint before validation",
+            _ => "syncing visible heads",
+        },
+        crate::BrowserJoinStage::TransportConnect => "connecting peer transport",
     }
 }
 
@@ -950,7 +1000,7 @@ fn session_label(session: &BrowserSessionState) -> String {
             )
         }
         (None, true) => "reenroll".into(),
-        (None, false) => "viewer".into(),
+        (None, false) => "guest".into(),
     }
 }
 
@@ -991,12 +1041,74 @@ fn is_training_active(state: &BrowserRuntimeState) -> bool {
 
 fn role_label(role: &BrowserRuntimeRole) -> &'static str {
     match role {
-        BrowserRuntimeRole::PortalViewer => "viewer",
-        BrowserRuntimeRole::BrowserObserver => "viewer",
+        BrowserRuntimeRole::PortalViewer => "portal",
+        BrowserRuntimeRole::BrowserObserver => "observe",
         BrowserRuntimeRole::BrowserVerifier => "validate",
         BrowserRuntimeRole::BrowserTrainerWgpu => "train",
         BrowserRuntimeRole::BrowserFallback => "fallback",
     }
+}
+
+fn training_slice_status(
+    state: &BrowserRuntimeState,
+    storage: &BrowserStorageSnapshot,
+    latest_peer_window: Option<&burn_p2p_core::PeerWindowMetrics>,
+) -> String {
+    if storage.active_assignment.is_none() {
+        return "waiting for work".into();
+    }
+    if storage.last_head_id.is_none() {
+        return "waiting for checkpoint sync".into();
+    }
+    if storage.cached_microshards.is_empty() {
+        return "downloading assigned slice".into();
+    }
+
+    let microshards_ready = storage.cached_microshards.len();
+    match state {
+        BrowserRuntimeState::Trainer => {
+            if let Some(metrics) = latest_peer_window {
+                if let Some(accepted) = metrics.accepted_tokens_or_samples {
+                    let remaining = metrics.attempted_tokens_or_samples.saturating_sub(accepted);
+                    return format!(
+                        "{} microshard{} cached · {} left in slice",
+                        microshards_ready,
+                        plural_suffix(microshards_ready),
+                        remaining
+                    );
+                }
+            }
+            format!(
+                "{} microshard{} cached · training ready",
+                microshards_ready,
+                plural_suffix(microshards_ready)
+            )
+        }
+        BrowserRuntimeState::Catchup {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+        } => format!(
+            "{} microshard{} cached · catching up",
+            microshards_ready,
+            plural_suffix(microshards_ready)
+        ),
+        BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..
+        } => format!(
+            "{} microshard{} cached · waiting to join",
+            microshards_ready,
+            plural_suffix(microshards_ready)
+        ),
+        _ => format!(
+            "{} microshard{} cached",
+            microshards_ready,
+            plural_suffix(microshards_ready)
+        ),
+    }
+}
+
+fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 fn short_identity_label(value: &str) -> String {

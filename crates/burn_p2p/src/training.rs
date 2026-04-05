@@ -1,10 +1,12 @@
 use super::*;
+use crate::backend::TrainingWindowTiming;
 use crate::metrics_runtime::{
     TrainingMetricBuildArgs, build_metrics_announcement, build_training_peer_window_metrics,
     persist_peer_window_metrics,
 };
 use crate::runtime_support::LagAssessment;
-use burn_p2p_core::MetricsLiveEventKind;
+use burn_p2p_core::{MetricsLiveEventKind, MicroShard};
+use std::collections::BTreeSet;
 
 struct TrainingPreparedState {
     assignment: SlotAssignmentState,
@@ -58,13 +60,20 @@ impl<P> RunningNode<P> {
     {
         let prepared = self.prepare_training_state(experiment)?;
         let execution = self.execute_training_window(experiment, &prepared)?;
-        self.publish_training_execution(experiment, &prepared, &execution)?;
+        let publish_latency_ms =
+            self.publish_training_execution(experiment, &prepared, &execution)?;
 
         Ok(TrainingWindowOutcome {
             lease: execution.lease,
             head: execution.head,
             artifact: execution.artifact,
             contribution: execution.contribution,
+            timing: TrainingWindowTiming {
+                window_started_at: execution.window_started_at,
+                completed_at: execution.report.completed_at,
+                data_fetch_time_ms: execution.data_fetch_time_ms,
+                publish_latency_ms,
+            },
             report: execution.report,
         })
     }
@@ -120,7 +129,8 @@ impl<P> RunningNode<P> {
                 )
             });
         let network_id = self.mainnet().network_id().clone();
-        let telemetry_snapshot = self.telemetry().snapshot();
+        let mut telemetry_snapshot = self.telemetry().snapshot();
+        merge_connected_lease_announcements(&mut telemetry_snapshot.control_plane, &snapshots);
         let mainnet_roles = self.mainnet().roles.clone();
         let node_config = self.config().clone();
         let metrics_retention = node_config
@@ -392,6 +402,22 @@ impl<P> RunningNode<P> {
             &prepared.local_peer_id,
             &topology_peers,
         )?);
+        let lease_microshards = unleased_microshards_for_window(
+            &prepared.telemetry_snapshot,
+            experiment,
+            window_id,
+            &prepared.local_peer_id,
+            &microshard_plan.microshards,
+        );
+        let lease_microshards = if lease_microshards.len() == microshard_plan.microshards.len() {
+            preferred_microshards_for_peer(
+                &topology_peers,
+                &prepared.local_peer_id,
+                &lease_microshards,
+            )
+        } else {
+            lease_microshards
+        };
         let lease = LeasePlanner::default().plan_lease(
             prepared.network_id.clone(),
             experiment.study_id.clone(),
@@ -402,7 +428,7 @@ impl<P> RunningNode<P> {
             window_id,
             Utc::now(),
             budget_work_units,
-            &microshard_plan.microshards,
+            &lease_microshards,
         )?;
         self.control.publish_lease(LeaseAnnouncement {
             overlay: overlays.leases.clone(),
@@ -428,7 +454,7 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
         prepared: &TrainingPreparedState,
         execution: &TrainingExecution<T>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<u64> {
         let publish_started_at = Utc::now();
         persist_limit_profile(&prepared.storage, experiment, &execution.limit_profile)?;
         set_effective_limit_profile(&self.telemetry, Some(execution.limit_profile.clone()));
@@ -504,6 +530,9 @@ impl<P> RunningNode<P> {
             announced_at: Utc::now(),
         })?;
         let publish_finished_at = Utc::now();
+        let publish_latency_ms = (publish_finished_at - publish_started_at)
+            .num_milliseconds()
+            .max(0) as u64;
         let peer_window_metrics = build_training_peer_window_metrics(TrainingMetricBuildArgs {
             config: &prepared.node_config,
             experiment,
@@ -515,9 +544,7 @@ impl<P> RunningNode<P> {
             contribution: &execution.contribution,
             window_started_at: execution.window_started_at,
             data_fetch_time_ms: execution.data_fetch_time_ms,
-            publish_latency_ms: (publish_finished_at - publish_started_at)
-                .num_milliseconds()
-                .max(0) as u64,
+            publish_latency_ms,
             head_lag_at_start: prepared.telemetry_snapshot.head_lag_steps,
             head_lag_at_finish: prepared.telemetry_snapshot.head_lag_steps,
         });
@@ -539,7 +566,84 @@ impl<P> RunningNode<P> {
             Some(SlotRuntimeState::CoolingDown(prepared.assignment.clone())),
         );
 
-        Ok(())
+        Ok(publish_latency_ms)
+    }
+}
+
+fn unleased_microshards_for_window(
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+    window_id: WindowId,
+    local_peer_id: &PeerId,
+    microshards: &[MicroShard],
+) -> Vec<MicroShard> {
+    let now = Utc::now();
+    let leased_microshards = snapshot
+        .control_plane
+        .lease_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.lease.study_id == experiment.study_id
+                && announcement.lease.experiment_id == experiment.experiment_id
+                && announcement.lease.revision_id == experiment.revision_id
+                && announcement.lease.window_id == window_id
+                && &announcement.lease.peer_id != local_peer_id
+                && announcement.lease.expires_at > now
+        })
+        .flat_map(|announcement| announcement.lease.microshards.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let available = microshards
+        .iter()
+        .filter(|microshard| !leased_microshards.contains(&microshard.microshard_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if available.is_empty() {
+        microshards.to_vec()
+    } else {
+        available
+    }
+}
+
+fn merge_connected_lease_announcements(
+    local_snapshot: &mut ControlPlaneSnapshot,
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+) {
+    for (_, snapshot) in snapshots {
+        for announcement in &snapshot.lease_announcements {
+            if !local_snapshot.lease_announcements.contains(announcement) {
+                local_snapshot
+                    .lease_announcements
+                    .push(announcement.clone());
+            }
+        }
+    }
+}
+
+fn preferred_microshards_for_peer(
+    topology_peers: &[PeerId],
+    local_peer_id: &PeerId,
+    microshards: &[MicroShard],
+) -> Vec<MicroShard> {
+    if microshards.len() <= 1 {
+        return microshards.to_vec();
+    }
+
+    let peer_index = topology_peers
+        .iter()
+        .position(|peer_id| peer_id == local_peer_id)
+        .unwrap_or_default();
+    let slot_count = topology_peers.len().max(1);
+    let preferred = microshards
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % slot_count == peer_index % slot_count)
+        .map(|(_, microshard)| microshard.clone())
+        .collect::<Vec<_>>();
+
+    if preferred.is_empty() {
+        vec![microshards[peer_index % microshards.len()].clone()]
+    } else {
+        preferred
     }
 }
 

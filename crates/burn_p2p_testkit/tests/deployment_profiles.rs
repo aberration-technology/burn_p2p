@@ -75,7 +75,7 @@ fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()
         "burn_p2p_auth_oidc",
         "burn_p2p_auth_oauth",
         "burn_p2p_browser",
-        "burn_p2p_portal",
+        "burn_p2p_app",
         "burn_p2p_social",
     ] {
         anyhow::ensure!(
@@ -87,11 +87,11 @@ fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()
 }
 
 #[test]
-fn enterprise_sso_profile_builds_with_oidc_and_portal_only() -> anyhow::Result<()> {
-    let features = "admin-http,metrics,portal,rbac,auth-oidc";
+fn enterprise_sso_profile_builds_with_oidc_and_browser_edge_only() -> anyhow::Result<()> {
+    let features = "admin-http,metrics,browser-edge,rbac,auth-oidc";
     check_bootstrap_profile(features)?;
     let tree = bootstrap_tree(features)?;
-    for required in ["burn_p2p_auth_oidc", "burn_p2p_portal"] {
+    for required in ["burn_p2p_auth_oidc", "burn_p2p_app"] {
         anyhow::ensure!(
             tree.contains(required),
             "enterprise-sso should include {required}\n{tree}"
@@ -107,11 +107,11 @@ fn enterprise_sso_profile_builds_with_oidc_and_portal_only() -> anyhow::Result<(
 }
 
 #[test]
-fn community_web_profile_builds_with_browser_and_social() -> anyhow::Result<()> {
-    let features = "admin-http,metrics,portal,browser-edge,rbac,auth-github,social";
+fn community_web_profile_builds_with_browser_edge_and_social() -> anyhow::Result<()> {
+    let features = "admin-http,metrics,browser-edge,rbac,auth-github,social";
     check_bootstrap_profile(features)?;
     let tree = bootstrap_tree(features)?;
-    for required in ["burn_p2p_auth_github", "burn_p2p_portal", "burn_p2p_social"] {
+    for required in ["burn_p2p_auth_github", "burn_p2p_app", "burn_p2p_social"] {
         anyhow::ensure!(
             tree.contains(required),
             "community-web should include {required}\n{tree}"
@@ -122,7 +122,7 @@ fn community_web_profile_builds_with_browser_and_social() -> anyhow::Result<()> 
 
 #[test]
 fn mixed_native_browser_profile_builds_without_social() -> anyhow::Result<()> {
-    let features = "admin-http,metrics,portal,browser-edge,auth-static";
+    let features = "admin-http,metrics,browser-edge,auth-static";
     check_bootstrap_profile(features)?;
     run_profile_step(&[
         "check",
@@ -133,8 +133,8 @@ fn mixed_native_browser_profile_builds_without_social() -> anyhow::Result<()> {
     ])?;
     let tree = bootstrap_tree(features)?;
     anyhow::ensure!(
-        tree.contains("burn_p2p_portal"),
-        "mixed-native-browser should include burn_p2p_portal\n{tree}"
+        tree.contains("burn_p2p_app"),
+        "mixed-native-browser should include burn_p2p_app\n{tree}"
     );
     anyhow::ensure!(
         !tree.contains("burn_p2p_social"),

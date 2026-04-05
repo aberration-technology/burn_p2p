@@ -13,6 +13,12 @@ use burn_p2p::{
     Precision, PrincipalId, ProjectFamilyId, RevisionId, RevisionManifest, StudyId,
     WindowActivation, WindowId, WorkloadId,
 };
+use burn_p2p_app::{
+    PortalArtifactRow, PortalDiagnosticsView, PortalExperimentRow, PortalHeadRow,
+    PortalLeaderboardRow, PortalLoginProvider, PortalMetricRow, PortalMetricsPanel, PortalPaths,
+    PortalPeerStatusRow, PortalRuntimeStateCard, PortalServiceStatusRow, PortalSnapshotView,
+    PortalTransportSurface, PortalTrustView, render_browser_app_static_html,
+};
 use burn_p2p_core::{
     BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
     BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
@@ -22,13 +28,7 @@ use burn_p2p_core::{
     SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
-use burn_p2p_portal::{
-    PortalArtifactRow, PortalDiagnosticsView, PortalExperimentRow, PortalHeadRow,
-    PortalLeaderboardRow, PortalLoginProvider, PortalMetricRow, PortalMetricsPanel, PortalPaths,
-    PortalPeerStatusRow, PortalRuntimeStateCard, PortalServiceStatusRow, PortalSnapshotView,
-    PortalTransportSurface, PortalTrustView, render_browser_app_static_html,
-};
-use burn_p2p_ui::{BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,33 @@ pub struct PortalCaptureManifest {
     pub scenarios: Vec<PortalCaptureScenario>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One rendered browser-portal scenario consumed by the Playwright bundle writer.
+pub struct BrowserPortalCaptureSpec {
+    /// Stable scenario identifier used for folders and routes.
+    pub slug: String,
+    /// Human-readable scenario title.
+    pub title: String,
+    /// Short explanation of what the scenario demonstrates.
+    pub description: String,
+    /// Browser workspace shown first when the static app loads.
+    pub default_surface: BrowserAppSurface,
+    /// Snapshot served to the browser app for the scenario.
+    pub snapshot: BrowserPortalSnapshot,
+    /// Metrics catchup material served to the browser app for the scenario.
+    #[serde(default)]
+    pub metrics_catchup: Vec<MetricsCatchupBundle>,
+    /// Runtime state labels rendered in the scenario.
+    #[serde(default)]
+    pub runtime_states: Vec<String>,
+    /// Ordered interactions the Playwright runner should perform.
+    #[serde(default)]
+    pub interactions: Vec<PortalCaptureInteraction>,
+    /// Optional viewport override for the capture.
+    #[serde(default)]
+    pub viewport: Option<PortalCaptureViewport>,
+}
+
 #[derive(Clone, Debug)]
 struct PortalScenarioSpec {
     scenario: PortalCaptureScenario,
@@ -107,58 +134,99 @@ struct PortalScenarioSpec {
 
 /// Writes the rendered portal scenario bundle consumed by the Playwright capture runner.
 pub fn write_portal_capture_bundle(root: impl AsRef<Path>) -> Result<PortalCaptureManifest> {
+    let specs = build_portal_capture_scenarios()
+        .into_iter()
+        .map(|spec| BrowserPortalCaptureSpec {
+            slug: spec.scenario.slug,
+            title: spec.scenario.title,
+            description: spec.scenario.description,
+            default_surface: BrowserAppSurface::Viewer,
+            snapshot: browser_portal_snapshot(&spec.snapshot),
+            metrics_catchup: scenario_metrics_catchup(
+                &spec.snapshot,
+                &browser_portal_snapshot(&spec.snapshot),
+            ),
+            runtime_states: spec.scenario.runtime_states,
+            interactions: spec.scenario.interactions,
+            viewport: spec.scenario.viewport,
+        })
+        .collect::<Vec<_>>();
+    write_browser_portal_capture_bundle(root, &specs)
+}
+
+/// Writes a rendered browser bundle consumed by the Playwright capture runner.
+pub fn write_browser_portal_capture_bundle(
+    root: impl AsRef<Path>,
+    specs: &[BrowserPortalCaptureSpec],
+) -> Result<PortalCaptureManifest> {
     let root = root.as_ref();
     fs::create_dir_all(root)?;
     let scenarios_root = root.join("scenarios");
     fs::create_dir_all(&scenarios_root)?;
 
-    let specs = build_portal_capture_scenarios();
     let scenarios = specs
         .iter()
-        .map(|spec| spec.scenario.clone())
+        .map(|spec| PortalCaptureScenario {
+            slug: spec.slug.clone(),
+            title: spec.title.clone(),
+            description: spec.description.clone(),
+            html_path: format!("scenarios/{}/index.html", spec.slug),
+            snapshot_path: format!("scenarios/{}/snapshot.json", spec.slug),
+            scenario_path: format!("scenarios/{}/scenario.json", spec.slug),
+            peer_count: spec.snapshot.directory.entries.len(),
+            experiment_count: spec.snapshot.directory.entries.len(),
+            estimated_network_size: spec.snapshot.leaderboard.entries.len(),
+            runtime_states: spec.runtime_states.clone(),
+            viewport: spec.viewport.clone(),
+            interactions: spec.interactions.clone(),
+        })
         .collect::<Vec<_>>();
 
     for spec in specs {
-        let scenario_dir = scenarios_root.join(&spec.scenario.slug);
+        let scenario_dir = scenarios_root.join(&spec.slug);
         fs::create_dir_all(&scenario_dir)?;
         fs::write(
             scenario_dir.join("index.html"),
-            render_browser_app_static_html(&scenario_bootstrap(&spec.scenario.slug)),
+            render_browser_app_static_html(&scenario_bootstrap(&spec.slug, spec.default_surface)),
         )?;
-        let edge_snapshot = browser_portal_snapshot(&spec.snapshot);
         fs::write(
             scenario_dir.join("snapshot.json"),
-            serde_json::to_vec_pretty(&edge_snapshot)?,
+            serde_json::to_vec_pretty(&spec.snapshot)?,
         )?;
         fs::write(
             scenario_dir.join("directory.json"),
-            serde_json::to_vec_pretty(&edge_snapshot.directory.entries)?,
+            serde_json::to_vec_pretty(&spec.snapshot.directory.entries)?,
         )?;
         fs::write(
             scenario_dir.join("heads.json"),
-            serde_json::to_vec_pretty(&edge_snapshot.heads)?,
+            serde_json::to_vec_pretty(&spec.snapshot.heads)?,
         )?;
         fs::write(
             scenario_dir.join("signed-directory.json"),
             serde_json::to_vec_pretty(&signed_browser_directory_snapshot(
-                &edge_snapshot.network_id,
-                edge_snapshot.directory.entries.clone(),
+                &spec.snapshot.network_id,
+                spec.snapshot.directory.entries.clone(),
             ))?,
         )?;
         fs::write(
             scenario_dir.join("signed-leaderboard.json"),
             serde_json::to_vec_pretty(&signed_browser_leaderboard_snapshot(
-                &edge_snapshot.network_id,
-                edge_snapshot.leaderboard.entries.clone(),
+                &spec.snapshot.network_id,
+                spec.snapshot.leaderboard.entries.clone(),
             ))?,
         )?;
         fs::write(
             scenario_dir.join("metrics-catchup.json"),
-            serde_json::to_vec_pretty(&scenario_metrics_catchup(&spec.snapshot, &edge_snapshot))?,
+            serde_json::to_vec_pretty(&spec.metrics_catchup)?,
         )?;
         fs::write(
             scenario_dir.join("scenario.json"),
-            serde_json::to_vec_pretty(&spec.scenario)?,
+            serde_json::to_vec_pretty(
+                scenarios
+                    .iter()
+                    .find(|scenario| scenario.slug == spec.slug)
+                    .expect("scenario manifest row should exist"),
+            )?,
         )?;
     }
 
@@ -174,14 +242,14 @@ pub fn write_portal_capture_bundle(root: impl AsRef<Path>) -> Result<PortalCaptu
     Ok(manifest)
 }
 
-fn scenario_bootstrap(slug: &str) -> BrowserAppStaticBootstrap {
+fn scenario_bootstrap(slug: &str, default_surface: BrowserAppSurface) -> BrowserAppStaticBootstrap {
     BrowserAppStaticBootstrap {
         app_name: "burn_p2p".into(),
         asset_base_url: String::new(),
         module_entry_path: "../../assets/browser-app-loader.js".into(),
         stylesheet_path: Some("../../assets/browser-app.css".into()),
         default_edge_url: Some(format!("/{slug}")),
-        default_surface: BrowserAppSurface::Viewer,
+        default_surface,
         refresh_interval_ms: 15_000,
     }
 }

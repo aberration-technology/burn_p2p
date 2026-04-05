@@ -43,7 +43,7 @@ use burn_p2p_security::{
     ValidatorPolicy,
 };
 use burn_p2p_swarm::{PeerObservation, RuntimeTransportPolicy, SwarmError, SwarmStats};
-use burn_p2p_ui::{
+use burn_p2p_views::{
     CheckpointDagView, EmaFlowView, OperatorConsoleView, OperatorDiagnosticsView,
     OperatorPeerDiagnosticView, OperatorRobustnessSummaryView, OperatorTransferView,
     ParticipantPortalView, ParticipantProfile, ShardAssignmentHeatmap, StudyBoardView,
@@ -536,7 +536,7 @@ impl SimulationRunner {
                         .contribution_receipts
                         .push(simulated.contribution_receipt.clone());
                     accepted_receipts.push(simulated.contribution_receipt.clone());
-                    authority_actions.push(burn_p2p_ui::AuthorityActionRecord {
+                    authority_actions.push(burn_p2p_views::AuthorityActionRecord {
                         action: "accepted-window-update".into(),
                         actor_peer_id: Some(fixture.peer_id.clone()),
                         happened_at: granted_at,
@@ -611,7 +611,7 @@ impl SimulationRunner {
                 admin_state
                     .merge_certificates
                     .push(merge_certificate.clone());
-                authority_actions.push(burn_p2p_ui::AuthorityActionRecord {
+                authority_actions.push(burn_p2p_views::AuthorityActionRecord {
                     action: "promote-certified-head".into(),
                     actor_peer_id: Some(PeerId::new("validator")),
                     happened_at: merge_certificate.issued_at,
@@ -1172,7 +1172,7 @@ fn build_overlay_statuses(
     spec: &SimulationSpec,
     windows: &[SimulatedWindow],
     swarm: SwarmStats,
-) -> Result<Vec<burn_p2p_ui::OverlayStatusView>, TestkitError> {
+) -> Result<Vec<burn_p2p_views::OverlayStatusView>, TestkitError> {
     let overlays = burn_p2p_swarm::ExperimentOverlaySet::new(
         spec.network_id.clone(),
         spec.study_id.clone(),
@@ -1181,19 +1181,19 @@ fn build_overlay_statuses(
     let last_window_id = windows.last().map(|window| window.window_id);
 
     Ok(vec![
-        burn_p2p_ui::OverlayStatusView {
+        burn_p2p_views::OverlayStatusView {
             overlay: overlays.heads,
             active_peers: swarm.connected_peers,
             connected_peers: swarm.connected_peers,
             last_window_id,
         },
-        burn_p2p_ui::OverlayStatusView {
+        burn_p2p_views::OverlayStatusView {
             overlay: overlays.leases,
             active_peers: swarm.connected_peers,
             connected_peers: swarm.connected_peers,
             last_window_id,
         },
-        burn_p2p_ui::OverlayStatusView {
+        burn_p2p_views::OverlayStatusView {
             overlay: overlays.telemetry,
             active_peers: swarm.connected_peers,
             connected_peers: swarm.connected_peers,
@@ -1202,10 +1202,10 @@ fn build_overlay_statuses(
     ])
 }
 
-fn build_merge_queue_entries(windows: &[SimulatedWindow]) -> Vec<burn_p2p_ui::MergeQueueEntry> {
+fn build_merge_queue_entries(windows: &[SimulatedWindow]) -> Vec<burn_p2p_views::MergeQueueEntry> {
     windows
         .iter()
-        .map(|window| burn_p2p_ui::MergeQueueEntry {
+        .map(|window| burn_p2p_views::MergeQueueEntry {
             base_head_id: window
                 .accepted_receipts
                 .first()
@@ -1217,11 +1217,11 @@ fn build_merge_queue_entries(windows: &[SimulatedWindow]) -> Vec<burn_p2p_ui::Me
                 .map(|receipt| receipt.receipt_id.clone())
                 .collect(),
             status: if window.merge_certificate.is_some() {
-                burn_p2p_ui::MergeQueueStatus::Certified
+                burn_p2p_views::MergeQueueStatus::Certified
             } else if window.accepted_receipts.is_empty() {
-                burn_p2p_ui::MergeQueueStatus::Rejected
+                burn_p2p_views::MergeQueueStatus::Rejected
             } else {
-                burn_p2p_ui::MergeQueueStatus::Pending
+                burn_p2p_views::MergeQueueStatus::Pending
             },
             merged_head_id: window
                 .merge_certificate
@@ -1240,13 +1240,13 @@ fn build_merge_queue_entries(windows: &[SimulatedWindow]) -> Vec<burn_p2p_ui::Me
 }
 
 fn build_study_board(spec: &SimulationSpec, windows: &[SimulatedWindow]) -> StudyBoardView {
-    let variant = burn_p2p_ui::ExperimentVariantView {
+    let variant = burn_p2p_views::ExperimentVariantView {
         study_id: spec.study_id.clone(),
         experiment_id: spec.experiment_id.clone(),
         revision_id: spec.revision_id.clone(),
         metrics: windows
             .iter()
-            .map(|window| burn_p2p_ui::MetricPoint {
+            .map(|window| burn_p2p_views::MetricPoint {
                 window_id: window.window_id,
                 metrics: BTreeMap::from([
                     (
@@ -1269,7 +1269,7 @@ fn build_study_board(spec: &SimulationSpec, windows: &[SimulatedWindow]) -> Stud
             .iter()
             .map(|window| window.accepted_receipts.len() as u64)
             .sum(),
-        cost_performance: vec![burn_p2p_ui::CostPerformancePoint {
+        cost_performance: vec![burn_p2p_views::CostPerformancePoint {
             label: "accepted-receipts-per-window".into(),
             cost: windows.len() as f64,
             value: windows
@@ -1281,7 +1281,7 @@ fn build_study_board(spec: &SimulationSpec, windows: &[SimulatedWindow]) -> Stud
     };
 
     let migrations = if windows.len() > 1 {
-        vec![burn_p2p_ui::ExperimentMigrationView {
+        vec![burn_p2p_views::ExperimentMigrationView {
             experiment_id: spec.experiment_id.clone(),
             from_revision_id: spec.revision_id.clone(),
             to_revision_id: spec.revision_id.clone(),
@@ -1331,7 +1331,7 @@ fn build_participant_portals(
                 .heads
                 .values()
                 .filter(|head| head.parent_head_id.is_some())
-                .map(|head| burn_p2p_ui::CheckpointDownload {
+                .map(|head| burn_p2p_views::CheckpointDownload {
                     head_id: head.head_id.clone(),
                     artifact_id: head.artifact_id.clone(),
                     label: format!("head-{}", head.global_step),

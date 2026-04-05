@@ -1534,15 +1534,8 @@ pub mod security {
 /// Burn-specific runtime integration helpers.
 pub mod burn;
 
-#[cfg(feature = "browser")]
-pub mod browser {
-    pub use crate::{BrowserRolePolicy, BrowserVisibilityPolicy, ClientPlatform};
-}
-
 /// Public APIs for prelude.
 pub mod prelude {
-    #[cfg(feature = "browser")]
-    pub use crate::browser;
     #[cfg(feature = "burn")]
     pub use crate::burn;
     pub use crate::{

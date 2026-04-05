@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use burn::{
     module::{AutodiffModule, Module},
-    optim::{Optimizer, adaptor::OptimizerAdaptor, lr_scheduler::LrScheduler},
+    optim::{Optimizer, lr_scheduler::LrScheduler},
     prelude::Backend,
     tensor::backend::AutodiffBackend,
     train::{InferenceStep, LearningComponentsMarker, LearningComponentsTypes, TrainStep},
@@ -61,6 +61,19 @@ pub type BurnLearnerBatch<LC> =
 pub type BurnLearnerOutput<LC> =
     <<LC as LearningComponentsTypes>::TrainingModel as TrainStep>::Output;
 
+/// Type alias for burn's supervised training dataloader.
+pub type BurnTrainLoader<LC> = burn::train::TrainLoader<LC>;
+
+/// Type alias for burn's upstream validation dataloader.
+pub type BurnValidLoader<LC> = burn::train::ValidLoader<LC>;
+
+/// Type alias for the evaluation dataloader used by the burn-facing p2p api.
+///
+/// `burn` names the upstream type `ValidLoader`; `burn_p2p` uses `eval`
+/// terminology at the public api layer because validation is only one possible
+/// evaluation pattern.
+pub type BurnEvalLoader<LC> = BurnValidLoader<LC>;
+
 /// Type alias for the training batch input used by [`BurnLearnerWorkload`].
 pub type BurnTrainBatch<W> = <<W as BurnLearnerWorkload>::Model as TrainStep>::Input;
 
@@ -69,19 +82,6 @@ pub type BurnTrainOutput<W> = <<W as BurnLearnerWorkload>::Model as TrainStep>::
 
 /// Type alias for the inference model derived from [`BurnLearnerWorkload`].
 pub type BurnEvalModel<W> = <W as BurnLearnerWorkload>::EvalModel;
-
-/// Type alias for a burn SGD optimizer adaptor.
-#[doc(hidden)]
-pub type BurnSgdOptimizer<B, M> =
-    OptimizerAdaptor<burn::optim::Sgd<<B as AutodiffBackend>::InnerBackend>, M, B>;
-
-/// Type alias for a burn Adam optimizer adaptor.
-#[doc(hidden)]
-pub type BurnAdamOptimizer<B, M> = OptimizerAdaptor<burn::optim::Adam, M, B>;
-
-/// Type alias for a burn AdamW optimizer adaptor.
-#[doc(hidden)]
-pub type BurnAdamWOptimizer<B, M> = OptimizerAdaptor<burn::optim::AdamW, M, B>;
 
 type LearnerBenchmarkFn<LC> = dyn Fn(&BurnLearnerModel<LC>, &BurnLearnerDevice<LC>) -> crate::CapabilityEstimate
     + Send
@@ -367,19 +367,26 @@ impl BurnTarget {
             Self::Custom(roles) => roles.clone(),
         }
     }
+
+    /// Returns whether the target can issue local training windows.
+    pub fn requires_training_hooks(&self) -> bool {
+        let roles = self.roles();
+        roles.contains(&crate::PeerRole::TrainerCpu)
+            || roles.contains(&crate::PeerRole::TrainerGpu)
+            || roles.contains(&crate::PeerRole::BrowserTrainer)
+            || roles.contains(&crate::PeerRole::BrowserTrainerWgpu)
+    }
 }
 
-#[deprecated(note = "use BurnTarget")]
-/// Backward-compatible alias for the older burn target name.
-#[doc(hidden)]
-pub type BurnNodeTarget = BurnTarget;
-
+mod dataset;
 mod learner;
-#[allow(deprecated)]
-pub use learner::BurnSyntheticDatasetConfig;
-pub use learner::{
-    BurnLearnerProject, BurnLearnerProjectBuilder, BurnLocalDatasetConfig, from_learner,
-};
+pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
+pub mod advanced {
+    //! Advanced burn integration hooks for custom dataset, shard, and local
+    //! batch plumbing.
+    pub use super::learner::{BurnLearnerProjectBuilderAdvancedExt, BurnLocalDatasetConfig};
+}
+pub use learner::{BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders};
 
 /// Advanced learner-backed burn integration seam.
 ///
@@ -770,21 +777,6 @@ where
     W: BurnWorkload + Clone,
 {
     Ok(node(release_manifest, workload, config)?.with_roles(target.roles()))
-}
-
-#[deprecated(note = "use connect")]
-/// Backward-compatible alias for the older native entrypoint.
-#[doc(hidden)]
-pub fn native<W>(
-    target: BurnTarget,
-    release_manifest: ClientReleaseManifest,
-    workload: W,
-    config: BurnWorkloadConfig,
-) -> anyhow::Result<NodeBuilder<SingleWorkloadProjectFamily<BurnWorkloadAdapter<W>>>>
-where
-    W: BurnWorkload + Clone,
-{
-    connect(target, release_manifest, workload, config)
 }
 
 /// Builds a single-workload node builder from a Burn-native workload.

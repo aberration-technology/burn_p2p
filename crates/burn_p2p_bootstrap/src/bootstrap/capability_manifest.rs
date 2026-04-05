@@ -8,10 +8,10 @@ pub(super) fn compiled_feature_set() -> CompiledFeatureSet {
     if cfg!(feature = "metrics") {
         features.insert(EdgeFeature::Metrics);
     }
-    if cfg!(feature = "portal") {
+    if cfg!(feature = "browser-edge") {
         features.insert(EdgeFeature::Portal);
     }
-    if cfg!(feature = "browser-edge") {
+    if cfg!(feature = "browser-join") {
         features.insert(EdgeFeature::BrowserEdge);
     }
     if cfg!(feature = "rbac") {
@@ -60,7 +60,7 @@ pub(super) fn configured_auth_providers(
 
 pub(super) fn configured_service_set(config: &BootstrapDaemonConfig) -> ConfiguredServiceSet {
     let mut features = BTreeSet::from([EdgeFeature::AdminHttp, EdgeFeature::Metrics]);
-    if config.optional_services.portal_enabled {
+    if config.optional_services.browser_edge_enabled {
         features.insert(EdgeFeature::Portal);
     }
     if config.optional_services.browser_mode != BrowserMode::Disabled {
@@ -125,19 +125,20 @@ pub(super) fn validate_compiled_feature_support_with(
     compiled: &CompiledFeatureSet,
     config: &BootstrapDaemonConfig,
 ) -> Result<(), BootstrapCompositionError> {
-    if config.optional_services.portal_enabled && !compiled.features.contains(&EdgeFeature::Portal)
+    if config.optional_services.browser_edge_enabled
+        && !compiled.features.contains(&EdgeFeature::Portal)
     {
         return Err(BootstrapCompositionError::MissingCompiledFeature {
-            service: "portal",
-            feature: "portal",
+            service: "browser edge",
+            feature: "browser-edge",
         });
     }
     if config.optional_services.browser_mode != BrowserMode::Disabled
         && !compiled.features.contains(&EdgeFeature::BrowserEdge)
     {
         return Err(BootstrapCompositionError::MissingCompiledFeature {
-            service: "browser edge",
-            feature: "browser-edge",
+            service: "browser join",
+            feature: "browser-join",
         });
     }
     if config.optional_services.social_mode != SocialMode::Disabled
@@ -210,7 +211,7 @@ pub(super) fn portal_mode(
     config: &BootstrapDaemonConfig,
     auth_state: Option<&Arc<AuthPortalState>>,
 ) -> PortalMode {
-    if !config.optional_services.portal_enabled {
+    if !config.optional_services.browser_edge_enabled {
         PortalMode::Disabled
     } else if auth_state.is_some() {
         PortalMode::Interactive
@@ -274,11 +275,11 @@ pub(super) fn edge_service_manifest(
     }
 }
 
-pub(super) fn portal_route_enabled(config: &BootstrapDaemonConfig) -> bool {
-    config.optional_services.portal_enabled
+pub(super) fn browser_edge_route_enabled(config: &BootstrapDaemonConfig) -> bool {
+    config.optional_services.browser_edge_enabled
 }
 
-pub(super) fn browser_edge_enabled(config: &BootstrapDaemonConfig) -> bool {
+pub(super) fn browser_join_enabled(config: &BootstrapDaemonConfig) -> bool {
     config.optional_services.browser_mode != BrowserMode::Disabled
 }
 

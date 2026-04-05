@@ -9,8 +9,10 @@ publish = false
 anyhow.workspace = true
 burn_p2p = { path = "../crates/burn_p2p" }
 burn_p2p_core = { path = "../crates/burn_p2p_core" }
+burn_p2p_metrics = { path = "../crates/burn_p2p_metrics" }
 burn_p2p_security = { path = "../crates/burn_p2p_security" }
 burn_p2p_testkit = { path = "../crates/burn_p2p_testkit" }
+burn_p2p_views = { path = "../crates/burn_p2p_views" }
 chrono.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 serde.workspace = true

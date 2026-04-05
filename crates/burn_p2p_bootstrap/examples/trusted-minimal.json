@@ -32,7 +32,7 @@
   "admin_token": "local-admin",
   "allow_dev_admin_token": true,
   "optional_services": {
-    "portal_enabled": false,
+    "browser_edge_enabled": false,
     "browser_mode": "Disabled",
     "social_mode": "Disabled",
     "profile_mode": "Disabled"

@@ -71,7 +71,7 @@ fn portal_web_client_compiles_for_wasm_target() -> anyhow::Result<()> {
         "--manifest-path",
         "Cargo.toml",
         "-p",
-        "burn_p2p_portal",
+        "burn_p2p_app",
         "--target",
         "wasm32-unknown-unknown",
         "--features",

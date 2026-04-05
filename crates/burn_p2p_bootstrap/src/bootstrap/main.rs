@@ -36,7 +36,7 @@ use burn_p2p_bootstrap::{
     BrowserReceiptSubmissionResponse, BrowserTransportSurface, ReceiptQuery, ReenrollmentStatus,
     TrustBundleExport, TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
 };
-#[cfg(all(feature = "portal", feature = "artifact-publish"))]
+#[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 use burn_p2p_bootstrap::{
     render_artifact_run_summaries_html, render_artifact_run_view_html,
     render_head_artifact_view_html,

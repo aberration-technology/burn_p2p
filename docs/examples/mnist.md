@@ -1,0 +1,279 @@
+# MNIST Demo
+
+`examples/mnist_p2p_demo` is the real downstream-style demo for `burn_p2p`.
+
+It is not a synthetic toy workload. It uses:
+
+- real mnist data from Burn
+- real shard files plus a fetch manifest
+- real trainer lease assignment
+- real validator promotion
+- real reconnect / restart handling
+- real metrics indexing
+- real browser runtime role exercises
+- real browser portal snapshots
+- real browser burn/webgpu wasm execution in the correctness harness
+- real browser dataset latency / bandwidth shaping in the correctness harness
+- real Playwright captures through `cargo xtask e2e mnist`
+
+## Why It Exists
+
+Purpose:
+
+- prove the public Burn-facing API on a familiar workload
+- prove native node roles on one machine
+- prove browser-facing runtime and portal surfaces against a real run
+- prove live browser burn/webgpu execution against the same prepared mnist shards
+- prove artifact sync, checkpoint sync, and shard assignment
+- prove browser shard access stays lease-scoped and http-backed
+- prove browser dataset latency and bandwidth shaping change end-to-end timing
+- prove restart recovery in the core run
+- prove bounded-adversary behavior in the correctness harness
+- give downstream users one complete example crate to copy
+
+## Topology
+
+The demo runs one net with:
+
+- one validator / authority node
+- one helper node with bootstrap, relay-helper, and archive roles
+- one viewer node with portal-viewer and browser-observer roles
+- three initial native trainers
+- one late-joining native trainer
+- one restarted native trainer reusing its storage root
+
+Browser-facing runtime drills also exercise:
+
+- one browser viewer role
+- one browser verifier role
+- one browser wgpu trainer role
+
+It also runs two experiments on the same net:
+
+- `mnist-baseline`
+- `mnist-low-lr`
+
+The baseline experiment uses a higher learning rate. The low-lr experiment
+shares the same net and data shape but should move more slowly. The summary
+checks `baseline_outperformed_low_lr`.
+
+The core example crate stays native-focused.
+
+`cargo xtask e2e mnist` layers correctness tooling on top of the core run:
+
+- portal bundle export and Playwright capture
+- live browser burn/webgpu probe against leased mnist shards
+- latency / bandwidth-shaped browser dataset fetch profiles
+- adversarial annex checks from `burn_p2p_testkit`
+- summary assertions over both the native run and the browser probe
+
+## Files
+
+Main files:
+
+- `examples/mnist_p2p_demo/src/main.rs`: CLI entrypoint and export writing
+- `examples/mnist_p2p_demo/src/core.rs`: core happy-path burn_p2p setup,
+  node topology, experiment setup, training windows, and checkpoint flow
+- `examples/mnist_p2p_demo/src/scenario.rs`: thin wrapper from core run to
+  correctness export
+- `examples/mnist_p2p_demo/src/data.rs`: mnist subset preparation, shard files,
+  fetch manifest, lease-to-batch loading
+- `examples/mnist_p2p_demo/src/correctness/browser.rs`: browser runtime drills,
+  browser dataset access probe, browser portal export contracts
+- `examples/mnist_p2p_demo/src/correctness/export.rs`: summary and browser
+  export contracts
+- `examples/mnist_p2p_demo/src/correctness/report.rs`: correctness summaries
+  derived from the core run
+- `examples/mnist_p2p_demo/src/model.rs`: model, train/eval steps, custom
+  metrics
+
+## Burn Integration
+
+The demo uses the public Burn facade, not internal-only seams.
+
+Core path:
+
+- start from `burn::train::Learner::new(...)`
+- use `burn_p2p::burn::from_loaders(...)` for trainer nodes
+- use `burn_p2p::burn::from_learner(...)` for validator, helper, and viewer nodes
+- prepare the train dataset with `burn_p2p::burn::BurnShardedDataset::write_local(...)`
+- keep task-specific hooks in:
+  - `.with_sharded_dataset(...)`
+  - `.with_evaluate(...)`
+  - `.with_step_metrics(...)`
+  - `.with_window_metrics(...)`
+- spawn each node from the smallest builder that matches its role
+
+Why `BurnShardedDataset` matters:
+
+- the same public burn api still starts from `from_loaders(...)`
+- train data is fetched lease-by-lease through the runtime cache path
+- the same prepared dataset can be flipped to http upstream for browser or wasm
+  trainers with `.with_http_upstream(...)`
+- the demo proves shard fetch / assignment behavior without dropping to
+  the advanced `burn_p2p::burn::advanced` hooks
+
+Browser data transport in the demo is intentionally not p2p shard gossip:
+
+- browser-style shard access reads `fetch-manifest.json` from the dataset origin
+- browser-style shard access fetches only the assigned shard locators for the
+  active lease
+- mnist shard bytes are served from the prepared dataset root over http
+- shard payloads are not broadcast over the peer overlay
+- native dataset preparation uses Burn's mnist dataset helpers on the host side
+- the browser wasm probe does not depend on `burn/vision`; it reads the
+  prepared shard records directly and trains with `burn["webgpu", "autodiff"]`
+
+## Portal And Testkit
+
+`portal` here means the optional reference dioxus product surface.
+
+- `burn_p2p_app` owns the reference browser/native ui tree
+- bootstrap serves the live portal snapshot from `/portal/snapshot` when the
+  `browser-edge` feature is enabled
+- static portal assets can be built separately and hosted from a cdn
+- live data still comes from the bootstrap/browser-edge http surface
+
+`burn_p2p_testkit` is not part of the downstream mnist app.
+
+- the core `mnist_p2p_demo` crate no longer depends on `burn_p2p_testkit`
+- `burn_p2p_testkit` is the repo's qa/simulation harness
+- `cargo xtask e2e mnist` uses it for portal capture bundles, live browser wasm
+  probing, adversarial annex checks, and related correctness tooling
+
+## Custom Metrics
+
+The demo exports more than just loss:
+
+- `accuracy`
+- `loss`
+- `digit_zero_accuracy`
+- `digit_zero_examples`
+- `parameter_count`
+
+Those metrics show up in:
+
+- trainer lease summaries
+- validation metric previews
+- browser portal export snapshots
+- xtask summary artifacts
+
+## Commands
+
+Run the example crate directly:
+
+```bash
+cargo run --manifest-path examples/mnist_p2p_demo/Cargo.toml -- --output ./target/mnist-demo
+```
+
+Run the full local sanity lane:
+
+```bash
+cargo xtask e2e mnist --profile smoke --keep-artifacts
+```
+
+Thin wrapper:
+
+```bash
+just e2e-mnist
+```
+
+## What `cargo xtask e2e mnist` Proves
+
+The xtask lane runs the example, then:
+
+- reads `browser-export.json`
+- reads `correctness.json`
+- builds a browser portal bundle
+- runs Playwright against viewer / validate / train / network scenarios
+- builds a wasm browser probe from the same downstream example crate
+- runs live browser burn/webgpu training and eval against leased mnist shards
+- runs fast and slow browser fetch profiles with injected latency/bandwidth
+- stores screenshots and trace zips
+- writes a compact core `summary.json`
+- writes a separate `correctness.json`
+
+Checks and exported signals covered by `summary.json`, `correctness.json`, and
+the top-level xtask artifact summary:
+
+- `baseline_outperformed_low_lr`
+- `late_joiner_synced_checkpoint`
+- `shard_assignments_are_distinct`
+- `browser_dataset_access.fetch_manifest_requested`
+- `browser_dataset_access.fetched_only_leased_shards`
+- `browser_dataset_access.shards_distributed_over_p2p == false`
+- `browser_wasm_probe.browser_execution.live_browser_training`
+- `browser_wasm_probe.browser_execution.browser_latency_emulated`
+- `browser_wasm_probe.browser_execution.slower_profile_increased_total_time`
+- `resilience.trainer_restart_reconnected`
+- `resilience.trainer_restart_resumed_training`
+- `correctness.adversarial.reports[*].malicious_update_acceptance_rate == 0.0`
+- `assessment.browser_runtime_roles_exercised`
+- per-experiment initial and final accuracy
+- per-node role summaries
+- per-lease shard assignments and sample counts
+- train-window timing summaries
+- adversarial annex summaries for replay / free-rider / nan-inf / late-flood
+
+## Artifacts
+
+Direct example output:
+
+- `summary.json`
+- `correctness.json`
+- `browser-export.json`
+- `dataset/`
+- `nodes/`
+
+Xtask artifact root:
+
+- `target/test-artifacts/e2e-mnist/<run-id>/summary.json`
+- `target/test-artifacts/e2e-mnist/<run-id>/metrics/mnist-summary.json`
+- `target/test-artifacts/e2e-mnist/<run-id>/metrics/mnist-correctness.json`
+- `target/test-artifacts/e2e-mnist/<run-id>/mnist-demo/`
+- `target/test-artifacts/e2e-mnist/<run-id>/playwright/`
+- `target/test-artifacts/e2e-mnist/<run-id>/browser-wasm-probe/`
+- `target/test-artifacts/e2e-mnist/<run-id>/screenshots/`
+- `target/test-artifacts/e2e-mnist/<run-id>/playwright-traces/`
+
+## Browser Coverage
+
+The exported browser portal scenarios cover:
+
+- viewer
+- validate
+- train
+- network
+
+Separate browser runtime drills cover:
+
+- browser viewer state
+- browser verifier receipt flow
+- browser wgpu trainer receipt flow
+- transport stall and recovery
+- lease-scoped http shard fetching
+- live browser burn/webgpu training and eval through the wasm probe
+- latency-shaped dataset fetch over the prepared http shard origin
+
+Current split:
+
+- the core `mnist_p2p_demo` binary proves the native p2p workload path
+- the xtask correctness layer proves browser burn/webgpu execution and
+  latency-shaped shard fetching against the same prepared dataset
+- the xtask correctness layer also owns the adversarial annex
+- browser shards still come from the dataset http origin, not the peer overlay
+
+## When To Copy This
+
+Use the mnist demo when you want:
+
+- a complete downstream example crate
+- a real shard-backed Burn workload
+- a multi-role single-machine sanity environment
+- a reference for custom metrics and portal surfacing
+
+Use `burn_ndarray_runtime.rs` when you want:
+
+- the smallest Burn-facing example
+- a simpler local integration path
+- loader-oriented happy-path usage without the full shard-backed scenario

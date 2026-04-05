@@ -1,6 +1,7 @@
-use burn_p2p_ui::{
-    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppNetworkView, BrowserAppSurface,
-    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+use burn_p2p_views::{
+    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppMetricPreview,
+    BrowserAppNetworkView, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
+    BrowserAppViewerView,
 };
 
 use crate::{
@@ -55,6 +56,10 @@ pub fn build_node_app_view(
             entry.current_revision_id.as_str()
         )
     });
+    let validation_metric_preview = selected
+        .as_ref()
+        .map(|entry| selected_head_metric_preview(snapshot, entry))
+        .unwrap_or_default();
 
     BrowserAppClientView {
         network_id: snapshot
@@ -90,11 +95,13 @@ pub fn build_node_app_view(
             checked_chunks: Some(snapshot.in_flight_transfers.len()),
             emitted_receipt_id: None,
             evaluation_summary: Some(validation_summary(snapshot)),
+            metric_preview: validation_metric_preview,
         },
         training: BrowserAppTrainingView {
             train_available,
             can_train,
             active_assignment,
+            slice_status: training_slice_status(snapshot),
             latest_head_id,
             cached_chunk_artifacts: snapshot.in_flight_transfers.len(),
             cached_microshards: 0,
@@ -103,6 +110,8 @@ pub fn build_node_app_view(
             last_window_secs: max_window_secs,
             optimizer_steps: None,
             accepted_samples: None,
+            slice_target_samples: None,
+            slice_remaining_samples: None,
             last_loss: None,
             publish_latency_ms: None,
             throughput_summary: Some(training_summary(snapshot)),
@@ -229,6 +238,71 @@ fn entry_summary(entry: &ExperimentDirectoryEntry) -> BrowserAppExperimentSummar
     }
 }
 
+fn selected_head_metric_preview(
+    snapshot: &NodeTelemetrySnapshot,
+    entry: &ExperimentDirectoryEntry,
+) -> Vec<BrowserAppMetricPreview> {
+    snapshot
+        .control_plane
+        .head_announcements
+        .iter()
+        .rev()
+        .find(|announcement| {
+            announcement.head.experiment_id == entry.experiment_id
+                && announcement.head.revision_id == entry.current_revision_id
+                && entry
+                    .current_head_id
+                    .as_ref()
+                    .is_none_or(|head_id| &announcement.head.head_id == head_id)
+        })
+        .map(|announcement| metric_preview(&announcement.head.metrics))
+        .unwrap_or_default()
+}
+
+fn metric_preview(
+    metrics: &std::collections::BTreeMap<String, crate::MetricValue>,
+) -> Vec<BrowserAppMetricPreview> {
+    let mut preferred = ["accuracy", "loss", "train_loss_mean", "digit_zero_accuracy"]
+        .into_iter()
+        .filter_map(|key| {
+            metrics.get(key).map(|value| BrowserAppMetricPreview {
+                label: key.to_owned(),
+                value: metric_value_label(value),
+            })
+        })
+        .collect::<Vec<_>>();
+    let preferred_labels = preferred
+        .iter()
+        .map(|preview| preview.label.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let remaining = metrics
+        .iter()
+        .filter(|(key, _)| !preferred_labels.contains(key.as_str()))
+        .take(4usize.saturating_sub(preferred.len()))
+        .map(|(key, value)| BrowserAppMetricPreview {
+            label: key.clone(),
+            value: metric_value_label(value),
+        });
+    preferred.extend(remaining);
+    preferred
+}
+
+fn metric_value_label(value: &crate::MetricValue) -> String {
+    match value {
+        crate::MetricValue::Integer(value) => value.to_string(),
+        crate::MetricValue::Float(value) => format!("{value:.4}"),
+        crate::MetricValue::Bool(value) => {
+            if *value {
+                "true".to_owned()
+            } else {
+                "false".to_owned()
+            }
+        }
+        crate::MetricValue::Text(value) => value.clone(),
+    }
+}
+
 fn default_surface(
     snapshot: &NodeTelemetrySnapshot,
     can_validate: bool,
@@ -253,13 +327,13 @@ fn runtime_label(snapshot: &NodeTelemetrySnapshot) -> String {
         NodeRuntimeState::Admitting => "admitting",
         NodeRuntimeState::DirectorySync => "directory sync",
         NodeRuntimeState::HeadSync => "head sync",
-        NodeRuntimeState::IdleReady => "idle",
-        NodeRuntimeState::LeasePending => "lease pending",
-        NodeRuntimeState::TrainingWindow => "trainer",
+        NodeRuntimeState::IdleReady => "ready",
+        NodeRuntimeState::LeasePending => "waiting",
+        NodeRuntimeState::TrainingWindow => "train",
         NodeRuntimeState::PublishingUpdate => "publishing",
         NodeRuntimeState::WaitingMerge => "waiting merge",
-        NodeRuntimeState::PassiveValidator => "validator",
-        NodeRuntimeState::PassiveArchive => "archive",
+        NodeRuntimeState::PassiveValidator => "validate",
+        NodeRuntimeState::PassiveArchive => "observe",
         NodeRuntimeState::Quarantined => "quarantined",
         NodeRuntimeState::Revoked => "revoked",
         NodeRuntimeState::ShuttingDown => "shutting down",
@@ -331,10 +405,24 @@ fn validation_summary(snapshot: &NodeTelemetrySnapshot) -> String {
 
 fn training_summary(snapshot: &NodeTelemetrySnapshot) -> String {
     match snapshot.node_state {
-        NodeRuntimeState::TrainingWindow => "training window active".into(),
+        NodeRuntimeState::TrainingWindow => "training live".into(),
         NodeRuntimeState::PublishingUpdate => "publishing local update".into(),
         NodeRuntimeState::LeasePending => "waiting for lease".into(),
         _ => "native training runtime".into(),
+    }
+}
+
+fn training_slice_status(snapshot: &NodeTelemetrySnapshot) -> String {
+    match snapshot.slot_states.first() {
+        Some(SlotRuntimeState::Assigned(_)) => "assignment ready".into(),
+        Some(SlotRuntimeState::MaterializingBase(_)) => "materializing base checkpoint".into(),
+        Some(SlotRuntimeState::FetchingShards(_)) => "downloading assigned slice".into(),
+        Some(SlotRuntimeState::Training(_)) => "training assigned slice".into(),
+        Some(SlotRuntimeState::Publishing(_)) => "publishing slice update".into(),
+        Some(SlotRuntimeState::CoolingDown(_)) => "cooling down after slice".into(),
+        Some(SlotRuntimeState::Migrating(_)) => "migrating to the next slice".into(),
+        Some(SlotRuntimeState::Blocked { reason, .. }) => reason.clone(),
+        Some(SlotRuntimeState::Unassigned) | None => "waiting for work".into(),
     }
 }
 

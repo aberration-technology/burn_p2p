@@ -20,7 +20,7 @@ pub(super) struct BootstrapDaemonConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BootstrapOptionalServicesConfig {
     #[serde(default = "default_true")]
-    pub portal_enabled: bool,
+    pub browser_edge_enabled: bool,
     #[serde(default = "default_browser_mode")]
     pub browser_mode: BrowserMode,
     #[serde(default = "default_social_mode")]
@@ -38,7 +38,7 @@ pub(super) struct BootstrapArtifactPublicationConfig {
 impl Default for BootstrapOptionalServicesConfig {
     fn default() -> Self {
         Self {
-            portal_enabled: true,
+            browser_edge_enabled: true,
             browser_mode: default_browser_mode(),
             social_mode: default_social_mode(),
             profile_mode: ProfileMode::Disabled,

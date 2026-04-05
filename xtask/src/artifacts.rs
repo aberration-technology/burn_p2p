@@ -100,17 +100,29 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn copy_files_with_extension(src: &Path, extension: &str, dst: &Path) -> anyhow::Result<()> {
+pub fn copy_files_with_extension_tree(
+    src: &Path,
+    extension: &str,
+    dst: &Path,
+) -> anyhow::Result<()> {
     if !src.exists() {
         return Ok(());
     }
     fs::create_dir_all(dst)?;
     visit_files(src, &mut |path| {
         if path.extension().and_then(|value| value.to_str()) == Some(extension) {
-            let file_name = path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("missing file name for {}", path.display()))?;
-            fs::copy(path, dst.join(file_name))?;
+            let relative = path.strip_prefix(src).with_context(|| {
+                format!(
+                    "failed to derive relative artifact path for {} from {}",
+                    path.display(),
+                    src.display()
+                )
+            })?;
+            let target = dst.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(path, target)?;
         }
         Ok(())
     })

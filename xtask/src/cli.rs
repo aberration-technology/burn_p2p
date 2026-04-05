@@ -84,6 +84,8 @@ pub enum E2eCommand {
     Smoke(RunArgs),
     /// Run the mixed native/browser smoke suite.
     Mixed(RunArgs),
+    /// Run the downstream MNIST single-machine sanity suite and browser captures.
+    Mnist(RunArgs),
     /// Run publication and metrics persistence smoke.
     Services(RunArgs),
 }

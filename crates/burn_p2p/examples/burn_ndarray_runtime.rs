@@ -7,16 +7,20 @@ use std::{
 
 use burn::{
     backend::{Autodiff, NdArray},
+    data::{
+        dataloader::{DataLoaderBuilder, batcher::Batcher},
+        dataset::InMemDataset,
+    },
     module::Module,
     nn::{Linear, LinearConfig},
     optim::SgdConfig,
     tensor::{
-        ElementConversion, Tensor,
+        ElementConversion, Tensor, TensorData,
         backend::{AutodiffBackend, Backend},
     },
     train::{InferenceStep, ItemLazy, Learner, TrainOutput, TrainStep},
 };
-use burn_p2p::burn::{from_learner, inspect_module};
+use burn_p2p::burn::{from_loaders, inspect_module};
 use burn_p2p::{
     ClientReleaseManifest, ContentId, GenesisSpec, MetricValue, NetworkManifest, RoleSet,
     StorageConfig, SupportedWorkload, WorkloadId,
@@ -47,6 +51,30 @@ impl<B: Backend> TinyModel<B> {
 struct TinyBatch<B: Backend> {
     inputs: Tensor<B, 2>,
     targets: Tensor<B, 2>,
+}
+
+#[derive(Clone, Debug)]
+struct TinyItem {
+    value: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TinyBatcher;
+
+impl<B: Backend> Batcher<B, TinyItem, TinyBatch<B>> for TinyBatcher {
+    fn batch(&self, items: Vec<TinyItem>, device: &B::Device) -> TinyBatch<B> {
+        let mut inputs = Vec::with_capacity(items.len() * 4);
+        let mut targets = Vec::with_capacity(items.len() * 2);
+        for item in items {
+            inputs.extend([item.value, item.value + 1.0, item.value * 0.5, 1.0]);
+            targets.extend([item.value * 0.3, item.value * 0.7]);
+        }
+        let batch_len = targets.len() / 2;
+        TinyBatch {
+            inputs: Tensor::from_data(TensorData::new(inputs, [batch_len, 4]), device),
+            targets: Tensor::from_data(TensorData::new(targets, [batch_len, 2]), device),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -86,13 +114,6 @@ impl<B: AutodiffBackend> TrainStep for TinyModel<B> {
         let grads = loss.backward();
 
         TrainOutput::new(self, grads, TinyMetricItem { loss: loss_value })
-    }
-}
-
-fn batch_from_value<B: Backend>(value: f32, device: &B::Device) -> TinyBatch<B> {
-    TinyBatch {
-        inputs: Tensor::from_data([[value, value + 1.0, value * 0.5, 1.0]], device),
-        targets: Tensor::from_data([[value * 0.3, value * 0.7]], device),
     }
 }
 
@@ -159,22 +180,27 @@ fn main() -> anyhow::Result<()> {
 
     let make_workload = || -> anyhow::Result<_> {
         let device = <RuntimeBackend as Backend>::Device::default();
+        let train_loader =
+            DataLoaderBuilder::new(TinyBatcher)
+                .batch_size(2)
+                .build(InMemDataset::new(vec![
+                    TinyItem { value: 4.0 },
+                    TinyItem { value: 6.0 },
+                ]));
+        let eval_loader = DataLoaderBuilder::new(TinyBatcher)
+            .batch_size(1)
+            .build(InMemDataset::new(vec![TinyItem { value: 5.0 }]));
 
-        Ok(from_learner(
+        Ok(from_loaders(
             Learner::new(
                 TinyModel::<RuntimeBackend>::new(&device),
                 SgdConfig::new().init(),
                 0.05,
             ),
             device,
+            train_loader,
+            eval_loader,
         )
-        // p2p owns the window orchestration. burn still owns the per-batch step.
-        .with_batches(|device| {
-            Ok(vec![
-                batch_from_value::<RuntimeBackend>(4.0, device),
-                batch_from_value::<RuntimeBackend>(6.0, device),
-            ])
-        })
         .with_step_metrics(|_step_index, output, metrics| {
             metrics.insert("loss".into(), MetricValue::Float(output.loss));
             Ok(())

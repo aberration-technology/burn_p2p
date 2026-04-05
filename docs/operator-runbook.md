@@ -40,7 +40,7 @@ Compile/features:
 
 Should not require:
 
-- `burn_p2p_portal`
+- `burn_p2p_app`
 - `burn_p2p_social`
 - `burn_p2p_browser`
 - GitHub/OIDC/OAuth provider crates
@@ -56,8 +56,8 @@ Compile/features:
 
 - `admin-http`
 - `metrics`
-- `portal`
 - `browser-edge`
+- `browser-join`
 - one of `auth-static`, `auth-external`, or internal `auth-oidc`
 
 ### enterprise-sso
@@ -72,13 +72,13 @@ Compile/features:
 
 - `admin-http`
 - `metrics`
-- `portal`
 - `rbac`
 - `auth-oidc`
 
 Optional:
 
 - `browser-edge`
+- `browser-join`
 - `social`
 
 ### community-web
@@ -93,8 +93,8 @@ Compile/features:
 
 - `admin-http`
 - `metrics`
-- `portal`
 - `browser-edge`
+- `browser-join`
 - `rbac`
 - `auth-github`
 - optional `auth-oidc`

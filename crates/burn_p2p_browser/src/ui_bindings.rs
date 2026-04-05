@@ -6,7 +6,7 @@ use burn_p2p::{
     browser_join_policy_for_entry,
 };
 use burn_p2p_core::{BrowserDirectorySnapshot, BrowserPortalSnapshot};
-use burn_p2p_ui::{
+use burn_p2p_views::{
     AuthPortalView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
     BrowserExperimentPickerView, ExperimentPickerView, ParticipantPortalView,
 };

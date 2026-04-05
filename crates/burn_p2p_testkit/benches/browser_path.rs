@@ -11,6 +11,7 @@ use burn_p2p::{
     PrincipalSession, RevisionId, RevisionManifest, StudyId, WindowActivation, WindowId,
     WorkloadId,
 };
+use burn_p2p_app::render_browser_app_static_html;
 use burn_p2p_bootstrap::{
     BootstrapAdminState, BrowserDirectorySnapshot, BrowserLeaderboardSnapshot,
 };
@@ -23,8 +24,7 @@ use burn_p2p_core::{
     ContributionReceipt, ContributionReceiptId, LeaderboardSnapshot, SchemaEnvelope,
     SignatureAlgorithm, SignatureMetadata, SignedPayload,
 };
-use burn_p2p_portal::render_browser_app_static_html;
-use burn_p2p_ui::{BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
 use chrono::{Duration, Utc};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use semver::Version;

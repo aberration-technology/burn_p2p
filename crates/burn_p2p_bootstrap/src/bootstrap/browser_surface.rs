@@ -21,7 +21,7 @@ pub(super) fn browser_transport_surface(
     plan: &BootstrapPlan,
     config: &BootstrapDaemonConfig,
 ) -> BrowserTransportSurface {
-    if !browser_edge_enabled(config) {
+    if !browser_join_enabled(config) {
         return BrowserTransportSurface {
             webrtc_direct: false,
             webtransport_gateway: false,

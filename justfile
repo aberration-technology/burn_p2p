@@ -31,6 +31,9 @@ ci-publish:
 e2e:
     cargo xtask e2e smoke
 
+e2e-mnist:
+    cargo xtask e2e mnist
+
 e2e-mixed:
     cargo xtask e2e mixed
 

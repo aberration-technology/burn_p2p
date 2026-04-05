@@ -149,7 +149,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    #[cfg(any(feature = "portal", feature = "metrics-indexer"))]
+    #[cfg(any(feature = "browser-edge", feature = "metrics-indexer"))]
     use burn_p2p::DatasetViewId;
     use burn_p2p::{
         ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
@@ -177,7 +177,7 @@ mod tests {
     use semver::{Version, VersionReq};
     use tempfile::TempDir;
 
-    #[cfg(feature = "portal")]
+    #[cfg(feature = "browser-edge")]
     use super::render_dashboard_html;
     use super::{
         ActiveExperiment, AdminAction, AdminResult, BootstrapAdminState,
@@ -1190,27 +1190,27 @@ mod tests {
             Utc::now(),
             Some(120),
         );
-        diagnostics.robustness_panel = Some(burn_p2p_ui::RobustnessPanelView {
+        diagnostics.robustness_panel = Some(burn_p2p_views::RobustnessPanelView {
             preset: burn_p2p_core::RobustnessPreset::Balanced,
             policy: burn_p2p_core::RobustnessPolicy::balanced(),
-            rejection_reasons: vec![burn_p2p_ui::RobustnessReasonCountView {
+            rejection_reasons: vec![burn_p2p_views::RobustnessReasonCountView {
                 reason: burn_p2p_core::RejectionReason::Replay,
                 count: 1,
             }],
-            trust_scores: vec![burn_p2p_ui::TrustScorePointView {
+            trust_scores: vec![burn_p2p_views::TrustScorePointView {
                 peer_id: PeerId::new("peer-panel"),
                 score: 0.25,
                 quarantined: true,
                 ban_recommended: false,
                 updated_at: Utc::now(),
             }],
-            quarantined_peers: vec![burn_p2p_ui::QuarantinedPeerView {
+            quarantined_peers: vec![burn_p2p_views::QuarantinedPeerView {
                 peer_id: PeerId::new("peer-panel"),
                 reducer_eligible: false,
                 validator_eligible: false,
                 ban_recommended: false,
             }],
-            canary_regressions: vec![burn_p2p_ui::CanaryRegressionView {
+            canary_regressions: vec![burn_p2p_views::CanaryRegressionView {
                 candidate_head_id: HeadId::new("candidate-panel"),
                 regression_margin: 0.1,
                 detected_backdoor_trigger: false,
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(metrics.contains("burn_p2p_robustness_alerts 4"));
     }
 
-    #[cfg(feature = "portal")]
+    #[cfg(feature = "browser-edge")]
     #[test]
     fn dashboard_html_references_status_and_event_endpoints() {
         let html = render_dashboard_html(&burn_p2p_core::NetworkId::new("mainnet"));

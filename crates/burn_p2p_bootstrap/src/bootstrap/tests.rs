@@ -30,7 +30,7 @@ use burn_p2p::{
     PeerRoleSet, PrincipalId, ProfileMode, SocialMode, TrustedIssuer,
 };
 #[cfg(any(
-    feature = "portal",
+    feature = "browser-edge",
     feature = "metrics-indexer",
     feature = "artifact-s3"
 ))]
@@ -42,8 +42,8 @@ use burn_p2p::{
     LeaseId, PeerWindowMetrics, PeerWindowStatus, ReducerCohortMetrics, ReducerCohortStatus,
 };
 #[cfg(all(
-    feature = "portal",
     feature = "browser-edge",
+    feature = "browser-join",
     feature = "social",
     feature = "auth-static"
 ))]
@@ -66,8 +66,8 @@ use burn_p2p_core::AuthProvider;
 use burn_p2p_core::BackendClass;
 use burn_p2p_core::{ClientPlatform, ContentId, NetworkId, RevocationEpoch};
 #[cfg(all(
-    feature = "portal",
     feature = "browser-edge",
+    feature = "browser-join",
     feature = "social",
     feature = "auth-static"
 ))]
@@ -138,7 +138,7 @@ impl Drop for HttpTestServer {
     }
 }
 
-#[cfg(all(feature = "portal", feature = "auth-github"))]
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
 fn spawn_provider_json_server(
     assert_request: impl Fn(&str) + Send + 'static,
     response_status: &'static str,
@@ -835,7 +835,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
     });
 }
 
-#[cfg(all(feature = "portal", feature = "auth-github"))]
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
 #[test]
 fn browser_portal_client_completes_github_login_via_exchange_callback() {
     let (exchange_url, exchange_server) = spawn_provider_json_server(
@@ -968,7 +968,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
         .expect("join provider userinfo server");
 }
 
-#[cfg(all(feature = "portal", feature = "auth-github"))]
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
 #[test]
 fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
     let (token_url, token_server) = spawn_provider_json_server(
@@ -1116,7 +1116,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         .expect("join provider userinfo server");
 }
 
-#[cfg(all(feature = "portal", feature = "auth-github"))]
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
 #[test]
 fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_router() {
     let (exchange_url, exchange_server) = spawn_provider_json_server(
@@ -1279,8 +1279,8 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
 }
 
 #[cfg(all(
-    feature = "portal",
     feature = "browser-edge",
+    feature = "browser-join",
     feature = "social",
     feature = "rbac",
     feature = "auth-static"
@@ -1365,7 +1365,7 @@ fn disabled_optional_services_hide_routes_and_capabilities() {
             admin_token: None,
             allow_dev_admin_token: false,
             optional_services: BootstrapOptionalServicesConfig {
-                portal_enabled: false,
+                browser_edge_enabled: false,
                 browser_mode: BrowserMode::Disabled,
                 social_mode: SocialMode::Disabled,
                 profile_mode: ProfileMode::Disabled,
@@ -1439,7 +1439,7 @@ fn disabled_optional_services_hide_routes_and_capabilities() {
     assert!(browser_receipts.starts_with("HTTP/1.1 404 Not Found"));
 }
 
-#[cfg(all(feature = "portal", feature = "browser-edge", feature = "social"))]
+#[cfg(all(feature = "browser-edge", feature = "browser-join", feature = "social"))]
 #[test]
 fn portal_hides_disabled_browser_auth_and_social_flows() {
     let temp = tempdir().expect("temp dir");
@@ -1452,7 +1452,7 @@ fn portal_hides_disabled_browser_auth_and_social_flows() {
             admin_token: None,
             allow_dev_admin_token: false,
             optional_services: BootstrapOptionalServicesConfig {
-                portal_enabled: true,
+                browser_edge_enabled: true,
                 browser_mode: BrowserMode::Disabled,
                 social_mode: SocialMode::Disabled,
                 profile_mode: ProfileMode::Disabled,
@@ -1508,7 +1508,7 @@ fn startup_validation_rejects_uncompiled_optional_services() {
         admin_token: None,
         allow_dev_admin_token: false,
         optional_services: BootstrapOptionalServicesConfig {
-            portal_enabled: true,
+            browser_edge_enabled: true,
             browser_mode: BrowserMode::Disabled,
             social_mode: SocialMode::Public,
             profile_mode: ProfileMode::Disabled,
@@ -1523,8 +1523,8 @@ fn startup_validation_rejects_uncompiled_optional_services() {
         features: BTreeSet::from([EdgeFeature::AdminHttp, EdgeFeature::Metrics]),
     };
     let error = validate_compiled_feature_support_with(&compiled, &config)
-        .expect_err("portal and social should require compiled features");
-    assert!(error.to_string().contains("portal"));
+        .expect_err("browser edge and social should require compiled features");
+    assert!(error.to_string().contains("browser edge"));
 }
 
 #[test]
@@ -1709,8 +1709,8 @@ fn deployment_profile_examples_deserialize() {
 }
 
 #[cfg(all(
-    feature = "portal",
     feature = "browser-edge",
+    feature = "browser-join",
     feature = "social",
     feature = "auth-static"
 ))]
@@ -2087,7 +2087,11 @@ fn http_routes_serve_status_and_static_auth_flow() {
     assert_eq!(receipts.as_array().expect("receipts array").len(), 2);
 }
 
-#[cfg(all(feature = "portal", feature = "auth-github", feature = "auth-oidc"))]
+#[cfg(all(
+    feature = "browser-edge",
+    feature = "auth-github",
+    feature = "auth-oidc"
+))]
 #[test]
 fn github_and_oidc_routes_issue_provider_specific_sessions() {
     let temp = tempdir().expect("temp dir");
@@ -3054,8 +3058,8 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
     feature = "metrics-indexer",
     feature = "artifact-publish",
     feature = "artifact-download",
-    feature = "portal",
-    feature = "browser-edge"
+    feature = "browser-edge",
+    feature = "browser-join"
 ))]
 #[test]
 fn metrics_routes_export_snapshots_ledger_and_head_views() {

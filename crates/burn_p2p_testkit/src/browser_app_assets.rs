@@ -7,9 +7,9 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use wasm_bindgen_cli_support::Bindgen;
 
-const BROWSER_APP_LOADER: &str = r#"import init from "./burn_p2p_portal.js";
+const BROWSER_APP_LOADER: &str = r#"import init from "./burn_p2p_app.js";
 
-await init({ module_or_path: new URL("./burn_p2p_portal_bg.wasm", import.meta.url) });
+await init({ module_or_path: new URL("./burn_p2p_app_bg.wasm", import.meta.url) });
 "#;
 
 fn workspace_root() -> PathBuf {
@@ -48,16 +48,15 @@ pub fn build_browser_app_web_assets(root: impl AsRef<Path>) -> Result<()> {
             .arg("--manifest-path")
             .arg(workspace_root.join("Cargo.toml"))
             .arg("-p")
-            .arg("burn_p2p_portal")
+            .arg("burn_p2p_app")
             .arg("--target")
             .arg("wasm32-unknown-unknown")
             .arg("--features")
             .arg("web-client"),
-        "cargo build burn_p2p_portal wasm client",
+        "cargo build burn_p2p_app wasm client",
     )?;
 
-    let wasm_input =
-        workspace_root.join("target/wasm32-unknown-unknown/debug/burn_p2p_portal.wasm");
+    let wasm_input = workspace_root.join("target/wasm32-unknown-unknown/debug/burn_p2p_app.wasm");
     ensure!(
         wasm_input.exists(),
         "missing wasm output at {}",
@@ -65,7 +64,7 @@ pub fn build_browser_app_web_assets(root: impl AsRef<Path>) -> Result<()> {
     );
 
     let mut bindgen = Bindgen::new();
-    bindgen.input_path(&wasm_input).out_name("burn_p2p_portal");
+    bindgen.input_path(&wasm_input).out_name("burn_p2p_app");
     bindgen
         .web(true)
         .context("configure wasm-bindgen web target")?;
@@ -76,7 +75,7 @@ pub fn build_browser_app_web_assets(root: impl AsRef<Path>) -> Result<()> {
     fs::write(root.join("browser-app-loader.js"), BROWSER_APP_LOADER)?;
     fs::write(
         root.join("browser-app.css"),
-        burn_p2p_portal::browser_app_stylesheet(),
+        burn_p2p_app::browser_app_stylesheet(),
     )?;
     Ok(())
 }
