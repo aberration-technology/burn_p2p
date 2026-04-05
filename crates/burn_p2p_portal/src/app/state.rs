@@ -1,26 +1,27 @@
-use burn_p2p_ui::{BrowserAppClientView, BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_ui::{NodeAppClientView, NodeAppStaticBootstrap, NodeAppSurface};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RefreshTone {
     Ready,
     Refreshing,
     Healthy,
+    #[cfg(all(target_arch = "wasm32", feature = "web-client"))]
     Error,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct BrowserAppUiState {
-    pub bootstrap: BrowserAppStaticBootstrap,
+pub(crate) struct NodeAppUiState {
+    pub bootstrap: NodeAppStaticBootstrap,
     pub edge_base_url: String,
-    pub active_surface: BrowserAppSurface,
+    pub active_surface: NodeAppSurface,
     pub refresh_status: String,
     pub refresh_detail: String,
     pub refresh_tone: RefreshTone,
-    pub view: Option<BrowserAppClientView>,
+    pub view: Option<NodeAppClientView>,
 }
 
-impl BrowserAppUiState {
-    pub(crate) fn new(bootstrap: BrowserAppStaticBootstrap, edge_base_url: String) -> Self {
+impl NodeAppUiState {
+    pub(crate) fn new(bootstrap: NodeAppStaticBootstrap, edge_base_url: String) -> Self {
         Self {
             active_surface: bootstrap.default_surface,
             refresh_status: "ready".into(),
@@ -32,19 +33,20 @@ impl BrowserAppUiState {
         }
     }
 
+    #[cfg(all(target_arch = "wasm32", feature = "web-client"))]
     pub(crate) fn boot_error(message: impl Into<String>) -> Self {
         Self {
-            bootstrap: BrowserAppStaticBootstrap {
+            bootstrap: NodeAppStaticBootstrap {
                 app_name: "burn_p2p".into(),
                 asset_base_url: String::new(),
                 module_entry_path: String::new(),
                 stylesheet_path: None,
                 default_edge_url: None,
-                default_surface: BrowserAppSurface::Viewer,
+                default_surface: NodeAppSurface::Viewer,
                 refresh_interval_ms: 15_000,
             },
             edge_base_url: String::new(),
-            active_surface: BrowserAppSurface::Viewer,
+            active_surface: NodeAppSurface::Viewer,
             refresh_status: "degraded".into(),
             refresh_detail: message.into(),
             refresh_tone: RefreshTone::Error,
@@ -62,7 +64,7 @@ impl BrowserAppUiState {
         self.refresh_tone = RefreshTone::Refreshing;
     }
 
-    pub(crate) fn apply_view(&mut self, view: BrowserAppClientView) {
+    pub(crate) fn apply_view(&mut self, view: NodeAppClientView) {
         if self.view.is_none() && self.active_surface == self.bootstrap.default_surface {
             self.active_surface = view.default_surface;
         }
@@ -73,18 +75,19 @@ impl BrowserAppUiState {
         self.view = Some(view);
     }
 
+    #[cfg(all(target_arch = "wasm32", feature = "web-client"))]
     pub(crate) fn apply_error(&mut self, message: impl Into<String>) {
         self.refresh_status = "degraded".into();
         self.refresh_detail = message.into();
         self.refresh_tone = RefreshTone::Error;
     }
 
-    pub(crate) fn activate_surface(&mut self, surface: BrowserAppSurface) {
+    pub(crate) fn activate_surface(&mut self, surface: NodeAppSurface) {
         self.active_surface = surface;
     }
 
-    pub(crate) fn view_or_placeholder(&self) -> BrowserAppClientView {
-        self.view.clone().unwrap_or_else(|| BrowserAppClientView {
+    pub(crate) fn view_or_placeholder(&self) -> NodeAppClientView {
+        self.view.clone().unwrap_or_else(|| NodeAppClientView {
             network_id: "loading".into(),
             default_surface: self.active_surface,
             runtime_label: "starting".into(),
@@ -155,20 +158,20 @@ mod tests {
 
     #[test]
     fn ui_state_promotes_surface_from_latest_view() {
-        let bootstrap = BrowserAppStaticBootstrap {
+        let bootstrap = NodeAppStaticBootstrap {
             app_name: "burn_p2p".into(),
             asset_base_url: String::new(),
             module_entry_path: "browser-app-loader.js".into(),
             stylesheet_path: None,
             default_edge_url: Some("https://edge.example".into()),
-            default_surface: BrowserAppSurface::Viewer,
+            default_surface: NodeAppSurface::Viewer,
             refresh_interval_ms: 15_000,
         };
-        let mut state = BrowserAppUiState::new(bootstrap, "https://edge.example".into());
+        let mut state = NodeAppUiState::new(bootstrap, "https://edge.example".into());
 
-        state.apply_view(BrowserAppClientView {
+        state.apply_view(NodeAppClientView {
             network_id: "net".into(),
-            default_surface: BrowserAppSurface::Train,
+            default_surface: NodeAppSurface::Train,
             runtime_label: "trainer".into(),
             runtime_detail: "active assignment".into(),
             capability_summary: "webgpu".into(),
@@ -230,7 +233,7 @@ mod tests {
             selected_experiment: None,
         });
 
-        assert_eq!(state.active_surface, BrowserAppSurface::Train);
+        assert_eq!(state.active_surface, NodeAppSurface::Train);
         assert_eq!(state.refresh_status, "live");
         assert_eq!(
             state.view_or_placeholder().network.edge_base_url,

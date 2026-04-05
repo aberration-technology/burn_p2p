@@ -354,3 +354,33 @@ pub struct BrowserAppClientView {
     /// Network-focused summary.
     pub network: BrowserAppNetworkView,
 }
+
+/// Platform-agnostic alias for the shared app workspace identifiers.
+pub type NodeAppSurface = BrowserAppSurface;
+
+/// Platform-agnostic alias for one app shell bootstrap payload.
+pub type NodeAppShellView = BrowserAppShellView;
+
+/// Platform-agnostic alias for one static app bootstrap payload.
+pub type NodeAppStaticBootstrap = BrowserAppStaticBootstrap;
+
+/// Platform-agnostic alias for one shared client view.
+pub type NodeAppClientView = BrowserAppClientView;
+
+/// Platform-agnostic alias for one experiment summary row.
+pub type NodeAppExperimentSummary = BrowserAppExperimentSummary;
+
+/// Platform-agnostic alias for one leaderboard preview row.
+pub type NodeAppLeaderboardPreview = BrowserAppLeaderboardPreview;
+
+/// Platform-agnostic alias for one viewer summary.
+pub type NodeAppViewerView = BrowserAppViewerView;
+
+/// Platform-agnostic alias for one validation summary.
+pub type NodeAppValidationView = BrowserAppValidationView;
+
+/// Platform-agnostic alias for one training summary.
+pub type NodeAppTrainingView = BrowserAppTrainingView;
+
+/// Platform-agnostic alias for one network summary.
+pub type NodeAppNetworkView = BrowserAppNetworkView;

@@ -30,11 +30,13 @@ use libp2p_identity::Keypair;
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+mod app_view;
 mod backend;
 mod browser_join;
 mod config;
 mod handles;
 mod metrics_runtime;
+mod portal;
 mod project_family;
 mod runtime_support;
 mod training;
@@ -42,6 +44,7 @@ mod validation;
 
 use handles::dedupe_peer_ids;
 
+pub use app_view::{NodeAppSelection, build_node_app_view};
 pub use backend::{
     EvalSplit, MergeModelCandidate, MetricReport, PatchOutcome, TrainError, TrainingWindowOutcome,
     ValidationOutcome, WindowCtx, WindowReport,
@@ -56,20 +59,21 @@ pub use burn_p2p_checkpoint::{
 pub use burn_p2p_core::{
     ActiveServiceSet, AdminMode, AggregateEnvelope, AggregateStats, AggregateTier,
     ArtifactDescriptor, ArtifactId, ArtifactKind, ArtifactTargetKind, AssignmentLease,
-    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability, BrowserMode,
-    BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, CanaryEvalReport, CapabilityCard,
-    CapabilityEstimate, ChunkId, ClientPlatform, ClientReleaseManifest, CohortRobustnessReport,
-    CompiledFeatureSet, ConfiguredServiceSet, ContentId, ContributionReceipt,
-    ContributionReceiptId, ContributionRollup, DatasetId, DatasetManifest, DatasetView,
-    DatasetViewId, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest, EvalAggregationRule,
-    EvalMetricDef, EvalProtocolManifest, ExperimentDirectoryEntry, ExperimentId,
-    ExperimentManifest, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
-    ExperimentVisibility, GenesisSpec, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId,
-    HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState, LeaderboardEntry,
-    LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy,
-    MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope,
-    MetricTrustClass, MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest,
-    MicroShardId, NetworkEstimate, NetworkId, NetworkManifest, NodeCertId, NodeCertificate,
+    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability,
+    BrowserLoginProvider, BrowserMode, BrowserPortalSnapshot, BrowserRole, BrowserRolePolicy,
+    BrowserVisibilityPolicy, CanaryEvalReport, CapabilityCard, CapabilityEstimate, ChunkId,
+    ClientPlatform, ClientReleaseManifest, CohortRobustnessReport, CompiledFeatureSet,
+    ConfiguredServiceSet, ContentId, ContributionReceipt, ContributionReceiptId,
+    ContributionRollup, DatasetId, DatasetManifest, DatasetView, DatasetViewId, EdgeAuthProvider,
+    EdgeFeature, EdgeServiceManifest, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
+    ExperimentDirectoryEntry, ExperimentId, ExperimentManifest, ExperimentOptInPolicy,
+    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, GenesisSpec,
+    HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId, HeadPromotionPolicy,
+    IdentityVisibility, LagPolicy, LagState, LeaderboardEntry, LeaderboardIdentity,
+    LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy, MergeStrategy,
+    MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope, MetricTrustClass,
+    MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest, MicroShardId,
+    NetworkEstimate, NetworkId, NetworkManifest, NodeCertId, NodeCertificate,
     NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
     PeerWindowStatus, PortalMode, Precision, PrincipalId, ProfileMode, ProjectFamilyId,
     ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport,
@@ -128,6 +132,10 @@ pub use config::{
 };
 pub use handles::{
     CheckpointSyncHandle, ExperimentHandle, ExperimentOverlayTopics, MainnetHandle, RoleSet,
+};
+pub use portal::{
+    PortalAuthClient, PortalAuthClientError, PortalEnrollmentConfig, PortalEnrollmentResult,
+    PortalLogoutResponse, PortalPeerEnrollmentRequest, PortalPeerIdentity, PortalSessionState,
 };
 pub use project_family::{
     P2pProjectFamily, P2pWorkload, SelectedWorkloadProject, SingleWorkloadProjectFamily,

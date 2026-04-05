@@ -31,6 +31,10 @@ pub use auth::{
     BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};
+pub use burn_p2p::{
+    PortalAuthClient, PortalAuthClientError, PortalEnrollmentConfig, PortalEnrollmentResult,
+    PortalLogoutResponse, PortalPeerEnrollmentRequest, PortalPeerIdentity, PortalSessionState,
+};
 pub use burn_p2p_core::{
     BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
     BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,

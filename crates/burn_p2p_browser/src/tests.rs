@@ -103,6 +103,37 @@ fn browser_app_connect_config_tracks_target_and_selection() {
 }
 
 #[test]
+fn browser_app_connect_config_target_builders_choose_expected_presets() {
+    let capability = BrowserCapabilityReport::default();
+
+    assert_eq!(
+        BrowserAppConnectConfig::viewer("https://edge.example", capability.clone()).target,
+        BrowserAppTarget::Viewer
+    );
+    assert_eq!(
+        BrowserAppConnectConfig::observe("https://edge.example", capability.clone()).target,
+        BrowserAppTarget::Observe
+    );
+    assert_eq!(
+        BrowserAppConnectConfig::validate("https://edge.example", capability.clone()).target,
+        BrowserAppTarget::Validate
+    );
+    assert_eq!(
+        BrowserAppConnectConfig::train("https://edge.example", capability.clone()).target,
+        BrowserAppTarget::Train
+    );
+    assert_eq!(
+        BrowserAppConnectConfig::custom(
+            "https://edge.example",
+            capability,
+            BrowserRuntimeRole::BrowserFallback
+        )
+        .target,
+        BrowserAppTarget::Custom(BrowserRuntimeRole::BrowserFallback)
+    );
+}
+
+#[test]
 fn browser_transport_policy_tracks_swarm_browser_transport_order() {
     let policy = BrowserTransportPolicy::from(burn_p2p::RuntimeTransportPolicy::browser());
     assert_eq!(

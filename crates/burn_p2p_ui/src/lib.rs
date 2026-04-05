@@ -21,6 +21,9 @@ pub use browser_app::{
     BrowserAppLeaderboardPreview, BrowserAppLiveView, BrowserAppNetworkView, BrowserAppRouteLink,
     BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
     BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+    NodeAppClientView, NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppNetworkView,
+    NodeAppShellView, NodeAppStaticBootstrap, NodeAppSurface, NodeAppTrainingView,
+    NodeAppValidationView, NodeAppViewerView,
 };
 pub use dashboard::{
     AggregateDagEdge, AggregateDagNode, AggregateDagView, AuthorityActionRecord, CheckpointDagEdge,

@@ -1,14 +1,12 @@
-use burn_p2p_ui::{
-    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppLeaderboardPreview,
-};
+use burn_p2p_ui::{NodeAppClientView, NodeAppExperimentSummary, NodeAppLeaderboardPreview};
 use dioxus::prelude::*;
 
 #[component]
 pub(crate) fn ViewerSections(
-    view: BrowserAppClientView,
+    view: NodeAppClientView,
     on_select_experiment: EventHandler<(String, String, bool, bool)>,
-    on_enable_validate: EventHandler<MouseEvent>,
-    on_enable_train: EventHandler<MouseEvent>,
+    on_enable_validate: Option<EventHandler<MouseEvent>>,
+    on_enable_train: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let selected_key = view
         .selected_experiment
@@ -126,8 +124,8 @@ pub(crate) fn ViewerSections(
 
 #[component]
 pub(crate) fn ValidateSections(
-    view: BrowserAppClientView,
-    on_enable_validate: EventHandler<MouseEvent>,
+    view: NodeAppClientView,
+    on_enable_validate: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let head = view
         .validation
@@ -161,10 +159,9 @@ pub(crate) fn ValidateSections(
                             p { class: "section-detail", "{summary}" }
                         }
                         span {
-                            class: if view.validation.can_validate {
-                                "status-pill status-pill-accent"
-                            } else {
-                                "status-pill status-pill-neutral"
+                            class: match view.validation.can_validate {
+                                true => "status-pill status-pill-accent",
+                                false => "status-pill status-pill-neutral",
                             },
                             "{status}"
                         }
@@ -172,12 +169,13 @@ pub(crate) fn ValidateSections(
                     div { class: "browser-metric-band",
                         StatTile {
                             label: "status",
-                            value: if view.validation.can_validate {
-                                "active".to_owned()
-                            } else if view.validation.validate_available {
-                                "available".to_owned()
-                            } else {
-                                "unavailable".to_owned()
+                            value: match (
+                                view.validation.can_validate,
+                                view.validation.validate_available,
+                            ) {
+                                (true, _) => "active".to_owned(),
+                                (false, true) => "available".to_owned(),
+                                (false, false) => "unavailable".to_owned(),
                             },
                             detail: Some(view.runtime_label.clone()),
                         }
@@ -198,12 +196,16 @@ pub(crate) fn ValidateSections(
                         }
                     }
                     if !view.validation.can_validate {
-                        if view.validation.validate_available {
+                        if view.validation.validate_available && on_enable_validate.is_some() {
                             div { class: "browser-action-row",
                                 ActionButton {
                                     label: "Enable validation",
                                     tone: "primary",
-                                    onclick: move |event| on_enable_validate.call(event),
+                                    onclick: move |event| {
+                                        if let Some(handler) = on_enable_validate.as_ref() {
+                                            handler.call(event);
+                                        }
+                                    },
                                 }
                             }
                         } else {
@@ -254,8 +256,8 @@ pub(crate) fn ValidateSections(
 
 #[component]
 pub(crate) fn TrainSections(
-    view: BrowserAppClientView,
-    on_enable_train: EventHandler<MouseEvent>,
+    view: NodeAppClientView,
+    on_enable_train: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let throughput = view
         .training
@@ -293,10 +295,9 @@ pub(crate) fn TrainSections(
                             p { class: "section-detail", "{assignment}" }
                         }
                         span {
-                            class: if view.training.can_train {
-                                "status-pill status-pill-accent"
-                            } else {
-                                "status-pill status-pill-neutral"
+                            class: match view.training.can_train {
+                                true => "status-pill status-pill-accent",
+                                false => "status-pill status-pill-neutral",
                             },
                             if view.training.can_train {
                                 "active"
@@ -348,12 +349,16 @@ pub(crate) fn TrainSections(
                         }
                     }
                     if !view.training.can_train {
-                        if view.training.train_available {
+                        if view.training.train_available && on_enable_train.is_some() {
                             div { class: "browser-action-row",
                                 ActionButton {
                                     label: "Enable training",
                                     tone: "primary",
-                                    onclick: move |event| on_enable_train.call(event),
+                                    onclick: move |event| {
+                                        if let Some(handler) = on_enable_train.as_ref() {
+                                            handler.call(event);
+                                        }
+                                    },
                                 }
                             }
                         } else {
@@ -403,7 +408,7 @@ pub(crate) fn TrainSections(
 }
 
 #[component]
-pub(crate) fn NetworkSections(view: BrowserAppClientView) -> Element {
+pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
     rsx! {
         div { class: "surface-layout browser-surface-layout",
             section { class: "panel primary-panel browser-focus-panel",
@@ -443,10 +448,9 @@ pub(crate) fn NetworkSections(view: BrowserAppClientView) -> Element {
                         }
                         KeyValueRow {
                             label: "metrics",
-                            value: if view.network.metrics_live_ready {
-                                "ready".to_owned()
-                            } else {
-                                "pending".to_owned()
+                            value: match view.network.metrics_live_ready {
+                                true => "ready".to_owned(),
+                                false => "pending".to_owned(),
                             },
                         }
                         KeyValueRow {
@@ -505,13 +509,13 @@ fn StatTile(label: &'static str, value: String, detail: Option<String>) -> Eleme
 
 #[component]
 fn ExperimentHero(
-    experiment: BrowserAppExperimentSummary,
+    experiment: NodeAppExperimentSummary,
     validation_available: bool,
     training_available: bool,
     can_validate: bool,
     can_train: bool,
-    on_enable_validate: EventHandler<MouseEvent>,
-    on_enable_train: EventHandler<MouseEvent>,
+    on_enable_validate: Option<EventHandler<MouseEvent>>,
+    on_enable_train: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     rsx! {
         article { class: "experiment-hero",
@@ -520,20 +524,30 @@ fn ExperimentHero(
                 h3 { "{experiment.display_name}" }
                 p { class: "section-detail", "{experiment.experiment_id} · {experiment.revision_id}" }
                 CapabilityStrip { experiment: experiment.clone() }
-                if (validation_available && !can_validate) || (training_available && !can_train) {
+                if (validation_available && !can_validate && on_enable_validate.is_some())
+                    || (training_available && !can_train && on_enable_train.is_some())
+                {
                     div { class: "browser-action-row experiment-hero-actions",
-                        if validation_available && !can_validate {
+                        if validation_available && !can_validate && on_enable_validate.is_some() {
                             ActionButton {
                                 label: "Validate",
                                 tone: "primary",
-                                onclick: move |event| on_enable_validate.call(event),
+                                onclick: move |event| {
+                                    if let Some(handler) = on_enable_validate.as_ref() {
+                                        handler.call(event);
+                                    }
+                                },
                             }
                         }
-                        if training_available && !can_train {
+                        if training_available && !can_train && on_enable_train.is_some() {
                             ActionButton {
                                 label: "Train",
                                 tone: "primary",
-                                onclick: move |event| on_enable_train.call(event),
+                                onclick: move |event| {
+                                    if let Some(handler) = on_enable_train.as_ref() {
+                                        handler.call(event);
+                                    }
+                                },
                             }
                         }
                     }
@@ -551,7 +565,7 @@ fn ExperimentHero(
 }
 
 #[component]
-fn ExperimentCard(experiment: BrowserAppExperimentSummary) -> Element {
+fn ExperimentCard(experiment: NodeAppExperimentSummary) -> Element {
     rsx! {
         article { class: "experiment-card",
             div { class: "experiment-title-row",
@@ -573,7 +587,7 @@ fn ExperimentCard(experiment: BrowserAppExperimentSummary) -> Element {
 
 #[component]
 fn DirectoryRow(
-    experiment: BrowserAppExperimentSummary,
+    experiment: NodeAppExperimentSummary,
     selected: bool,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
@@ -585,10 +599,9 @@ fn DirectoryRow(
     rsx! {
         button {
             r#type: "button",
-            class: if selected {
-                "directory-row is-selected"
-            } else {
-                "directory-row"
+            class: match selected {
+                true => "directory-row is-selected",
+                false => "directory-row",
             },
             onclick: move |event| onclick.call(event),
             div { class: "directory-row-main",
@@ -614,7 +627,7 @@ fn DirectoryRow(
 }
 
 #[component]
-fn CapabilityStrip(experiment: BrowserAppExperimentSummary) -> Element {
+fn CapabilityStrip(experiment: NodeAppExperimentSummary) -> Element {
     rsx! {
         div { class: "capability-strip",
             span { class: "status-pill status-pill-neutral", "view" }
@@ -629,7 +642,7 @@ fn CapabilityStrip(experiment: BrowserAppExperimentSummary) -> Element {
 }
 
 #[component]
-fn LeaderboardRow(row: BrowserAppLeaderboardPreview) -> Element {
+fn LeaderboardRow(row: NodeAppLeaderboardPreview) -> Element {
     rsx! {
         article { class: if row.is_local { "leaderboard-row is-local" } else { "leaderboard-row" },
             div {
@@ -679,6 +692,14 @@ fn ActionButton(
     }
 }
 
+fn short_edge_label(edge_base_url: &str) -> String {
+    let value = edge_base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    value.split('/').next().unwrap_or(value).to_owned()
+}
+
 #[component]
 fn EmptyState(title: &'static str, detail: &'static str) -> Element {
     rsx! {
@@ -687,12 +708,4 @@ fn EmptyState(title: &'static str, detail: &'static str) -> Element {
             p { class: "muted", "{detail}" }
         }
     }
-}
-
-fn short_edge_label(edge_base_url: &str) -> String {
-    let value = edge_base_url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_end_matches('/');
-    value.split('/').next().unwrap_or(value).to_owned()
 }

@@ -1,31 +1,30 @@
-//! Public facade for the burn_p2p runtime, configuration, and workload surface.
+//! burn-native learner integration for the burn_p2p runtime.
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
 
 use burn::{
-    backend::NdArray,
-    module::{Module, ModuleMapper, Param},
+    backend::{Autodiff, NdArray},
+    module::Module,
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, backend::Backend},
+    optim::SgdConfig,
+    tensor::{
+        ElementConversion, Tensor,
+        backend::{AutodiffBackend, Backend},
+    },
+    train::{InferenceStep, ItemLazy, Learner, TrainOutput, TrainStep},
 };
+use burn_p2p::burn::{from_learner, inspect_module};
 use burn_p2p::{
-    AssignmentLease, CachedMicroShard, CapabilityEstimate, ClientReleaseManifest, ContentId,
-    DatasetRegistration, DatasetSizing, EvalSplit, GenesisSpec, MetricReport, MetricValue,
-    NetworkManifest, PatchOutcome, PatchSupport, ProjectFamilyId, RoleSet, RuntimePatch,
-    ShardFetchManifest, StorageConfig, SupportedWorkload, TrainError, WindowCtx, WindowReport,
-    WorkloadId,
+    ClientReleaseManifest, ContentId, GenesisSpec, MetricValue, NetworkManifest, RoleSet,
+    StorageConfig, SupportedWorkload, WorkloadId,
 };
 use chrono::Utc;
 use semver::Version;
 
-use burn_p2p::burn::{BurnArtifactConfig, BurnWorkload, BurnWorkloadConfig};
-
-type RuntimeBackend = NdArray<f32>;
+type RuntimeBackend = Autodiff<NdArray<f32>>;
 
 #[derive(Module, Debug)]
 struct TinyModel<B: Backend> {
@@ -38,168 +37,62 @@ impl<B: Backend> TinyModel<B> {
             linear: LinearConfig::new(4, 2).init(device),
         }
     }
+
+    fn forward(&self, inputs: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.linear.forward(inputs)
+    }
 }
 
 #[derive(Clone, Debug)]
-struct TinyProject {
-    dataset_root: PathBuf,
+struct TinyBatch<B: Backend> {
+    inputs: Tensor<B, 2>,
+    targets: Tensor<B, 2>,
 }
 
-#[derive(Debug)]
-struct AddScalarMapper {
-    delta: f32,
+#[derive(Clone, Debug)]
+struct TinyMetricItem {
+    loss: f64,
 }
 
-impl<B: Backend> ModuleMapper<B> for AddScalarMapper {
-    fn map_float<const D: usize>(&mut self, param: Param<Tensor<B, D>>) -> Param<Tensor<B, D>> {
-        param.map(|tensor| tensor + self.delta)
+impl ItemLazy for TinyMetricItem {
+    type ItemSync = Self;
+
+    fn sync(self) -> Self::ItemSync {
+        self
     }
 }
 
-fn shift_model<B: Backend>(model: TinyModel<B>, delta: f32) -> TinyModel<B> {
-    let mut mapper = AddScalarMapper { delta };
-    model.map(&mut mapper)
-}
+impl<B: Backend> InferenceStep for TinyModel<B> {
+    type Input = TinyBatch<B>;
+    type Output = TinyMetricItem;
 
-impl BurnWorkload for TinyProject {
-    type Backend = RuntimeBackend;
-    type Model = TinyModel<RuntimeBackend>;
-    type Batch = f32;
-    type WindowStats = BTreeMap<String, MetricValue>;
-
-    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
-        TinyModel::<RuntimeBackend>::new(device)
-    }
-
-    fn benchmark(
-        &self,
-        _model: &Self::Model,
-        _device: &<Self::Backend as Backend>::Device,
-    ) -> CapabilityEstimate {
-        CapabilityEstimate {
-            preferred_backends: vec!["ndarray".into()],
-            work_units_per_second: 32.0,
-            target_window_seconds: 1,
+    fn step(&self, batch: Self::Input) -> Self::Output {
+        let predictions = self.forward(batch.inputs);
+        let loss = (predictions - batch.targets).powf_scalar(2.0).mean();
+        TinyMetricItem {
+            loss: loss.into_scalar().elem::<f64>(),
         }
     }
+}
 
-    fn train_window(
-        &self,
-        ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
-    ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
-        let batch_sum = ctx.batches.iter().copied().sum::<f32>() as f64;
-        ctx.model = shift_model(ctx.model.clone(), (batch_sum as f32) / 100.0);
-        let parameter_count =
-            burn_p2p::burn::inspect_module::<RuntimeBackend, _>(&ctx.model).parameter_count as i64;
+impl<B: AutodiffBackend> TrainStep for TinyModel<B> {
+    type Input = TinyBatch<B>;
+    type Output = TinyMetricItem;
 
-        Ok(WindowReport {
-            contribution: None,
-            stats: BTreeMap::from([
-                ("loss".into(), MetricValue::Float(0.0)),
-                ("batch_sum".into(), MetricValue::Float(batch_sum)),
-                (
-                    "parameter_count".into(),
-                    MetricValue::Integer(parameter_count),
-                ),
-            ]),
-            completed_at: Utc::now(),
-        })
+    fn step(&self, batch: Self::Input) -> TrainOutput<Self::Output> {
+        let predictions = self.forward(batch.inputs);
+        let loss = (predictions - batch.targets).powf_scalar(2.0).mean();
+        let loss_value = loss.clone().into_scalar().elem::<f64>();
+        let grads = loss.backward();
+
+        TrainOutput::new(self, grads, TinyMetricItem { loss: loss_value })
     }
+}
 
-    fn evaluate(&self, model: &Self::Model, _split: EvalSplit) -> MetricReport {
-        let inventory = burn_p2p::burn::inspect_module::<RuntimeBackend, _>(model);
-        MetricReport {
-            metrics: BTreeMap::from([
-                ("loss".into(), MetricValue::Float(0.0)),
-                (
-                    "parameter_count".into(),
-                    MetricValue::Integer(inventory.parameter_count as i64),
-                ),
-            ]),
-            captured_at: Utc::now(),
-        }
-    }
-
-    fn apply_patch(&mut self, _patch: &RuntimePatch) -> PatchOutcome {
-        PatchOutcome::Rejected("no runtime patches supported".into())
-    }
-
-    fn supported_patch_classes(&self) -> PatchSupport {
-        PatchSupport {
-            hot: false,
-            warm: false,
-            cold: false,
-        }
-    }
-
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
-        <RuntimeBackend as Backend>::Device::default()
-    }
-
-    fn dataset_registration(&self) -> anyhow::Result<DatasetRegistration> {
-        Ok(DatasetRegistration {
-            manifest: burn_p2p::DatasetManifest {
-                dataset_id: burn_p2p::DatasetId::new("burn-ndarray-dataset"),
-                source_uri: self.dataset_root.display().to_string(),
-                format: "microshards".into(),
-                manifest_hash: burn_p2p::ContentId::new("burn-ndarray-manifest"),
-                metadata: BTreeMap::new(),
-            },
-            view: burn_p2p::DatasetView {
-                dataset_view_id: burn_p2p::DatasetViewId::new("burn-ndarray-view"),
-                dataset_id: burn_p2p::DatasetId::new("burn-ndarray-dataset"),
-                preprocessing_hash: burn_p2p::ContentId::new("burn-ndarray-preprocess"),
-                tokenizer_hash: None,
-                manifest_hash: burn_p2p::ContentId::new("burn-ndarray-manifest"),
-                metadata: BTreeMap::new(),
-            },
-            upstream: burn_p2p::UpstreamAdapter::Local {
-                root: self.dataset_root.display().to_string(),
-            },
-        })
-    }
-
-    fn microshard_plan(
-        &self,
-        registration: &DatasetRegistration,
-    ) -> anyhow::Result<burn_p2p::MicroShardPlan> {
-        Ok(
-            burn_p2p::MicroShardPlanner::new(burn_p2p::MicroShardPlannerConfig {
-                target_microshard_bytes: 10,
-                min_microshards: 2,
-                max_microshards: 2,
-            })?
-            .plan(
-                &registration.view,
-                DatasetSizing {
-                    total_examples: 2,
-                    total_tokens: 2,
-                    total_bytes: 20,
-                },
-            )?,
-        )
-    }
-
-    fn load_batches(
-        &self,
-        _lease: &AssignmentLease,
-        cached_microshards: &[CachedMicroShard],
-    ) -> anyhow::Result<Vec<Self::Batch>> {
-        cached_microshards
-            .iter()
-            .map(|shard| {
-                let bytes = fs::read(&shard.path)?;
-                let text = String::from_utf8(bytes)?;
-                text.trim().parse::<f32>().map_err(anyhow::Error::from)
-            })
-            .collect()
-    }
-
-    fn contribution_metrics(
-        &self,
-        report: &WindowReport<Self::WindowStats>,
-    ) -> BTreeMap<String, MetricValue> {
-        report.stats.clone()
+fn batch_from_value<B: Backend>(value: f32, device: &B::Device) -> TinyBatch<B> {
+    TinyBatch {
+        inputs: Tensor::from_data([[value, value + 1.0, value * 0.5, 1.0]], device),
+        targets: Tensor::from_data([[value * 0.3, value * 0.7]], device),
     }
 }
 
@@ -216,7 +109,7 @@ fn tiny_workload_manifest() -> SupportedWorkload {
 
 fn tiny_release_manifest() -> ClientReleaseManifest {
     ClientReleaseManifest {
-        project_family_id: ProjectFamilyId::new("burn-ndarray-family"),
+        project_family_id: burn_p2p::ProjectFamilyId::new("burn-ndarray-family"),
         release_train_hash: ContentId::new("burn-ndarray-train"),
         target_artifact_id: "native-linux-x86_64".into(),
         target_artifact_hash: ContentId::new("burn-ndarray-artifact-native"),
@@ -233,19 +126,16 @@ fn tiny_release_manifest() -> ClientReleaseManifest {
 }
 
 fn main() -> anyhow::Result<()> {
-    let data_root = PathBuf::from(".burn_p2p-burn-demo-data");
-    create_demo_dataset(&data_root)?;
-
     let genesis = GenesisSpec {
         network_id: burn_p2p::NetworkId::new("burn-ndarray-demo"),
         protocol_version: Version::new(0, 1, 0),
         display_name: "Burn NdArray Demo".into(),
         created_at: Utc::now(),
-        metadata: BTreeMap::from([("purpose".into(), "burn runtime example".into())]),
+        metadata: BTreeMap::from([("purpose".into(), "burn learner example".into())]),
     };
     let network_manifest = NetworkManifest {
         network_id: genesis.network_id.clone(),
-        project_family_id: ProjectFamilyId::new("burn-ndarray-family"),
+        project_family_id: burn_p2p::ProjectFamilyId::new("burn-ndarray-family"),
         protocol_major: 0,
         required_release_train_hash: ContentId::new("burn-ndarray-train"),
         allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
@@ -267,21 +157,43 @@ fn main() -> anyhow::Result<()> {
         burn_p2p::RevisionId::new("rev-1"),
     );
 
-    let validator = burn_p2p::burn::native(
-        burn_p2p::burn::BurnNodeTarget::Validator,
-        tiny_release_manifest(),
-        TinyProject {
-            dataset_root: data_root.clone(),
-        },
-        BurnWorkloadConfig::new(
-            tiny_workload_manifest(),
-            BurnArtifactConfig::burnpack(burn_p2p::ChunkingScheme::new(64)?),
+    let make_workload = || -> anyhow::Result<_> {
+        let device = <RuntimeBackend as Backend>::Device::default();
+
+        Ok(from_learner(
+            Learner::new(
+                TinyModel::<RuntimeBackend>::new(&device),
+                SgdConfig::new().init(),
+                0.05,
+            ),
+            device,
         )
-        .with_root_ema(0.75),
-    )?
-    .with_network(network_manifest.clone())?
-    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
-    .spawn()?;
+        // p2p owns the window orchestration. burn still owns the per-batch step.
+        .with_batches(|device| {
+            Ok(vec![
+                batch_from_value::<RuntimeBackend>(4.0, device),
+                batch_from_value::<RuntimeBackend>(6.0, device),
+            ])
+        })
+        .with_step_metrics(|_step_index, output, metrics| {
+            metrics.insert("loss".into(), MetricValue::Float(output.loss));
+            Ok(())
+        })
+        .with_window_metrics(|learner, metrics| {
+            let inventory = inspect_module::<RuntimeBackend, _>(&learner.model());
+            metrics.insert(
+                "parameter_count".into(),
+                MetricValue::Integer(inventory.parameter_count as i64),
+            );
+            Ok(())
+        }))
+    };
+
+    let validator = make_workload()?
+        .validator(tiny_release_manifest(), tiny_workload_manifest())?
+        .with_network(network_manifest.clone())?
+        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
+        .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || {
@@ -296,26 +208,16 @@ fn main() -> anyhow::Result<()> {
     let mut validator = validator;
     let genesis_head = validator.initialize_local_head(&experiment)?;
     println!(
-        "validator published Burn genesis head {}",
+        "validator published burn genesis head {}",
         genesis_head.head_id.as_str()
     );
 
-    let trainer = burn_p2p::burn::native(
-        burn_p2p::burn::BurnNodeTarget::Trainer,
-        tiny_release_manifest(),
-        TinyProject {
-            dataset_root: data_root,
-        },
-        BurnWorkloadConfig::new(
-            tiny_workload_manifest(),
-            BurnArtifactConfig::burnpack(burn_p2p::ChunkingScheme::new(64)?),
-        )
-        .with_root_ema(0.75),
-    )?
-    .with_network(network_manifest)?
-    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
-    .with_bootstrap_peer(validator_addr)
-    .spawn()?;
+    let trainer = make_workload()?
+        .trainer(tiny_release_manifest(), tiny_workload_manifest())?
+        .with_network(network_manifest)?
+        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
+        .with_bootstrap_peer(validator_addr)
+        .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || trainer.telemetry().snapshot().connected_peers >= 1,
@@ -325,7 +227,7 @@ fn main() -> anyhow::Result<()> {
     let mut trainer = trainer;
     let training = trainer.train_window_once(&experiment)?;
     println!(
-        "trainer published Burn candidate head {} with metrics {:?}",
+        "trainer published burn candidate head {} with metrics {:?}",
         training.head.head_id.as_str(),
         training.report.stats
     );
@@ -334,7 +236,7 @@ fn main() -> anyhow::Result<()> {
         .validate_candidates_once(&experiment)?
         .expect("validator should certify the trainer update");
     println!(
-        "validator certified Burn head {} from {}",
+        "validator certified burn head {} from {}",
         validated.merged_head.head_id.as_str(),
         validated.source_peer_id.as_str()
     );
@@ -343,35 +245,6 @@ fn main() -> anyhow::Result<()> {
     let _ = trainer.await_termination()?;
     validator.shutdown()?;
     let _ = validator.await_termination()?;
-    Ok(())
-}
-
-fn create_demo_dataset(root: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(root)?;
-    let project = TinyProject {
-        dataset_root: root.to_path_buf(),
-    };
-    let registration = project.dataset_registration()?;
-    let plan = project.microshard_plan(&registration)?;
-    let manifest =
-        ShardFetchManifest::from_microshards(&plan.dataset_view, &plan.microshards, |ordinal| {
-            match ordinal {
-                0 => b"4.0".to_vec(),
-                _ => b"6.0".to_vec(),
-            }
-        });
-
-    fs::write(
-        root.join("fetch-manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    for entry in &manifest.entries {
-        let bytes = match entry.ordinal {
-            0 => b"4.0".to_vec(),
-            _ => b"6.0".to_vec(),
-        };
-        fs::write(root.join(&entry.locator), bytes)?;
-    }
     Ok(())
 }
 

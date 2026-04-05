@@ -76,6 +76,35 @@ impl BrowserAppConnectConfig {
         }
     }
 
+    /// Creates a viewer-first browser-app connection config.
+    pub fn viewer(edge_base_url: impl Into<String>, capability: BrowserCapabilityReport) -> Self {
+        Self::new(edge_base_url, capability, BrowserAppTarget::Viewer)
+    }
+
+    /// Creates an observer-first browser-app connection config.
+    pub fn observe(edge_base_url: impl Into<String>, capability: BrowserCapabilityReport) -> Self {
+        Self::new(edge_base_url, capability, BrowserAppTarget::Observe)
+    }
+
+    /// Creates a validation-first browser-app connection config.
+    pub fn validate(edge_base_url: impl Into<String>, capability: BrowserCapabilityReport) -> Self {
+        Self::new(edge_base_url, capability, BrowserAppTarget::Validate)
+    }
+
+    /// Creates a training-first browser-app connection config.
+    pub fn train(edge_base_url: impl Into<String>, capability: BrowserCapabilityReport) -> Self {
+        Self::new(edge_base_url, capability, BrowserAppTarget::Train)
+    }
+
+    /// Creates a browser-app connection config with an explicit runtime target.
+    pub fn custom(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+        role: BrowserRuntimeRole,
+    ) -> Self {
+        Self::new(edge_base_url, capability, BrowserAppTarget::Custom(role))
+    }
+
     /// Pins the initial experiment and optional revision selection.
     pub fn with_selection(
         mut self,
@@ -380,6 +409,38 @@ impl BrowserAppController {
             selected_experiment_id.map(|experiment_id| (experiment_id, selected_revision_id)),
         )
         .await
+    }
+
+    /// Connects a viewer-first browser app.
+    pub async fn viewer(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+    ) -> Result<Self, BrowserAuthClientError> {
+        Self::connect_with(BrowserAppConnectConfig::viewer(edge_base_url, capability)).await
+    }
+
+    /// Connects an observer-first browser app.
+    pub async fn observe(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+    ) -> Result<Self, BrowserAuthClientError> {
+        Self::connect_with(BrowserAppConnectConfig::observe(edge_base_url, capability)).await
+    }
+
+    /// Connects a validation-first browser app.
+    pub async fn validate(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+    ) -> Result<Self, BrowserAuthClientError> {
+        Self::connect_with(BrowserAppConnectConfig::validate(edge_base_url, capability)).await
+    }
+
+    /// Connects a training-first browser app.
+    pub async fn train(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+    ) -> Result<Self, BrowserAuthClientError> {
+        Self::connect_with(BrowserAppConnectConfig::train(edge_base_url, capability)).await
     }
 
     /// Connects the browser app to one bootstrap edge and derives initial local runtime state.

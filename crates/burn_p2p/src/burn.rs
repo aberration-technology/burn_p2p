@@ -1,6 +1,13 @@
 use std::collections::BTreeMap;
 
-use burn::{module::Module, prelude::Backend};
+use burn::{
+    module::{AutodiffModule, Module},
+    optim::{Optimizer, adaptor::OptimizerAdaptor, lr_scheduler::LrScheduler},
+    prelude::Backend,
+    tensor::backend::AutodiffBackend,
+    train::{InferenceStep, LearningComponentsMarker, LearningComponentsTypes, TrainStep},
+};
+use chrono::Utc;
 
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ChunkingScheme,
@@ -22,6 +29,87 @@ pub use burn_p2p_engine::{
     materialize_store_bytes_artifact, materialize_store_file_artifact, merge_weighted_mean_modules,
     module_schema_hash, save_record_file, save_store_file,
 };
+
+/// Type alias for the burn learning components used by [`BurnLearnerWorkload`].
+pub type BurnLearningComponents<W> = LearningComponentsMarker<
+    <W as BurnLearnerWorkload>::Backend,
+    <W as BurnLearnerWorkload>::Scheduler,
+    <W as BurnLearnerWorkload>::Model,
+    <W as BurnLearnerWorkload>::Optimizer,
+>;
+
+/// Type alias for the burn learner used by [`BurnLearnerWorkload`].
+pub type BurnWorkloadLearner<W> = BurnLearner<BurnLearningComponents<W>>;
+
+/// Type alias for the burn backend used by a concrete learner.
+pub type BurnLearnerBackend<LC> = <LC as LearningComponentsTypes>::Backend;
+
+/// Type alias for the burn device used by a concrete learner.
+pub type BurnLearnerDevice<LC> = <<LC as LearningComponentsTypes>::Backend as Backend>::Device;
+
+/// Type alias for the training model used by a concrete learner.
+pub type BurnLearnerModel<LC> = <LC as LearningComponentsTypes>::TrainingModel;
+
+/// Type alias for the inference model used by a concrete learner.
+pub type BurnLearnerEvalModel<LC> = <LC as LearningComponentsTypes>::InferenceModel;
+
+/// Type alias for the training batch input used by a concrete learner.
+pub type BurnLearnerBatch<LC> =
+    <<LC as LearningComponentsTypes>::TrainingModel as TrainStep>::Input;
+
+/// Type alias for the training step output used by a concrete learner.
+pub type BurnLearnerOutput<LC> =
+    <<LC as LearningComponentsTypes>::TrainingModel as TrainStep>::Output;
+
+/// Type alias for the training batch input used by [`BurnLearnerWorkload`].
+pub type BurnTrainBatch<W> = <<W as BurnLearnerWorkload>::Model as TrainStep>::Input;
+
+/// Type alias for the per-step training output used by [`BurnLearnerWorkload`].
+pub type BurnTrainOutput<W> = <<W as BurnLearnerWorkload>::Model as TrainStep>::Output;
+
+/// Type alias for the inference model derived from [`BurnLearnerWorkload`].
+pub type BurnEvalModel<W> = <W as BurnLearnerWorkload>::EvalModel;
+
+/// Type alias for a burn SGD optimizer adaptor.
+#[doc(hidden)]
+pub type BurnSgdOptimizer<B, M> =
+    OptimizerAdaptor<burn::optim::Sgd<<B as AutodiffBackend>::InnerBackend>, M, B>;
+
+/// Type alias for a burn Adam optimizer adaptor.
+#[doc(hidden)]
+pub type BurnAdamOptimizer<B, M> = OptimizerAdaptor<burn::optim::Adam, M, B>;
+
+/// Type alias for a burn AdamW optimizer adaptor.
+#[doc(hidden)]
+pub type BurnAdamWOptimizer<B, M> = OptimizerAdaptor<burn::optim::AdamW, M, B>;
+
+type LearnerBenchmarkFn<LC> = dyn Fn(&BurnLearnerModel<LC>, &BurnLearnerDevice<LC>) -> crate::CapabilityEstimate
+    + Send
+    + Sync;
+type LearnerEvaluateFn<LC> =
+    dyn Fn(&BurnLearnerEvalModel<LC>, EvalSplit) -> MetricReport + Send + Sync;
+type LearnerDatasetRegistrationFn =
+    dyn Fn() -> anyhow::Result<crate::DatasetRegistration> + Send + Sync;
+type LearnerMicroshardPlanFn =
+    dyn Fn(&crate::DatasetRegistration) -> anyhow::Result<crate::MicroShardPlan> + Send + Sync;
+type LearnerBatchLoaderFn<LC> = dyn Fn(
+        &AssignmentLease,
+        &[CachedMicroShard],
+        &BurnLearnerDevice<LC>,
+    ) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
+    + Send
+    + Sync;
+type LearnerBatchFn<LC> =
+    dyn Fn(&BurnLearnerDevice<LC>) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>> + Send + Sync;
+type LearnerAssignmentBatchFn<LC> = dyn Fn(&AssignmentLease, &BurnLearnerDevice<LC>) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
+    + Send
+    + Sync;
+type LearnerStepMetricFn<LC> = dyn Fn(usize, &BurnLearnerOutput<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
+    + Send
+    + Sync;
+type LearnerWindowMetricFn<LC> = dyn Fn(&BurnLearner<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
+    + Send
+    + Sync;
 
 #[derive(Clone, Debug)]
 /// Represents a record bytes runtime artifact options.
@@ -232,6 +320,16 @@ impl BurnWorkloadConfig {
         }
     }
 
+    /// Creates the default burn config used by the learner-first happy path.
+    ///
+    /// Uses burnpack artifacts with the default chunking scheme.
+    pub fn standard(supported_workload: SupportedWorkload) -> Self {
+        Self::new(
+            supported_workload,
+            BurnArtifactConfig::burnpack(ChunkingScheme::default()),
+        )
+    }
+
     /// Disables default merge behavior.
     pub fn with_merge_disabled(mut self) -> Self {
         self.merge = BurnMergeConfig::Disabled;
@@ -246,8 +344,8 @@ impl BurnWorkloadConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Selects the native node target preset for a Burn workload.
-pub enum BurnNodeTarget {
+/// Selects the node target preset for a Burn workload.
+pub enum BurnTarget {
     /// Trainer-oriented native node.
     Trainer,
     /// Authority / validator / archive native node.
@@ -256,7 +354,7 @@ pub enum BurnNodeTarget {
     Custom(crate::PeerRoleSet),
 }
 
-impl BurnNodeTarget {
+impl BurnTarget {
     /// Returns the role set applied for the target preset.
     pub fn roles(&self) -> crate::PeerRoleSet {
         match self {
@@ -268,6 +366,258 @@ impl BurnNodeTarget {
             ]),
             Self::Custom(roles) => roles.clone(),
         }
+    }
+}
+
+#[deprecated(note = "use BurnTarget")]
+/// Backward-compatible alias for the older burn target name.
+#[doc(hidden)]
+pub type BurnNodeTarget = BurnTarget;
+
+mod learner;
+#[allow(deprecated)]
+pub use learner::BurnSyntheticDatasetConfig;
+pub use learner::{
+    BurnLearnerProject, BurnLearnerProjectBuilder, BurnLocalDatasetConfig, from_learner,
+};
+
+/// Advanced learner-backed burn integration seam.
+///
+/// Prefer [`from_learner`] for the common path that starts from a burn
+/// `Learner::new(...)`.
+///
+/// Use this trait when the same hooks should live on a reusable project type.
+/// The default adapter rebuilds a `Learner` from the current model head, runs
+/// one burn-native window, records a small metric map, and reuses the existing
+/// artifact + merge helpers.
+pub trait BurnLearnerWorkload {
+    /// Burn autodiff backend used for local training.
+    type Backend: AutodiffBackend;
+    /// Burn training model.
+    type Model: BurnModuleTarget<Self::Backend>
+        + TrainStep
+        + AutodiffModule<Self::Backend, InnerModule = Self::EvalModel>
+        + Clone
+        + core::fmt::Display
+        + 'static;
+    /// Burn inference model produced by `valid()`.
+    type EvalModel: BurnModuleTarget<<Self::Backend as AutodiffBackend>::InnerBackend>
+        + InferenceStep
+        + Clone
+        + 'static;
+    /// Burn optimizer used by the learner.
+    type Optimizer: Optimizer<Self::Model, Self::Backend> + Clone + 'static;
+    /// Burn scheduler used by the learner.
+    type Scheduler: LrScheduler + Clone + 'static;
+
+    /// Creates the initial learner for the provided device.
+    fn init_learner(
+        &self,
+        device: &<Self::Backend as Backend>::Device,
+    ) -> BurnWorkloadLearner<Self>;
+
+    /// Restores a learner from the current p2p model head.
+    fn restore_learner(
+        &self,
+        model: Self::Model,
+        device: &<Self::Backend as Backend>::Device,
+    ) -> BurnWorkloadLearner<Self> {
+        let mut learner = self.init_learner(device);
+        learner.load_model(model.into_record());
+        learner
+    }
+
+    /// Initializes the starting model from the learner.
+    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
+        self.init_learner(device).model()
+    }
+
+    /// Reports runtime capability for the local device.
+    fn benchmark(
+        &self,
+        model: &Self::Model,
+        device: &<Self::Backend as Backend>::Device,
+    ) -> crate::CapabilityEstimate;
+
+    /// Evaluates the current model on the requested split.
+    fn evaluate(&self, model: &BurnEvalModel<Self>, split: EvalSplit) -> MetricReport;
+
+    /// Returns the runtime device used by the workload.
+    fn runtime_device(&self) -> <Self::Backend as Backend>::Device;
+
+    /// Returns the dataset registration used to plan microshards.
+    fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration>;
+
+    /// Builds the microshard plan for the registered dataset.
+    fn microshard_plan(
+        &self,
+        registration: &crate::DatasetRegistration,
+    ) -> anyhow::Result<crate::MicroShardPlan>;
+
+    /// Loads training batches from cached microshards.
+    fn load_batches(
+        &self,
+        lease: &AssignmentLease,
+        cached_microshards: &[CachedMicroShard],
+    ) -> anyhow::Result<Vec<BurnTrainBatch<Self>>>;
+
+    /// Runs before a training window starts.
+    fn before_window(
+        &self,
+        _learner: &mut BurnWorkloadLearner<Self>,
+        _lease: &AssignmentLease,
+    ) -> Result<(), TrainError> {
+        Ok(())
+    }
+
+    /// Records step-local metrics after one learner step.
+    fn after_train_step(
+        &self,
+        _step_index: usize,
+        _output: &BurnTrainOutput<Self>,
+        _metrics: &mut BTreeMap<String, MetricValue>,
+    ) -> Result<(), TrainError> {
+        Ok(())
+    }
+
+    /// Finalizes the metric map before the window report is emitted.
+    fn after_window(
+        &self,
+        _learner: &BurnWorkloadLearner<Self>,
+        _metrics: &mut BTreeMap<String, MetricValue>,
+    ) -> Result<(), TrainError> {
+        Ok(())
+    }
+
+    /// Returns receipt metrics for a completed training window.
+    fn contribution_metrics(
+        &self,
+        report: &WindowReport<BTreeMap<String, MetricValue>>,
+    ) -> BTreeMap<String, MetricValue> {
+        report.stats.clone()
+    }
+
+    /// Returns the contribution weight used for receipt scoring.
+    fn contribution_weight(&self, _report: &WindowReport<BTreeMap<String, MetricValue>>) -> f64 {
+        1.0
+    }
+
+    /// Applies an optional runtime patch.
+    fn apply_patch(&mut self, _patch: &RuntimePatch) -> PatchOutcome {
+        PatchOutcome::Rejected("workload does not support runtime patches".into())
+    }
+
+    /// Declares which patch classes are accepted.
+    fn supported_patch_classes(&self) -> PatchSupport {
+        PatchSupport {
+            hot: false,
+            warm: false,
+            cold: false,
+        }
+    }
+}
+
+impl<W> BurnWorkload for W
+where
+    W: BurnLearnerWorkload,
+{
+    type Backend = W::Backend;
+    type Model = W::Model;
+    type Batch = BurnTrainBatch<W>;
+    type WindowStats = BTreeMap<String, MetricValue>;
+
+    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
+        BurnLearnerWorkload::init_model(self, device)
+    }
+
+    fn benchmark(
+        &self,
+        model: &Self::Model,
+        device: &<Self::Backend as Backend>::Device,
+    ) -> crate::CapabilityEstimate {
+        BurnLearnerWorkload::benchmark(self, model, device)
+    }
+
+    fn train_window(
+        &self,
+        ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
+    ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
+        let batch_count = ctx.batches.len() as i64;
+        let mut learner = self.restore_learner(ctx.model.clone(), &ctx.device);
+        self.before_window(&mut learner, &ctx.lease)?;
+
+        let mut metrics =
+            BTreeMap::from([("batch_count".into(), MetricValue::Integer(batch_count))]);
+
+        for (step_index, batch) in ctx.batches.drain(..).enumerate() {
+            learner.lr_step();
+            let output = learner.train_step(batch);
+            let lr = learner.lr_current();
+            learner.optimizer_step(output.grads);
+
+            metrics.insert(
+                "train_steps".into(),
+                MetricValue::Integer((step_index + 1) as i64),
+            );
+            metrics.insert("learning_rate".into(), MetricValue::Float(lr));
+
+            self.after_train_step(step_index, &output.item, &mut metrics)?;
+        }
+
+        self.after_window(&learner, &mut metrics)?;
+        ctx.model = learner.model();
+
+        Ok(WindowReport {
+            contribution: None,
+            stats: metrics,
+            completed_at: Utc::now(),
+        })
+    }
+
+    fn evaluate(&self, model: &Self::Model, split: EvalSplit) -> MetricReport {
+        BurnLearnerWorkload::evaluate(self, &model.valid(), split)
+    }
+
+    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
+        BurnLearnerWorkload::runtime_device(self)
+    }
+
+    fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
+        BurnLearnerWorkload::dataset_registration(self)
+    }
+
+    fn microshard_plan(
+        &self,
+        registration: &crate::DatasetRegistration,
+    ) -> anyhow::Result<crate::MicroShardPlan> {
+        BurnLearnerWorkload::microshard_plan(self, registration)
+    }
+
+    fn load_batches(
+        &self,
+        lease: &AssignmentLease,
+        cached_microshards: &[CachedMicroShard],
+    ) -> anyhow::Result<Vec<Self::Batch>> {
+        BurnLearnerWorkload::load_batches(self, lease, cached_microshards)
+    }
+
+    fn contribution_metrics(
+        &self,
+        report: &WindowReport<Self::WindowStats>,
+    ) -> BTreeMap<String, MetricValue> {
+        BurnLearnerWorkload::contribution_metrics(self, report)
+    }
+
+    fn contribution_weight(&self, report: &WindowReport<Self::WindowStats>) -> f64 {
+        BurnLearnerWorkload::contribution_weight(self, report)
+    }
+
+    fn apply_patch(&mut self, patch: &RuntimePatch) -> PatchOutcome {
+        BurnLearnerWorkload::apply_patch(self, patch)
+    }
+
+    fn supported_patch_classes(&self) -> PatchSupport {
+        BurnLearnerWorkload::supported_patch_classes(self)
     }
 }
 
@@ -409,9 +759,9 @@ pub trait IntoBurnWorkloadAdapter: BurnWorkload + Sized {
 
 impl<W> IntoBurnWorkloadAdapter for W where W: BurnWorkload {}
 
-/// Builds a native node builder from a Burn-native workload and target preset.
-pub fn native<W>(
-    target: BurnNodeTarget,
+/// Builds a node builder from a Burn-native workload and target preset.
+pub fn connect<W>(
+    target: BurnTarget,
     release_manifest: ClientReleaseManifest,
     workload: W,
     config: BurnWorkloadConfig,
@@ -420,6 +770,21 @@ where
     W: BurnWorkload + Clone,
 {
     Ok(node(release_manifest, workload, config)?.with_roles(target.roles()))
+}
+
+#[deprecated(note = "use connect")]
+/// Backward-compatible alias for the older native entrypoint.
+#[doc(hidden)]
+pub fn native<W>(
+    target: BurnTarget,
+    release_manifest: ClientReleaseManifest,
+    workload: W,
+    config: BurnWorkloadConfig,
+) -> anyhow::Result<NodeBuilder<SingleWorkloadProjectFamily<BurnWorkloadAdapter<W>>>>
+where
+    W: BurnWorkload + Clone,
+{
+    connect(target, release_manifest, workload, config)
 }
 
 /// Builds a single-workload node builder from a Burn-native workload.
@@ -447,7 +812,7 @@ pub fn trainer<W>(
 where
     W: BurnWorkload + Clone,
 {
-    native(BurnNodeTarget::Trainer, release_manifest, workload, config)
+    connect(BurnTarget::Trainer, release_manifest, workload, config)
 }
 
 /// Builds an authority/validator/archive-flavored node builder from a Burn-native workload.
@@ -459,12 +824,7 @@ pub fn validator<W>(
 where
     W: BurnWorkload + Clone,
 {
-    native(
-        BurnNodeTarget::Validator,
-        release_manifest,
-        workload,
-        config,
-    )
+    connect(BurnTarget::Validator, release_manifest, workload, config)
 }
 
 impl<W> P2pWorkload for BurnWorkloadAdapter<W>
@@ -663,325 +1023,4 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use burn::{
-        backend::NdArray,
-        module::Module,
-        nn::{Linear, LinearConfig},
-        tensor::backend::Backend,
-    };
-    use chrono::Utc;
-
-    type TestBackend = NdArray<f32>;
-
-    #[derive(Module, Debug)]
-    struct TinyModel<B: Backend> {
-        linear: Linear<B>,
-    }
-
-    impl<B: Backend> TinyModel<B> {
-        fn new(device: &B::Device) -> Self {
-            Self {
-                linear: LinearConfig::new(4, 2).init(device),
-            }
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    struct TinyBurnWorkload;
-
-    impl BurnWorkload for TinyBurnWorkload {
-        type Backend = TestBackend;
-        type Model = TinyModel<TestBackend>;
-        type Batch = f32;
-        type WindowStats = BTreeMap<String, MetricValue>;
-
-        fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
-            TinyModel::new(device)
-        }
-
-        fn benchmark(
-            &self,
-            _model: &Self::Model,
-            _device: &<Self::Backend as Backend>::Device,
-        ) -> crate::CapabilityEstimate {
-            crate::CapabilityEstimate {
-                preferred_backends: vec!["ndarray".into()],
-                work_units_per_second: 16.0,
-                target_window_seconds: 1,
-            }
-        }
-
-        fn train_window(
-            &self,
-            _ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
-        ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
-            Ok(WindowReport {
-                contribution: None,
-                stats: BTreeMap::from([("loss".into(), MetricValue::Float(0.0))]),
-                completed_at: Utc::now(),
-            })
-        }
-
-        fn evaluate(&self, _model: &Self::Model, _split: EvalSplit) -> MetricReport {
-            MetricReport {
-                metrics: BTreeMap::from([("loss".into(), MetricValue::Float(0.0))]),
-                captured_at: Utc::now(),
-            }
-        }
-
-        fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
-            <TestBackend as Backend>::Device::default()
-        }
-
-        fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
-            Ok(crate::DatasetRegistration {
-                manifest: crate::DatasetManifest {
-                    dataset_id: crate::DatasetId::new("tiny-dataset"),
-                    source_uri: ".".into(),
-                    format: "microshards".into(),
-                    manifest_hash: ContentId::new("tiny-manifest"),
-                    metadata: BTreeMap::new(),
-                },
-                view: crate::DatasetView {
-                    dataset_view_id: crate::DatasetViewId::new("tiny-view"),
-                    dataset_id: crate::DatasetId::new("tiny-dataset"),
-                    preprocessing_hash: ContentId::new("tiny-preprocess"),
-                    tokenizer_hash: None,
-                    manifest_hash: ContentId::new("tiny-manifest"),
-                    metadata: BTreeMap::new(),
-                },
-                upstream: crate::UpstreamAdapter::Local { root: ".".into() },
-            })
-        }
-
-        fn microshard_plan(
-            &self,
-            registration: &crate::DatasetRegistration,
-        ) -> anyhow::Result<crate::MicroShardPlan> {
-            Ok(
-                crate::MicroShardPlanner::new(crate::MicroShardPlannerConfig {
-                    target_microshard_bytes: 16,
-                    min_microshards: 1,
-                    max_microshards: 1,
-                })?
-                .plan(
-                    &registration.view,
-                    crate::DatasetSizing {
-                        total_examples: 1,
-                        total_tokens: 1,
-                        total_bytes: 16,
-                    },
-                )?,
-            )
-        }
-
-        fn load_batches(
-            &self,
-            _lease: &AssignmentLease,
-            _cached_microshards: &[CachedMicroShard],
-        ) -> anyhow::Result<Vec<Self::Batch>> {
-            Ok(vec![1.0])
-        }
-
-        fn contribution_metrics(
-            &self,
-            report: &WindowReport<Self::WindowStats>,
-        ) -> BTreeMap<String, MetricValue> {
-            report.stats.clone()
-        }
-    }
-
-    #[test]
-    fn burn_workload_adapter_derives_schema_and_manifest() {
-        let supported_workload = SupportedWorkload {
-            workload_id: crate::WorkloadId::new("tiny-workload"),
-            workload_name: "Tiny Burn Workload".into(),
-            model_program_hash: ContentId::new("tiny-program"),
-            checkpoint_format_hash: ContentId::new("tiny-burnpack"),
-            supported_revision_family: ContentId::new("tiny-family"),
-            resource_class: "cpu".into(),
-        };
-        let config = BurnWorkloadConfig::new(
-            supported_workload.clone(),
-            BurnArtifactConfig::burnpack(ChunkingScheme::new(64).expect("chunking")),
-        )
-        .with_root_ema(0.99);
-        let adapter = TinyBurnWorkload
-            .into_p2p_workload(config)
-            .expect("adapter should build");
-
-        assert_eq!(adapter.supported_workload(), supported_workload);
-        assert_eq!(
-            adapter.checkpoint_format_hash(),
-            ContentId::new("tiny-burnpack")
-        );
-        assert!(!adapter.model_schema_hash().as_str().is_empty());
-    }
-
-    #[test]
-    fn trainer_builder_wraps_single_burn_workload_with_trainer_roles() {
-        let supported_workload = SupportedWorkload {
-            workload_id: crate::WorkloadId::new("tiny-workload"),
-            workload_name: "Tiny Burn Workload".into(),
-            model_program_hash: ContentId::new("tiny-program"),
-            checkpoint_format_hash: ContentId::new("tiny-burnpack"),
-            supported_revision_family: ContentId::new("tiny-family"),
-            resource_class: "cpu".into(),
-        };
-        let release_manifest = ClientReleaseManifest {
-            project_family_id: crate::ProjectFamilyId::new("tiny-family"),
-            release_train_hash: ContentId::new("tiny-train"),
-            target_artifact_id: "native-linux-x86_64".into(),
-            target_artifact_hash: ContentId::new("tiny-artifact"),
-            target_platform: crate::ClientPlatform::Native,
-            app_semver: semver::Version::new(0, 1, 0),
-            git_commit: "local".into(),
-            cargo_lock_hash: ContentId::new("tiny-lock"),
-            burn_version_string: "0.21.0-pre.2".into(),
-            enabled_features_hash: ContentId::new("tiny-features"),
-            protocol_major: 0,
-            supported_workloads: vec![supported_workload.clone()],
-            built_at: Utc::now(),
-        };
-        let network_manifest = crate::NetworkManifest {
-            network_id: crate::NetworkId::new("tiny-network"),
-            project_family_id: release_manifest.project_family_id.clone(),
-            protocol_major: release_manifest.protocol_major,
-            required_release_train_hash: release_manifest.release_train_hash.clone(),
-            allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
-                .target_artifact_hash
-                .clone()]),
-            authority_public_keys: Vec::new(),
-            bootstrap_addrs: Vec::new(),
-            auth_policy_hash: ContentId::new("tiny-auth-policy"),
-            created_at: Utc::now(),
-            description: "tiny network".into(),
-        };
-        let builder = trainer(
-            release_manifest,
-            TinyBurnWorkload,
-            BurnWorkloadConfig::new(
-                supported_workload.clone(),
-                BurnArtifactConfig::burnpack(ChunkingScheme::new(64).expect("chunking")),
-            ),
-        )
-        .expect("trainer builder")
-        .with_network(network_manifest)
-        .expect("network binding");
-        let prepared = builder.prepare().expect("prepared node");
-
-        assert_eq!(prepared.mainnet().roles, crate::RoleSet::default_trainer());
-        assert_eq!(
-            prepared.config().selected_workload_id,
-            Some(supported_workload.workload_id)
-        );
-    }
-
-    #[test]
-    fn validator_builder_wraps_single_burn_workload_with_validator_roles() {
-        let supported_workload = SupportedWorkload {
-            workload_id: crate::WorkloadId::new("tiny-workload"),
-            workload_name: "Tiny Burn Workload".into(),
-            model_program_hash: ContentId::new("tiny-program"),
-            checkpoint_format_hash: ContentId::new("tiny-burnpack"),
-            supported_revision_family: ContentId::new("tiny-family"),
-            resource_class: "cpu".into(),
-        };
-        let release_manifest = ClientReleaseManifest {
-            project_family_id: crate::ProjectFamilyId::new("tiny-family"),
-            release_train_hash: ContentId::new("tiny-train"),
-            target_artifact_id: "native-linux-x86_64".into(),
-            target_artifact_hash: ContentId::new("tiny-artifact"),
-            target_platform: crate::ClientPlatform::Native,
-            app_semver: semver::Version::new(0, 1, 0),
-            git_commit: "local".into(),
-            cargo_lock_hash: ContentId::new("tiny-lock"),
-            burn_version_string: "0.21.0-pre.2".into(),
-            enabled_features_hash: ContentId::new("tiny-features"),
-            protocol_major: 0,
-            supported_workloads: vec![supported_workload.clone()],
-            built_at: Utc::now(),
-        };
-        let network_manifest = crate::NetworkManifest {
-            network_id: crate::NetworkId::new("tiny-network"),
-            project_family_id: release_manifest.project_family_id.clone(),
-            protocol_major: release_manifest.protocol_major,
-            required_release_train_hash: release_manifest.release_train_hash.clone(),
-            allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
-                .target_artifact_hash
-                .clone()]),
-            authority_public_keys: Vec::new(),
-            bootstrap_addrs: Vec::new(),
-            auth_policy_hash: ContentId::new("tiny-auth-policy"),
-            created_at: Utc::now(),
-            description: "tiny network".into(),
-        };
-        let builder = validator(
-            release_manifest,
-            TinyBurnWorkload,
-            BurnWorkloadConfig::new(
-                supported_workload.clone(),
-                BurnArtifactConfig::burnpack(ChunkingScheme::new(64).expect("chunking")),
-            ),
-        )
-        .expect("validator builder")
-        .with_network(network_manifest)
-        .expect("network binding");
-        let prepared = builder.prepare().expect("prepared node");
-
-        assert_eq!(
-            prepared.mainnet().roles,
-            crate::PeerRoleSet::new([
-                crate::PeerRole::Authority,
-                crate::PeerRole::Validator,
-                crate::PeerRole::Archive
-            ])
-        );
-        assert_eq!(
-            prepared.config().selected_workload_id,
-            Some(supported_workload.workload_id)
-        );
-    }
-
-    #[test]
-    fn native_builder_accepts_explicit_target_preset() {
-        let supported_workload = SupportedWorkload {
-            workload_id: crate::WorkloadId::new("tiny-workload"),
-            workload_name: "Tiny Burn Workload".into(),
-            model_program_hash: ContentId::new("tiny-program"),
-            checkpoint_format_hash: ContentId::new("tiny-burnpack"),
-            supported_revision_family: ContentId::new("tiny-family"),
-            resource_class: "cpu".into(),
-        };
-        let release_manifest = ClientReleaseManifest {
-            project_family_id: crate::ProjectFamilyId::new("tiny-family"),
-            release_train_hash: ContentId::new("tiny-train"),
-            target_artifact_id: "native-linux-x86_64".into(),
-            target_artifact_hash: ContentId::new("tiny-artifact"),
-            target_platform: crate::ClientPlatform::Native,
-            app_semver: semver::Version::new(0, 1, 0),
-            git_commit: "local".into(),
-            cargo_lock_hash: ContentId::new("tiny-lock"),
-            burn_version_string: "0.21.0-pre.2".into(),
-            enabled_features_hash: ContentId::new("tiny-features"),
-            protocol_major: 0,
-            supported_workloads: vec![supported_workload.clone()],
-            built_at: Utc::now(),
-        };
-
-        let builder = native(
-            BurnNodeTarget::Trainer,
-            release_manifest,
-            TinyBurnWorkload,
-            BurnWorkloadConfig::new(
-                supported_workload,
-                BurnArtifactConfig::burnpack(ChunkingScheme::new(64).expect("chunking")),
-            ),
-        )
-        .expect("native builder");
-
-        assert_eq!(builder.config().selected_workload_id, None);
-    }
-}
+mod tests;
