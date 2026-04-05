@@ -220,10 +220,9 @@ pub(crate) fn ValidateSections(
             }
             aside { class: "support-stack",
                 section { class: "panel compact-panel",
-                    SectionHeader {
+                    CompactSectionHeader {
                         eyebrow: "selection",
-                        title: "current revision",
-                        detail: "the revision currently in scope.",
+                        detail: "current experiment and revision.",
                     }
                     if let Some(selected) = view.selected_experiment.clone() {
                         ExperimentCard { experiment: selected }
@@ -319,18 +318,13 @@ pub(crate) fn TrainSections(
     rsx! {
         div { class: "surface-layout browser-surface-layout",
             section { class: "panel primary-panel browser-focus-panel",
-                SectionHeader {
-                    eyebrow: "train",
-                    title: "training",
-                    detail: "throughput and the current work slice.",
-                }
                 if let Some((label, detail, tone)) = train_notice {
                     InlineNotice { label, detail, tone }
                 }
                 article { class: "browser-spotlight",
                     div { class: "browser-spotlight-top",
                         div { class: "browser-spotlight-copy",
-                            div { class: "eyebrow", "slice" }
+                            div { class: "eyebrow", "work" }
                             h2 { class: "browser-focus-title browser-focus-metric", "{throughput}" }
                             p { class: "section-detail", "{view.training.slice_status}" }
                         }
@@ -417,10 +411,9 @@ pub(crate) fn TrainSections(
             }
             aside { class: "support-stack",
                 section { class: "panel compact-panel",
-                    SectionHeader {
+                    CompactSectionHeader {
                         eyebrow: "selection",
-                        title: "current revision",
-                        detail: "the revision this node is following.",
+                        detail: "current experiment and revision.",
                     }
                     if let Some(selected) = view.selected_experiment.clone() {
                         ExperimentCard { experiment: selected }
@@ -432,9 +425,8 @@ pub(crate) fn TrainSections(
                     }
                 }
                 section { class: "panel compact-panel",
-                    SectionHeader {
+                    CompactSectionHeader {
                         eyebrow: "latest output",
-                        title: "publish",
                         detail: "most recent local output.",
                     }
                     KeyValueList {
@@ -512,10 +504,9 @@ pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
                     }
                 }
                 section { class: "panel compact-panel",
-                    SectionHeader {
+                    CompactSectionHeader {
                         eyebrow: "selection",
-                        title: "current revision",
-                        detail: "the experiment currently in scope.",
+                        detail: "current experiment and revision.",
                     }
                     if let Some(selected) = view.selected_experiment.clone() {
                         ExperimentCard { experiment: selected }
@@ -537,6 +528,16 @@ fn SectionHeader(eyebrow: &'static str, title: &'static str, detail: &'static st
         header { class: "section-header",
             div { class: "eyebrow", "{eyebrow}" }
             h2 { "{title}" }
+            p { class: "section-detail", "{detail}" }
+        }
+    }
+}
+
+#[component]
+fn CompactSectionHeader(eyebrow: &'static str, detail: &'static str) -> Element {
+    rsx! {
+        header { class: "section-header",
+            div { class: "eyebrow", "{eyebrow}" }
             p { class: "section-detail", "{detail}" }
         }
     }

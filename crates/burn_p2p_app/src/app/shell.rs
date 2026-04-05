@@ -36,11 +36,6 @@ pub(crate) fn NodeAppShell(
             view.network.direct_peers, view.network.estimated_network_size
         )
     };
-    let sync_summary = format!(
-        "{} · {}",
-        state.refresh_status,
-        short_edge_label(&view.network.edge_base_url)
-    );
     let edge_summary = short_edge_label(&view.network.edge_base_url);
     let hero_subtitle = hero_subtitle(&view, state.active_surface);
     let hero_notice = hero_notice(&view, state.active_surface);
@@ -119,10 +114,6 @@ pub(crate) fn NodeAppShell(
                         div { class: "edge-summary",
                             span { class: "toolbar-meta-label", "edge" }
                             strong { class: "edge-summary-pill", "{edge_summary}" }
-                        }
-                        div { class: "browser-hero-meta",
-                            span { class: "toolbar-meta-label", "sync" }
-                            strong { "{sync_summary}" }
                         }
                     }
                 }
@@ -226,7 +217,7 @@ fn hero_subtitle(view: &NodeAppClientView, surface: NodeAppSurface) -> String {
             }
         }
         NodeAppSurface::Validate => "checkpoint review and receipt flow".into(),
-        NodeAppSurface::Train => "throughput, slice state, and publish flow".into(),
+        NodeAppSurface::Train => "decentralized training dashboard".into(),
         NodeAppSurface::Network => "transport, peers, and sync".into(),
     }
 }

@@ -140,7 +140,7 @@ pub fn write_portal_capture_bundle(root: impl AsRef<Path>) -> Result<PortalCaptu
             slug: spec.scenario.slug,
             title: spec.scenario.title,
             description: spec.scenario.description,
-            default_surface: BrowserAppSurface::Viewer,
+            default_surface: capture_default_surface(&spec.scenario.interactions),
             snapshot: browser_portal_snapshot(&spec.snapshot),
             metrics_catchup: scenario_metrics_catchup(
                 &spec.snapshot,
@@ -755,9 +755,9 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
             vec![
                 PortalCaptureInteraction {
                     action: "click".into(),
-                    selector: Some(r#"[data-surface-target="viewer"]"#.into()),
+                    selector: Some(r#"[data-surface-target="overview"]"#.into()),
                     value: None,
-                    wait_for_text: Some("Overview".into()),
+                    wait_for_text: Some("overview".into()),
                 },
             ],
         ),
@@ -801,9 +801,9 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 .build(),
             vec![PortalCaptureInteraction {
                 action: "click".into(),
-                selector: Some(r#"[data-surface-target="viewer"]"#.into()),
+                selector: Some(r#"[data-surface-target="overview"]"#.into()),
                 value: None,
-                wait_for_text: Some("Overview".into()),
+                wait_for_text: Some("overview".into()),
             }],
         ),
         scenario_spec(
@@ -831,9 +831,9 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 .build(),
             vec![PortalCaptureInteraction {
                 action: "click".into(),
-                selector: Some(r#"[data-surface-target="viewer"]"#.into()),
+                selector: Some(r#"[data-surface-target="overview"]"#.into()),
                 value: None,
-                wait_for_text: Some("Top participants".into()),
+                wait_for_text: Some("top participants".into()),
             }],
         ),
         scenario_spec(
@@ -881,7 +881,7 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 action: "click".into(),
                 selector: Some(r#"[data-surface-target="train"]"#.into()),
                 value: None,
-                wait_for_text: Some("Training".into()),
+                wait_for_text: Some("training".into()),
             }],
         ),
         scenario_spec(
@@ -911,7 +911,7 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 action: "click".into(),
                 selector: Some(r#"[data-surface-target="validate"]"#.into()),
                 value: None,
-                wait_for_text: Some("Validation".into()),
+                wait_for_text: Some("validation".into()),
             }],
         ),
         scenario_spec(
@@ -955,7 +955,7 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                     action: "click".into(),
                     selector: Some(r#"[data-surface-target="train"]"#.into()),
                     value: None,
-                    wait_for_text: Some("Training".into()),
+                    wait_for_text: Some("training".into()),
                 },
             ],
         ),
@@ -1004,7 +1004,7 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 action: "click".into(),
                 selector: Some(r#"[data-surface-target="train"]"#.into()),
                 value: None,
-                wait_for_text: Some("Training".into()),
+                wait_for_text: Some("training".into()),
             }],
         ),
         scenario_spec(
@@ -1030,7 +1030,7 @@ fn build_portal_capture_scenarios() -> Vec<PortalScenarioSpec> {
                 action: "click".into(),
                 selector: Some(r#"[data-surface-target="network"]"#.into()),
                 value: None,
-                wait_for_text: Some("Connection".into()),
+                wait_for_text: Some("connection".into()),
             }],
         ),
         scenario_spec_with_viewport(
@@ -1118,7 +1118,7 @@ fn fleet_scenario(slug: &str, title: &str, peer_count: usize) -> PortalScenarioS
             action: "click".into(),
             selector: Some(r#"[data-surface-target="network"]"#.into()),
             value: None,
-            wait_for_text: Some("Connection".into()),
+            wait_for_text: Some("connection".into()),
         }],
     )
 }
@@ -1163,6 +1163,30 @@ fn scenario_spec_with_viewport(
         },
         snapshot,
     }
+}
+
+fn capture_default_surface(interactions: &[PortalCaptureInteraction]) -> BrowserAppSurface {
+    interactions
+        .iter()
+        .find_map(|interaction| match interaction.selector.as_deref() {
+            Some(selector) if selector.contains(r#"data-surface-target="overview""#) => {
+                Some(BrowserAppSurface::Viewer)
+            }
+            Some(selector) if selector.contains(r#"data-surface-target="viewer""#) => {
+                Some(BrowserAppSurface::Viewer)
+            }
+            Some(selector) if selector.contains(r#"data-surface-target="validate""#) => {
+                Some(BrowserAppSurface::Validate)
+            }
+            Some(selector) if selector.contains(r#"data-surface-target="train""#) => {
+                Some(BrowserAppSurface::Train)
+            }
+            Some(selector) if selector.contains(r#"data-surface-target="network""#) => {
+                Some(BrowserAppSurface::Network)
+            }
+            _ => None,
+        })
+        .unwrap_or(BrowserAppSurface::Viewer)
 }
 
 #[derive(Clone, Debug)]
