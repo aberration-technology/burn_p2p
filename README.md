@@ -2,8 +2,7 @@
 
 `burn_p2p` is the public entrypoint for peer-to-peer Burn training.
 
-if you already have a Burn model, loss function, optimizer, and dataset, the
-integration path is:
+integration path:
 
 1. wrap your existing training code in `P2pWorkload`
 2. wrap workload in `SingleWorkloadProjectFamily`
@@ -26,7 +25,7 @@ burn_p2p = { version = "=0.21.0-pre.4", features = ["burn"] }
 
 ## usage
 
-### if you already have a model, loss fn, and dataset
+### workload shape
 
 `burn_p2p` does not replace your training step. you keep your model, loss, and
 batch logic; you expose them through `P2pWorkload`.
