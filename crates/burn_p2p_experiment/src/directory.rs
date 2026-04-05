@@ -4,7 +4,7 @@ use burn_p2p_core::{
     ArtifactTargetKind, BrowserCapability, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy,
     CapabilityCard, ClientPlatform, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
     ExperimentScope, ExperimentVisibility, LagPolicy, MergeWindowMissPolicy, NetworkId, Precision,
-    RevisionManifest,
+    RevisionManifest, RobustnessPolicy,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,8 @@ const BROWSER_MAX_WINDOW_SECS_KEY: &str = "burn_p2p.revision.browser.max_window_
 const BROWSER_MAX_SHARD_BYTES_KEY: &str = "burn_p2p.revision.browser.max_shard_bytes";
 const BROWSER_MAX_BATCH_SIZE_KEY: &str = "burn_p2p.revision.browser.max_batch_size";
 const BROWSER_RECOMMENDED_PRECISION_KEY: &str = "burn_p2p.revision.browser.recommended_precision";
+const ROBUSTNESS_POLICY_JSON_KEY: &str = "burn_p2p.revision.robustness.policy_json";
+const ROBUSTNESS_PRESET_KEY: &str = "burn_p2p.revision.robustness.preset";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents an experiment directory.
@@ -121,6 +123,8 @@ pub trait ExperimentDirectoryPolicyExt {
     fn max_browser_batch_size(&self) -> Option<u32>;
     /// Performs the recommended browser precision operation.
     fn recommended_browser_precision(&self) -> Option<Precision>;
+    /// Performs the robustness policy operation.
+    fn robustness_policy(&self) -> Option<RobustnessPolicy>;
     /// Performs the browser role allowed operation.
     fn browser_role_allowed(&self, role: BrowserRole) -> bool;
     /// Returns whether the value is browser eligible.
@@ -301,6 +305,12 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
                 "int8" => Some(Precision::Int8),
                 _ => None,
             })
+    }
+
+    fn robustness_policy(&self) -> Option<RobustnessPolicy> {
+        self.metadata
+            .get(ROBUSTNESS_POLICY_JSON_KEY)
+            .and_then(|value| serde_json::from_str(value).ok())
     }
 
     fn browser_role_allowed(&self, role: BrowserRole) -> bool {
@@ -484,6 +494,17 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
                 .into(),
             );
         }
+        if let Some(policy) = revision.robustness_policy.as_ref() {
+            self.metadata.insert(
+                ROBUSTNESS_POLICY_JSON_KEY.into(),
+                serde_json::to_string(policy)
+                    .expect("revision robustness policy should serialize to directory metadata"),
+            );
+            self.metadata.insert(
+                ROBUSTNESS_PRESET_KEY.into(),
+                format!("{:?}", policy.preset).to_lowercase(),
+            );
+        }
     }
 }
 
@@ -497,7 +518,7 @@ mod tests {
         ContentId, ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
         ExperimentScope, ExperimentVisibility, HeadId, LagPolicy, MergeWindowMissPolicy, NetworkId,
         PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision, RevisionId, RevisionManifest,
-        StudyId, WindowActivation, WindowId,
+        RobustnessPolicy, StudyId, WindowActivation, WindowId,
     };
     use chrono::Utc;
 
@@ -652,6 +673,7 @@ mod tests {
                 max_window_skew_before_lease_revoke: 4,
             },
             merge_window_miss_policy: MergeWindowMissPolicy::RebaseRequired,
+            robustness_policy: Some(RobustnessPolicy::strict()),
             browser_enabled: true,
             browser_role_policy: BrowserRolePolicy::default(),
             max_browser_checkpoint_bytes: Some(1024),
@@ -671,6 +693,7 @@ mod tests {
             entry.merge_window_miss_policy(),
             MergeWindowMissPolicy::RebaseRequired
         );
+        assert_eq!(entry.robustness_policy(), revision.robustness_policy);
         assert!(entry.browser_enabled());
         assert_eq!(
             entry.browser_visibility_policy(),
@@ -700,6 +723,7 @@ mod tests {
             },
             lag_policy: LagPolicy::default(),
             merge_window_miss_policy: MergeWindowMissPolicy::LeaseBlocked,
+            robustness_policy: None,
             browser_enabled: true,
             browser_role_policy: BrowserRolePolicy {
                 observer: true,
@@ -783,6 +807,7 @@ mod tests {
             },
             lag_policy: LagPolicy::default(),
             merge_window_miss_policy: MergeWindowMissPolicy::LeaseBlocked,
+            robustness_policy: None,
             browser_enabled: true,
             browser_role_policy: BrowserRolePolicy::default(),
             max_browser_checkpoint_bytes: None,

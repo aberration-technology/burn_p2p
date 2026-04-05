@@ -63,3 +63,18 @@ fn browser_supporting_crates_compile_for_wasm_target() -> anyhow::Result<()> {
         "wasm32-unknown-unknown",
     ])
 }
+
+#[test]
+fn portal_web_client_compiles_for_wasm_target() -> anyhow::Result<()> {
+    run_browser_matrix_step(&[
+        "check",
+        "--manifest-path",
+        "Cargo.toml",
+        "-p",
+        "burn_p2p_portal",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--features",
+        "web-client",
+    ])
+}

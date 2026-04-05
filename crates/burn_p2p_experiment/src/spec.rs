@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use burn_p2p_core::{
     ContentId, DatasetViewId, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
     EvalProtocolOptions, ExperimentId, HeadId, MergePolicy, MergeTopologyPolicy, NetworkId,
-    RevisionId, StudyId,
+    RevisionId, RobustnessPolicy, StudyId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -143,7 +143,7 @@ impl PatchSupport {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents a revision spec.
 pub struct RevisionSpec {
     /// The revision ID.
@@ -165,6 +165,9 @@ pub struct RevisionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Metrics policy and registered evaluation protocols for this revision.
     pub metrics_policy: Option<RevisionMetricsPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Robustness policy attached to the revision.
+    pub robustness_policy: Option<RobustnessPolicy>,
 }
 
 impl RevisionSpec {
@@ -196,12 +199,19 @@ impl RevisionSpec {
             patch_support,
             created_at,
             metrics_policy: None,
+            robustness_policy: None,
         })
     }
 
     /// Returns a copy configured with a metrics policy.
     pub fn with_metrics_policy(mut self, metrics_policy: RevisionMetricsPolicy) -> Self {
         self.metrics_policy = Some(metrics_policy);
+        self
+    }
+
+    /// Returns a copy configured with a robustness policy.
+    pub fn with_robustness_policy(mut self, robustness_policy: RobustnessPolicy) -> Self {
+        self.robustness_policy = Some(robustness_policy);
         self
     }
 }
@@ -414,7 +424,9 @@ impl RuntimePatch {
 mod tests {
     use std::collections::BTreeSet;
 
-    use burn_p2p_core::{ContentId, DatasetViewId, ExperimentId};
+    use burn_p2p_core::{
+        ContentId, DatasetViewId, ExperimentId, RobustnessPolicy, RobustnessPreset,
+    };
     use chrono::Utc;
 
     use super::{PatchSupport, RevisionCompatibility, RevisionMetricsPolicy, RevisionSpec};
@@ -502,5 +514,28 @@ mod tests {
         );
         assert_eq!(attached.stale_work_head_lag_threshold, Some(4));
         assert_eq!(attached.stale_work_time_lag_ms_threshold, Some(30_000));
+    }
+
+    #[test]
+    fn revision_can_attach_robustness_policy() {
+        let revision = RevisionSpec::new(
+            ExperimentId::new("exp-a"),
+            None,
+            ContentId::new("project-a"),
+            ContentId::new("config-a"),
+            RevisionCompatibility {
+                model_schema_hash: ContentId::new("schema-a"),
+                dataset_view_id: DatasetViewId::new("view-a"),
+                required_client_capabilities: BTreeSet::new(),
+            },
+            PatchSupport::default(),
+            Utc::now(),
+        )
+        .expect("revision")
+        .with_robustness_policy(RobustnessPolicy::strict());
+
+        let attached = revision.robustness_policy.expect("robustness policy");
+        assert_eq!(attached.preset, RobustnessPreset::Strict);
+        assert!(attached.screening_policy.require_replica_agreement);
     }
 }

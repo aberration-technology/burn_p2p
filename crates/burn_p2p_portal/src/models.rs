@@ -89,16 +89,35 @@ pub struct PortalHeadRow {
 pub struct PortalDiagnosticsView {
     /// Number of currently connected peers.
     pub connected_peers: usize,
+    /// Number of observed peers surfaced by the edge.
+    pub observed_peers: usize,
+    /// Estimated wider network size beyond the directly visible peer set.
+    pub estimated_network_size: usize,
     /// Number of currently admitted peers.
     pub admitted_peers: usize,
     /// Number of rejected peers visible to the edge.
     pub rejected_peers: usize,
     /// Number of quarantined peers visible to the edge.
     pub quarantined_peers: usize,
+    /// Number of banned peers visible to the edge.
+    pub banned_peers: usize,
+    /// Number of in-flight transfer operations currently visible to the edge.
+    pub in_flight_transfers: usize,
     /// Total accepted receipt count currently surfaced by the edge.
     pub accepted_receipts: u64,
     /// Total certified merge count currently surfaced by the edge.
     pub certified_merges: u64,
+    /// Lower ETA bound for current remaining work, when available.
+    #[serde(default)]
+    pub eta_lower_seconds: Option<u64>,
+    /// Upper ETA bound for current remaining work, when available.
+    #[serde(default)]
+    pub eta_upper_seconds: Option<u64>,
+    /// Human-readable node runtime state.
+    pub node_state: String,
+    /// Last surfaced error, when one exists.
+    #[serde(default)]
+    pub last_error: Option<String>,
     /// Human-readable list of active edge services.
     pub active_services: Vec<String>,
 }
@@ -116,6 +135,53 @@ pub struct PortalTrustView {
     pub minimum_revocation_epoch: Option<u64>,
     /// Whether peers must re-enroll before continuing to participate.
     pub reenrollment_required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One browser/runtime state card rendered in the reference portal.
+pub struct PortalRuntimeStateCard {
+    /// Short label for the runtime card.
+    pub label: String,
+    /// Human-readable state name.
+    pub state: String,
+    /// Optional role or mode label.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Short detail text shown below the state.
+    pub detail: String,
+    /// Optional progress percentage when the state has a bounded phase.
+    #[serde(default)]
+    pub progress_percent: Option<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One service-health row rendered in the reference portal.
+pub struct PortalServiceStatusRow {
+    /// Service label.
+    pub service: String,
+    /// Human-readable service state.
+    pub status: String,
+    /// Short explanatory detail shown beside the status.
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One peer-status row rendered in the reference portal.
+pub struct PortalPeerStatusRow {
+    /// Stable peer label shown to operators.
+    pub peer_label: String,
+    /// Human-readable role label.
+    pub role: String,
+    /// Human-readable platform label.
+    pub platform: String,
+    /// Human-readable peer state.
+    pub status: String,
+    /// Short lag summary label.
+    #[serde(default)]
+    pub lag_label: Option<String>,
+    /// Optional note shown for the peer.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +394,8 @@ pub struct PortalHeadArtifactView {
 pub struct PortalSnapshotView {
     /// Network identifier.
     pub network_id: String,
+    /// RFC3339 timestamp when the portal snapshot was captured.
+    pub captured_at: String,
     /// Whether interactive auth is enabled for this edge.
     pub auth_enabled: bool,
     /// Human-readable edge mode label.
@@ -348,6 +416,15 @@ pub struct PortalSnapshotView {
     pub diagnostics: PortalDiagnosticsView,
     /// Trust and release posture for the edge.
     pub trust: PortalTrustView,
+    /// Browser/runtime state cards currently visible from the edge.
+    #[serde(default)]
+    pub runtime_states: Vec<PortalRuntimeStateCard>,
+    /// Service-health rows currently visible from the edge.
+    #[serde(default)]
+    pub service_statuses: Vec<PortalServiceStatusRow>,
+    /// Per-peer status rows currently visible from the edge.
+    #[serde(default)]
+    pub peer_statuses: Vec<PortalPeerStatusRow>,
     /// Browser-visible experiment rows.
     pub experiments: Vec<PortalExperimentRow>,
     /// Currently visible certified heads.

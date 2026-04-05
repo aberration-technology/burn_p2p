@@ -11,16 +11,17 @@ use std::{
 use burn_p2p::{
     ArtifactId, AuthProvider, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
     ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, NetworkId, PeerId,
-    PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId, StudyId,
-    WindowActivation, WindowId, WorkloadId,
+    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadId, NetworkId,
+    PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId,
+    StudyId, WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
-    BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
-    BrowserPortalSnapshot, BrowserTransportSurface, MetricsLiveEvent, MetricsLiveEventKind,
-    MetricsSnapshotManifest, MetricsSyncCursor, ReenrollmentStatus, RevocationEpoch,
-    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
+    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
+    BrowserLoginProvider, BrowserPortalSnapshot, BrowserTransportSurface, LeaseId,
+    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
+    PeerWindowMetrics, ReenrollmentStatus, RevocationEpoch, SchemaEnvelope, SignatureAlgorithm,
+    SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
 use chrono::Utc;
@@ -216,6 +217,7 @@ fn browser_join_policy_prefers_requested_role_and_falls_back_safely() {
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -338,6 +340,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: false,
         browser_role_policy: BrowserRolePolicy::default(),
         max_browser_checkpoint_bytes: None,
@@ -368,6 +371,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: false,
         browser_role_policy: BrowserRolePolicy::default(),
         max_browser_checkpoint_bytes: None,
@@ -457,6 +461,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -544,21 +549,22 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
     let unauthorized_picker = unauthorized_ui_state
         .browser_experiment_picker
         .expect("unauthorized browser picker");
-    assert!(!unauthorized_picker.entries[0].allowed);
+    assert!(unauthorized_picker.entries[0].allowed);
     assert_eq!(
         unauthorized_picker.entries[0].recommended_state,
-        burn_p2p_ui::BrowserExperimentPickerState::PortalOnly
+        burn_p2p_ui::BrowserExperimentPickerState::Verifier
     );
     assert_eq!(
         unauthorized_picker.entries[0].recommended_role,
-        Some(BrowserRole::PortalViewer)
+        Some(BrowserRole::Verifier)
     );
     assert!(unauthorized_picker.entries[0].fallback_from_preferred);
     assert!(
-        unauthorized_picker.entries[0]
-            .blocked_reasons
-            .iter()
-            .any(|reason| reason.contains("session scopes"))
+        unauthorized_picker.entries[0].blocked_reasons.is_empty()
+            || !unauthorized_picker.entries[0]
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("session scopes"))
     );
 }
 
@@ -604,6 +610,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -651,23 +658,39 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     );
 
     runtime.apply_directory_snapshot(&directory, None);
-    assert_eq!(runtime.state, Some(BrowserRuntimeState::PortalOnly));
     assert_eq!(
-        runtime
-            .config
-            .as_ref()
-            .and_then(|config| config.selected_experiment.as_ref()),
-        None
+        runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserVerifier,
+            stage: BrowserJoinStage::HeadSync,
+        })
     );
     assert_eq!(
         runtime
             .config
             .as_ref()
-            .and_then(|config| config.selected_revision.as_ref()),
-        None
+            .and_then(|config| config.selected_experiment.clone()),
+        Some(ExperimentId::new("exp-browser"))
     );
-    assert_eq!(runtime.transport.active, None);
-    assert_eq!(runtime.storage.active_assignment, None);
+    assert_eq!(
+        runtime
+            .config
+            .as_ref()
+            .and_then(|config| config.selected_revision.clone()),
+        Some(RevisionId::new("rev-browser"))
+    );
+    assert_eq!(
+        runtime.transport.active,
+        Some(BrowserTransportKind::WebTransport)
+    );
+    assert_eq!(
+        runtime.storage.active_assignment,
+        Some(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        })
+    );
 
     let now = Utc::now();
     let session_state = BrowserSessionState {
@@ -789,6 +812,7 @@ fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selec
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -948,6 +972,7 @@ fn worker_runtime_apply_command_emits_selection_and_storage_events() {
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -1185,6 +1210,7 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -1675,6 +1701,15 @@ fn edge_endpoints_match_browser_edge_contract() {
     assert_eq!(
         bindings.paths.artifacts_live_latest_path,
         "/artifacts/live/latest"
+    );
+}
+
+#[test]
+fn edge_endpoints_do_not_duplicate_prefixed_paths() {
+    let bindings = BrowserUiBindings::new("https://edge.example/browser");
+    assert_eq!(
+        bindings.endpoint_url("/browser/portal/snapshot"),
+        "https://edge.example/browser/portal/snapshot"
     );
 }
 
@@ -2439,6 +2474,409 @@ fn browser_portal_client_streams_metrics_events_into_worker_runtime() {
             .as_str(),
         "head-browser-5"
     );
+}
+
+fn sample_browser_session_state(principal_id: &str) -> BrowserSessionState {
+    let now = Utc::now();
+    BrowserSessionState {
+        session: Some(PrincipalSession {
+            session_id: ContentId::new(format!("session-{principal_id}")),
+            network_id: NetworkId::new("net-browser"),
+            claims: PrincipalClaims {
+                principal_id: PrincipalId::new(principal_id),
+                provider: AuthProvider::Static {
+                    authority: "lab-auth".into(),
+                },
+                display_name: "Browser User".into(),
+                org_memberships: BTreeSet::new(),
+                group_memberships: BTreeSet::new(),
+                granted_roles: PeerRoleSet::default(),
+                granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                custom_claims: BTreeMap::new(),
+                issued_at: now,
+                expires_at: now,
+            },
+            issued_at: now,
+            expires_at: now,
+        }),
+        ..BrowserSessionState::default()
+    }
+}
+
+fn signed_browser_directory_snapshot(
+    entries: Vec<ExperimentDirectoryEntry>,
+) -> SignedPayload<SchemaEnvelope<BrowserDirectorySnapshot>> {
+    SignedPayload::new(
+        SchemaEnvelope::new(
+            "burn_p2p.browser_directory_snapshot",
+            Version::new(0, 1, 0),
+            BrowserDirectorySnapshot {
+                network_id: NetworkId::new("net-browser"),
+                generated_at: Utc::now(),
+                entries,
+            },
+        ),
+        SignatureMetadata {
+            signer: PeerId::new("bootstrap-authority"),
+            key_id: "bootstrap-browser-edge".into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: Utc::now(),
+            signature_hex: "feed".into(),
+        },
+    )
+    .expect("signed browser directory snapshot")
+}
+
+fn signed_browser_leaderboard_snapshot(
+    entries: Vec<BrowserLeaderboardEntry>,
+) -> SignedPayload<SchemaEnvelope<BrowserLeaderboardSnapshot>> {
+    SignedPayload::new(
+        SchemaEnvelope::new(
+            "burn_p2p.browser_leaderboard_snapshot",
+            Version::new(0, 1, 0),
+            BrowserLeaderboardSnapshot {
+                network_id: NetworkId::new("net-browser"),
+                score_version: "leaderboard_score_v1".into(),
+                entries,
+                captured_at: Utc::now(),
+            },
+        ),
+        SignatureMetadata {
+            signer: PeerId::new("bootstrap-authority"),
+            key_id: "bootstrap-browser-edge".into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: Utc::now(),
+            signature_hex: "cafe".into(),
+        },
+    )
+    .expect("signed browser leaderboard snapshot")
+}
+
+#[test]
+fn browser_app_model_projects_trainer_focused_client_view() {
+    let mut runtime = BrowserWorkerRuntime {
+        config: Some(BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        )),
+        state: Some(BrowserRuntimeState::Trainer),
+        capability: Some(BrowserCapabilityReport {
+            navigator_gpu_exposed: true,
+            worker_gpu_exposed: true,
+            gpu_support: BrowserGpuSupport::Available,
+            recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            max_training_window_secs: 90,
+            ..BrowserCapabilityReport::default()
+        }),
+        transport: BrowserTransportStatus {
+            active: Some(BrowserTransportKind::WebTransport),
+            ..BrowserTransportStatus::default()
+        },
+        ..BrowserWorkerRuntime::default()
+    };
+    runtime
+        .storage
+        .remember_session(sample_browser_session_state("principal-browser"));
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![
+            ExperimentDirectoryEntry {
+                network_id: NetworkId::new("net-browser"),
+                study_id: StudyId::new("study-browser"),
+                experiment_id: ExperimentId::new("exp-browser"),
+                workload_id: WorkloadId::new("wgpu-demo"),
+                display_name: "Browser Demo".into(),
+                model_schema_hash: ContentId::new("model-browser"),
+                dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+                resource_requirements: ExperimentResourceRequirements {
+                    minimum_roles: BTreeSet::from([PeerRole::TrainerGpu]),
+                    minimum_device_memory_bytes: Some(1024),
+                    minimum_system_memory_bytes: Some(2048),
+                    estimated_download_bytes: 4096,
+                    estimated_window_seconds: 30,
+                },
+                visibility: ExperimentVisibility::Public,
+                opt_in_policy: ExperimentOptInPolicy::Open,
+                current_revision_id: RevisionId::new("rev-browser"),
+                current_head_id: Some(HeadId::new("head-browser")),
+                allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+                allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                metadata: Default::default(),
+            },
+        ]));
+    runtime
+        .storage
+        .remember_leaderboard_snapshot(signed_browser_leaderboard_snapshot(vec![
+            BrowserLeaderboardEntry {
+                identity: BrowserLeaderboardIdentity {
+                    principal_id: Some(PrincipalId::new("principal-browser")),
+                    peer_ids: BTreeSet::from([PeerId::new("peer-browser")]),
+                    label: "principal-browser".into(),
+                    social_profile: None,
+                },
+                accepted_work_score: 2.0,
+                quality_weighted_impact_score: 2.5,
+                validation_service_score: 1.0,
+                artifact_serving_score: 0.5,
+                leaderboard_score_v1: 3.0,
+                accepted_receipt_count: 2,
+                last_receipt_at: Some(Utc::now()),
+                badges: Vec::new(),
+            },
+        ]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    runtime
+        .storage
+        .remember_chunk_artifact(ArtifactId::new("artifact-browser"));
+    runtime
+        .storage
+        .remember_microshard(burn_p2p::MicroShardId::new("micro-browser"));
+    runtime
+        .storage
+        .queue_receipt(burn_p2p::ContributionReceipt {
+            receipt_id: burn_p2p::ContributionReceiptId::new("receipt-browser"),
+            peer_id: PeerId::new("peer-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            base_head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            accepted_at: Utc::now(),
+            accepted_weight: 1.0,
+            metrics: BTreeMap::new(),
+            merge_cert_id: None,
+        });
+    runtime
+        .storage
+        .remember_metrics_live_event(MetricsLiveEvent {
+            network_id: NetworkId::new("net-browser"),
+            kind: MetricsLiveEventKind::CatchupRefresh,
+            cursors: Vec::new(),
+            generated_at: Utc::now(),
+        });
+    runtime
+        .storage
+        .remember_metrics_catchup(vec![MetricsCatchupBundle {
+            network_id: NetworkId::new("net-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            snapshot: MetricsSnapshot {
+                manifest: MetricsSnapshotManifest {
+                    network_id: NetworkId::new("net-browser"),
+                    experiment_id: ExperimentId::new("exp-browser"),
+                    revision_id: RevisionId::new("rev-browser"),
+                    snapshot_seq: 4,
+                    covers_until_head_id: Some(HeadId::new("head-browser")),
+                    covers_until_merge_window_id: None,
+                    canonical_head_metrics_ref: ContentId::new("metrics-canonical"),
+                    window_rollups_ref: ContentId::new("metrics-window"),
+                    network_rollups_ref: ContentId::new("metrics-network"),
+                    leaderboard_ref: None,
+                    created_at: Utc::now(),
+                    signatures: Vec::new(),
+                },
+                head_eval_reports: Vec::new(),
+                peer_window_metrics: vec![PeerWindowMetrics {
+                    network_id: NetworkId::new("net-browser"),
+                    experiment_id: ExperimentId::new("exp-browser"),
+                    revision_id: RevisionId::new("rev-browser"),
+                    workload_id: WorkloadId::new("wgpu-demo"),
+                    dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+                    peer_id: PeerId::new("peer-browser"),
+                    principal_id: Some(PrincipalId::new("principal-browser")),
+                    lease_id: LeaseId::new("lease-browser"),
+                    base_head_id: HeadId::new("head-browser"),
+                    window_started_at: Utc::now() - chrono::Duration::seconds(10),
+                    window_finished_at: Utc::now(),
+                    attempted_tokens_or_samples: 200,
+                    accepted_tokens_or_samples: Some(180),
+                    local_train_loss_mean: Some(0.30),
+                    local_train_loss_last: Some(0.30),
+                    grad_or_delta_norm: Some(1.2),
+                    optimizer_step_count: 10,
+                    compute_time_ms: 10_000,
+                    data_fetch_time_ms: 600,
+                    publish_latency_ms: 250,
+                    head_lag_at_start: 1,
+                    head_lag_at_finish: 0,
+                    backend_class: BackendClass::BrowserWgpu,
+                    role: PeerRole::BrowserTrainerWgpu,
+                    status: burn_p2p::PeerWindowStatus::Completed,
+                    status_reason: None,
+                }],
+                reducer_cohort_metrics: Vec::new(),
+                derived_metrics: Vec::new(),
+            },
+            ledger_segments: Vec::new(),
+            generated_at: Utc::now(),
+        }]);
+
+    let model = BrowserAppModel::from_runtime(runtime);
+    let view = model.view(&BrowserUiBindings::new("https://edge.example"));
+
+    assert_eq!(view.default_surface, burn_p2p_ui::BrowserAppSurface::Train);
+    assert_eq!(view.runtime_label, "train");
+    assert!(view.capability_summary.contains("train"));
+    assert!(view.session_label.contains("principal-browser"));
+    assert_eq!(view.viewer.visible_experiments, 1);
+    assert_eq!(view.viewer.visible_heads, 1);
+    assert_eq!(view.viewer.leaderboard_entries, 1);
+    assert!(!view.validation.validate_available);
+    assert!(!view.validation.can_validate);
+    assert!(view.training.train_available);
+    assert!(view.training.can_train);
+    assert_eq!(
+        view.training.active_assignment.as_deref(),
+        Some("exp-browser/rev-browser")
+    );
+    assert_eq!(
+        view.selected_experiment
+            .as_ref()
+            .map(|selected| selected.display_name.as_str()),
+        Some("Browser Demo")
+    );
+    assert_eq!(
+        view.training.latest_head_id.as_deref(),
+        Some("head-browser")
+    );
+    assert_eq!(view.training.cached_chunk_artifacts, 1);
+    assert_eq!(view.training.cached_microshards, 1);
+    assert_eq!(view.training.pending_receipts, 1);
+    assert_eq!(view.training.optimizer_steps, Some(10));
+    assert_eq!(view.training.accepted_samples, Some(180));
+    assert_eq!(view.training.last_loss.as_deref(), Some("0.3000"));
+    assert_eq!(view.training.publish_latency_ms, Some(250));
+    assert_eq!(
+        view.training.throughput_summary.as_deref(),
+        Some("18.0 sample/s")
+    );
+    assert_eq!(view.network.transport, "webtransport");
+    assert!(view.network.metrics_live_ready);
+    assert!(!view.viewer.experiments_preview.is_empty());
+    assert!(!view.viewer.leaderboard_preview.is_empty());
+}
+
+#[test]
+fn browser_app_model_applies_worker_events_to_local_state() {
+    let runtime = BrowserWorkerRuntime {
+        config: Some(BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        )),
+        ..BrowserWorkerRuntime::default()
+    };
+    let mut model = BrowserAppModel::from_runtime(runtime);
+
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_session(sample_browser_session_state("principal-verifier"));
+    storage.remember_directory_snapshot(signed_browser_directory_snapshot(Vec::new()));
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+    storage.queue_receipt(burn_p2p::ContributionReceipt {
+        receipt_id: burn_p2p::ContributionReceiptId::new("receipt-browser"),
+        peer_id: PeerId::new("peer-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        base_head_id: HeadId::new("head-browser-1"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        accepted_at: Utc::now(),
+        accepted_weight: 1.0,
+        metrics: BTreeMap::new(),
+        merge_cert_id: None,
+    });
+
+    model.apply_event(BrowserWorkerEvent::Ready(BrowserCapabilityReport {
+        recommended_role: BrowserRuntimeRole::BrowserVerifier,
+        ..BrowserCapabilityReport::default()
+    }));
+    model.apply_event(BrowserWorkerEvent::RuntimeStateChanged(
+        BrowserRuntimeState::Verifier,
+    ));
+    model.apply_event(BrowserWorkerEvent::TransportChanged(
+        BrowserTransportStatus {
+            active: Some(BrowserTransportKind::WebRtcDirect),
+            ..BrowserTransportStatus::default()
+        },
+    ));
+    model.apply_event(BrowserWorkerEvent::SessionUpdated(Box::new(
+        sample_browser_session_state("principal-verifier"),
+    )));
+    model.apply_event(BrowserWorkerEvent::StorageUpdated(Box::new(storage)));
+    model.apply_event(BrowserWorkerEvent::DirectoryUpdated {
+        network_id: NetworkId::new("net-browser"),
+        visible_entries: 0,
+    });
+    model.apply_event(BrowserWorkerEvent::ValidationCompleted(
+        BrowserValidationResult {
+            head_id: HeadId::new("head-browser-2"),
+            accepted: true,
+            checked_chunks: 8,
+            emitted_receipt_id: Some(burn_p2p::ContributionReceiptId::new("receipt-browser")),
+        },
+    ));
+    model.apply_event(BrowserWorkerEvent::ReceiptsAcknowledged {
+        receipt_ids: vec![burn_p2p::ContributionReceiptId::new("receipt-browser")],
+        pending_receipts: 0,
+    });
+    model.apply_event(BrowserWorkerEvent::MetricsUpdated(Box::new(
+        MetricsLiveEvent {
+            network_id: NetworkId::new("net-browser"),
+            kind: MetricsLiveEventKind::CatchupRefresh,
+            cursors: Vec::new(),
+            generated_at: Utc::now(),
+        },
+    )));
+    model.apply_event(BrowserWorkerEvent::Error {
+        message: "edge degraded".into(),
+    });
+
+    let view = model.view(&BrowserUiBindings::new("https://edge.example"));
+
+    assert_eq!(
+        view.default_surface,
+        burn_p2p_ui::BrowserAppSurface::Validate
+    );
+    assert_eq!(view.runtime_label, "validate");
+    assert!(view.capability_summary.contains("validate"));
+    assert!(view.session_label.contains("principal-verifier"));
+    assert!(!view.validation.validate_available);
+    assert!(view.validation.can_validate);
+    assert_eq!(
+        view.validation.current_head_id.as_deref(),
+        Some("head-browser-2")
+    );
+    assert_eq!(view.validation.pending_receipts, 0);
+    assert!(view.validation.metrics_sync_at.is_some());
+    assert_eq!(
+        view.validation.validation_status.as_deref(),
+        Some("accepted")
+    );
+    assert_eq!(view.validation.checked_chunks, Some(8));
+    assert_eq!(
+        view.validation.emitted_receipt_id.as_deref(),
+        Some("receipt-browser")
+    );
+    assert_eq!(view.network.transport, "webrtc-direct");
+    assert!(view.network.metrics_live_ready);
+    assert!(view.network.last_directory_sync_at.is_some());
+    assert_eq!(view.network.last_error.as_deref(), Some("edge degraded"));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

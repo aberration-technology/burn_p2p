@@ -14,6 +14,16 @@ snapshots, and design diaries are intentionally not kept here.
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
   `burn_p2p` into a Burn project
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance
+- [testing/local-dev.md](testing/local-dev.md): local-first smoke, browser,
+  stress, and publish-readiness commands
+- [testing/ci-profiles.md](testing/ci-profiles.md): how xtask profiles map to
+  CI workflows
+- [testing/browser-local.md](testing/browser-local.md): Playwright, headless,
+  headed, and real-browser local flows
+- [testing/artifacts.md](testing/artifacts.md): artifact layout used both
+  locally and in CI
+- [testing/adversarial.md](testing/adversarial.md): robustness smoke, matrix,
+  seeded replay, and benchmark commands
 
 ## Code First
 

@@ -3,12 +3,20 @@
 
 /// Authentication and session helpers.
 pub mod auth;
+/// Robustness screening, bounded influence, and quarantine helpers.
+pub mod robust;
 
 pub use auth::{
     AdmissionPolicy, AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart,
     NodeCertificateAuthority, NodeEnrollmentRequest, PeerAdmissionReport, PeerTrustLevel,
     PrincipalClaims, PrincipalSession, StaticIdentityConnector, StaticPrincipalRecord,
     TrustedIssuer, create_peer_auth_envelope,
+};
+pub use robust::{
+    CohortWeightDecision, FeatureLayer, RobustUpdateObservation, RobustnessEngine,
+    TrustUpdateInput, aggregate_updates_with_policy, coordinate_median, extract_feature_sketch,
+    filter_update_sketches_with_policy, multi_krum_indices, should_quarantine, trimmed_mean,
+    updated_trust_score,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

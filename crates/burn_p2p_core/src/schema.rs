@@ -21,6 +21,7 @@ mod manifests;
 mod metrics;
 mod primitives;
 mod publication;
+mod robustness;
 mod runtime;
 
 pub use capabilities::*;
@@ -29,6 +30,7 @@ pub use manifests::*;
 pub use metrics::*;
 pub use primitives::*;
 pub use publication::*;
+pub use robustness::*;
 pub use runtime::*;
 
 #[cfg(test)]

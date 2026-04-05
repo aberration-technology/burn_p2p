@@ -1,0 +1,59 @@
+name: Browser
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/browser.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_browser/**"
+      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_testkit/**"
+      - "crates/burn_p2p_ui/**"
+      - "docs/testing/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/browser.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_browser/**"
+      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_testkit/**"
+      - "crates/burn_p2p_ui/**"
+      - "docs/testing/**"
+  workflow_dispatch:
+
+concurrency:
+  group: browser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci browser --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore

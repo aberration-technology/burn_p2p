@@ -4606,6 +4606,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
             max_window_skew_before_lease_revoke: 1,
         },
         merge_window_miss_policy: crate::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: false,
         browser_role_policy: crate::BrowserRolePolicy::default(),
         max_browser_checkpoint_bytes: None,

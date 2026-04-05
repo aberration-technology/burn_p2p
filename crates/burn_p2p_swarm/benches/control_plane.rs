@@ -110,6 +110,7 @@ fn update_announcement(index: usize) -> UpdateEnvelopeAnnouncement {
             revision_id,
             window_id: WindowId(1),
             base_head_id: HeadId::new("bench-base-head"),
+            lease_id: None,
             delta_artifact_id: ArtifactId::new(format!("delta-{index:04}")),
             sample_weight: 32.0 + (index % 5) as f64,
             quality_weight: 0.8 + ((index % 3) as f64 * 0.05),
@@ -119,6 +120,7 @@ fn update_announcement(index: usize) -> UpdateEnvelopeAnnouncement {
                 clipped: false,
                 non_finite_tensors: 0,
             },
+            feature_sketch: None,
             receipt_root: ContentId::derive(&("receipt-root", index)).expect("receipt root"),
             receipt_ids: vec![ContributionReceiptId::new(format!("receipt-{index:04}"))],
             providers: vec![

@@ -12,9 +12,10 @@ mod retention;
 mod store;
 
 use burn_p2p_core::{
-    ContentId, DatasetViewId, ExperimentId, HeadEvalReport, HeadId, LeaseId, MetricScope,
-    MetricTrustClass, MetricsLedgerSegment, MetricsSnapshotManifest, NetworkId, PeerId,
-    PeerWindowMetrics, ReducerCohortMetrics, RevisionId, WorkloadId,
+    CanaryEvalReport, CohortRobustnessReport, ContentId, DatasetViewId, ExperimentId,
+    HeadEvalReport, HeadId, LeaseId, MetricScope, MetricTrustClass, MetricsLedgerSegment,
+    MetricsSnapshotManifest, NetworkId, PeerId, PeerWindowMetrics, ReducerCohortMetrics,
+    RevisionId, TrustScore, WindowId, WorkloadId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -214,14 +215,95 @@ pub struct MetricsCatchupBundle {
     pub generated_at: DateTime<Utc>,
 }
 
+/// Robustness rollup materialized from cohort screening and trust updates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RobustnessRollup {
+    /// Network identifier covered by the rollup.
+    pub network_id: NetworkId,
+    /// Experiment identifier covered by the rollup.
+    pub experiment_id: ExperimentId,
+    /// Revision identifier covered by the rollup.
+    pub revision_id: RevisionId,
+    /// Merge window covered by the rollup.
+    pub window_id: WindowId,
+    /// Total updates screened in the cohort.
+    pub total_updates: u32,
+    /// Total rejected updates in the cohort.
+    pub rejected_updates: u32,
+    /// Fraction of rejected updates in the cohort.
+    pub rejection_ratio: f64,
+    /// Mean trust score across reported peers.
+    pub mean_trust_score: f64,
+    /// Number of quarantined peers in the trust snapshot.
+    pub quarantined_peer_count: u32,
+    /// Number of quarantined peers escalated to a ban recommendation.
+    pub ban_recommended_peer_count: u32,
+    /// Number of canary regressions in the supplied reports.
+    pub canary_regression_count: u32,
+    /// Number of active robustness alerts in the current cohort report.
+    pub alert_count: u32,
+    /// Rollup capture time.
+    pub captured_at: DateTime<Utc>,
+}
+
+/// Derives one robustness rollup from screening, trust, and canary state.
+pub fn derive_robustness_rollup(
+    network_id: NetworkId,
+    cohort: &CohortRobustnessReport,
+    trust_scores: &[TrustScore],
+    canary_reports: &[CanaryEvalReport],
+    captured_at: DateTime<Utc>,
+) -> RobustnessRollup {
+    let mean_trust_score = if trust_scores.is_empty() {
+        0.0
+    } else {
+        trust_scores.iter().map(|score| score.score).sum::<f64>() / trust_scores.len() as f64
+    };
+    let quarantined_peer_count = trust_scores
+        .iter()
+        .filter(|score| score.quarantined)
+        .count() as u32;
+    let ban_recommended_peer_count = trust_scores
+        .iter()
+        .filter(|score| score.quarantined && score.ban_recommended)
+        .count() as u32;
+    let canary_regression_count = canary_reports
+        .iter()
+        .filter(|report| !report.accepted || report.detected_backdoor_trigger)
+        .count() as u32;
+    let alert_count = cohort.alerts.len() as u32;
+
+    RobustnessRollup {
+        network_id,
+        experiment_id: cohort.experiment_id.clone(),
+        revision_id: cohort.revision_id.clone(),
+        window_id: cohort.window_id,
+        total_updates: cohort.total_updates,
+        rejected_updates: cohort.rejected_updates,
+        rejection_ratio: if cohort.total_updates == 0 {
+            0.0
+        } else {
+            cohort.rejected_updates as f64 / cohort.total_updates as f64
+        },
+        mean_trust_score,
+        quarantined_peer_count,
+        ban_recommended_peer_count,
+        canary_regression_count,
+        alert_count,
+        captured_at,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use burn_p2p_core::{
-        BackendClass, ContentId, DatasetViewId, ExperimentId, HeadEvalReport, HeadId, LeaseId,
-        MetricValue, MetricsLiveEventKind, NetworkId, PeerRole, PeerWindowMetrics,
-        PeerWindowStatus, ReducerCohortMetrics, ReducerCohortStatus, RevisionId, WorkloadId,
+        AggregationStrategy, BackendClass, CanaryEvalReport, CohortFilterStrategy,
+        CohortRobustnessReport, ContentId, DatasetViewId, ExperimentId, HeadEvalReport, HeadId,
+        LeaseId, MetricValue, MetricsLiveEventKind, NetworkId, PeerRole, PeerWindowMetrics,
+        PeerWindowStatus, ReducerCohortMetrics, ReducerCohortStatus, RevisionId, RobustnessAlert,
+        TrustScore, WindowId, WorkloadId,
     };
     use chrono::{Duration, Utc};
     use tempfile::tempdir;
@@ -229,7 +311,7 @@ mod tests {
     use super::{
         DerivedMetricKind, MetricEnvelope, MetricsIndexer, MetricsIndexerConfig, MetricsStore,
         derive_peer_window_distribution_detail, derive_peer_window_distribution_detail_with_limit,
-        derive_peer_window_distribution_summaries,
+        derive_peer_window_distribution_summaries, derive_robustness_rollup,
     };
 
     #[test]
@@ -898,5 +980,82 @@ mod tests {
             retained_revisions,
             BTreeSet::from([RevisionId::new("rev-b"), RevisionId::new("rev-c")])
         );
+    }
+
+    #[test]
+    fn derive_robustness_rollup_summarizes_rejections_and_quarantine() {
+        let now = Utc::now();
+        let cohort = CohortRobustnessReport {
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            window_id: WindowId(7),
+            cohort_filter_strategy: CohortFilterStrategy::SimilarityAware,
+            aggregation_strategy: AggregationStrategy::ClippedWeightedMean,
+            total_updates: 5,
+            accepted_updates: 3,
+            rejected_updates: 2,
+            downweighted_updates: 1,
+            effective_weight_sum: 2.5,
+            mean_screen_score: 1.4,
+            rejection_reasons: std::collections::BTreeMap::new(),
+            alerts: vec![RobustnessAlert {
+                experiment_id: ExperimentId::new("exp-a"),
+                revision_id: RevisionId::new("rev-a"),
+                window_id: Some(WindowId(7)),
+                peer_id: None,
+                reason: burn_p2p_core::RejectionReason::Replay,
+                severity: burn_p2p_core::RobustnessAlertSeverity::Warn,
+                message: "replay".into(),
+                emitted_at: now,
+            }],
+        };
+        let trust_scores = vec![
+            TrustScore {
+                peer_id: burn_p2p_core::PeerId::new("peer-a"),
+                score: 0.5,
+                reducer_eligible: true,
+                validator_eligible: true,
+                quarantined: false,
+                ban_recommended: false,
+                updated_at: now,
+            },
+            TrustScore {
+                peer_id: burn_p2p_core::PeerId::new("peer-b"),
+                score: -1.5,
+                reducer_eligible: false,
+                validator_eligible: false,
+                quarantined: true,
+                ban_recommended: true,
+                updated_at: now,
+            },
+        ];
+        let canary_reports = vec![CanaryEvalReport {
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            eval_protocol_id: ContentId::new("canary"),
+            candidate_head_id: HeadId::new("head-a"),
+            base_head_id: Some(HeadId::new("head-base")),
+            accepted: false,
+            metric_deltas: std::collections::BTreeMap::new(),
+            regression_margin: 0.12,
+            detected_backdoor_trigger: false,
+            evaluator_quorum: 2,
+            evaluated_at: now,
+        }];
+
+        let rollup = derive_robustness_rollup(
+            NetworkId::new("network-a"),
+            &cohort,
+            &trust_scores,
+            &canary_reports,
+            now,
+        );
+
+        assert_eq!(rollup.rejected_updates, 2);
+        assert_eq!(rollup.quarantined_peer_count, 1);
+        assert_eq!(rollup.ban_recommended_peer_count, 1);
+        assert_eq!(rollup.canary_regression_count, 1);
+        assert_eq!(rollup.alert_count, 1);
+        assert!(rollup.rejection_ratio > 0.0);
     }
 }

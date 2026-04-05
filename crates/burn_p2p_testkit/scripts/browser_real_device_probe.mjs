@@ -12,6 +12,25 @@ const CHECKPOINT_BYTES = 16 * 1024 * 1024;
 const SHARD_BYTES = 8 * 1024 * 1024;
 const SHARD_COUNT = Number.parseInt(process.env.BURN_P2P_BROWSER_PROBE_SHARD_COUNT ?? "4", 10);
 const ITERATIONS = Number.parseInt(process.env.BURN_P2P_BROWSER_PROBE_ITERATIONS ?? "5", 10);
+const HEADLESS = process.env.BURN_P2P_PLAYWRIGHT_HEADED === "1" ? false : true;
+const ARTIFACT_DIR = process.env.BURN_P2P_BROWSER_PROBE_ARTIFACT_DIR ?? null;
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function resolveExecutable(envVar, candidates) {
+  const explicit = process.env[envVar];
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
 async function loadPlaywright() {
   try {
@@ -97,8 +116,20 @@ function recommendedRole({ dedicatedWorker, pageGpu, workerGpu }) {
 async function measureBrowser(browserName, launcher, launchOptions, pageUrl) {
   const browser = await launcher.launch(launchOptions);
   try {
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    if (ARTIFACT_DIR) {
+      ensureDir(ARTIFACT_DIR);
+      await context.tracing.start({ screenshots: true, snapshots: true });
+    }
+    const page = await context.newPage();
     page.setDefaultTimeout(30_000);
+    const consoleMessages = [];
+    page.on("console", (message) => {
+      consoleMessages.push({
+        type: message.type(),
+        text: message.text(),
+      });
+    });
     await page.goto(pageUrl);
     const result = await page.evaluate(
       async ({ checkpointBytes, shardBytes, shardCount, iterations, browserTargetWindowMs }) => {
@@ -302,7 +333,7 @@ async function measureBrowser(browserName, launcher, launchOptions, pageUrl) {
       },
     );
 
-    return {
+    const summary = {
       browser: browserName,
       user_agent: result.userAgent,
       hardware_concurrency: result.hardwareConcurrency,
@@ -333,6 +364,23 @@ async function measureBrowser(browserName, launcher, launchOptions, pageUrl) {
       shards_per_validation_sample: SHARD_COUNT,
       meets_browser_target_window: result.meetsBrowserTargetWindow,
     };
+    if (ARTIFACT_DIR) {
+      const browserDir = path.join(ARTIFACT_DIR, browserName);
+      ensureDir(browserDir);
+      await page.screenshot({ path: path.join(browserDir, "screenshot.png"), fullPage: true });
+      await context.tracing.stop({ path: path.join(browserDir, "trace.zip") });
+      fs.writeFileSync(
+        path.join(browserDir, "console.json"),
+        `${JSON.stringify(consoleMessages, null, 2)}\n`,
+      );
+      summary.artifacts = {
+        screenshot: path.join(browserDir, "screenshot.png"),
+        trace: path.join(browserDir, "trace.zip"),
+        console: path.join(browserDir, "console.json"),
+      };
+    }
+    await context.close();
+    return summary;
   } finally {
     await browser.close();
   }
@@ -341,6 +389,15 @@ async function measureBrowser(browserName, launcher, launchOptions, pageUrl) {
 async function main() {
   const { chromium, firefox } = await loadPlaywright();
   const { server, probeUrl } = await startProbeServer();
+  const chromeExecutable = resolveExecutable("BURN_P2P_CHROME_BIN", [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ]);
+  const firefoxExecutable = resolveExecutable("BURN_P2P_FIREFOX_BIN", [
+    "/usr/bin/firefox",
+    "/Applications/Firefox.app/Contents/MacOS/firefox",
+  ]);
   try {
     const results = [];
     const requestedBrowsers = new Set(
@@ -354,8 +411,7 @@ async function main() {
         browser: "chrome-wgpu",
         launcher: chromium,
         options: {
-          executablePath: "/usr/bin/google-chrome",
-          headless: true,
+          headless: HEADLESS,
           args: ["--enable-unsafe-webgpu", "--use-angle=swiftshader"],
         },
         pageUrl: probeUrl,
@@ -364,8 +420,7 @@ async function main() {
         browser: "chrome-no-gpu",
         launcher: chromium,
         options: {
-          executablePath: "/usr/bin/google-chrome",
-          headless: true,
+          headless: HEADLESS,
           args: [],
         },
         pageUrl: "about:blank",
@@ -374,12 +429,17 @@ async function main() {
         browser: "firefox",
         launcher: firefox,
         options: {
-          executablePath: "/usr/bin/firefox",
-          headless: true,
+          headless: HEADLESS,
         },
         pageUrl: probeUrl,
       },
     ]) {
+      if (descriptor.browser.startsWith("chrome") && chromeExecutable) {
+        descriptor.options.executablePath = chromeExecutable;
+      }
+      if (descriptor.browser === "firefox" && firefoxExecutable) {
+        descriptor.options.executablePath = firefoxExecutable;
+      }
       if (!requestedBrowsers.has(descriptor.browser)) {
         continue;
       }

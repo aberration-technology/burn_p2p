@@ -1,0 +1,51 @@
+name: PR Fast
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/pr-fast.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "scripts/release_prep.sh"
+      - "crates/**"
+      - "docs/testing/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/pr-fast.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "scripts/release_prep.sh"
+      - "crates/**"
+      - "docs/testing/**"
+
+concurrency:
+  group: pr-fast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci pr-fast --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-fast-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore

@@ -108,7 +108,7 @@ impl SyntheticProcessConfig {
             listen_addresses: Vec::new(),
             persist_identity: true,
             learning_rate: 1.0,
-            target_model: 10.0,
+            target_model: 100.0,
             startup_timeout_secs: 15,
             poll_interval_ms: 50,
             sync_timeout_secs: 15,
@@ -135,7 +135,7 @@ impl SyntheticProcessConfig {
             listen_addresses: Vec::new(),
             persist_identity: false,
             learning_rate: 1.0,
-            target_model: 10.0,
+            target_model: 100.0,
             startup_timeout_secs: 15,
             poll_interval_ms: 50,
             sync_timeout_secs: 15,
@@ -475,7 +475,7 @@ pub fn create_synthetic_runtime_dataset(root: &Path) -> anyhow::Result<()> {
     let project = SyntheticRuntimeProject {
         dataset_root: root.to_path_buf(),
         learning_rate: 1.0,
-        target_model: 10.0,
+        target_model: 100.0,
     };
     let registration = project.dataset_registration()?;
     let plan = project.microshard_plan(&registration)?;

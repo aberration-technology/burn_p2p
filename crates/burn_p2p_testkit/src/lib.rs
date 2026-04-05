@@ -1,10 +1,16 @@
 //! Test harnesses, fixtures, and mixed-fleet verification helpers for burn_p2p.
 #![forbid(unsafe_code)]
 
+/// Adversarial fixtures, attacks, and robustness scenario helpers.
+pub mod adversarial;
+/// Static browser-app wasm asset build helpers.
+pub mod browser_app_assets;
 /// Public APIs for merge topology.
 pub mod merge_topology;
 /// Public APIs for multiprocess.
 pub mod multiprocess;
+/// Public APIs for portal capture bundles and Playwright scenarios.
+pub mod portal_capture;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,8 +45,8 @@ use burn_p2p_security::{
 use burn_p2p_swarm::{PeerObservation, RuntimeTransportPolicy, SwarmError, SwarmStats};
 use burn_p2p_ui::{
     CheckpointDagView, EmaFlowView, OperatorConsoleView, OperatorDiagnosticsView,
-    OperatorPeerDiagnosticView, OperatorTransferView, ParticipantPortalView, ParticipantProfile,
-    ShardAssignmentHeatmap, StudyBoardView,
+    OperatorPeerDiagnosticView, OperatorRobustnessSummaryView, OperatorTransferView,
+    ParticipantPortalView, ParticipantProfile, ShardAssignmentHeatmap, StudyBoardView,
 };
 use chrono::{DateTime, Duration, Utc};
 use semver::{Version, VersionReq};
@@ -1415,6 +1421,48 @@ fn build_benchmark_samples(
 }
 
 fn operator_diagnostics_view(diagnostics: &BootstrapDiagnostics) -> OperatorDiagnosticsView {
+    let robustness_panel = diagnostics.robustness_panel.clone();
+    let robustness_summary = diagnostics
+        .robustness_rollup
+        .as_ref()
+        .map(|rollup| OperatorRobustnessSummaryView {
+            rejected_updates: u64::from(rollup.rejected_updates),
+            mean_trust_score: rollup.mean_trust_score,
+            quarantined_peer_count: rollup.quarantined_peer_count,
+            ban_recommended_peer_count: rollup.ban_recommended_peer_count,
+            canary_regression_count: rollup.canary_regression_count,
+            alert_count: rollup.alert_count,
+        })
+        .or_else(|| {
+            robustness_panel
+                .as_ref()
+                .map(|panel| OperatorRobustnessSummaryView {
+                    rejected_updates: panel
+                        .rejection_reasons
+                        .iter()
+                        .map(|reason| u64::from(reason.count))
+                        .sum(),
+                    mean_trust_score: if panel.trust_scores.is_empty() {
+                        0.0
+                    } else {
+                        panel
+                            .trust_scores
+                            .iter()
+                            .map(|score| score.score)
+                            .sum::<f64>()
+                            / panel.trust_scores.len() as f64
+                    },
+                    quarantined_peer_count: panel.quarantined_peers.len() as u32,
+                    ban_recommended_peer_count: panel
+                        .quarantined_peers
+                        .iter()
+                        .filter(|peer| peer.ban_recommended)
+                        .count() as u32,
+                    canary_regression_count: panel.canary_regressions.len() as u32,
+                    alert_count: panel.alerts.len() as u32,
+                })
+        });
+
     OperatorDiagnosticsView {
         network_id: diagnostics.network_id.clone(),
         preset_label: format!("{:?}", diagnostics.preset),
@@ -1465,6 +1513,8 @@ fn operator_diagnostics_view(diagnostics: &BootstrapDiagnostics) -> OperatorDiag
         rejected_peers: diagnostics.rejected_peers.clone(),
         quarantined_peers: diagnostics.quarantined_peers.clone(),
         banned_peers: diagnostics.banned_peers.clone(),
+        robustness_summary,
+        robustness_panel,
         minimum_revocation_epoch: diagnostics.minimum_revocation_epoch,
         last_error: diagnostics.last_error.clone(),
         node_state_label: format!("{:?}", diagnostics.node_state),

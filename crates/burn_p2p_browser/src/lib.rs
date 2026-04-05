@@ -1,6 +1,8 @@
 //! Browser runtime, client, and worker support for burn_p2p.
 #![forbid(unsafe_code)]
 
+/// Browser-app state model for static wasm clients.
+pub mod app;
 /// Authentication and session helpers.
 pub mod auth;
 /// Browser UI and worker bridge types.
@@ -22,6 +24,7 @@ pub mod validation;
 /// Public APIs for worker.
 pub mod worker;
 
+pub use app::{BrowserAppController, BrowserAppModel};
 pub use auth::{
     BrowserAuthClientError, BrowserEnrollmentConfig, BrowserEnrollmentResult,
     BrowserLogoutResponse, BrowserPeerEnrollmentRequest, BrowserPortalClient, BrowserSessionState,

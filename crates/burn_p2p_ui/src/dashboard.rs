@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::robustness::RobustnessPanelView;
 use burn_p2p_core::{
     AggregateEnvelope, AggregateTier, ArtifactId, AssignmentLease, ContentId,
     ContributionReceiptId, DatasetViewId, ExperimentId, HeadDescriptor, HeadId, MergeCertId,
@@ -57,6 +58,23 @@ pub struct OperatorPeerDiagnosticView {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Compact robustness summary carried alongside operator diagnostics.
+pub struct OperatorRobustnessSummaryView {
+    /// Total rejected updates in the latest screened cohort.
+    pub rejected_updates: u64,
+    /// Mean trust score in the current trust snapshot.
+    pub mean_trust_score: f64,
+    /// Number of quarantined peers in the current trust snapshot.
+    pub quarantined_peer_count: u32,
+    /// Number of peers escalated to a ban recommendation.
+    pub ban_recommended_peer_count: u32,
+    /// Number of candidate heads flagged by canary regression.
+    pub canary_regression_count: u32,
+    /// Number of active robustness alerts.
+    pub alert_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Presentation-owned operator diagnostics payload.
 pub struct OperatorDiagnosticsView {
     /// Network identifier for the diagnostics snapshot.
@@ -95,6 +113,12 @@ pub struct OperatorDiagnosticsView {
     pub quarantined_peers: BTreeSet<PeerId>,
     /// Banned peer identifiers.
     pub banned_peers: BTreeSet<PeerId>,
+    #[serde(default)]
+    /// Compact robustness summary aligned with the latest bootstrap diagnostics rollup.
+    pub robustness_summary: Option<OperatorRobustnessSummaryView>,
+    #[serde(default)]
+    /// Detailed robustness panel aligned with the latest bootstrap diagnostics payload.
+    pub robustness_panel: Option<RobustnessPanelView>,
     /// Minimum revocation epoch, when active.
     pub minimum_revocation_epoch: Option<RevocationEpoch>,
     /// Last operator-visible runtime error.

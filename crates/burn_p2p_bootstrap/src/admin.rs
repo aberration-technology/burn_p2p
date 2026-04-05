@@ -93,7 +93,7 @@ impl AdminAction {
 /// Enumerates the supported admin result values.
 pub enum AdminResult {
     /// Uses the control variant.
-    Control(ControlCertificate<ExperimentControlEnvelope>),
+    Control(Box<ControlCertificate<ExperimentControlEnvelope>>),
     /// Uses the peer banned variant.
     PeerBanned {
         /// The peer ID.
@@ -102,7 +102,7 @@ pub enum AdminResult {
         reason: String,
     },
     /// Uses the diagnostics variant.
-    Diagnostics(BootstrapDiagnostics),
+    Diagnostics(Box<BootstrapDiagnostics>),
     /// Uses the diagnostics bundle variant.
     DiagnosticsBundle(Box<BootstrapDiagnosticsBundle>),
     /// Uses the heads variant.
@@ -193,17 +193,15 @@ impl BootstrapPlan {
                 let signer = signer.ok_or(BootstrapError::MissingSigner)?;
                 apply_control_command_to_admin_state(state, &command);
                 let certificate = self.issue_control_certificate(command, signer)?;
-                Ok(AdminResult::Control(certificate))
+                Ok(AdminResult::Control(Box::new(certificate)))
             }
             AdminAction::BanPeer { peer_id, reason } => {
                 state.quarantined_peers.insert(peer_id.clone());
                 state.banned_peers.insert(peer_id.clone());
                 Ok(AdminResult::PeerBanned { peer_id, reason })
             }
-            AdminAction::ExportDiagnostics => Ok(AdminResult::Diagnostics(state.diagnostics(
-                self,
-                captured_at,
-                remaining_work_units,
+            AdminAction::ExportDiagnostics => Ok(AdminResult::Diagnostics(Box::new(
+                state.diagnostics(self, captured_at, remaining_work_units),
             ))),
             AdminAction::ExportDiagnosticsBundle => Ok(AdminResult::DiagnosticsBundle(Box::new(
                 state.diagnostics_bundle(self, captured_at, remaining_work_units),

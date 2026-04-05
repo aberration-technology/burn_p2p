@@ -1,9 +1,9 @@
-//! Real-browser probe wrapper for local Chrome/Firefox validation.
+//! Real-browser probe wrapper for local Chrome/Firefox or Playwright-managed validation.
 
 use std::process::Command;
 
 #[test]
-#[ignore = "requires system Chrome/Firefox plus Playwright"]
+#[ignore = "requires local Playwright plus Chrome/Firefox system binaries or Playwright-managed browsers"]
 fn browser_real_device_probe_reports_budget_and_role_evidence() {
     let output = Command::new("node")
         .arg("crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs")

@@ -40,9 +40,7 @@ pub use crate::deploy::{
 };
 pub use crate::history::StoredEvalProtocolManifestRecord;
 pub use crate::portal::{
-    render_artifact_run_summaries_html, render_artifact_run_view_html, render_browser_portal_html,
-    render_browser_portal_html_with_artifacts, render_browser_portal_html_with_metrics,
-    render_browser_portal_html_with_metrics_and_artifacts, render_dashboard_html,
+    render_artifact_run_summaries_html, render_artifact_run_view_html, render_dashboard_html,
     render_head_artifact_view_html,
 };
 pub use crate::state::{
@@ -151,22 +149,23 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    #[cfg(any(feature = "portal", feature = "metrics-indexer"))]
+    use burn_p2p::DatasetViewId;
     use burn_p2p::{
         ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
         CapabilityEstimate, ChunkingScheme, ControlPlaneSnapshot, DatasetConfig,
-        DatasetRegistration, DatasetSizing, DatasetViewId, EvalSplit, ExperimentDirectoryEntry,
-        ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
-        ExperimentVisibility, FsArtifactStore, HeadDescriptor, LeaderboardEntry,
-        LeaderboardIdentity, LeaderboardSnapshot, LiveControlPlaneEvent, MetricReport, MetricValue,
-        NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload, PatchOutcome, PatchSupport,
-        PeerRoleSet, ReducerLoadAnnouncement, RuntimePatch, RuntimeStatus, ShardFetchManifest,
-        SlotAssignmentState, StorageConfig, TrainError, WindowCtx, WindowReport, WorkloadId,
+        DatasetRegistration, DatasetSizing, EvalSplit, FsArtifactStore, HeadDescriptor,
+        LiveControlPlaneEvent, MetricReport, MetricValue, NodeBuilder, NodeConfig,
+        NodeTelemetrySnapshot, P2pWorkload, PatchOutcome, PatchSupport, ReducerLoadAnnouncement,
+        RuntimePatch, RuntimeStatus, ShardFetchManifest, SlotAssignmentState, StorageConfig,
+        TrainError, WindowCtx, WindowReport, WorkloadId,
     };
+    #[cfg(feature = "social")]
+    use burn_p2p_core::BadgeKind;
     use burn_p2p_core::{
-        ArtifactId, BadgeKind, BrowserMode, CapabilityCard, CapabilityCardId, CapabilityClass,
-        ClientPlatform, ContentId, ContributionReceipt, ExperimentId, HeadId, MergeCertificate,
-        PeerId, PersistenceClass, PrincipalId, ProfileMode, RevisionId, SocialMode, StudyId,
-        TelemetrySummary, WindowActivation, WindowId,
+        ArtifactId, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform, ContentId,
+        ContributionReceipt, ExperimentId, HeadId, MergeCertificate, PeerId, PersistenceClass,
+        PrincipalId, RevisionId, StudyId, TelemetrySummary, WindowActivation, WindowId,
     };
     use burn_p2p_experiment::{ActivationTarget, ExperimentControlCommand};
     use burn_p2p_security::{
@@ -178,13 +177,12 @@ mod tests {
     use semver::{Version, VersionReq};
     use tempfile::TempDir;
 
+    #[cfg(feature = "portal")]
+    use super::render_dashboard_html;
     use super::{
         ActiveExperiment, AdminAction, AdminResult, BootstrapAdminState,
         BootstrapEmbeddedDaemonConfig, BootstrapPlan, BootstrapPreset, BootstrapService,
-        BootstrapSpec, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
-        BrowserLoginProvider, BrowserPortalSnapshot, BrowserTransportSurface, HeadQuery,
-        ReceiptQuery, ReducerLoadQuery, render_browser_portal_html, render_dashboard_html,
-        render_openmetrics,
+        BootstrapSpec, HeadQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
     };
 
     fn genesis() -> burn_p2p_core::GenesisSpec {
@@ -832,6 +830,56 @@ mod tests {
             minimum_revocation_epoch: None,
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            robustness_policy: Some(burn_p2p_core::RobustnessPolicy::balanced()),
+            latest_cohort_robustness: Some(burn_p2p_core::CohortRobustnessReport {
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                window_id: WindowId(7),
+                cohort_filter_strategy: burn_p2p_core::CohortFilterStrategy::SimilarityAware,
+                aggregation_strategy: burn_p2p_core::AggregationStrategy::ClippedWeightedMean,
+                total_updates: 3,
+                accepted_updates: 2,
+                rejected_updates: 1,
+                downweighted_updates: 0,
+                effective_weight_sum: 2.0,
+                mean_screen_score: 0.4,
+                rejection_reasons: BTreeMap::from([(
+                    burn_p2p_core::RejectionReason::SimilarityOutlier,
+                    1,
+                )]),
+                alerts: vec![burn_p2p_core::RobustnessAlert {
+                    experiment_id: ExperimentId::new("exp"),
+                    revision_id: RevisionId::new("rev"),
+                    reason: burn_p2p_core::RejectionReason::SimilarityOutlier,
+                    severity: burn_p2p_core::RobustnessAlertSeverity::Warn,
+                    message: "cohort drift".into(),
+                    peer_id: Some(peer_id.clone()),
+                    window_id: Some(WindowId(7)),
+                    emitted_at: now,
+                }],
+            }),
+            trust_scores: vec![burn_p2p_core::TrustScore {
+                peer_id: peer_id.clone(),
+                score: 0.72,
+                quarantined: true,
+                reducer_eligible: false,
+                validator_eligible: false,
+                ban_recommended: true,
+                updated_at: now,
+            }],
+            canary_reports: vec![burn_p2p_core::CanaryEvalReport {
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                candidate_head_id: HeadId::new("head"),
+                base_head_id: Some(HeadId::new("base")),
+                eval_protocol_id: burn_p2p_core::ContentId::new("canary"),
+                metric_deltas: BTreeMap::from([("loss".into(), 0.19)]),
+                regression_margin: 0.19,
+                detected_backdoor_trigger: false,
+                accepted: false,
+                evaluator_quorum: 1,
+                evaluated_at: now,
+            }],
             effective_limit_profile: None,
             last_error: Some("peer rejected".into()),
             started_at: now,
@@ -867,6 +915,34 @@ mod tests {
                 assert_eq!(bundle.contribution_receipts, vec![receipt]);
                 assert_eq!(bundle.merge_certificates, vec![merge]);
                 assert_eq!(bundle.reducer_load_announcements, vec![reducer_load]);
+                assert_eq!(
+                    bundle
+                        .diagnostics
+                        .robustness_panel
+                        .as_ref()
+                        .map(|panel| panel.quarantined_peers.len()),
+                    Some(1)
+                );
+                assert_eq!(
+                    bundle
+                        .diagnostics
+                        .robustness_panel
+                        .as_ref()
+                        .and_then(|panel| panel.quarantined_peers.first())
+                        .map(|peer| peer.ban_recommended),
+                    Some(true)
+                );
+                assert!(bundle.diagnostics.quarantined_peers.contains(&peer_id));
+                #[cfg(feature = "metrics-indexer")]
+                assert_eq!(
+                    bundle.diagnostics.robustness_rollup.as_ref().map(|rollup| {
+                        (
+                            rollup.quarantined_peer_count,
+                            rollup.ban_recommended_peer_count,
+                        )
+                    }),
+                    Some((1, 1))
+                );
                 assert_eq!(bundle.runtime_snapshot, Some(runtime_snapshot));
             }
             other => panic!("unexpected result: {other:?}"),
@@ -1106,102 +1182,76 @@ mod tests {
         assert!(metrics.contains("burn_p2p_rejected_peers"));
     }
 
+    #[cfg(feature = "metrics-indexer")]
+    #[test]
+    fn openmetrics_prefers_rollup_for_robustness_summary_metrics() {
+        let mut diagnostics = BootstrapAdminState::default().diagnostics(
+            &plan(BootstrapPreset::BootstrapOnly),
+            Utc::now(),
+            Some(120),
+        );
+        diagnostics.robustness_panel = Some(burn_p2p_ui::RobustnessPanelView {
+            preset: burn_p2p_core::RobustnessPreset::Balanced,
+            policy: burn_p2p_core::RobustnessPolicy::balanced(),
+            rejection_reasons: vec![burn_p2p_ui::RobustnessReasonCountView {
+                reason: burn_p2p_core::RejectionReason::Replay,
+                count: 1,
+            }],
+            trust_scores: vec![burn_p2p_ui::TrustScorePointView {
+                peer_id: PeerId::new("peer-panel"),
+                score: 0.25,
+                quarantined: true,
+                ban_recommended: false,
+                updated_at: Utc::now(),
+            }],
+            quarantined_peers: vec![burn_p2p_ui::QuarantinedPeerView {
+                peer_id: PeerId::new("peer-panel"),
+                reducer_eligible: false,
+                validator_eligible: false,
+                ban_recommended: false,
+            }],
+            canary_regressions: vec![burn_p2p_ui::CanaryRegressionView {
+                candidate_head_id: HeadId::new("candidate-panel"),
+                regression_margin: 0.1,
+                detected_backdoor_trigger: false,
+                evaluated_at: Utc::now(),
+            }],
+            alerts: Vec::new(),
+        });
+        diagnostics.robustness_rollup = Some(burn_p2p_metrics::RobustnessRollup {
+            network_id: burn_p2p_core::NetworkId::new("mainnet"),
+            experiment_id: ExperimentId::new("exp-rollup"),
+            revision_id: RevisionId::new("rev-rollup"),
+            window_id: WindowId(9),
+            total_updates: 10,
+            rejected_updates: 7,
+            rejection_ratio: 0.7,
+            mean_trust_score: -1.25,
+            quarantined_peer_count: 1,
+            ban_recommended_peer_count: 2,
+            canary_regression_count: 3,
+            alert_count: 4,
+            captured_at: Utc::now(),
+        });
+
+        let metrics = render_openmetrics(&diagnostics);
+
+        assert!(metrics.contains("burn_p2p_robustness_rejected_updates 7"));
+        assert!(metrics.contains("burn_p2p_robustness_mean_trust_score -1.250000"));
+        assert!(metrics.contains("burn_p2p_robustness_canary_regressions 3"));
+        assert!(metrics.contains("burn_p2p_robustness_ban_recommendations 2"));
+        assert!(metrics.contains("burn_p2p_robustness_alerts 4"));
+    }
+
+    #[cfg(feature = "portal")]
     #[test]
     fn dashboard_html_references_status_and_event_endpoints() {
         let html = render_dashboard_html(&burn_p2p_core::NetworkId::new("mainnet"));
 
         assert!(html.contains("/status"));
         assert!(html.contains("/events"));
-        assert!(html.contains("/portal"));
+        assert!(html.contains("/portal/snapshot"));
         assert!(html.contains("burn_p2p bootstrap"));
-    }
-
-    #[test]
-    fn browser_portal_html_renders_snapshot_content() {
-        let snapshot = BrowserPortalSnapshot {
-            network_id: burn_p2p_core::NetworkId::new("mainnet"),
-            edge_mode: BrowserEdgeMode::Peer,
-            browser_mode: BrowserMode::Verifier,
-            social_mode: SocialMode::Public,
-            profile_mode: ProfileMode::Public,
-            transports: BrowserTransportSurface {
-                webrtc_direct: true,
-                webtransport_gateway: false,
-                wss_fallback: true,
-            },
-            paths: BrowserEdgePaths::default(),
-            auth_enabled: true,
-            login_providers: vec![BrowserLoginProvider {
-                label: "Static".into(),
-                login_path: "/login/static".into(),
-                callback_path: Some("/callback/static".into()),
-                device_path: Some("/device".into()),
-            }],
-            required_release_train_hash: Some(ContentId::new("train-browser")),
-            allowed_target_artifact_hashes: BTreeSet::new(),
-            diagnostics: BootstrapAdminState::default().diagnostics(
-                &plan(BootstrapPreset::BootstrapOnly),
-                Utc::now(),
-                Some(10),
-            ),
-            directory: BrowserDirectorySnapshot {
-                network_id: burn_p2p_core::NetworkId::new("mainnet"),
-                generated_at: Utc::now(),
-                entries: vec![ExperimentDirectoryEntry {
-                    network_id: burn_p2p_core::NetworkId::new("mainnet"),
-                    study_id: StudyId::new("study"),
-                    experiment_id: ExperimentId::new("exp"),
-                    workload_id: WorkloadId::new("demo"),
-                    display_name: "Demo".into(),
-                    model_schema_hash: ContentId::new("model"),
-                    dataset_view_id: DatasetViewId::new("view"),
-                    resource_requirements: ExperimentResourceRequirements {
-                        minimum_roles: BTreeSet::new(),
-                        minimum_device_memory_bytes: None,
-                        minimum_system_memory_bytes: None,
-                        estimated_download_bytes: 1024,
-                        estimated_window_seconds: 30,
-                    },
-                    visibility: ExperimentVisibility::Public,
-                    opt_in_policy: ExperimentOptInPolicy::Open,
-                    current_revision_id: RevisionId::new("rev"),
-                    current_head_id: None,
-                    allowed_roles: PeerRoleSet::default(),
-                    allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
-                    metadata: BTreeMap::new(),
-                }],
-            },
-            heads: Vec::new(),
-            leaderboard: LeaderboardSnapshot {
-                network_id: burn_p2p_core::NetworkId::new("mainnet"),
-                score_version: "leaderboard_score_v1".into(),
-                captured_at: Utc::now(),
-                entries: vec![LeaderboardEntry {
-                    identity: LeaderboardIdentity {
-                        principal_id: Some(PrincipalId::new("alice")),
-                        peer_ids: BTreeSet::new(),
-                        label: "Alice".into(),
-                        social_profile: None,
-                    },
-                    accepted_receipt_count: 1,
-                    accepted_work_score: 1.0,
-                    quality_weighted_impact_score: 0.5,
-                    validation_service_score: 0.0,
-                    artifact_serving_score: 0.0,
-                    leaderboard_score_v1: 1.5,
-                    last_receipt_at: None,
-                    badges: Vec::new(),
-                }],
-            },
-            trust_bundle: None,
-            captured_at: Utc::now(),
-        };
-
-        let html = render_browser_portal_html(&snapshot);
-        assert!(html.contains("burn_p2p browser portal"));
-        assert!(html.contains("/login/static"));
-        assert!(html.contains("Demo"));
-        assert!(html.contains("alice"));
     }
 
     #[test]

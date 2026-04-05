@@ -171,6 +171,14 @@ pub(crate) struct PersistedRuntimeSecurityState {
     pub admitted_peers: BTreeMap<PeerId, PeerAdmissionReport>,
     pub rejected_peers: BTreeMap<PeerId, String>,
     pub peer_reputation: BTreeMap<PeerId, ReputationState>,
+    #[serde(default)]
+    pub robustness_policy: Option<RobustnessPolicy>,
+    #[serde(default)]
+    pub latest_cohort_robustness: Option<CohortRobustnessReport>,
+    #[serde(default)]
+    pub trust_scores: Vec<TrustScore>,
+    #[serde(default)]
+    pub canary_reports: Vec<CanaryEvalReport>,
     pub minimum_revocation_epoch: Option<RevocationEpoch>,
     pub trust_bundle: Option<TrustBundleState>,
 }
@@ -187,6 +195,10 @@ impl PersistedRuntimeSecurityState {
             admitted_peers: snapshot.admitted_peers.clone(),
             rejected_peers: snapshot.rejected_peers.clone(),
             peer_reputation: snapshot.peer_reputation.clone(),
+            robustness_policy: snapshot.robustness_policy.clone(),
+            latest_cohort_robustness: snapshot.latest_cohort_robustness.clone(),
+            trust_scores: snapshot.trust_scores.clone(),
+            canary_reports: snapshot.canary_reports.clone(),
             minimum_revocation_epoch: snapshot.minimum_revocation_epoch,
             trust_bundle: snapshot.trust_bundle.clone(),
         }
@@ -201,6 +213,10 @@ impl PersistedRuntimeSecurityState {
         snapshot.admitted_peers = self.admitted_peers;
         snapshot.rejected_peers = self.rejected_peers;
         snapshot.peer_reputation = self.peer_reputation;
+        snapshot.robustness_policy = self.robustness_policy;
+        snapshot.latest_cohort_robustness = self.latest_cohort_robustness;
+        snapshot.trust_scores = self.trust_scores;
+        snapshot.canary_reports = self.canary_reports;
         if snapshot.minimum_revocation_epoch.is_none() {
             snapshot.minimum_revocation_epoch = self.minimum_revocation_epoch;
         }
@@ -899,6 +915,28 @@ pub(crate) fn connected_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<P
         .cloned()
         .chain(snapshot.recent_events.iter().filter_map(peer_id_from_event))
         .collect()
+}
+
+fn trust_score_for_peer<'a>(
+    snapshot: &'a NodeTelemetrySnapshot,
+    peer_id: &PeerId,
+) -> Option<&'a TrustScore> {
+    snapshot
+        .trust_scores
+        .iter()
+        .find(|score| &score.peer_id == peer_id)
+}
+
+fn peer_is_reducer_eligible(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> bool {
+    trust_score_for_peer(snapshot, peer_id)
+        .map(|score| !score.quarantined && score.reducer_eligible)
+        .unwrap_or(true)
+}
+
+fn peer_is_validator_eligible(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> bool {
+    trust_score_for_peer(snapshot, peer_id)
+        .map(|score| !score.quarantined && score.validator_eligible)
+        .unwrap_or(true)
 }
 
 pub(crate) fn matches_experiment_head(
@@ -1653,6 +1691,75 @@ fn numeric_metric_values(metrics: &BTreeMap<String, MetricValue>) -> Vec<f64> {
         .collect()
 }
 
+pub(crate) fn update_feature_sketch_from_metrics(
+    metrics: &BTreeMap<String, MetricValue>,
+    reference_metrics: Option<&BTreeMap<String, MetricValue>>,
+    sketch_dimensionality: usize,
+    staleness_windows: u16,
+    receive_delay_ms: u64,
+    canary_loss_delta: Option<f64>,
+) -> UpdateFeatureSketch {
+    let values = numeric_metric_values(metrics);
+    let reference = reference_metrics.map(numeric_metric_values);
+    burn_p2p_security::extract_feature_sketch(
+        &values,
+        reference.as_deref(),
+        &[burn_p2p_security::FeatureLayer::new(
+            "metrics",
+            0,
+            values.len(),
+        )],
+        sketch_dimensionality.max(1),
+        staleness_windows,
+        receive_delay_ms,
+        canary_loss_delta,
+    )
+}
+
+pub(crate) fn active_experiment_directory_entry(
+    config: &NodeConfig,
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+) -> Option<ExperimentDirectoryEntry> {
+    config
+        .auth
+        .as_ref()
+        .and_then(|auth| {
+            auth.experiment_directory.iter().find(|entry| {
+                entry.network_id == experiment.network_id
+                    && entry.study_id == experiment.study_id
+                    && entry.experiment_id == experiment.experiment_id
+                    && entry.current_revision_id == experiment.revision_id
+            })
+        })
+        .cloned()
+        .or_else(|| {
+            snapshot
+                .control_plane
+                .directory_announcements
+                .iter()
+                .filter(|announcement| announcement.network_id == experiment.network_id)
+                .flat_map(|announcement| announcement.entries.iter())
+                .find(|entry| {
+                    entry.network_id == experiment.network_id
+                        && entry.study_id == experiment.study_id
+                        && entry.experiment_id == experiment.experiment_id
+                        && entry.current_revision_id == experiment.revision_id
+                })
+                .cloned()
+        })
+}
+
+pub(crate) fn runtime_robustness_policy(
+    config: &NodeConfig,
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+) -> RobustnessPolicy {
+    active_experiment_directory_entry(config, snapshot, experiment)
+        .and_then(|entry| entry.robustness_policy())
+        .unwrap_or_default()
+}
+
 pub(crate) fn update_norm_stats(metrics: &BTreeMap<String, MetricValue>) -> UpdateNormStats {
     let values = numeric_metric_values(metrics);
     let l2_norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
@@ -1796,8 +1903,33 @@ pub(crate) fn runtime_topology_peers(
     snapshot: &NodeTelemetrySnapshot,
     local_peer_id: &PeerId,
 ) -> Vec<PeerId> {
-    let mut peers = connected_peer_ids(snapshot);
-    peers.insert(local_peer_id.clone());
+    let mut peers = connected_peer_ids(snapshot)
+        .into_iter()
+        .filter(|peer_id| peer_is_reducer_eligible(snapshot, peer_id))
+        .collect::<BTreeSet<_>>();
+    if peer_is_reducer_eligible(snapshot, local_peer_id) {
+        peers.insert(local_peer_id.clone());
+    }
+    if peers.is_empty() {
+        peers.insert(local_peer_id.clone());
+    }
+    peers.into_iter().collect()
+}
+
+pub(crate) fn runtime_validator_peers(
+    snapshot: &NodeTelemetrySnapshot,
+    local_peer_id: &PeerId,
+) -> Vec<PeerId> {
+    let mut peers = connected_peer_ids(snapshot)
+        .into_iter()
+        .filter(|peer_id| peer_is_validator_eligible(snapshot, peer_id))
+        .collect::<BTreeSet<_>>();
+    if peer_is_validator_eligible(snapshot, local_peer_id) {
+        peers.insert(local_peer_id.clone());
+    }
+    if peers.is_empty() {
+        peers.insert(local_peer_id.clone());
+    }
     peers.into_iter().collect()
 }
 
@@ -1808,7 +1940,10 @@ pub(crate) fn runtime_validators(
     quorum: u16,
 ) -> Vec<PeerId> {
     let mut validators = Vec::new();
-    if roles.contains(&PeerRole::Validator) || roles.contains(&PeerRole::Authority) {
+    let local_in_pool = peers.iter().any(|peer_id| peer_id == local_peer_id);
+    if local_in_pool
+        && (roles.contains(&PeerRole::Validator) || roles.contains(&PeerRole::Authority))
+    {
         validators.push(local_peer_id.clone());
     }
     for peer_id in peers {
@@ -1820,7 +1955,12 @@ pub(crate) fn runtime_validators(
         }
     }
     if validators.is_empty() {
-        validators.push(local_peer_id.clone());
+        validators.push(
+            peers
+                .first()
+                .cloned()
+                .unwrap_or_else(|| local_peer_id.clone()),
+        );
     }
     validators
 }
@@ -2685,5 +2825,95 @@ pub(crate) fn remember_known_peer_addresses(
         && let Err(error) = persist_known_peers(storage, &snapshot.known_peer_addresses)
     {
         snapshot.last_error = Some(format!("failed to persist known peers: {error}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
+        NodeTelemetrySnapshot::starting(
+            &MainnetHandle {
+                genesis: GenesisSpec {
+                    network_id: NetworkId::new("net-test"),
+                    protocol_version: Version::new(1, 0, 0),
+                    display_name: String::from("test"),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                },
+                roles: PeerRoleSet::new(roles),
+            },
+            &NodeConfig::default(),
+        )
+    }
+
+    fn trust_score(
+        peer_id: &str,
+        reducer_eligible: bool,
+        validator_eligible: bool,
+        quarantined: bool,
+    ) -> TrustScore {
+        TrustScore {
+            peer_id: PeerId::new(peer_id),
+            score: if quarantined { -4.0 } else { 0.5 },
+            reducer_eligible,
+            validator_eligible,
+            quarantined,
+            ban_recommended: false,
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn runtime_topology_peers_exclude_quarantined_and_reducer_demoted_peers() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([
+            PeerId::new("peer-good"),
+            PeerId::new("peer-quarantined"),
+            PeerId::new("peer-validator-only"),
+        ]);
+        snapshot.trust_scores = vec![
+            trust_score("peer-quarantined", false, false, true),
+            trust_score("peer-validator-only", false, true, false),
+        ];
+
+        let peers = runtime_topology_peers(&snapshot, &PeerId::new("local"));
+
+        assert!(peers.contains(&PeerId::new("local")));
+        assert!(peers.contains(&PeerId::new("peer-good")));
+        assert!(!peers.contains(&PeerId::new("peer-quarantined")));
+        assert!(!peers.contains(&PeerId::new("peer-validator-only")));
+    }
+
+    #[test]
+    fn runtime_validator_peers_and_quorum_respect_validator_eligibility() {
+        let mut snapshot = test_snapshot([PeerRole::Validator]);
+        snapshot.observed_peer_ids = BTreeSet::from([
+            PeerId::new("peer-good"),
+            PeerId::new("peer-reducer-only"),
+            PeerId::new("peer-quarantined"),
+        ]);
+        snapshot.trust_scores = vec![
+            trust_score("peer-reducer-only", true, false, false),
+            trust_score("peer-quarantined", false, false, true),
+        ];
+
+        let validator_peers = runtime_validator_peers(&snapshot, &PeerId::new("local"));
+        let validators = runtime_validators(
+            &PeerRoleSet::new([PeerRole::Validator]),
+            &PeerId::new("local"),
+            &validator_peers,
+            2,
+        );
+
+        assert!(validator_peers.contains(&PeerId::new("local")));
+        assert!(validator_peers.contains(&PeerId::new("peer-good")));
+        assert!(!validator_peers.contains(&PeerId::new("peer-reducer-only")));
+        assert!(!validator_peers.contains(&PeerId::new("peer-quarantined")));
+        assert_eq!(
+            validators,
+            vec![PeerId::new("local"), PeerId::new("peer-good")]
+        );
     }
 }

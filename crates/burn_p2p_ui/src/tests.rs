@@ -1,28 +1,34 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{
-    AggregateEnvelope, AggregateStats, AggregateTier, ArtifactId, AssignmentLease, AuthProvider,
-    BrowserRole, ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
+    AggregateEnvelope, AggregateStats, AggregateTier, AggregationStrategy, ArtifactId,
+    AssignmentLease, AuthProvider, BrowserRole, CanaryEvalReport, CohortFilterStrategy,
+    CohortRobustnessReport, ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
     ExperimentId, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
     ExperimentVisibility, HeadDescriptor, HeadId, MergeCertId, MergeCertificate, MergePolicy,
     MergeStrategy, MergeTopologyPolicy, MergeWindowState, NetworkEstimate, NetworkId, PeerId,
     PeerRole, PeerRoleSet, ReducerLoadReport, ReductionCertificate, RevisionId, RevocationEpoch,
-    StudyId, WindowActivation, WindowId,
+    RobustnessAlert, RobustnessAlertSeverity, RobustnessPolicy, StudyId, TrustScore,
+    WindowActivation, WindowId,
 };
 use burn_p2p_security::{PeerTrustLevel, ReputationDecision};
 use burn_p2p_swarm::{AlertNotice, AlertSeverity, OverlayChannel, OverlayTopic};
 use chrono::{Duration, Utc};
 
 use crate::{
-    AggregateDagView, AuthPortalView, AuthorityActionRecord, BrowserExperimentPickerCard,
+    AggregateDagView, AuthPortalView, AuthorityActionRecord, BrowserAppClientView,
+    BrowserAppExperimentSummary, BrowserAppLeaderboardPreview, BrowserAppLiveView,
+    BrowserAppNetworkView, BrowserAppRouteLink, BrowserAppShellView, BrowserAppStaticBootstrap,
+    BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab, BrowserAppTrainingView,
+    BrowserAppValidationView, BrowserAppViewerView, BrowserExperimentPickerCard,
     BrowserExperimentPickerState, BrowserExperimentPickerView, CheckpointDagEdgeKind,
     CheckpointDagView, CheckpointDownload, ContributionIdentityPanel, CostPerformancePoint,
     EmaFlowView, ExperimentMigrationView, ExperimentPickerView, ExperimentVariantView,
     GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView, MergeQueueEntry,
     MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
     OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView,
-    ParticipantPortalView, ParticipantProfile, ReducerUtilizationView, ShardAssignmentHeatmap,
-    StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
+    ParticipantPortalView, ParticipantProfile, ReducerUtilizationView, RobustnessPanelView,
+    ShardAssignmentHeatmap, StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
 };
 
 #[test]
@@ -260,6 +266,15 @@ fn operator_console_and_study_board_are_framework_neutral_contracts() {
         )]),
         quarantined_peers: BTreeSet::new(),
         banned_peers: BTreeSet::new(),
+        robustness_summary: Some(crate::OperatorRobustnessSummaryView {
+            rejected_updates: 2,
+            mean_trust_score: 0.8,
+            quarantined_peer_count: 0,
+            ban_recommended_peer_count: 0,
+            canary_regression_count: 1,
+            alert_count: 1,
+        }),
+        robustness_panel: None,
         minimum_revocation_epoch: Some(RevocationEpoch(3)),
         last_error: Some("peer rejected".into()),
         node_state_label: "IdleReady".into(),
@@ -345,6 +360,186 @@ fn operator_console_and_study_board_are_framework_neutral_contracts() {
     assert!(matches!(event.payload, UiPayload::Operator(_)));
     assert_eq!(board.variants.len(), 1);
     assert_eq!(board.migrations.len(), 1);
+}
+
+#[test]
+fn browser_app_shell_view_serializes_lowercase_surface_keys() {
+    let shell = BrowserAppShellView {
+        active_surface: BrowserAppSurface::Train,
+        surface_tabs: vec![
+            BrowserAppSurfaceTab {
+                surface: BrowserAppSurface::Viewer,
+                label: "viewer".into(),
+                detail: "leaderboard, heads, and experiment state".into(),
+            },
+            BrowserAppSurfaceTab {
+                surface: BrowserAppSurface::Train,
+                label: "train".into(),
+                detail: "throughput, active slice, and checkpoint export".into(),
+            },
+        ],
+        summary_cards: vec![BrowserAppSummaryCard {
+            label: "accepted receipts".into(),
+            live_key: Some("accepted_receipts".into()),
+            value: "14".into(),
+        }],
+        routes: vec![BrowserAppRouteLink {
+            label: "browser app live json".into(),
+            path: "/portal/browser-app/view".into(),
+        }],
+        refresh_interval_ms: 15_000,
+    };
+
+    let json = serde_json::to_string(&shell).expect("serialize shell");
+
+    assert!(json.contains("\"active_surface\":\"train\""));
+    assert!(json.contains("\"surface\":\"viewer\""));
+    assert!(json.contains("\"refresh_interval_ms\":15000"));
+    assert_eq!(
+        BrowserAppSurface::from_key("network"),
+        BrowserAppSurface::Network
+    );
+    assert_eq!(
+        BrowserAppSurface::from_key("unknown"),
+        BrowserAppSurface::Viewer
+    );
+}
+
+#[test]
+fn browser_app_live_view_serializes_flat_live_contract() {
+    let live = BrowserAppLiveView {
+        captured_at: "2026-04-04T18:00:00Z".into(),
+        browser_mode: "Trainer".into(),
+        node_state: "Training window".into(),
+        network_note: "5 direct connection(s), 12 observed peers, and an estimated 64 peers across the wider network.".into(),
+        eta: "120s-180s".into(),
+        last_error: "none".into(),
+        trust_revocation: "7".into(),
+        connected_peers: 5,
+        observed_peers: 12,
+        estimated_network_size: 64,
+        accepted_receipts: 14,
+        certified_merges: 3,
+        heads_count: 2,
+        leaderboard_count: 1,
+        in_flight_transfers: 2,
+    };
+
+    let json = serde_json::to_string(&live).expect("serialize live view");
+
+    assert!(json.contains("\"captured_at\":\"2026-04-04T18:00:00Z\""));
+    assert!(json.contains("\"browser_mode\":\"Trainer\""));
+    assert!(json.contains("\"heads_count\":2"));
+    assert!(json.contains("\"leaderboard_count\":1"));
+}
+
+#[test]
+fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
+    let bootstrap = BrowserAppStaticBootstrap {
+        app_name: "burn_p2p browser app".into(),
+        asset_base_url: "https://cdn.example/burn-p2p".into(),
+        module_entry_path: "/assets/browser-app.js".into(),
+        stylesheet_path: Some("/assets/browser-app.css".into()),
+        default_edge_url: Some("https://bootstrap.example".into()),
+        default_surface: BrowserAppSurface::Viewer,
+        refresh_interval_ms: 12_000,
+    };
+    let view = BrowserAppClientView {
+        network_id: "mainnet".into(),
+        default_surface: BrowserAppSurface::Train,
+        runtime_label: "train".into(),
+        runtime_detail: "active assignment".into(),
+        capability_summary: "webgpu available".into(),
+        session_label: "authenticated".into(),
+        selected_experiment: Some(BrowserAppExperimentSummary {
+            display_name: "Main experiment".into(),
+            experiment_id: "exp-auth".into(),
+            revision_id: "rev-auth".into(),
+            workload_id: "lm-small".into(),
+            current_head_id: Some("head-1".into()),
+            validate_available: true,
+            train_available: true,
+            availability: "view / validate / train · ready".into(),
+        }),
+        viewer: BrowserAppViewerView {
+            visible_experiments: 3,
+            visible_heads: 2,
+            leaderboard_entries: 10,
+            signed_directory_ready: true,
+            signed_leaderboard_ready: true,
+            experiments_preview: vec![BrowserAppExperimentSummary {
+                display_name: "Main experiment".into(),
+                experiment_id: "exp-auth".into(),
+                revision_id: "rev-auth".into(),
+                workload_id: "lm-small".into(),
+                current_head_id: Some("head-1".into()),
+                validate_available: true,
+                train_available: true,
+                availability: "view / validate / train · ready".into(),
+            }],
+            leaderboard_preview: vec![BrowserAppLeaderboardPreview {
+                label: "alice".into(),
+                score: "42.00".into(),
+                receipts: 12,
+                is_local: true,
+            }],
+        },
+        validation: BrowserAppValidationView {
+            validate_available: true,
+            can_validate: true,
+            current_head_id: Some("head-1".into()),
+            metrics_sync_at: Some("2026-04-04T18:00:00Z".into()),
+            pending_receipts: 1,
+            validation_status: Some("accepted".into()),
+            checked_chunks: Some(8),
+            emitted_receipt_id: Some("receipt-1".into()),
+            evaluation_summary: Some("complete · 128 sample(s) · val_loss 0.2400".into()),
+        },
+        training: BrowserAppTrainingView {
+            train_available: true,
+            can_train: true,
+            active_assignment: Some("exp-auth/rev-auth".into()),
+            latest_head_id: Some("head-1".into()),
+            cached_chunk_artifacts: 4,
+            cached_microshards: 12,
+            pending_receipts: 1,
+            max_window_secs: Some(30),
+            last_window_secs: Some(30),
+            optimizer_steps: Some(48),
+            accepted_samples: Some(2048),
+            last_loss: Some("0.2400".into()),
+            publish_latency_ms: Some(320),
+            throughput_summary: Some("68.3 sample/s".into()),
+            last_artifact_id: Some("artifact-1".into()),
+            last_receipt_id: Some("receipt-1".into()),
+        },
+        network: BrowserAppNetworkView {
+            edge_base_url: "https://bootstrap.example".into(),
+            transport: "webtransport".into(),
+            node_state: "viewer".into(),
+            direct_peers: 5,
+            observed_peers: 18,
+            estimated_network_size: 256,
+            accepted_receipts: 42,
+            certified_merges: 8,
+            in_flight_transfers: 2,
+            network_note: "5 direct peers; browser clients stay scoped to edge visibility instead of full-network fanout.".into(),
+            metrics_live_ready: true,
+            last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
+            last_error: None,
+        },
+    };
+
+    let bootstrap_json = serde_json::to_string(&bootstrap).expect("serialize static bootstrap");
+    let view_json = serde_json::to_string(&view).expect("serialize client view");
+
+    assert!(bootstrap_json.contains("\"module_entry_path\":\"/assets/browser-app.js\""));
+    assert!(bootstrap_json.contains("\"default_surface\":\"viewer\""));
+    assert!(bootstrap_json.contains("\"refresh_interval_ms\":12000"));
+    assert!(view_json.contains("\"default_surface\":\"train\""));
+    assert!(view_json.contains("\"runtime_label\":\"train\""));
+    assert!(view_json.contains("\"metrics_live_ready\":true"));
+    assert!(view_json.contains("\"estimated_network_size\":256"));
 }
 
 #[test]
@@ -579,4 +774,82 @@ fn merge_topology_views_build_window_load_and_aggregate_dag() {
     assert_eq!(dashboard.aggregate_dag.nodes.len(), 2);
     assert_eq!(dashboard.aggregate_dag.edges.len(), 1);
     assert_eq!(dashboard.promotion_timeline.len(), 1);
+}
+
+#[test]
+fn robustness_panel_view_surfaces_rejections_quarantine_and_canary_failures() {
+    let now = Utc::now();
+    let cohort = CohortRobustnessReport {
+        experiment_id: ExperimentId::new("exp"),
+        revision_id: RevisionId::new("rev"),
+        window_id: WindowId(9),
+        cohort_filter_strategy: CohortFilterStrategy::SimilarityAware,
+        aggregation_strategy: AggregationStrategy::ClippedWeightedMean,
+        total_updates: 4,
+        accepted_updates: 2,
+        rejected_updates: 2,
+        downweighted_updates: 1,
+        effective_weight_sum: 1.5,
+        mean_screen_score: 2.0,
+        rejection_reasons: BTreeMap::from([
+            (burn_p2p_core::RejectionReason::Replay, 1),
+            (burn_p2p_core::RejectionReason::SimilarityOutlier, 1),
+        ]),
+        alerts: vec![RobustnessAlert {
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            window_id: Some(WindowId(9)),
+            peer_id: Some(PeerId::new("peer-b")),
+            reason: burn_p2p_core::RejectionReason::Replay,
+            severity: RobustnessAlertSeverity::Warn,
+            message: "replay rejected".into(),
+            emitted_at: now,
+        }],
+    };
+    let trust_scores = vec![
+        TrustScore {
+            peer_id: PeerId::new("peer-a"),
+            score: 0.5,
+            reducer_eligible: true,
+            validator_eligible: true,
+            quarantined: false,
+            ban_recommended: false,
+            updated_at: now,
+        },
+        TrustScore {
+            peer_id: PeerId::new("peer-b"),
+            score: -2.0,
+            reducer_eligible: false,
+            validator_eligible: false,
+            quarantined: true,
+            ban_recommended: true,
+            updated_at: now,
+        },
+    ];
+    let canary_reports = vec![CanaryEvalReport {
+        experiment_id: ExperimentId::new("exp"),
+        revision_id: RevisionId::new("rev"),
+        eval_protocol_id: burn_p2p_core::ContentId::new("canary"),
+        candidate_head_id: HeadId::new("head-2"),
+        base_head_id: Some(HeadId::new("head-1")),
+        accepted: false,
+        metric_deltas: BTreeMap::from([("loss".into(), 0.12)]),
+        regression_margin: 0.12,
+        detected_backdoor_trigger: false,
+        evaluator_quorum: 2,
+        evaluated_at: now,
+    }];
+
+    let panel = RobustnessPanelView::from_reports(
+        RobustnessPolicy::strict(),
+        &cohort,
+        &trust_scores,
+        &canary_reports,
+    );
+
+    assert_eq!(panel.rejection_reasons.len(), 2);
+    assert_eq!(panel.quarantined_peers.len(), 1);
+    assert!(panel.quarantined_peers[0].ban_recommended);
+    assert_eq!(panel.canary_regressions.len(), 1);
+    assert_eq!(panel.policy.preset, burn_p2p_core::RobustnessPreset::Strict);
 }

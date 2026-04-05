@@ -55,6 +55,7 @@ fn browser_directory_snapshot(
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,

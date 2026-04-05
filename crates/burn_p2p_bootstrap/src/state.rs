@@ -13,12 +13,20 @@ use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, PeerId, PeerWindowMetrics,
     ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport,
 };
+#[cfg(feature = "metrics-indexer")]
+use burn_p2p_metrics::{RobustnessRollup, derive_robustness_rollup};
 use burn_p2p_security::{
     PeerAdmissionReport, PeerTrustLevel, ReputationDecision, ReputationEngine, ReputationState,
 };
 use burn_p2p_swarm::{PeerStore, SwarmStats};
+use burn_p2p_ui::RobustnessPanelView;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "metrics-indexer")]
+type BootstrapRobustnessRollup = RobustnessRollup;
+#[cfg(not(feature = "metrics-indexer"))]
+type BootstrapRobustnessRollup = serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a receipt query.
@@ -175,6 +183,20 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    fn effective_quarantined_peers(&self) -> BTreeSet<PeerId> {
+        let mut quarantined = self.quarantined_peers.clone();
+        if let Some(snapshot) = self.runtime_snapshot.as_ref() {
+            quarantined.extend(
+                snapshot
+                    .trust_scores
+                    .iter()
+                    .filter(|score| score.quarantined)
+                    .map(|score| score.peer_id.clone()),
+            );
+        }
+        quarantined
+    }
+
     /// Performs the ingest contribution receipts operation.
     pub fn ingest_contribution_receipts(
         &mut self,
@@ -202,6 +224,7 @@ impl BootstrapAdminState {
 
     /// Performs the peer diagnostics operation.
     fn peer_diagnostics(&self) -> Vec<BootstrapPeerDiagnostic> {
+        let effective_quarantined = self.effective_quarantined_peers();
         let peer_ids = self
             .peer_store
             .observed_peer_ids()
@@ -209,7 +232,7 @@ impl BootstrapAdminState {
             .chain(self.peer_admission_reports.keys().cloned())
             .chain(self.rejected_peers.keys().cloned())
             .chain(self.peer_reputation.keys().cloned())
-            .chain(self.quarantined_peers.iter().cloned())
+            .chain(effective_quarantined.iter().cloned())
             .chain(self.banned_peers.iter().cloned())
             .collect::<BTreeSet<_>>();
         let reputation_engine = ReputationEngine::default();
@@ -229,7 +252,7 @@ impl BootstrapAdminState {
                     reputation_score: reputation_state.map(|state| state.score),
                     reputation_decision: reputation_state
                         .map(|state| reputation_engine.decision(state.score)),
-                    quarantined: self.quarantined_peers.contains(&peer_id),
+                    quarantined: effective_quarantined.contains(&peer_id),
                     banned: self.banned_peers.contains(&peer_id),
                 }
             })
@@ -279,6 +302,7 @@ impl BootstrapAdminState {
         captured_at: DateTime<Utc>,
         remaining_work_units: Option<u64>,
     ) -> BootstrapDiagnostics {
+        let effective_quarantined = self.effective_quarantined_peers();
         BootstrapDiagnostics {
             network_id: plan.genesis.network_id.clone(),
             preset: plan.preset.clone(),
@@ -293,12 +317,14 @@ impl BootstrapAdminState {
             admitted_peers: self.admitted_peers.clone(),
             peer_diagnostics: self.peer_diagnostics(),
             rejected_peers: self.rejected_peers.clone(),
-            quarantined_peers: self.quarantined_peers.clone(),
+            quarantined_peers: effective_quarantined,
             banned_peers: self.banned_peers.clone(),
             minimum_revocation_epoch: self.minimum_revocation_epoch,
             last_error: self.last_error.clone(),
             node_state: self.node_state.clone(),
             slot_states: self.slot_states.clone(),
+            robustness_panel: self.robustness_panel(),
+            robustness_rollup: self.robustness_rollup(plan, captured_at),
             captured_at,
         }
     }
@@ -321,6 +347,45 @@ impl BootstrapAdminState {
             trust_bundle: self.trust_bundle.clone(),
             captured_at,
         }
+    }
+
+    fn robustness_panel(&self) -> Option<RobustnessPanelView> {
+        let snapshot = self.runtime_snapshot.as_ref()?;
+        let policy = snapshot.robustness_policy.clone()?;
+        let cohort = snapshot.latest_cohort_robustness.as_ref()?;
+
+        Some(RobustnessPanelView::from_reports(
+            policy,
+            cohort,
+            &snapshot.trust_scores,
+            &snapshot.canary_reports,
+        ))
+    }
+
+    #[cfg(feature = "metrics-indexer")]
+    fn robustness_rollup(
+        &self,
+        plan: &BootstrapPlan,
+        captured_at: DateTime<Utc>,
+    ) -> Option<BootstrapRobustnessRollup> {
+        let snapshot = self.runtime_snapshot.as_ref()?;
+        let cohort = snapshot.latest_cohort_robustness.as_ref()?;
+        Some(derive_robustness_rollup(
+            plan.genesis.network_id.clone(),
+            cohort,
+            &snapshot.trust_scores,
+            &snapshot.canary_reports,
+            captured_at,
+        ))
+    }
+
+    #[cfg(not(feature = "metrics-indexer"))]
+    fn robustness_rollup(
+        &self,
+        _plan: &BootstrapPlan,
+        _captured_at: DateTime<Utc>,
+    ) -> Option<BootstrapRobustnessRollup> {
+        None
     }
 }
 
@@ -388,6 +453,12 @@ pub struct BootstrapDiagnostics {
     pub node_state: NodeRuntimeState,
     /// The slot states.
     pub slot_states: Vec<SlotRuntimeState>,
+    #[serde(default)]
+    /// The active robustness panel, when runtime validation has emitted one.
+    pub robustness_panel: Option<RobustnessPanelView>,
+    #[serde(default)]
+    /// The compact robustness rollup, when metrics-indexer support is enabled.
+    pub robustness_rollup: Option<BootstrapRobustnessRollup>,
     /// The captured at.
     pub captured_at: DateTime<Utc>,
 }
@@ -468,6 +539,156 @@ pub fn render_openmetrics(diagnostics: &BootstrapDiagnostics) -> String {
         "burn_p2p_banned_peers {}",
         diagnostics.banned_peers.len()
     ));
+    if diagnostics.robustness_panel.is_some() || diagnostics.robustness_rollup.is_some() {
+        let panel = diagnostics.robustness_panel.as_ref();
+        #[cfg(feature = "metrics-indexer")]
+        let rollup = diagnostics.robustness_rollup.as_ref();
+        let rejected_updates = {
+            #[cfg(feature = "metrics-indexer")]
+            {
+                rollup
+                    .map(|rollup| u64::from(rollup.rejected_updates))
+                    .or_else(|| {
+                        panel.map(|panel| {
+                            panel
+                                .rejection_reasons
+                                .iter()
+                                .map(|reason| u64::from(reason.count))
+                                .sum::<u64>()
+                        })
+                    })
+                    .unwrap_or(0)
+            }
+            #[cfg(not(feature = "metrics-indexer"))]
+            {
+                panel
+                    .map(|panel| {
+                        panel
+                            .rejection_reasons
+                            .iter()
+                            .map(|reason| u64::from(reason.count))
+                            .sum::<u64>()
+                    })
+                    .unwrap_or(0)
+            }
+        };
+        let mean_trust_score = {
+            #[cfg(feature = "metrics-indexer")]
+            {
+                rollup
+                    .map(|rollup| rollup.mean_trust_score)
+                    .or_else(|| {
+                        panel.map(|panel| {
+                            if panel.trust_scores.is_empty() {
+                                0.0
+                            } else {
+                                panel
+                                    .trust_scores
+                                    .iter()
+                                    .map(|score| score.score)
+                                    .sum::<f64>()
+                                    / panel.trust_scores.len() as f64
+                            }
+                        })
+                    })
+                    .unwrap_or(0.0)
+            }
+            #[cfg(not(feature = "metrics-indexer"))]
+            {
+                panel
+                    .map(|panel| {
+                        if panel.trust_scores.is_empty() {
+                            0.0
+                        } else {
+                            panel
+                                .trust_scores
+                                .iter()
+                                .map(|score| score.score)
+                                .sum::<f64>()
+                                / panel.trust_scores.len() as f64
+                        }
+                    })
+                    .unwrap_or(0.0)
+            }
+        };
+        let canary_regressions = {
+            #[cfg(feature = "metrics-indexer")]
+            {
+                rollup
+                    .map(|rollup| u64::from(rollup.canary_regression_count))
+                    .or_else(|| panel.map(|panel| panel.canary_regressions.len() as u64))
+                    .unwrap_or(0)
+            }
+            #[cfg(not(feature = "metrics-indexer"))]
+            {
+                panel
+                    .map(|panel| panel.canary_regressions.len() as u64)
+                    .unwrap_or(0)
+            }
+        };
+        let ban_recommendations = {
+            #[cfg(feature = "metrics-indexer")]
+            {
+                rollup
+                    .map(|rollup| u64::from(rollup.ban_recommended_peer_count))
+                    .or_else(|| {
+                        panel.map(|panel| {
+                            panel
+                                .quarantined_peers
+                                .iter()
+                                .filter(|peer| peer.ban_recommended)
+                                .count() as u64
+                        })
+                    })
+                    .unwrap_or(0)
+            }
+            #[cfg(not(feature = "metrics-indexer"))]
+            {
+                panel
+                    .map(|panel| {
+                        panel
+                            .quarantined_peers
+                            .iter()
+                            .filter(|peer| peer.ban_recommended)
+                            .count() as u64
+                    })
+                    .unwrap_or(0)
+            }
+        };
+        let alert_count = {
+            #[cfg(feature = "metrics-indexer")]
+            {
+                rollup
+                    .map(|rollup| rollup.alert_count)
+                    .or_else(|| panel.map(|panel| panel.alerts.len() as u32))
+                    .unwrap_or(0)
+            }
+            #[cfg(not(feature = "metrics-indexer"))]
+            {
+                panel.map(|panel| panel.alerts.len() as u32).unwrap_or(0)
+            }
+        };
+        lines.push("# TYPE burn_p2p_robustness_rejected_updates gauge".to_owned());
+        lines.push(format!(
+            "burn_p2p_robustness_rejected_updates {rejected_updates}"
+        ));
+        lines.push("# TYPE burn_p2p_robustness_mean_trust_score gauge".to_owned());
+        lines.push(format!(
+            "burn_p2p_robustness_mean_trust_score {mean_trust_score:.6}"
+        ));
+        lines.push("# TYPE burn_p2p_robustness_canary_regressions gauge".to_owned());
+        lines.push(format!(
+            "burn_p2p_robustness_canary_regressions {}",
+            canary_regressions
+        ));
+        lines.push("# TYPE burn_p2p_robustness_ban_recommendations gauge".to_owned());
+        lines.push(format!(
+            "burn_p2p_robustness_ban_recommendations {}",
+            ban_recommendations
+        ));
+        lines.push("# TYPE burn_p2p_robustness_alerts gauge".to_owned());
+        lines.push(format!("burn_p2p_robustness_alerts {alert_count}"));
+    }
 
     if let Some(eta_lower_seconds) = diagnostics.swarm.network_estimate.eta_lower_seconds {
         lines.push("# TYPE burn_p2p_eta_lower_seconds gauge".to_owned());

@@ -5,8 +5,9 @@ use burn_p2p::{
     BrowserRolePolicy, BrowserVisibilityPolicy, ContentId, ExperimentDirectoryEntry,
     ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadId, NetworkId,
-    PeerRoleSet, Precision, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId,
-    RevisionManifest, WindowActivation, WindowId, WorkloadId,
+    PeerId, PeerRoleSet, Precision, PrincipalClaims, PrincipalId, PrincipalSession,
+    RejectionReason, RevisionId, RevisionManifest, RobustnessPolicy, WindowActivation, WindowId,
+    WorkloadId,
 };
 use burn_p2p_bootstrap::BrowserDirectorySnapshot;
 use burn_p2p_browser::{
@@ -15,7 +16,10 @@ use burn_p2p_browser::{
     BrowserTransportStatus, BrowserValidationPlan, BrowserWorkerCommand, BrowserWorkerEvent,
     BrowserWorkerRuntime,
 };
-use burn_p2p_testkit::{PeerFixtureMode, SimulationRunner, SimulationSpec};
+use burn_p2p_testkit::{
+    MaliciousBehavior, PeerFixtureMode, SimulationRunner, SimulationSpec,
+    adversarial::{AdversarialAttack, run_scenario},
+};
 use chrono::Utc;
 
 fn browser_revision_manifest(
@@ -46,6 +50,7 @@ fn browser_revision_manifest(
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::default(),
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -362,4 +367,60 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
             .any(|receipt| receipt.receipt_id == validation_receipt_id
                 && receipt.peer_id == browser_fixture.peer_id)
     );
+}
+
+#[test]
+fn mixed_fleet_browser_adversarial_smoke_rejects_browser_style_replay_and_free_riding() {
+    let runner = SimulationRunner::default();
+    let mut spec = SimulationSpec {
+        peer_count: 6,
+        browser_peer_count: 2,
+        ..SimulationSpec::default()
+    };
+    spec.malicious_peers
+        .insert(PeerId::new("peer-1"), MaliciousBehavior::OutOfLeaseWork);
+
+    let outcome = runner.run(spec).expect("mixed browser simulation outcome");
+    assert!(
+        outcome
+            .browser_harness
+            .peer_ids
+            .contains(&PeerId::new("peer-1"))
+    );
+
+    let browser_rejections = outcome
+        .windows
+        .iter()
+        .flat_map(|window| &window.rejected_updates)
+        .filter(|rejection| rejection.peer_id == PeerId::new("peer-1"))
+        .collect::<Vec<_>>();
+    assert!(!browser_rejections.is_empty());
+    assert!(browser_rejections.iter().any(|rejection| {
+        rejection.findings.iter().any(|finding| {
+            matches!(
+                finding,
+                burn_p2p_security::AuditFinding::UnexpectedMicroshards(_)
+            )
+        })
+    }));
+
+    let replay = run_scenario(
+        RobustnessPolicy::balanced(),
+        AdversarialAttack::Replay,
+        10,
+        0.2,
+    );
+    assert_eq!(
+        replay.rejection_reasons.get(&RejectionReason::Replay),
+        Some(&2)
+    );
+
+    let free_rider = run_scenario(
+        RobustnessPolicy::balanced(),
+        AdversarialAttack::FreeRider,
+        10,
+        0.2,
+    );
+    assert!(free_rider.malicious_update_acceptance_rate < 1.0);
+    assert!(free_rider.quarantine_precision >= 0.0);
 }

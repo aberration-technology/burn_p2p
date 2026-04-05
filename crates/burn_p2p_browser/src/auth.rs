@@ -100,6 +100,57 @@ impl BrowserEnrollmentConfig {
             session_ttl_secs,
         })
     }
+
+    /// Creates a minimal config for viewer-first runtime sync without assuming auth enrollment.
+    pub fn for_runtime_sync(snapshot: &BrowserPortalSnapshot) -> Self {
+        let target_artifact_hash = snapshot
+            .allowed_target_artifact_hashes
+            .iter()
+            .next()
+            .cloned()
+            .or_else(|| {
+                snapshot
+                    .trust_bundle
+                    .as_ref()
+                    .and_then(|bundle| bundle.allowed_target_artifact_hashes.iter().next().cloned())
+            })
+            .unwrap_or_else(|| ContentId::new("browser-client-artifact"));
+
+        Self {
+            network_id: snapshot.network_id.clone(),
+            project_family_id: snapshot
+                .trust_bundle
+                .as_ref()
+                .map(|bundle| bundle.project_family_id.clone())
+                .unwrap_or_else(|| ProjectFamilyId::new("browser-family")),
+            release_train_hash: snapshot
+                .required_release_train_hash
+                .clone()
+                .or_else(|| {
+                    snapshot
+                        .trust_bundle
+                        .as_ref()
+                        .map(|bundle| bundle.required_release_train_hash.clone())
+                })
+                .unwrap_or_else(|| ContentId::new("browser-client-train")),
+            target_artifact_id: "browser-client".into(),
+            target_artifact_hash,
+            login_path: snapshot
+                .login_providers
+                .first()
+                .map(|provider| provider.login_path.clone())
+                .unwrap_or_else(|| snapshot.paths.login_path.clone()),
+            callback_path: snapshot
+                .login_providers
+                .first()
+                .and_then(|provider| provider.callback_path.clone())
+                .unwrap_or_else(|| snapshot.paths.callback_path.clone()),
+            enroll_path: snapshot.paths.enroll_path.clone(),
+            trust_bundle_path: snapshot.paths.trust_bundle_path.clone(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 3600,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

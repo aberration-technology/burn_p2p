@@ -6,7 +6,9 @@
 #![forbid(unsafe_code)]
 
 mod auth;
+mod browser_app;
 mod dashboard;
+mod robustness;
 
 pub use auth::{
     AuthPortalView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
@@ -14,14 +16,25 @@ pub use auth::{
     ExperimentPickerCard, ExperimentPickerView, GitHubProfileLink, LoginProviderView,
     ParticipantPortalView, ParticipantProfile, TrustBadgeView,
 };
+pub use browser_app::{
+    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppFocusPanel,
+    BrowserAppLeaderboardPreview, BrowserAppLiveView, BrowserAppNetworkView, BrowserAppRouteLink,
+    BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
+    BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+};
 pub use dashboard::{
     AggregateDagEdge, AggregateDagNode, AggregateDagView, AuthorityActionRecord, CheckpointDagEdge,
     CheckpointDagEdgeKind, CheckpointDagNode, CheckpointDagView, CostPerformancePoint, EmaFlowStep,
     EmaFlowView, ExperimentMigrationView, ExperimentVariantView, HeadPromotionTimelineEntry,
     MergeQueueEntry, MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
-    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OperatorTransferView,
-    OverlayStatusView, ReducerUtilizationView, ShardAssignmentCell, ShardAssignmentHeatmap,
-    StudyBoardView, UiChannel, UiEventEnvelope, UiPayload,
+    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView,
+    OperatorRobustnessSummaryView, OperatorTransferView, OverlayStatusView, ReducerUtilizationView,
+    ShardAssignmentCell, ShardAssignmentHeatmap, StudyBoardView, UiChannel, UiEventEnvelope,
+    UiPayload,
+};
+pub use robustness::{
+    CanaryRegressionView, QuarantinedPeerView, RobustnessPanelView, RobustnessReasonCountView,
+    TrustScorePointView,
 };
 
 #[cfg(test)]

@@ -4,17 +4,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p::{
-    ArtifactId, AuthProvider, BrowserMode, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
+    ArtifactId, AuthProvider, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
     ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadDescriptor, HeadId,
     MetricValue, NetworkId, PeerId, PeerRoleSet, Precision, PrincipalClaims, PrincipalId,
-    PrincipalSession, ProfileMode, RevisionId, RevisionManifest, SocialMode, StudyId,
-    WindowActivation, WindowId, WorkloadId,
+    PrincipalSession, RevisionId, RevisionManifest, StudyId, WindowActivation, WindowId,
+    WorkloadId,
 };
 use burn_p2p_bootstrap::{
-    BootstrapAdminState, BootstrapDiagnostics, BootstrapPreset, BrowserDirectorySnapshot,
-    BrowserEdgeMode, BrowserLeaderboardSnapshot, BrowserLoginProvider, BrowserPortalSnapshot,
-    BrowserTransportSurface, render_browser_portal_html,
+    BootstrapAdminState, BrowserDirectorySnapshot, BrowserLeaderboardSnapshot,
 };
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserGpuSupport, BrowserMetricsSyncState, BrowserRuntimeConfig,
@@ -25,6 +23,8 @@ use burn_p2p_core::{
     ContributionReceipt, ContributionReceiptId, LeaderboardSnapshot, SchemaEnvelope,
     SignatureAlgorithm, SignatureMetadata, SignedPayload,
 };
+use burn_p2p_portal::render_browser_app_static_html;
+use burn_p2p_ui::{BrowserAppStaticBootstrap, BrowserAppSurface};
 use chrono::{Duration, Utc};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use semver::Version;
@@ -59,6 +59,7 @@ fn benchmark_directory(
         },
         lag_policy: burn_p2p::LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {
             observer: true,
@@ -253,88 +254,6 @@ fn benchmark_runtime(network_id: &NetworkId, role: BrowserRuntimeRole) -> Browse
     )
 }
 
-fn benchmark_portal_snapshot() -> BrowserPortalSnapshot {
-    let network_id = NetworkId::new("browser-bench");
-    let study_id = StudyId::new("study-bench");
-    let experiment_id = ExperimentId::new("exp-bench");
-    let revision_id = RevisionId::new("rev-bench");
-    let directory = benchmark_directory(&network_id, &study_id, &experiment_id, &revision_id);
-
-    BrowserPortalSnapshot {
-        network_id,
-        edge_mode: BrowserEdgeMode::Full,
-        browser_mode: BrowserMode::Trainer,
-        social_mode: SocialMode::Public,
-        profile_mode: ProfileMode::Public,
-        transports: BrowserTransportSurface {
-            webrtc_direct: false,
-            webtransport_gateway: true,
-            wss_fallback: true,
-        },
-        paths: Default::default(),
-        auth_enabled: true,
-        login_providers: vec![BrowserLoginProvider {
-            label: "GitHub".into(),
-            login_path: "/login/github".into(),
-            callback_path: Some("/callback/github".into()),
-            device_path: None,
-        }],
-        required_release_train_hash: Some(ContentId::new("browser-train")),
-        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
-            "approved-artifact-browser",
-        )]),
-        diagnostics: BootstrapDiagnostics {
-            network_id: directory.network_id.clone(),
-            preset: BootstrapPreset::AllInOne,
-            services: BootstrapPreset::AllInOne.services(),
-            roles: BootstrapPreset::AllInOne.roles(),
-            swarm: burn_p2p::SwarmStats {
-                connected_peers: 0,
-                connected_peer_ids: Vec::new(),
-                observed_peers: Vec::new(),
-                network_estimate: burn_p2p::NetworkEstimate {
-                    connected_peers: 0,
-                    observed_peers: 0,
-                    estimated_network_size: 0.0,
-                    estimated_total_vram_bytes: None,
-                    estimated_total_flops: None,
-                    eta_lower_seconds: None,
-                    eta_upper_seconds: None,
-                },
-            },
-            pinned_heads: BTreeSet::new(),
-            pinned_artifacts: BTreeSet::new(),
-            accepted_receipts: 0,
-            certified_merges: 0,
-            in_flight_transfers: Vec::new(),
-            admitted_peers: BTreeSet::new(),
-            peer_diagnostics: Vec::new(),
-            rejected_peers: BTreeMap::new(),
-            quarantined_peers: BTreeSet::new(),
-            banned_peers: BTreeSet::new(),
-            minimum_revocation_epoch: None,
-            last_error: None,
-            node_state: burn_p2p::NodeRuntimeState::IdleReady,
-            slot_states: Vec::new(),
-            captured_at: Utc::now(),
-        },
-        directory: directory.clone(),
-        heads: vec![benchmark_head(
-            &StudyId::new("study-bench"),
-            &ExperimentId::new("exp-bench"),
-            &RevisionId::new("rev-bench"),
-        )],
-        leaderboard: LeaderboardSnapshot {
-            network_id: directory.network_id.clone(),
-            score_version: "leaderboard_score_v1".into(),
-            entries: Vec::new(),
-            captured_at: Utc::now(),
-        },
-        trust_bundle: None,
-        captured_at: Utc::now(),
-    }
-}
-
 fn benchmark_receipt() -> ContributionReceipt {
     ContributionReceipt {
         receipt_id: ContributionReceiptId::new("receipt-bench-1"),
@@ -352,9 +271,17 @@ fn benchmark_receipt() -> ContributionReceipt {
 }
 
 fn bench_portal_load(c: &mut Criterion) {
-    let snapshot = benchmark_portal_snapshot();
-    c.bench_function("browser_path/portal_load_render", |b| {
-        b.iter(|| render_browser_portal_html(criterion::black_box(&snapshot)));
+    let bootstrap = BrowserAppStaticBootstrap {
+        app_name: "burn_p2p".into(),
+        asset_base_url: "https://cdn.example/burn-p2p".into(),
+        module_entry_path: "assets/browser-app.js".into(),
+        stylesheet_path: Some("assets/browser-app.css".into()),
+        default_edge_url: Some("https://edge.example".into()),
+        default_surface: BrowserAppSurface::Viewer,
+        refresh_interval_ms: 15_000,
+    };
+    c.bench_function("browser_path/static_shell_render", |b| {
+        b.iter(|| render_browser_app_static_html(criterion::black_box(&bootstrap)));
     });
 }
 

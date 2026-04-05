@@ -274,6 +274,9 @@ pub struct UpdateAnnounce {
     pub window_id: WindowId,
     /// The base head ID.
     pub base_head_id: HeadId,
+    /// The lease ID that authorized the update, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<LeaseId>,
     /// The delta artifact ID.
     pub delta_artifact_id: ArtifactId,
     /// The sample weight.
@@ -282,6 +285,9 @@ pub struct UpdateAnnounce {
     pub quality_weight: f64,
     /// The norm stats.
     pub norm_stats: UpdateNormStats,
+    /// Compact feature sketch used for robustness screening.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_sketch: Option<UpdateFeatureSketch>,
     /// The receipt root.
     pub receipt_root: ContentId,
     /// The receipt IDs.

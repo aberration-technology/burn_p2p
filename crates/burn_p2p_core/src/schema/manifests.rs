@@ -480,7 +480,7 @@ pub struct LeaderboardSnapshot {
     pub captured_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Describes the revision.
 pub struct RevisionManifest {
     /// The experiment ID.
@@ -511,6 +511,9 @@ pub struct RevisionManifest {
     #[serde(default)]
     /// The merge window miss policy.
     pub merge_window_miss_policy: MergeWindowMissPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Robustness policy carried by the revision.
+    pub robustness_policy: Option<RobustnessPolicy>,
     /// The browser enabled.
     pub browser_enabled: bool,
     /// The browser role policy.

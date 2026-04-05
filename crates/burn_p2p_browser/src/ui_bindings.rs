@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use burn_p2p::{
-    ArtifactTargetKind, BrowserJoinPolicy, BrowserRole, ExperimentDirectoryEntry, ExperimentId,
-    ExperimentScope, RevisionId, browser_join_policy_for_entry,
+    ArtifactTargetKind, BrowserJoinPolicy, BrowserRole, ExperimentDirectoryAccess,
+    ExperimentDirectoryEntry, ExperimentId, ExperimentScope, RevisionId,
+    browser_join_policy_for_entry,
 };
 use burn_p2p_core::{BrowserDirectorySnapshot, BrowserPortalSnapshot};
 use burn_p2p_ui::{
@@ -198,6 +199,25 @@ impl BrowserUiBindings {
 
     /// Performs the endpoint URL operation.
     pub fn endpoint_url(&self, path: &str) -> String {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return path.to_owned();
+        }
+
+        if let Ok(url) = reqwest::Url::parse(&self.edge_base_url)
+            && path.starts_with('/')
+        {
+            let base_path = url.path().trim_end_matches('/');
+            if !base_path.is_empty() && base_path != "/" && path.starts_with(base_path) {
+                let mut origin =
+                    format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
+                if let Some(port) = url.port() {
+                    origin.push(':');
+                    origin.push_str(&port.to_string());
+                }
+                return format!("{origin}{path}");
+            }
+        }
+
         format!("{}{}", self.edge_base_url, path)
     }
 }
@@ -229,6 +249,9 @@ pub struct BrowserExperimentCandidate {
 }
 
 fn allowed_by_scopes(entry: &ExperimentDirectoryEntry, scopes: &[ExperimentScope]) -> bool {
+    if scopes.is_empty() {
+        return entry.is_visible_to(&std::collections::BTreeSet::new());
+    }
     let scope_set = scopes
         .iter()
         .cloned()

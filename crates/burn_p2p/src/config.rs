@@ -267,6 +267,52 @@ impl StorageConfig {
         )
     }
 
+    pub(crate) fn scoped_robustness_state_path(&self, experiment: &ExperimentHandle) -> PathBuf {
+        self.state_dir().join(format!(
+            "robustness-{}-{}-{}.json",
+            experiment.study_id.as_str(),
+            experiment.experiment_id.as_str(),
+            experiment.revision_id.as_str()
+        ))
+    }
+
+    pub(crate) fn scoped_cohort_robustness_report_path(
+        &self,
+        experiment: &ExperimentHandle,
+        window_id: &WindowId,
+    ) -> PathBuf {
+        self.metrics_dir().join(format!(
+            "cohort-robustness-{}-{}-{}-{}.json",
+            experiment.study_id.as_str(),
+            experiment.experiment_id.as_str(),
+            experiment.revision_id.as_str(),
+            window_id.0
+        ))
+    }
+
+    pub(crate) fn scoped_trust_scores_path(&self, experiment: &ExperimentHandle) -> PathBuf {
+        self.metrics_dir().join(format!(
+            "trust-scores-{}-{}-{}.json",
+            experiment.study_id.as_str(),
+            experiment.experiment_id.as_str(),
+            experiment.revision_id.as_str()
+        ))
+    }
+
+    pub(crate) fn scoped_canary_eval_report_path(
+        &self,
+        experiment: &ExperimentHandle,
+        head_id: &HeadId,
+    ) -> PathBuf {
+        self.metrics_dir().join(format!(
+            "canary-report-{}-{}-{}-{}.json",
+            experiment.study_id.as_str(),
+            experiment.experiment_id.as_str(),
+            experiment.revision_id.as_str(),
+            head_id.as_str()
+        ))
+    }
+
     pub(crate) fn scoped_reducer_cohort_metrics_experiment_prefix(
         &self,
         experiment: &ExperimentHandle,
@@ -930,6 +976,18 @@ pub struct NodeTelemetrySnapshot {
     #[serde(default)]
     /// The in flight transfers.
     pub in_flight_transfers: BTreeMap<ArtifactId, ArtifactTransferState>,
+    #[serde(default)]
+    /// The active robustness policy, when one is currently scoped to the revision.
+    pub robustness_policy: Option<RobustnessPolicy>,
+    #[serde(default)]
+    /// The latest cohort robustness report emitted by validation.
+    pub latest_cohort_robustness: Option<CohortRobustnessReport>,
+    #[serde(default)]
+    /// The latest trust scores tracked by the robustness pipeline.
+    pub trust_scores: Vec<TrustScore>,
+    #[serde(default)]
+    /// Recent canary reports tracked by the robustness pipeline.
+    pub canary_reports: Vec<CanaryEvalReport>,
     /// The effective limit profile.
     pub effective_limit_profile: Option<LimitProfile>,
     /// The last error.
@@ -975,6 +1033,10 @@ impl NodeTelemetrySnapshot {
                 .map(|policy| policy.minimum_revocation_epoch),
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            robustness_policy: None,
+            latest_cohort_robustness: None,
+            trust_scores: Vec::new(),
+            canary_reports: Vec::new(),
             effective_limit_profile: None,
             last_error: None,
             started_at: now,
@@ -1034,6 +1096,27 @@ impl NodeTelemetrySnapshot {
 
     pub(crate) fn clear_transfer_state(&mut self, artifact_id: &ArtifactId) {
         self.in_flight_transfers.remove(artifact_id);
+        self.updated_at = Utc::now();
+    }
+
+    pub(crate) fn set_robustness_state(
+        &mut self,
+        policy: RobustnessPolicy,
+        cohort: CohortRobustnessReport,
+        trust_scores: Vec<TrustScore>,
+        canary_report: Option<CanaryEvalReport>,
+    ) {
+        self.robustness_policy = Some(policy);
+        self.latest_cohort_robustness = Some(cohort);
+        self.trust_scores = trust_scores;
+        if let Some(report) = canary_report {
+            self.canary_reports
+                .retain(|candidate| candidate.candidate_head_id != report.candidate_head_id);
+            self.canary_reports.push(report);
+            self.canary_reports
+                .sort_by_key(|candidate| std::cmp::Reverse(candidate.evaluated_at));
+            self.canary_reports.truncate(16);
+        }
         self.updated_at = Utc::now();
     }
 }

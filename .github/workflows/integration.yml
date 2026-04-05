@@ -1,0 +1,68 @@
+name: Integration
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/integration.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p/**"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_browser/**"
+      - "crates/burn_p2p_core/**"
+      - "crates/burn_p2p_engine/**"
+      - "crates/burn_p2p_metrics/**"
+      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_publish/**"
+      - "crates/burn_p2p_swarm/**"
+      - "crates/burn_p2p_testkit/**"
+      - "crates/burn_p2p_ui/**"
+      - "docs/testing/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/integration.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p/**"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_browser/**"
+      - "crates/burn_p2p_core/**"
+      - "crates/burn_p2p_engine/**"
+      - "crates/burn_p2p_metrics/**"
+      - "crates/burn_p2p_portal/**"
+      - "crates/burn_p2p_publish/**"
+      - "crates/burn_p2p_swarm/**"
+      - "crates/burn_p2p_testkit/**"
+      - "crates/burn_p2p_ui/**"
+      - "docs/testing/**"
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mixed-and-stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci integration --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore

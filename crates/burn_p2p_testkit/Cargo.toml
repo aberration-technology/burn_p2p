@@ -16,6 +16,8 @@ burn_p2p_core = { path = "../burn_p2p_core" }
 burn_p2p_dataloader = { path = "../burn_p2p_dataloader" }
 burn_p2p_experiment = { path = "../burn_p2p_experiment" }
 burn_p2p_limits = { path = "../burn_p2p_limits" }
+burn_p2p_metrics = { path = "../burn_p2p_metrics" }
+burn_p2p_portal = { path = "../burn_p2p_portal", features = ["interactive", "browser-join"] }
 burn_p2p_security = { path = "../burn_p2p_security" }
 burn_p2p_swarm = { path = "../burn_p2p_swarm" }
 burn_p2p_ui = { path = "../burn_p2p_ui" }
@@ -24,10 +26,10 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+wasm-bindgen-cli-support = "0.2.117"
 
 [dev-dependencies]
 burn_p2p_browser = { path = "../burn_p2p_browser" }
-burn_p2p_metrics = { path = "../burn_p2p_metrics" }
 criterion.workspace = true
 tempfile.workspace = true
 

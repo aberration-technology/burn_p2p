@@ -296,6 +296,7 @@ fn build_update_announces(
             revision_id: config.revision_id.clone(),
             window_id: merge_window.window_id,
             base_head_id: merge_window.base_head_id.clone(),
+            lease_id: None,
             delta_artifact_id: ArtifactId::new(format!(
                 "delta-{}-{}",
                 merge_window.window_id.0,
@@ -309,6 +310,7 @@ fn build_update_announces(
                 clipped: false,
                 non_finite_tensors: 0,
             },
+            feature_sketch: None,
             receipt_root: ContentId::derive(&(peer.peer_id.as_str(), "receipt-root"))
                 .expect("receipt root"),
             receipt_ids: vec![ContributionReceiptId::new(format!(

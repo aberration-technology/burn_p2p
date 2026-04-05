@@ -17,6 +17,7 @@ struct TrainingPreparedState {
     mainnet_roles: PeerRoleSet,
     metrics_retention: MetricsRetentionBudget,
     node_config: NodeConfig,
+    robustness_policy: RobustnessPolicy,
 }
 
 struct PlannedTrainingWindow {
@@ -125,6 +126,8 @@ impl<P> RunningNode<P> {
         let metrics_retention = node_config
             .metrics_retention
             .resolve_for_roles(&mainnet_roles);
+        let robustness_policy =
+            runtime_robustness_policy(&node_config, &telemetry_snapshot, experiment);
 
         self.update_runtime_state(
             NodeRuntimeState::HeadSync,
@@ -150,6 +153,7 @@ impl<P> RunningNode<P> {
             mainnet_roles,
             metrics_retention,
             node_config,
+            robustness_policy,
         })
     }
 
@@ -356,10 +360,12 @@ impl<P> RunningNode<P> {
         );
         let topology_peers =
             runtime_topology_peers(&prepared.telemetry_snapshot, &prepared.local_peer_id);
+        let validator_peers =
+            runtime_validator_peers(&prepared.telemetry_snapshot, &prepared.local_peer_id);
         let validators = runtime_validators(
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
-            &topology_peers,
+            &validator_peers,
             topology_policy.promotion_policy.validator_quorum,
         );
         let merge_window = latest_merge_window_from_snapshot(
@@ -464,12 +470,27 @@ impl<P> RunningNode<P> {
                 revision_id: experiment.revision_id.clone(),
                 window_id: execution.window_id,
                 base_head_id: execution.base_head_id.clone(),
+                lease_id: Some(execution.lease.lease_id.clone()),
                 delta_artifact_id: execution.artifact.artifact_id.clone(),
                 sample_weight: execution.contribution.accepted_weight,
                 quality_weight: (1.0
                     / (1.0 + metric_quality(&execution.contribution.metrics).abs()))
                 .max(0.01),
                 norm_stats: update_norm_stats(&execution.contribution.metrics),
+                feature_sketch: Some(update_feature_sketch_from_metrics(
+                    &execution.contribution.metrics,
+                    prepared
+                        .current_head
+                        .as_ref()
+                        .map(|(_, head)| &head.metrics),
+                    prepared
+                        .robustness_policy
+                        .screening_policy
+                        .sketch_dimensionality as usize,
+                    0,
+                    0,
+                    None,
+                )),
                 receipt_root: ContentId::derive(&[execution.contribution.receipt_id.as_str()])?,
                 receipt_ids: vec![execution.contribution.receipt_id.clone()],
                 providers: vec![prepared.local_peer_id.clone()],

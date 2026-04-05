@@ -1,56 +1,29 @@
-name: Publish Readiness
+name: Release Readiness
 
 on:
-  pull_request:
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/publish-readiness.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "scripts/release_prep.sh"
+      - "crates/**"
+      - "docs/testing/**"
+
+concurrency:
+  group: publish-readiness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy -p burn_p2p --all-targets --features burn -- -D warnings
-      - run: cargo clippy -p burn_p2p_swarm --all-targets -- -D warnings
-      - run: cargo clippy -p burn_p2p_security --all-targets -- -D warnings
-      - run: cargo clippy -p burn_p2p_publish --all-targets --features fs,s3 -- -D warnings
-      - run: cargo clippy -p burn_p2p_bootstrap --all-targets -- -D warnings
-      - run: cargo clippy -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static --all-targets -- -D warnings
-      - run: cargo clippy -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,portal,browser-edge,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social --all-targets -- -D warnings
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
-      - run: cargo test -p burn_p2p --features burn
-      - run: cargo test -p burn_p2p_publish --features fs,s3
-      - run: cargo test -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,auth-static
-      - run: cargo test -p burn_p2p_bootstrap --no-default-features --features admin-http,metrics,metrics-indexer,artifact-publish,artifact-download,artifact-fs,artifact-s3,portal,browser-edge,rbac,auth-static,auth-github,auth-oidc,auth-oauth,social
-
-  doc:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-
   publish-dry-run:
     runs-on: ubuntu-latest
     steps:
@@ -58,5 +31,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: chmod +x scripts/release_prep.sh
-      - run: ./scripts/release_prep.sh
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci publish --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-readiness-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore

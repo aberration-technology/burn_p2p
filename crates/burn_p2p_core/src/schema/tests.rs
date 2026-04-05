@@ -19,10 +19,12 @@ use super::{
     NodeCertificate, NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
     PeerWindowStatus, PortalMode, ProfileMode, PublicationAccessMode, PublicationMode,
     PublicationTarget, PublicationTargetKind, PublishedArtifactRecord, PublishedArtifactStatus,
-    ReducerCohortMetrics, ReducerCohortStatus, RevocationEpoch, SchemaEnvelope, SocialMode,
-    SocialProfile, SupportedWorkload, WindowActivation, WindowId,
+    ReducerCohortMetrics, ReducerCohortStatus, RejectionReason, RobustnessPolicy, RobustnessPreset,
+    SchemaEnvelope, SocialMode, SocialProfile, SupportedWorkload, UpdateFeatureSketch,
+    WindowActivation, WindowId,
 };
 use crate::{
+    RevocationEpoch,
     codec::{CanonicalSchema, deterministic_cbor, from_cbor_slice},
     id::{
         ArtifactAliasId, ContentId, DatasetViewId, DownloadTicketId, ExperimentId, ExportJobId,
@@ -278,6 +280,59 @@ fn leaderboard_snapshot_round_trips() {
             .leaderboard_score_v1,
         7.75
     );
+}
+
+#[test]
+fn robustness_policy_presets_round_trip() {
+    let minimal = RobustnessPolicy::minimal();
+    let balanced = RobustnessPolicy::balanced();
+    let strict = RobustnessPolicy::strict();
+    let research = RobustnessPolicy::research();
+
+    assert_eq!(minimal.preset, RobustnessPreset::Minimal);
+    assert_eq!(balanced.preset, RobustnessPreset::Balanced);
+    assert_eq!(strict.preset, RobustnessPreset::Strict);
+    assert_eq!(research.preset, RobustnessPreset::Research);
+    assert!(strict.clipping_policy.global_norm_cap < balanced.clipping_policy.global_norm_cap);
+    assert!(research.assumed_byzantine_fraction >= balanced.assumed_byzantine_fraction);
+
+    let bytes = strict.to_cbor_vec().expect("encode policy");
+    let decoded: RobustnessPolicy = from_cbor_slice(&bytes).expect("decode policy");
+    assert_eq!(decoded, strict);
+}
+
+#[test]
+fn update_feature_sketch_round_trips() {
+    let sketch = UpdateFeatureSketch {
+        artifact_size_bytes: 4096,
+        global_norm: 1.25,
+        per_layer_norms: BTreeMap::from([("encoder.0".into(), 0.8), ("head".into(), 0.45)]),
+        random_projection: vec![0.1, -0.2, 0.4],
+        sign_projection: vec![1, -1, 1],
+        top_k_indices: vec![3, 8, 13],
+        cosine_to_reference: Some(0.88),
+        sign_agreement_fraction: Some(0.71),
+        canary_loss_delta: Some(0.01),
+        historical_deviation_score: Some(0.2),
+        neighbor_distance: Some(1.4),
+        staleness_windows: 1,
+        receive_delay_ms: 250,
+        non_finite_tensor_count: 0,
+    };
+
+    let bytes = deterministic_cbor(&sketch).expect("encode sketch");
+    let decoded: UpdateFeatureSketch = from_cbor_slice(&bytes).expect("decode sketch");
+
+    assert_eq!(decoded, sketch);
+}
+
+#[test]
+fn rejection_reason_is_orderable_for_metrics_rollups() {
+    let mut reasons = BTreeMap::new();
+    reasons.insert(RejectionReason::Replay, 2_u32);
+    reasons.insert(RejectionReason::CanaryRegression, 1_u32);
+
+    assert_eq!(reasons.get(&RejectionReason::Replay), Some(&2));
 }
 
 #[test]

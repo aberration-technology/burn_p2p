@@ -1,0 +1,54 @@
+name: Services
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/services.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p_metrics/**"
+      - "crates/burn_p2p_publish/**"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_testkit/**"
+      - "docs/testing/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".cargo/config.toml"
+      - ".github/workflows/services.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "crates/burn_p2p_metrics/**"
+      - "crates/burn_p2p_publish/**"
+      - "crates/burn_p2p_bootstrap/**"
+      - "crates/burn_p2p_testkit/**"
+      - "docs/testing/**"
+  workflow_dispatch:
+
+concurrency:
+  group: services-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  services-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci services --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: services-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore

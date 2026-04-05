@@ -1095,6 +1095,7 @@ mod tests {
             },
             lag_policy: crate::LagPolicy::default(),
             merge_window_miss_policy: crate::MergeWindowMissPolicy::default(),
+            robustness_policy: None,
             browser_enabled: false,
             browser_role_policy: crate::BrowserRolePolicy::default(),
             max_browser_checkpoint_bytes: None,

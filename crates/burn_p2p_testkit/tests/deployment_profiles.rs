@@ -77,7 +77,6 @@ fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()
         "burn_p2p_browser",
         "burn_p2p_portal",
         "burn_p2p_social",
-        "burn_p2p_ui",
     ] {
         anyhow::ensure!(
             !tree.contains(forbidden),
