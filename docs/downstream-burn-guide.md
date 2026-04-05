@@ -5,17 +5,25 @@ project today.
 
 ## Recommended Mental Model
 
-Treat `burn_p2p` as a runtime that asks your project for three things:
+Treat `burn_p2p` as a runtime that wraps your existing training code. You do
+not hand it a model and then switch to a new training API. Instead, you expose
+your current project through:
 
-1. workload metadata
-2. training and evaluation logic
-3. dataset registration and shard-loading hooks
+1. `P2pWorkload`
+2. `SingleWorkloadProjectFamily` or `P2pProjectFamily`
+3. `NodeBuilder`
 
-The forward-facing model is:
+If you already have a model, loss fn, optimizer, and dataset loader, the
+translation is:
 
-- `P2pWorkload`
-- `P2pProjectFamily`
-- `NodeBuilder`
+- your model type becomes `P2pWorkload::Model`
+- your batch type becomes `P2pWorkload::Batch`
+- your loss and optimizer step live in `train_window(...)`
+- your evaluation metrics live in `evaluate(...)`
+- your dataset metadata and shard loading live in `dataset_registration(...)`,
+  `microshard_plan(...)`, and `load_batches(...)`
+- your checkpoint serialization lives in `load_model_artifact(...)` and
+  `materialize_model_artifact(...)`
 
 ## Minimal Integration Flow
 
@@ -30,15 +38,17 @@ Example reference:
 
 ### 2. Implement the runtime hooks
 
-Today, a complete integration implements:
-
-- `P2pWorkload`
+Today, the concrete downstream integration point is `P2pWorkload`.
 
 Practical guidance:
 
-- put Burn-specific model/batch logic on `P2pWorkload`
-- put `type Device`, dataset, and checkpoint/materialization hooks on `P2pWorkload`
-- put workload metadata and role support on `P2pWorkload`
+- put your forward pass, loss fn, and optimizer step in `train_window`
+- put your validation metrics in `evaluate`
+- put Burn-specific model/device/batch types on the associated types
+- put dataset registration and shard loading on the dataset hooks
+- put checkpoint load/save behavior on the artifact hooks
+- put workload metadata and compatibility identifiers on `supported_workload`
+  and `model_schema_hash`
 
 ## 3. Wrap the workload in a project family
 
@@ -59,14 +69,42 @@ the family to select the workload before spawning the node.
 The intended downstream builder flow is:
 
 1. `NodeBuilder::new(family)`
-2. `with_network(...)`
-3. `for_workload(...)`
-4. `with_storage(...)`
-5. `with_identity(...)` or enrollment/auth configuration
-6. `spawn()`
+2. `for_workload(...)` if the family has more than one workload
+3. `with_network(...)`
+4. `with_roles(...)`
+5. `with_storage(...)`
+6. `with_identity(...)` or enrollment/auth configuration
+7. `spawn()`
 
 The exact builder methods available depend on the enabled feature set and the
 runtime profile being used.
+
+For a trainer, the minimal practical shape is:
+
+```rust
+let mut trainer = NodeBuilder::new(family)
+    .with_network(network_manifest)?
+    .with_roles(RoleSet::default_trainer())
+    .with_storage(StorageConfig::new("./burn-p2p-node"))
+    .with_bootstrap_peer(validator_addr)
+    .spawn()?;
+
+let experiment = trainer.experiment(
+    StudyId::new("study"),
+    ExperimentId::new("experiment"),
+    RevisionId::new("rev-1"),
+);
+
+let outcome = trainer.train_window_once(&experiment)?;
+```
+
+That call to `train_window_once` is the actual “make this node a trainer” step.
+It pulls the current base head and assigned shards, runs one local training
+window, and publishes the candidate update.
+
+One important point: a trainer is not enough by itself. A validator / authority
+path must already exist in the network to initialize the revision head and
+validate/promote candidate updates.
 
 ## 5. Pick a role and capability profile deliberately
 
