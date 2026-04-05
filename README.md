@@ -1,6 +1,6 @@
-# burn_p2p
+# burn_p2p 🔥🤝
 
-`burn_p2p` turns a burn learner into a peer in a decentralized training network.
+`burn_p2p` turns a burn learner into a decentralized training network.
 
 core shape:
 
