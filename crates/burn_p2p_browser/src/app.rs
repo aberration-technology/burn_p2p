@@ -17,6 +17,83 @@ use crate::{
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Selects the browser app target preset.
+pub enum BrowserAppTarget {
+    /// Viewer-first browser app.
+    Viewer,
+    /// Observer-first browser app.
+    Observe,
+    /// Validation-first browser app.
+    Validate,
+    /// Training-first browser app.
+    Train,
+    /// Explicit browser runtime role.
+    Custom(BrowserRuntimeRole),
+}
+
+impl BrowserAppTarget {
+    /// Returns the preferred runtime role for the target preset.
+    pub fn preferred_role(&self) -> BrowserRuntimeRole {
+        match self {
+            Self::Viewer => BrowserRuntimeRole::PortalViewer,
+            Self::Observe => BrowserRuntimeRole::BrowserObserver,
+            Self::Validate => BrowserRuntimeRole::BrowserVerifier,
+            Self::Train => BrowserRuntimeRole::BrowserTrainerWgpu,
+            Self::Custom(role) => role.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures browser-app connection with one target-based entry.
+pub struct BrowserAppConnectConfig {
+    /// The edge base URL.
+    pub edge_base_url: String,
+    /// Browser capability report used to choose the local runtime mode.
+    pub capability: BrowserCapabilityReport,
+    /// Target preset requested by the caller.
+    pub target: BrowserAppTarget,
+    /// Optional selected experiment id.
+    pub selected_experiment_id: Option<String>,
+    /// Optional selected revision id.
+    pub selected_revision_id: Option<String>,
+}
+
+impl BrowserAppConnectConfig {
+    /// Creates a new browser-app connection config.
+    pub fn new(
+        edge_base_url: impl Into<String>,
+        capability: BrowserCapabilityReport,
+        target: BrowserAppTarget,
+    ) -> Self {
+        Self {
+            edge_base_url: edge_base_url.into(),
+            capability,
+            target,
+            selected_experiment_id: None,
+            selected_revision_id: None,
+        }
+    }
+
+    /// Pins the initial experiment and optional revision selection.
+    pub fn with_selection(
+        mut self,
+        experiment_id: impl Into<String>,
+        revision_id: Option<impl Into<String>>,
+    ) -> Self {
+        self.selected_experiment_id = Some(experiment_id.into());
+        self.selected_revision_id = revision_id.map(Into::into);
+        self
+    }
+
+    pub fn selected_experiment(&self) -> Option<(String, Option<String>)> {
+        self.selected_experiment_id
+            .as_ref()
+            .map(|experiment_id| (experiment_id.clone(), self.selected_revision_id.clone()))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 /// Client-owned browser app model for a static wasm UI.
 pub struct BrowserAppModel {
@@ -285,6 +362,26 @@ pub struct BrowserAppController {
 }
 
 impl BrowserAppController {
+    /// Connects the browser app using the target-based connect config.
+    pub async fn connect_with(
+        config: BrowserAppConnectConfig,
+    ) -> Result<Self, BrowserAuthClientError> {
+        let BrowserAppConnectConfig {
+            edge_base_url,
+            capability,
+            target,
+            selected_experiment_id,
+            selected_revision_id,
+        } = config;
+        Self::connect(
+            edge_base_url,
+            capability,
+            target.preferred_role(),
+            selected_experiment_id.map(|experiment_id| (experiment_id, selected_revision_id)),
+        )
+        .await
+    }
+
     /// Connects the browser app to one bootstrap edge and derives initial local runtime state.
     pub async fn connect(
         edge_base_url: impl Into<String>,

@@ -24,7 +24,7 @@ pub mod validation;
 /// Public APIs for worker.
 pub mod worker;
 
-pub use app::{BrowserAppController, BrowserAppModel};
+pub use app::{BrowserAppConnectConfig, BrowserAppController, BrowserAppModel, BrowserAppTarget};
 pub use auth::{
     BrowserAuthClientError, BrowserEnrollmentConfig, BrowserEnrollmentResult,
     BrowserLogoutResponse, BrowserPeerEnrollmentRequest, BrowserPortalClient, BrowserSessionState,

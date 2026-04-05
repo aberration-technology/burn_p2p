@@ -9,21 +9,21 @@ Treat `burn_p2p` as a runtime that wraps your existing training code. You do
 not hand it a model and then switch to a new training API. Instead, you expose
 your current project through:
 
-1. `P2pWorkload`
-2. `SingleWorkloadProjectFamily` or `P2pProjectFamily`
+1. `burn_p2p::burn::BurnWorkload` if you are already using Burn
+2. `burn_p2p::burn::native(BurnNodeTarget::...)`
 3. `NodeBuilder`
 
 If you already have a model, loss fn, optimizer, and dataset loader, the
 translation is:
 
-- your model type becomes `P2pWorkload::Model`
-- your batch type becomes `P2pWorkload::Batch`
+- your model type becomes `BurnWorkload::Model`
+- your batch type becomes `BurnWorkload::Batch`
 - your loss and optimizer step live in `train_window(...)`
 - your evaluation metrics live in `evaluate(...)`
 - your dataset metadata and shard loading live in `dataset_registration(...)`,
   `microshard_plan(...)`, and `load_batches(...)`
-- your checkpoint serialization lives in `load_model_artifact(...)` and
-  `materialize_model_artifact(...)`
+- the adapter handles checkpoint load/save, schema hashing, merge defaults, and
+  optional root ema
 
 ## Minimal Integration Flow
 
@@ -38,7 +38,8 @@ Example reference:
 
 ### 2. Implement the runtime hooks
 
-Today, the concrete downstream integration point is `P2pWorkload`.
+For Burn-native projects, the recommended integration point is now
+`burn_p2p::burn::BurnWorkload`.
 
 Practical guidance:
 
@@ -46,19 +47,58 @@ Practical guidance:
 - put your validation metrics in `evaluate`
 - put Burn-specific model/device/batch types on the associated types
 - put dataset registration and shard loading on the dataset hooks
-- put checkpoint load/save behavior on the artifact hooks
-- put workload metadata and compatibility identifiers on `supported_workload`
-  and `model_schema_hash`
+- return receipt metrics from `contribution_metrics`
+
+The adapter fills in:
+
+- model schema hashing
+- model artifact load/save
+- weighted-mean merge
+- optional root ema
+
+Use `P2pWorkload` directly only for non-Burn or fully custom runtimes.
 
 ## 3. Wrap the workload in a project family
 
-If you have one workload, use `SingleWorkloadProjectFamily`.
+The Burn-native happy path is:
 
 ```rust
+let trainer = burn_p2p::burn::native(
+    BurnNodeTarget::Trainer,
+    release_manifest,
+    my_workload,
+    BurnWorkloadConfig::new(
+        supported_workload,
+        BurnArtifactConfig::burnpack(ChunkingScheme::new(64)?),
+    )
+    .with_root_ema(0.995),
+)?;
+```
+
+`native(...)` returns the normal `NodeBuilder`, already wrapped around a
+single-workload Burn family.
+
+Use `BurnNodeTarget::Validator` for the authority / validator / archive side.
+
+Use `BurnNodeTarget::Custom(...)` when you want a custom role set.
+
+thin wrappers still exist:
+
+- `burn_p2p::burn::trainer(...)`
+- `burn_p2p::burn::validator(...)`
+
+browser side follows the same target-first pattern through
+`burn_p2p_browser::BrowserAppConnectConfig` and `BrowserAppTarget`.
+
+If you want full manual control, you can still use `SingleWorkloadProjectFamily`.
+
+```rust
+let workload = my_workload.into_p2p_workload(config)?;
+
 let family = SingleWorkloadProjectFamily::new(
     release_manifest,
     workload,
-);
+)?;
 ```
 
 If you have multiple workloads, implement `P2pProjectFamily` directly and use

@@ -15,14 +15,15 @@ use burn::{
 };
 use burn_p2p::{
     AssignmentLease, CachedMicroShard, CapabilityEstimate, ClientReleaseManifest, ContentId,
-    DatasetRegistration, DatasetSizing, EvalSplit, FsArtifactStore, GenesisSpec, MergePolicy,
-    MetricReport, MetricValue, NetworkManifest, NodeBuilder, P2pWorkload, PatchOutcome,
-    PatchSupport, ProjectFamilyId, RoleSet, RuntimePatch, ShardFetchManifest,
-    SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainError, WindowCtx,
-    WindowReport, WorkloadId,
+    DatasetRegistration, DatasetSizing, EvalSplit, GenesisSpec, MetricReport, MetricValue,
+    NetworkManifest, PatchOutcome, PatchSupport, ProjectFamilyId, RoleSet, RuntimePatch,
+    ShardFetchManifest, StorageConfig, SupportedWorkload, TrainError, WindowCtx, WindowReport,
+    WorkloadId,
 };
 use chrono::Utc;
 use semver::Version;
+
+use burn_p2p::burn::{BurnArtifactConfig, BurnWorkload, BurnWorkloadConfig};
 
 type RuntimeBackend = NdArray<f32>;
 
@@ -42,7 +43,6 @@ impl<B: Backend> TinyModel<B> {
 #[derive(Clone, Debug)]
 struct TinyProject {
     dataset_root: PathBuf,
-    ema_decay: f64,
 }
 
 #[derive(Debug)]
@@ -61,17 +61,21 @@ fn shift_model<B: Backend>(model: TinyModel<B>, delta: f32) -> TinyModel<B> {
     model.map(&mut mapper)
 }
 
-impl P2pWorkload for TinyProject {
-    type Device = <RuntimeBackend as Backend>::Device;
+impl BurnWorkload for TinyProject {
+    type Backend = RuntimeBackend;
     type Model = TinyModel<RuntimeBackend>;
     type Batch = f32;
     type WindowStats = BTreeMap<String, MetricValue>;
 
-    fn init_model(&self, device: &Self::Device) -> Self::Model {
+    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
         TinyModel::<RuntimeBackend>::new(device)
     }
 
-    fn benchmark(&self, _model: &Self::Model, _device: &Self::Device) -> CapabilityEstimate {
+    fn benchmark(
+        &self,
+        _model: &Self::Model,
+        _device: &<Self::Backend as Backend>::Device,
+    ) -> CapabilityEstimate {
         CapabilityEstimate {
             preferred_backends: vec!["ndarray".into()],
             work_units_per_second: 32.0,
@@ -81,7 +85,7 @@ impl P2pWorkload for TinyProject {
 
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
         let batch_sum = ctx.batches.iter().copied().sum::<f32>() as f64;
         ctx.model = shift_model(ctx.model.clone(), (batch_sum as f32) / 100.0);
@@ -128,7 +132,7 @@ impl P2pWorkload for TinyProject {
         }
     }
 
-    fn runtime_device(&self) -> Self::Device {
+    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
         <RuntimeBackend as Backend>::Device::default()
     }
 
@@ -191,107 +195,11 @@ impl P2pWorkload for TinyProject {
             .collect()
     }
 
-    fn load_model_artifact(
-        &self,
-        model: Self::Model,
-        descriptor: &burn_p2p::ArtifactDescriptor,
-        store: &FsArtifactStore,
-        device: &Self::Device,
-    ) -> anyhow::Result<Self::Model> {
-        let _ = device;
-        Ok(burn_p2p::burn::load_store_bytes_runtime_artifact::<
-            RuntimeBackend,
-            _,
-        >(
-            model,
-            descriptor,
-            store,
-            burn_p2p::burn::BurnStoreFormat::Burnpack,
-        )?)
-    }
-
-    fn materialize_model_artifact(
-        &self,
-        model: &Self::Model,
-        artifact_kind: burn_p2p::ArtifactKind,
-        head_id: burn_p2p::HeadId,
-        base_head_id: Option<burn_p2p::HeadId>,
-        store: &FsArtifactStore,
-    ) -> anyhow::Result<burn_p2p::ArtifactDescriptor> {
-        Ok(burn_p2p::burn::materialize_store_bytes_runtime_artifact::<
-            RuntimeBackend,
-            _,
-        >(
-            model,
-            store,
-            burn_p2p::burn::StoreBytesRuntimeArtifactOptions {
-                artifact_kind,
-                head_id,
-                base_head_id,
-                format: burn_p2p::burn::BurnStoreFormat::Burnpack,
-                declared_precision: burn_p2p::Precision::Fp32,
-                chunking: burn_p2p::ChunkingScheme::new(64)?,
-            },
-        )?)
-    }
-
     fn contribution_metrics(
         &self,
         report: &WindowReport<Self::WindowStats>,
     ) -> BTreeMap<String, MetricValue> {
         report.stats.clone()
-    }
-
-    fn merge_candidate_models(
-        &self,
-        base_model: &Self::Model,
-        candidates: &[burn_p2p::MergeModelCandidate<'_, Self::Model>],
-        policy: MergePolicy,
-    ) -> anyhow::Result<Option<Self::Model>> {
-        let weighted = candidates
-            .iter()
-            .map(|candidate| {
-                let quality = match policy {
-                    MergePolicy::WeightedMean => 1.0,
-                    MergePolicy::NormClippedWeightedMean => {
-                        candidate.quality_weight.clamp(0.0, 1.0)
-                    }
-                    MergePolicy::TrimmedMean => candidate.quality_weight,
-                    MergePolicy::Ema | MergePolicy::QualityWeightedEma => candidate.quality_weight,
-                    MergePolicy::Custom(_) => candidate.quality_weight,
-                };
-                burn_p2p::burn::BurnMergeCandidate {
-                    module: candidate.model,
-                    weight: candidate.sample_weight * quality,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(burn_p2p::burn::merge_weighted_mean_modules::<
-            RuntimeBackend,
-            _,
-        >(base_model, &weighted)?)
-    }
-
-    fn apply_single_root_ema(
-        &self,
-        base_model: &Self::Model,
-        merged_model: Self::Model,
-        _policy: MergePolicy,
-    ) -> anyhow::Result<Self::Model> {
-        Ok(burn_p2p::burn::apply_root_ema_modules::<RuntimeBackend, _>(
-            base_model,
-            &merged_model,
-            self.ema_decay,
-        )?)
-    }
-
-    fn supported_workload(&self) -> SupportedWorkload {
-        tiny_workload_manifest()
-    }
-
-    fn model_schema_hash(&self) -> ContentId {
-        ContentId::new("burn-ndarray-schema")
     }
 }
 
@@ -359,22 +267,21 @@ fn main() -> anyhow::Result<()> {
         burn_p2p::RevisionId::new("rev-1"),
     );
 
-    let validator_family = SingleWorkloadProjectFamily::new(
+    let validator = burn_p2p::burn::native(
+        burn_p2p::burn::BurnNodeTarget::Validator,
         tiny_release_manifest(),
         TinyProject {
             dataset_root: data_root.clone(),
-            ema_decay: 0.75,
         },
-    )?;
-    let validator = NodeBuilder::new(validator_family)
-        .with_network(network_manifest.clone())?
-        .with_roles(burn_p2p::PeerRoleSet::new([
-            burn_p2p::PeerRole::Authority,
-            burn_p2p::PeerRole::Validator,
-            burn_p2p::PeerRole::Archive,
-        ]))
-        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
-        .spawn()?;
+        BurnWorkloadConfig::new(
+            tiny_workload_manifest(),
+            BurnArtifactConfig::burnpack(burn_p2p::ChunkingScheme::new(64)?),
+        )
+        .with_root_ema(0.75),
+    )?
+    .with_network(network_manifest.clone())?
+    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/validator"))
+    .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || {
@@ -393,19 +300,22 @@ fn main() -> anyhow::Result<()> {
         genesis_head.head_id.as_str()
     );
 
-    let trainer_family = SingleWorkloadProjectFamily::new(
+    let trainer = burn_p2p::burn::native(
+        burn_p2p::burn::BurnNodeTarget::Trainer,
         tiny_release_manifest(),
         TinyProject {
             dataset_root: data_root,
-            ema_decay: 0.75,
         },
-    )?;
-    let trainer = NodeBuilder::new(trainer_family)
-        .with_network(network_manifest)?
-        .with_roles(RoleSet::default_trainer())
-        .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
-        .with_bootstrap_peer(validator_addr)
-        .spawn()?;
+        BurnWorkloadConfig::new(
+            tiny_workload_manifest(),
+            BurnArtifactConfig::burnpack(burn_p2p::ChunkingScheme::new(64)?),
+        )
+        .with_root_ema(0.75),
+    )?
+    .with_network(network_manifest)?
+    .with_storage(StorageConfig::new(".burn_p2p-burn-demo/trainer"))
+    .with_bootstrap_peer(validator_addr)
+    .spawn()?;
     wait_for(
         Duration::from_secs(5),
         || trainer.telemetry().snapshot().connected_peers >= 1,
@@ -440,7 +350,6 @@ fn create_demo_dataset(root: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(root)?;
     let project = TinyProject {
         dataset_root: root.to_path_buf(),
-        ema_decay: 0.75,
     };
     let registration = project.dataset_registration()?;
     let plan = project.microshard_plan(&registration)?;

@@ -63,6 +63,46 @@ fn browser_runtime_defaults_to_observer_safe_policy() {
 }
 
 #[test]
+fn browser_app_target_maps_to_expected_runtime_roles() {
+    assert_eq!(
+        BrowserAppTarget::Viewer.preferred_role(),
+        BrowserRuntimeRole::PortalViewer
+    );
+    assert_eq!(
+        BrowserAppTarget::Observe.preferred_role(),
+        BrowserRuntimeRole::BrowserObserver
+    );
+    assert_eq!(
+        BrowserAppTarget::Validate.preferred_role(),
+        BrowserRuntimeRole::BrowserVerifier
+    );
+    assert_eq!(
+        BrowserAppTarget::Train.preferred_role(),
+        BrowserRuntimeRole::BrowserTrainerWgpu
+    );
+    assert_eq!(
+        BrowserAppTarget::Custom(BrowserRuntimeRole::BrowserFallback).preferred_role(),
+        BrowserRuntimeRole::BrowserFallback
+    );
+}
+
+#[test]
+fn browser_app_connect_config_tracks_target_and_selection() {
+    let config = BrowserAppConnectConfig::new(
+        "https://edge.example",
+        BrowserCapabilityReport::default(),
+        BrowserAppTarget::Train,
+    )
+    .with_selection("exp-browser", Some("rev-browser"));
+
+    assert_eq!(config.target, BrowserAppTarget::Train);
+    assert_eq!(
+        config.selected_experiment(),
+        Some(("exp-browser".to_owned(), Some("rev-browser".to_owned())))
+    );
+}
+
+#[test]
 fn browser_transport_policy_tracks_swarm_browser_transport_order() {
     let policy = BrowserTransportPolicy::from(burn_p2p::RuntimeTransportPolicy::browser());
     assert_eq!(
