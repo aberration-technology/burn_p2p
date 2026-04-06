@@ -159,9 +159,14 @@ pub(crate) fn cached_connected_snapshots(
                         .filter(|announcement| announcement.update.peer_id == peer_id)
                         .cloned()
                         .collect(),
-                    aggregate_announcements: aggregate.aggregate_announcements.clone(),
+                    aggregate_proposal_announcements: aggregate
+                        .aggregate_proposal_announcements
+                        .clone(),
                     reduction_certificate_announcements: aggregate
                         .reduction_certificate_announcements
+                        .clone(),
+                    validation_quorum_announcements: aggregate
+                        .validation_quorum_announcements
                         .clone(),
                     reducer_load_announcements: aggregate.reducer_load_announcements.clone(),
                     auth_announcements: aggregate
@@ -183,59 +188,7 @@ pub(crate) fn merge_control_plane_snapshot(
     target: &mut ControlPlaneSnapshot,
     remote: &ControlPlaneSnapshot,
 ) {
-    fn extend_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
-        for value in values {
-            if !target.contains(value) {
-                target.push(value.clone());
-            }
-        }
-    }
-
-    extend_unique(
-        &mut target.control_announcements,
-        &remote.control_announcements,
-    );
-    extend_unique(&mut target.head_announcements, &remote.head_announcements);
-    extend_unique(&mut target.lease_announcements, &remote.lease_announcements);
-    extend_unique(&mut target.merge_announcements, &remote.merge_announcements);
-    extend_unique(
-        &mut target.merge_window_announcements,
-        &remote.merge_window_announcements,
-    );
-    extend_unique(
-        &mut target.reducer_assignment_announcements,
-        &remote.reducer_assignment_announcements,
-    );
-    extend_unique(
-        &mut target.update_announcements,
-        &remote.update_announcements,
-    );
-    extend_unique(
-        &mut target.aggregate_announcements,
-        &remote.aggregate_announcements,
-    );
-    extend_unique(
-        &mut target.reduction_certificate_announcements,
-        &remote.reduction_certificate_announcements,
-    );
-    extend_unique(
-        &mut target.reducer_load_announcements,
-        &remote.reducer_load_announcements,
-    );
-    extend_unique(&mut target.auth_announcements, &remote.auth_announcements);
-    extend_unique(
-        &mut target.directory_announcements,
-        &remote.directory_announcements,
-    );
-    extend_unique(
-        &mut target.peer_directory_announcements,
-        &remote.peer_directory_announcements,
-    );
-    extend_unique(
-        &mut target.metrics_announcements,
-        &remote.metrics_announcements,
-    );
-    target.clamp_metrics_announcements();
+    target.merge_from_semantic(remote);
 }
 
 pub(crate) fn matches_experiment_head(
@@ -952,5 +905,23 @@ mod tests {
             validators,
             vec![PeerId::new("local"), PeerId::new("peer-good")]
         );
+    }
+
+    #[test]
+    fn runtime_validators_cap_selection_to_the_requested_quorum() {
+        let peers = std::iter::once(PeerId::new("local"))
+            .chain((0..25).map(|index| PeerId::new(format!("validator-{index:02}"))))
+            .collect::<Vec<_>>();
+
+        let validators = runtime_validators(
+            &PeerRoleSet::new([PeerRole::Validator]),
+            &PeerId::new("local"),
+            &peers,
+            2,
+        );
+
+        assert_eq!(validators.len(), 2);
+        assert_eq!(validators[0], PeerId::new("local"));
+        assert_eq!(validators[1], PeerId::new("validator-00"));
     }
 }

@@ -12,7 +12,7 @@ use burn_p2p_core::{
     StudyId, UpdateAnnounce, UpdateNormStats, WindowId, WorkloadId,
 };
 use burn_p2p_swarm::{
-    AggregateAnnouncement, ControlPlaneResponse, ControlPlaneSnapshot,
+    AggregateProposalAnnouncement, ControlPlaneResponse, ControlPlaneSnapshot,
     ExperimentDirectoryAnnouncement, ExperimentOverlaySet, HeadAnnouncement, LeaseAnnouncement,
     MergeAnnouncement, MergeWindowAnnouncement, OverlayTopic, PubsubEnvelope, PubsubPayload,
     ReducerAssignmentAnnouncement, ReducerLoadAnnouncement, ReductionCertificateAnnouncement,
@@ -132,12 +132,12 @@ fn update_announcement(index: usize) -> UpdateEnvelopeAnnouncement {
     }
 }
 
-fn aggregate_announcement(index: usize) -> AggregateAnnouncement {
+fn aggregate_proposal_announcement(index: usize) -> AggregateProposalAnnouncement {
     let topics = overlays();
     let (_, study_id, experiment_id, revision_id) = ids();
-    AggregateAnnouncement {
+    AggregateProposalAnnouncement {
         overlay: topics.telemetry,
-        aggregate: AggregateEnvelope {
+        proposal: AggregateEnvelope {
             aggregate_id: ContentId::derive(&("aggregate", index)).expect("aggregate id"),
             study_id,
             experiment_id,
@@ -329,12 +329,13 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
             })
             .collect(),
         update_announcements: (0..update_count).map(update_announcement).collect(),
-        aggregate_announcements: (0..(update_count / 8).max(1))
-            .map(aggregate_announcement)
+        aggregate_proposal_announcements: (0..(update_count / 8).max(1))
+            .map(aggregate_proposal_announcement)
             .collect(),
         reduction_certificate_announcements: (0..2)
             .map(reduction_certificate_announcement)
             .collect(),
+        validation_quorum_announcements: Vec::new(),
         reducer_load_announcements: (0..4)
             .map(|index| ReducerLoadAnnouncement {
                 overlay: topics.telemetry.clone(),
@@ -371,10 +372,10 @@ fn bench_pubsub_envelope_roundtrip(c: &mut Criterion) {
             },
         ),
         (
-            "aggregate",
+            "aggregate_proposal",
             PubsubEnvelope {
                 topic_path: topics.telemetry.path.clone(),
-                payload: PubsubPayload::Aggregate(aggregate_announcement(0)),
+                payload: PubsubPayload::AggregateProposal(aggregate_proposal_announcement(0)),
                 published_at: Utc::now(),
             },
         ),

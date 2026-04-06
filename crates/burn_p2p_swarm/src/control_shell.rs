@@ -123,11 +123,11 @@ impl ControlPlaneShell {
         }
     }
 
-    /// Performs the publish aggregate operation.
-    pub fn publish_aggregate(&mut self, announcement: AggregateAnnouncement) {
+    /// Performs the publish aggregate proposal operation.
+    pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {
         match self {
-            Self::Memory(shell) => shell.publish_aggregate(announcement),
-            Self::Native(shell) => shell.publish_aggregate(announcement),
+            Self::Memory(shell) => shell.publish_aggregate_proposal(announcement),
+            Self::Native(shell) => shell.publish_aggregate_proposal(announcement),
         }
     }
 
@@ -139,6 +139,14 @@ impl ControlPlaneShell {
         match self {
             Self::Memory(shell) => shell.publish_reduction_certificate(announcement),
             Self::Native(shell) => shell.publish_reduction_certificate(announcement),
+        }
+    }
+
+    /// Performs the publish validation quorum operation.
+    pub fn publish_validation_quorum(&mut self, announcement: ValidationQuorumAnnouncement) {
+        match self {
+            Self::Memory(shell) => shell.publish_validation_quorum(announcement),
+            Self::Native(shell) => shell.publish_validation_quorum(announcement),
         }
     }
 

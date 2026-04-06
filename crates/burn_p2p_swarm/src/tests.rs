@@ -10,21 +10,23 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use burn_p2p_core::{
-    ArtifactDescriptor, ArtifactId, ArtifactKind, CapabilityCard, CapabilityCardId,
-    CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform, ContentId, HeadDescriptor, HeadId,
-    MetricValue, MetricsLiveEvent, MetricsLiveEventKind, NetworkId, PeerId, PeerRoleSet,
-    PersistenceClass, Precision, RevisionId, StudyId, TelemetrySummary, WindowActivation, WindowId,
+    AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
+    CapabilityCard, CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform,
+    ContentId, HeadDescriptor, HeadId, MetricValue, MetricsLiveEvent, MetricsLiveEventKind,
+    NetworkId, PeerId, PeerRoleSet, PersistenceClass, Precision, ReductionCertificate, RevisionId,
+    StudyId, TelemetrySummary, ValidationQuorumCertificate, WindowActivation, WindowId,
 };
 use chrono::Utc;
 use futures::{executor::block_on, future};
 use semver::Version;
 
 use super::{
-    ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot, ExperimentControlEnvelope,
-    ExperimentOverlaySet, HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
-    MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell,
-    OverlayChannel, OverlayTopic, PeerObservation, PeerStore, ProtocolSet, PubsubPayload,
-    RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind,
+    AggregateProposalAnnouncement, ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot,
+    ExperimentControlEnvelope, ExperimentOverlaySet, HeadAnnouncement, LiveControlPlaneEvent,
+    LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator,
+    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerObservation, PeerStore, ProtocolSet,
+    PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
+    RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
 };
 use burn_p2p_experiment::ActivationTarget;
 
@@ -204,6 +206,301 @@ fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
     assert_eq!(policy.max_established_total, Some(128));
     assert_eq!(policy.max_established_per_peer, Some(1));
     assert!(!policy.enable_local_discovery);
+}
+
+fn semantic_test_overlay() -> OverlayTopic {
+    OverlayTopic::experiment(
+        NetworkId::new("semantic-net"),
+        StudyId::new("study"),
+        burn_p2p_core::ExperimentId::new("exp"),
+        OverlayChannel::Heads,
+    )
+    .expect("semantic overlay")
+}
+
+fn semantic_test_aggregate(
+    reducer_peer_id: &str,
+    aggregate_id: &str,
+    artifact_id: &str,
+    providers: &[&str],
+    announced_at: chrono::DateTime<Utc>,
+    published_at: chrono::DateTime<Utc>,
+) -> AggregateProposalAnnouncement {
+    AggregateProposalAnnouncement {
+        overlay: semantic_test_overlay(),
+        proposal: AggregateEnvelope {
+            aggregate_id: ContentId::new(aggregate_id),
+            study_id: StudyId::new("study"),
+            experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            window_id: WindowId(7),
+            base_head_id: HeadId::new("head-base"),
+            aggregate_artifact_id: ArtifactId::new(artifact_id),
+            tier: AggregateTier::RootCandidate,
+            reducer_peer_id: PeerId::new(reducer_peer_id),
+            contributor_peers: vec![PeerId::new("trainer-b"), PeerId::new("trainer-a")],
+            child_aggregate_ids: Vec::new(),
+            stats: AggregateStats {
+                accepted_updates: 2,
+                duplicate_updates: 0,
+                dropped_updates: 0,
+                late_updates: 0,
+                sum_sample_weight: 8.0,
+                sum_quality_weight: 1.75,
+                sum_weighted_delta_norm: 3.25,
+                max_update_norm: 1.5,
+                accepted_sample_coverage: 1.0,
+            },
+            providers: providers.iter().map(|peer| PeerId::new(*peer)).collect(),
+            published_at,
+        },
+        announced_at,
+    }
+}
+
+fn semantic_test_reduction_certificate(
+    validator: &str,
+    aggregate_id: &str,
+    quorum: u16,
+    issued_at: chrono::DateTime<Utc>,
+) -> ReductionCertificateAnnouncement {
+    ReductionCertificateAnnouncement {
+        overlay: semantic_test_overlay(),
+        certificate: ReductionCertificate {
+            reduction_id: ContentId::new(format!("reduction-{validator}")),
+            study_id: StudyId::new("study"),
+            experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            window_id: WindowId(7),
+            base_head_id: HeadId::new("head-base"),
+            aggregate_id: ContentId::new(aggregate_id),
+            validator: PeerId::new(validator),
+            validator_quorum: quorum,
+            cross_checked_reducers: vec![PeerId::new("reducer-b"), PeerId::new("reducer-a")],
+            issued_at,
+        },
+        announced_at: issued_at,
+    }
+}
+
+fn semantic_test_validation_quorum(
+    coordinator: &str,
+    aggregate_id: &str,
+    merged_head_id: &str,
+    validators: &[&str],
+    reduction_ids: &[&str],
+    issued_at: chrono::DateTime<Utc>,
+) -> ValidationQuorumAnnouncement {
+    ValidationQuorumAnnouncement {
+        overlay: semantic_test_overlay(),
+        certificate: ValidationQuorumCertificate {
+            quorum_cert_id: ContentId::new(format!("quorum-{aggregate_id}-{merged_head_id}")),
+            study_id: StudyId::new("study"),
+            experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            window_id: WindowId(7),
+            base_head_id: HeadId::new("head-base"),
+            aggregate_id: ContentId::new(aggregate_id),
+            aggregate_artifact_id: ArtifactId::new("artifact-a"),
+            merged_head_id: HeadId::new(merged_head_id),
+            validator_quorum: 2,
+            coordinator: PeerId::new(coordinator),
+            attesting_validators: validators.iter().map(|peer| PeerId::new(*peer)).collect(),
+            reduction_ids: reduction_ids.iter().map(|id| ContentId::new(*id)).collect(),
+            issued_at,
+        },
+        announced_at: issued_at,
+    }
+}
+
+#[test]
+fn pubsub_message_id_ignores_timestamps_and_provider_order_for_semantic_duplicates() {
+    let now = Utc::now();
+    let first = PubsubEnvelope {
+        topic_path: semantic_test_overlay().path.clone(),
+        payload: PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-a",
+            &["provider-b", "provider-a"],
+            now,
+            now,
+        )),
+        published_at: now,
+    };
+    let second = PubsubEnvelope {
+        topic_path: semantic_test_overlay().path.clone(),
+        payload: PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-a",
+            &["provider-a", "provider-b"],
+            now + chrono::Duration::seconds(30),
+            now + chrono::Duration::seconds(45),
+        )),
+        published_at: now + chrono::Duration::seconds(60),
+    };
+
+    let first_id = super::pubsub_semantic_message_id(
+        &serde_json::to_vec(&first).expect("encode first envelope"),
+    );
+    let second_id = super::pubsub_semantic_message_id(
+        &serde_json::to_vec(&second).expect("encode second envelope"),
+    );
+
+    assert_eq!(first_id, second_id);
+}
+
+#[test]
+fn aggregate_proposal_announcements_coalesce_semantic_duplicates_and_union_providers() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-a",
+            &["provider-a"],
+            now,
+            now,
+        )),
+    );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-a",
+            &["provider-c", "provider-b"],
+            now + chrono::Duration::seconds(10),
+            now + chrono::Duration::seconds(20),
+        )),
+    );
+
+    assert_eq!(snapshot.aggregate_proposal_announcements.len(), 1);
+    assert_eq!(
+        snapshot.aggregate_proposal_announcements[0]
+            .proposal
+            .providers
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>(),
+        vec!["provider-a", "provider-b", "provider-c"]
+    );
+}
+
+#[test]
+fn aggregate_proposals_with_same_semantic_key_and_conflicting_payloads_are_hard_rejected() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-a",
+            &["provider-a"],
+            now,
+            now,
+        )),
+    );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::AggregateProposal(semantic_test_aggregate(
+            "reducer-a",
+            "aggregate-a",
+            "artifact-conflict",
+            &["provider-b"],
+            now + chrono::Duration::seconds(5),
+            now + chrono::Duration::seconds(5),
+        )),
+    );
+
+    assert_eq!(snapshot.aggregate_proposal_announcements.len(), 1);
+    assert_eq!(
+        snapshot.aggregate_proposal_announcements[0]
+            .proposal
+            .aggregate_artifact_id,
+        ArtifactId::new("artifact-a")
+    );
+}
+
+#[test]
+fn reduction_certificate_announcements_cap_at_validator_quorum() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    for (offset, validator) in ["validator-a", "validator-b", "validator-c", "validator-d"]
+        .into_iter()
+        .enumerate()
+    {
+        super::apply_pubsub_payload(
+            &mut snapshot,
+            PubsubPayload::ReductionCertificate(semantic_test_reduction_certificate(
+                validator,
+                "aggregate-a",
+                2,
+                now + chrono::Duration::seconds(offset as i64),
+            )),
+        );
+    }
+
+    assert_eq!(snapshot.reduction_certificate_announcements.len(), 2);
+    assert_eq!(
+        snapshot
+            .reduction_certificate_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.validator.as_str())
+            .collect::<Vec<_>>(),
+        vec!["validator-a", "validator-b"]
+    );
+}
+
+#[test]
+fn validation_quorum_announcements_dedupe_semantic_replays() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::ValidationQuorum(semantic_test_validation_quorum(
+            "validator-a",
+            "aggregate-a",
+            "merged-head-a",
+            &["validator-b", "validator-a"],
+            &["reduction-b", "reduction-a"],
+            now,
+        )),
+    );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::ValidationQuorum(semantic_test_validation_quorum(
+            "validator-a",
+            "aggregate-a",
+            "merged-head-a",
+            &["validator-a", "validator-b"],
+            &["reduction-a", "reduction-b"],
+            now + chrono::Duration::seconds(30),
+        )),
+    );
+
+    assert_eq!(snapshot.validation_quorum_announcements.len(), 1);
+    let certificate = &snapshot.validation_quorum_announcements[0].certificate;
+    assert_eq!(
+        certificate
+            .attesting_validators
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>(),
+        vec!["validator-a", "validator-b"]
+    );
+    assert_eq!(
+        certificate
+            .reduction_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["reduction-a", "reduction-b"]
+    );
 }
 
 #[test]
@@ -728,10 +1025,17 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
                 .reducer_assignment_announcements
                 .clone(),
             update_announcements: listener.snapshot().update_announcements.clone(),
-            aggregate_announcements: listener.snapshot().aggregate_announcements.clone(),
+            aggregate_proposal_announcements: listener
+                .snapshot()
+                .aggregate_proposal_announcements
+                .clone(),
             reduction_certificate_announcements: listener
                 .snapshot()
                 .reduction_certificate_announcements
+                .clone(),
+            validation_quorum_announcements: listener
+                .snapshot()
+                .validation_quorum_announcements
                 .clone(),
             reducer_load_announcements: listener.snapshot().reducer_load_announcements.clone(),
             auth_announcements: listener.snapshot().auth_announcements.clone(),

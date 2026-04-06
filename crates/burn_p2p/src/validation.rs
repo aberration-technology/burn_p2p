@@ -23,7 +23,8 @@ use candidate::{
 use output::{
     ValidationExecution, aggregate_stats_from_updates, build_aggregate_record,
     build_reduction_certificate, build_validation_aggregate, build_validation_contribution,
-    build_validation_merge_certificate, build_validation_reducer_load,
+    build_validation_merge_certificate, build_validation_quorum_certificate,
+    build_validation_reducer_load,
 };
 use robustness::{
     CandidateRobustnessOutcome, PersistedRobustnessState, ValidationRobustnessExecution,
@@ -33,6 +34,10 @@ use robustness::{
 };
 #[cfg(test)]
 use robustness::{PeerRobustnessState, project_robustness_state};
+
+const VALIDATION_QUORUM_WAIT: Duration = Duration::from_secs(5);
+const VALIDATION_PROMOTION_GRACE: Duration = Duration::from_millis(300);
+const VALIDATION_COORDINATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 struct ValidationPreparedState {
     assignment: SlotAssignmentState,
@@ -48,6 +53,49 @@ struct ValidationPreparedState {
     metrics_retention: MetricsRetentionBudget,
     robustness_policy: RobustnessPolicy,
     robustness_state: PersistedRobustnessState,
+}
+
+fn effective_validator_quorum(merge_window: &MergeWindowState) -> usize {
+    usize::from(merge_window.policy.promotion_policy.validator_quorum.max(1))
+        .min(merge_window.validators.len().max(1))
+}
+
+fn effective_canary_minimum_evaluator_quorum(prepared: &ValidationPreparedState) -> u16 {
+    prepared
+        .robustness_policy
+        .validator_canary_policy
+        .minimum_evaluator_quorum
+        .min(effective_validator_quorum(&prepared.merge_window) as u16)
+}
+
+fn canary_blocks_promotion(
+    prepared: &ValidationPreparedState,
+    canary_report: &CanaryEvalReport,
+) -> bool {
+    let policy = &prepared.robustness_policy.validator_canary_policy;
+    !canary_report.accepted
+        || canary_report.detected_backdoor_trigger
+        || canary_report.regression_margin > policy.maximum_regression_delta
+        || canary_report.evaluator_quorum < effective_canary_minimum_evaluator_quorum(prepared)
+}
+
+fn runtime_window_validators(
+    roles: &PeerRoleSet,
+    local_peer_id: &PeerId,
+    telemetry_snapshot: &NodeTelemetrySnapshot,
+    updates: &[UpdateAnnounce],
+    requested_quorum: u16,
+) -> Vec<PeerId> {
+    let update_peers = updates
+        .iter()
+        .map(|update| update.peer_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut validator_peers = runtime_validator_peers(telemetry_snapshot, local_peer_id);
+    validator_peers.retain(|peer_id| peer_id == local_peer_id || !update_peers.contains(peer_id));
+    if validator_peers.is_empty() {
+        validator_peers.push(local_peer_id.clone());
+    }
+    runtime_validators(roles, local_peer_id, &validator_peers, requested_quorum)
 }
 
 enum ValidationAttempt {
@@ -103,15 +151,7 @@ impl<P> RunningNode<P> {
             }
             ValidationAttempt::Promoted(execution) => {
                 self.persist_validation_robustness(experiment, &prepared, &execution.robustness)?;
-                self.publish_validation_execution(experiment, &prepared, &execution)?;
-
-                Ok(Some(ValidationOutcome {
-                    source_peer_id: execution.source_peer_id,
-                    merged_head: execution.merged_head,
-                    merge_certificate: execution.merge_certificate,
-                    contribution: execution.contribution,
-                    evaluation: execution.evaluation,
-                }))
+                self.publish_validation_execution(experiment, &prepared, &execution)
             }
         }
     }
@@ -182,34 +222,58 @@ impl<P> RunningNode<P> {
         let topology_policy =
             runtime_merge_topology_policy(&telemetry_snapshot, experiment, Some(&base_head_id));
         let topology_peers = runtime_topology_peers(&telemetry_snapshot, &local_peer_id);
-        let validator_peers = runtime_validator_peers(&telemetry_snapshot, &local_peer_id);
-        let validators = runtime_validators(
-            &self.mainnet().roles,
-            &local_peer_id,
-            &validator_peers,
-            topology_policy.promotion_policy.validator_quorum,
-        );
-        let merge_window = latest_merge_window_from_connected_snapshots(
+        let (merge_window, updates) = match latest_merge_window_from_connected_snapshots(
             &telemetry_snapshot.control_plane,
             &snapshots,
             experiment,
             Some(&base_head_id),
-        )
-        .unwrap_or(open_runtime_merge_window(
-            experiment,
-            next_window_id(&storage, experiment)?,
-            base_head_id.clone(),
-            topology_policy,
-            topology_peers,
-            validators,
-        )?);
-        let updates = update_announces_from_connected_snapshots(
-            &telemetry_snapshot.control_plane,
-            &snapshots,
-            experiment,
-            merge_window.window_id,
-            &base_head_id,
-        );
+        ) {
+            Some(mut merge_window) => {
+                let updates = update_announces_from_connected_snapshots(
+                    &telemetry_snapshot.control_plane,
+                    &snapshots,
+                    experiment,
+                    merge_window.window_id,
+                    &base_head_id,
+                );
+                merge_window.validators = runtime_window_validators(
+                    &self.mainnet().roles,
+                    &local_peer_id,
+                    &telemetry_snapshot,
+                    &updates,
+                    merge_window.policy.promotion_policy.validator_quorum,
+                );
+                (merge_window, updates)
+            }
+            None => {
+                let planned_window_id = next_window_id(&storage, experiment)?;
+                let updates = update_announces_from_connected_snapshots(
+                    &telemetry_snapshot.control_plane,
+                    &snapshots,
+                    experiment,
+                    planned_window_id,
+                    &base_head_id,
+                );
+                let validators = runtime_window_validators(
+                    &self.mainnet().roles,
+                    &local_peer_id,
+                    &telemetry_snapshot,
+                    &updates,
+                    topology_policy.promotion_policy.validator_quorum,
+                );
+                (
+                    open_runtime_merge_window(
+                        experiment,
+                        planned_window_id,
+                        base_head_id.clone(),
+                        topology_policy,
+                        topology_peers,
+                        validators,
+                    )?,
+                    updates,
+                )
+            }
+        };
         let robustness_policy =
             runtime_robustness_policy(self.config(), &telemetry_snapshot, experiment);
         let dataset_view_id =
@@ -369,12 +433,7 @@ impl<P> RunningNode<P> {
                 .robustness_policy
                 .validator_canary_policy
                 .maximum_regression_delta,
-            prepared
-                .merge_window
-                .policy
-                .promotion_policy
-                .validator_quorum
-                .max(1),
+            effective_validator_quorum(&prepared.merge_window) as u16,
         )?;
         robustness.canary_report = Some(canary_report.clone());
         append_canary_escalation_alert(
@@ -384,7 +443,7 @@ impl<P> RunningNode<P> {
             &canary_report,
             started_at,
         );
-        if engine.candidate_blocked_by_canary(&canary_report) {
+        if canary_blocks_promotion(prepared, &canary_report) {
             all_candidate_models.clear();
             candidate_models.clear();
             return Ok(Some(ValidationAttempt::Blocked(Box::new(robustness))));
@@ -462,37 +521,12 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
         prepared: &ValidationPreparedState,
         execution: &ValidationExecution,
-    ) -> anyhow::Result<()> {
-        let publish_started_at = Utc::now();
+    ) -> anyhow::Result<Option<ValidationOutcome>> {
         persist_json(
             prepared
                 .storage
                 .scoped_receipt_path(&execution.contribution.receipt_id),
             &execution.contribution,
-        )?;
-        persist_json(
-            prepared
-                .storage
-                .scoped_merge_cert_path(&execution.merge_certificate.merge_cert_id),
-            &execution.merge_certificate,
-        )?;
-        persist_head_state(&prepared.storage, experiment, &execution.merged_head)?;
-        persist_json(
-            prepared
-                .storage
-                .scoped_head_path(&execution.merged_head.head_id),
-            &execution.merged_head,
-        )?;
-        prepared.store.pin_head(&execution.merged_head.head_id)?;
-        prepared
-            .store
-            .pin_artifact(&execution.merged_head.artifact_id)?;
-        prepared
-            .store
-            .pin_artifact(&execution.aggregate_artifact.descriptor.artifact_id)?;
-        prepared.store.store_prebuilt_artifact_bytes(
-            &execution.aggregate_artifact.descriptor,
-            &execution.aggregate_artifact.bytes,
         )?;
 
         self.update_runtime_state(
@@ -501,16 +535,24 @@ impl<P> RunningNode<P> {
         );
 
         let overlays = experiment.overlay_set()?;
+        prepared.store.store_prebuilt_artifact_bytes(
+            &execution.aggregate_artifact.descriptor,
+            &execution.aggregate_artifact.bytes,
+        )?;
+        prepared
+            .store
+            .pin_artifact(&execution.aggregate_artifact.descriptor.artifact_id)?;
         self.control.publish_merge_window(MergeWindowAnnouncement {
             overlay: overlays.heads.clone(),
             merge_window: prepared.merge_window.clone(),
             announced_at: Utc::now(),
         })?;
-        self.control.publish_aggregate(AggregateAnnouncement {
-            overlay: overlays.heads.clone(),
-            aggregate: execution.aggregate.clone(),
-            announced_at: Utc::now(),
-        })?;
+        self.control
+            .publish_aggregate_proposal(AggregateProposalAnnouncement {
+                overlay: overlays.heads.clone(),
+                proposal: execution.aggregate.clone(),
+                announced_at: Utc::now(),
+            })?;
         self.control
             .publish_reduction_certificate(ReductionCertificateAnnouncement {
                 overlay: overlays.heads.clone(),
@@ -521,41 +563,118 @@ impl<P> RunningNode<P> {
             overlay: overlays.telemetry.clone(),
             report: execution.reducer_load_report.clone(),
         })?;
-        self.control.publish_artifact(
-            execution.aggregate_artifact.descriptor.clone(),
-            execution
-                .aggregate_artifact
-                .descriptor
-                .chunks
+        let coordination =
+            self.wait_for_validation_coordination(experiment, prepared, execution)?;
+        let attesters = coordination.attesters;
+        let reduction_ids = coordination.reduction_ids;
+        let quorum = effective_validator_quorum(&prepared.merge_window);
+        let mut publish_latency_ms = 0;
+        let mut promoted = false;
+        if !coordination.merge_announced && attesters.len() >= quorum {
+            let local_rank = attesters
                 .iter()
-                .map(|chunk| {
-                    let start = chunk.offset_bytes as usize;
-                    let end = start + chunk.length_bytes as usize;
-                    ArtifactChunkPayload {
-                        artifact_id: execution.aggregate_artifact.descriptor.artifact_id.clone(),
-                        chunk: chunk.clone(),
-                        bytes: execution.aggregate_artifact.bytes[start..end].to_vec(),
-                        generated_at: Utc::now(),
+                .position(|peer_id| peer_id == &prepared.local_peer_id);
+            if let Some(local_rank) = local_rank {
+                let grace_ms = VALIDATION_PROMOTION_GRACE.as_millis() as u64 * local_rank as u64;
+                let promotion_deadline = Instant::now() + Duration::from_millis(grace_ms);
+                while Instant::now() < promotion_deadline {
+                    std::thread::sleep(VALIDATION_COORDINATION_POLL_INTERVAL);
+                    let observed =
+                        self.observe_validation_coordination(experiment, prepared, execution)?;
+                    if observed.merge_announced {
+                        break;
                     }
-                })
-                .collect(),
-        )?;
-        self.publish_artifact_from_store(&execution.merged_head.artifact_id)?;
-        self.control.publish_merge(MergeAnnouncement {
-            overlay: overlays.heads.clone(),
-            certificate: execution.merge_certificate.clone(),
-            announced_at: Utc::now(),
-        })?;
-        self.control.publish_head(HeadAnnouncement {
-            overlay: overlays.heads,
-            provider_peer_id: Some(prepared.local_peer_id.clone()),
-            head: execution.merged_head.clone(),
-            announced_at: Utc::now(),
-        })?;
-        let publish_finished_at = Utc::now();
-        let publish_latency_ms = (publish_finished_at - publish_started_at)
-            .num_milliseconds()
-            .max(0) as u64;
+                }
+
+                let observed =
+                    self.observe_validation_coordination(experiment, prepared, execution)?;
+                if !observed.merge_announced {
+                    let publish_started_at = Utc::now();
+                    if !observed.quorum_announced {
+                        self.control
+                            .publish_validation_quorum(ValidationQuorumAnnouncement {
+                                overlay: overlays.heads.clone(),
+                                certificate: build_validation_quorum_certificate(
+                                    experiment,
+                                    prepared,
+                                    &execution.aggregate,
+                                    &execution.merged_head,
+                                    &attesters,
+                                    &reduction_ids,
+                                )?,
+                                announced_at: Utc::now(),
+                            })?;
+                    }
+                    persist_json(
+                        prepared
+                            .storage
+                            .scoped_merge_cert_path(&execution.merge_certificate.merge_cert_id),
+                        &execution.merge_certificate,
+                    )?;
+                    persist_head_state(&prepared.storage, experiment, &execution.merged_head)?;
+                    persist_json(
+                        prepared
+                            .storage
+                            .scoped_head_path(&execution.merged_head.head_id),
+                        &execution.merged_head,
+                    )?;
+                    prepared.store.pin_head(&execution.merged_head.head_id)?;
+                    prepared
+                        .store
+                        .pin_artifact(&execution.merged_head.artifact_id)?;
+
+                    if !observed.aggregate_proposal_announced {
+                        self.control
+                            .publish_aggregate_proposal(AggregateProposalAnnouncement {
+                                overlay: overlays.heads.clone(),
+                                proposal: execution.aggregate.clone(),
+                                announced_at: Utc::now(),
+                            })?;
+                        self.control.publish_artifact(
+                            execution.aggregate_artifact.descriptor.clone(),
+                            execution
+                                .aggregate_artifact
+                                .descriptor
+                                .chunks
+                                .iter()
+                                .map(|chunk| {
+                                    let start = chunk.offset_bytes as usize;
+                                    let end = start + chunk.length_bytes as usize;
+                                    ArtifactChunkPayload {
+                                        artifact_id: execution
+                                            .aggregate_artifact
+                                            .descriptor
+                                            .artifact_id
+                                            .clone(),
+                                        chunk: chunk.clone(),
+                                        bytes: execution.aggregate_artifact.bytes[start..end]
+                                            .to_vec(),
+                                        generated_at: Utc::now(),
+                                    }
+                                })
+                                .collect(),
+                        )?;
+                    }
+                    self.publish_artifact_from_store(&execution.merged_head.artifact_id)?;
+                    self.control.publish_merge(MergeAnnouncement {
+                        overlay: overlays.heads.clone(),
+                        certificate: execution.merge_certificate.clone(),
+                        announced_at: Utc::now(),
+                    })?;
+                    self.control.publish_head(HeadAnnouncement {
+                        overlay: overlays.heads.clone(),
+                        provider_peer_id: Some(prepared.local_peer_id.clone()),
+                        head: execution.merged_head.clone(),
+                        announced_at: Utc::now(),
+                    })?;
+                    let publish_finished_at = Utc::now();
+                    publish_latency_ms = (publish_finished_at - publish_started_at)
+                        .num_milliseconds()
+                        .max(0) as u64;
+                    promoted = true;
+                }
+            }
+        }
         let head_lag_steps = self.telemetry().snapshot().head_lag_steps;
         let peer_window_metrics = build_validation_peer_window_metrics(ValidationMetricBuildArgs {
             config: self.config(),
@@ -621,16 +740,24 @@ impl<P> RunningNode<P> {
             &eval_protocol_manifest,
             prepared.metrics_retention,
         )?;
-        self.control.publish_metrics(build_metrics_announcement(
-            experiment,
-            overlays.metrics,
-            MetricsLiveEventKind::CatchupRefresh,
-            Some(execution.merged_head.head_id.clone()),
-            Some(prepared.merge_window.merge_window_id.clone()),
-        ))?;
+        if promoted {
+            self.control.publish_metrics(build_metrics_announcement(
+                experiment,
+                overlays.metrics,
+                MetricsLiveEventKind::CatchupRefresh,
+                Some(execution.merged_head.head_id.clone()),
+                Some(prepared.merge_window.merge_window_id.clone()),
+            ))?;
+        }
         self.set_experiment_idle_state(experiment, NodeRuntimeState::PassiveValidator);
 
-        Ok(())
+        Ok(promoted.then(|| ValidationOutcome {
+            source_peer_id: execution.source_peer_id.clone(),
+            merged_head: execution.merged_head.clone(),
+            merge_certificate: execution.merge_certificate.clone(),
+            contribution: execution.contribution.clone(),
+            evaluation: execution.evaluation.clone(),
+        }))
     }
 
     fn persist_validation_robustness(
@@ -709,6 +836,188 @@ fn validation_blocked_reason(lag_assessment: &LagAssessment) -> String {
             lag_assessment.head_lag_steps
         ),
         _ => unreachable!("non-blocking lag state matched blocking branch"),
+    }
+}
+
+struct ObservedValidationCoordination {
+    attesters: Vec<PeerId>,
+    reduction_ids: Vec<ContentId>,
+    aggregate_proposal_announced: bool,
+    quorum_announced: bool,
+    merge_announced: bool,
+}
+
+fn reduction_attestations_from_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    overlay: &OverlayTopic,
+    experiment: &ExperimentHandle,
+    aggregate_id: &ContentId,
+) -> BTreeMap<PeerId, ContentId> {
+    snapshot
+        .reduction_certificate_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.overlay == *overlay
+                && announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+                && announcement.certificate.aggregate_id == *aggregate_id
+        })
+        .map(|announcement| {
+            (
+                announcement.certificate.validator.clone(),
+                announcement.certificate.reduction_id.clone(),
+            )
+        })
+        .collect()
+}
+
+fn aggregate_proposal_announced_in_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    overlay: &OverlayTopic,
+    experiment: &ExperimentHandle,
+    aggregate_id: &ContentId,
+) -> bool {
+    snapshot
+        .aggregate_proposal_announcements
+        .iter()
+        .any(|announcement| {
+            announcement.overlay == *overlay
+                && announcement.proposal.study_id == experiment.study_id
+                && announcement.proposal.experiment_id == experiment.experiment_id
+                && announcement.proposal.revision_id == experiment.revision_id
+                && announcement.proposal.aggregate_id == *aggregate_id
+        })
+}
+
+fn merge_announced_in_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    overlay: &OverlayTopic,
+    experiment: &ExperimentHandle,
+    merged_head_id: &HeadId,
+) -> bool {
+    snapshot.merge_announcements.iter().any(|announcement| {
+        announcement.overlay == *overlay
+            && announcement.certificate.study_id == experiment.study_id
+            && announcement.certificate.experiment_id == experiment.experiment_id
+            && announcement.certificate.revision_id == experiment.revision_id
+            && announcement.certificate.merged_head_id == *merged_head_id
+    })
+}
+
+fn validation_quorum_announced_in_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    overlay: &OverlayTopic,
+    experiment: &ExperimentHandle,
+    aggregate_id: &ContentId,
+    merged_head_id: &HeadId,
+) -> bool {
+    snapshot
+        .validation_quorum_announcements
+        .iter()
+        .any(|announcement| {
+            announcement.overlay == *overlay
+                && announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+                && announcement.certificate.aggregate_id == *aggregate_id
+                && announcement.certificate.merged_head_id == *merged_head_id
+        })
+}
+
+impl<P> RunningNode<P> {
+    fn observe_validation_coordination(
+        &self,
+        experiment: &ExperimentHandle,
+        prepared: &ValidationPreparedState,
+        execution: &ValidationExecution,
+    ) -> anyhow::Result<ObservedValidationCoordination> {
+        let overlay = experiment.overlay_set()?.heads;
+        let local_snapshot = self.telemetry().snapshot().control_plane;
+        let remote_snapshots = self.fetch_connected_snapshots(Duration::from_millis(250))?;
+        let mut attestations = BTreeMap::from([(
+            prepared.local_peer_id.clone(),
+            execution.reduction_certificate.reduction_id.clone(),
+        )]);
+        let mut aggregate_proposal_announced = aggregate_proposal_announced_in_snapshot(
+            &local_snapshot,
+            &overlay,
+            experiment,
+            &execution.aggregate.aggregate_id,
+        );
+        let mut quorum_announced = validation_quorum_announced_in_snapshot(
+            &local_snapshot,
+            &overlay,
+            experiment,
+            &execution.aggregate.aggregate_id,
+            &execution.merged_head.head_id,
+        );
+        let mut merge_announced = merge_announced_in_snapshot(
+            &local_snapshot,
+            &overlay,
+            experiment,
+            &execution.merged_head.head_id,
+        );
+        attestations.extend(reduction_attestations_from_snapshot(
+            &local_snapshot,
+            &overlay,
+            experiment,
+            &execution.aggregate.aggregate_id,
+        ));
+        for (_, snapshot) in &remote_snapshots {
+            attestations.extend(reduction_attestations_from_snapshot(
+                snapshot,
+                &overlay,
+                experiment,
+                &execution.aggregate.aggregate_id,
+            ));
+            aggregate_proposal_announced |= aggregate_proposal_announced_in_snapshot(
+                snapshot,
+                &overlay,
+                experiment,
+                &execution.aggregate.aggregate_id,
+            );
+            quorum_announced |= validation_quorum_announced_in_snapshot(
+                snapshot,
+                &overlay,
+                experiment,
+                &execution.aggregate.aggregate_id,
+                &execution.merged_head.head_id,
+            );
+            merge_announced |= merge_announced_in_snapshot(
+                snapshot,
+                &overlay,
+                experiment,
+                &execution.merged_head.head_id,
+            );
+        }
+        Ok(ObservedValidationCoordination {
+            attesters: attestations.keys().cloned().collect(),
+            reduction_ids: attestations.into_values().collect(),
+            aggregate_proposal_announced,
+            quorum_announced,
+            merge_announced,
+        })
+    }
+
+    fn wait_for_validation_coordination(
+        &self,
+        experiment: &ExperimentHandle,
+        prepared: &ValidationPreparedState,
+        execution: &ValidationExecution,
+    ) -> anyhow::Result<ObservedValidationCoordination> {
+        let quorum = effective_validator_quorum(&prepared.merge_window);
+        let deadline = Instant::now() + VALIDATION_QUORUM_WAIT;
+        loop {
+            let observed = self.observe_validation_coordination(experiment, prepared, execution)?;
+            if observed.merge_announced
+                || observed.attesters.len() >= quorum
+                || Instant::now() >= deadline
+            {
+                return Ok(observed);
+            }
+            std::thread::sleep(VALIDATION_COORDINATION_POLL_INTERVAL);
+        }
     }
 }
 
@@ -1553,11 +1862,11 @@ mod tests {
             (
                 PeerId::new("reducer-a"),
                 ControlPlaneSnapshot {
-                    aggregate_announcements: vec![AggregateAnnouncement {
+                    aggregate_proposal_announcements: vec![AggregateProposalAnnouncement {
                         overlay: burn_p2p_swarm::OverlayTopic::control(
                             experiment.network_id.clone(),
                         ),
-                        aggregate: aggregate("reducer-a", "artifact-a"),
+                        proposal: aggregate("reducer-a", "artifact-a"),
                         announced_at: Utc::now(),
                     }],
                     ..ControlPlaneSnapshot::default()
@@ -1566,11 +1875,11 @@ mod tests {
             (
                 PeerId::new("reducer-b"),
                 ControlPlaneSnapshot {
-                    aggregate_announcements: vec![AggregateAnnouncement {
+                    aggregate_proposal_announcements: vec![AggregateProposalAnnouncement {
                         overlay: burn_p2p_swarm::OverlayTopic::control(
                             experiment.network_id.clone(),
                         ),
-                        aggregate: aggregate("reducer-b", "artifact-b"),
+                        proposal: aggregate("reducer-b", "artifact-b"),
                         announced_at: Utc::now(),
                     }],
                     ..ControlPlaneSnapshot::default()
@@ -1650,5 +1959,58 @@ mod tests {
 
         assert!(!report.accepted);
         assert!(report.regression_margin > 0.05);
+    }
+
+    #[test]
+    fn merge_certificate_ids_are_validator_scoped() {
+        let prepared = prepared_state();
+        let experiment = ExperimentHandle {
+            network_id: NetworkId::new("net-a"),
+            study_id: StudyId::new("study-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+        };
+        let merged_head = HeadDescriptor {
+            head_id: HeadId::new("head-merged"),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            artifact_id: ArtifactId::new("artifact-merged"),
+            parent_head_id: Some(prepared.base_head_id.clone()),
+            global_step: 9,
+            created_at: Utc::now(),
+            metrics: metric_report(0.1).metrics,
+        };
+        let contribution = build_validation_contribution(
+            &experiment,
+            &PeerId::new("trainer-a"),
+            &merged_head,
+            &metric_report(0.1),
+        );
+
+        let first = build_validation_merge_certificate(
+            &experiment,
+            &PeerId::new("validator-a"),
+            &prepared.base_head_id,
+            &merged_head,
+            MergePolicy::QualityWeightedEma,
+            &contribution,
+            &[],
+        );
+        let second = build_validation_merge_certificate(
+            &experiment,
+            &PeerId::new("validator-b"),
+            &prepared.base_head_id,
+            &merged_head,
+            MergePolicy::QualityWeightedEma,
+            &contribution,
+            &[],
+        );
+
+        assert_ne!(first.merge_cert_id, second.merge_cert_id);
+        assert_eq!(
+            first.contribution_receipts,
+            vec![contribution.receipt_id.clone()]
+        );
     }
 }

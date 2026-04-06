@@ -480,7 +480,8 @@ pub(super) fn append_canary_escalation_alert(
     let blocked = !canary_report.accepted
         || canary_report.detected_backdoor_trigger
         || canary_report.regression_margin > policy.maximum_regression_delta
-        || canary_report.evaluator_quorum < policy.minimum_evaluator_quorum;
+        || canary_report.evaluator_quorum
+            < super::effective_canary_minimum_evaluator_quorum(prepared);
     if !blocked {
         return;
     }
@@ -553,10 +554,10 @@ pub(super) fn observed_replica_agreement(
             continue;
         }
         let candidate = snapshot
-            .aggregate_announcements
+            .aggregate_proposal_announcements
             .iter()
             .filter(|announcement| {
-                let aggregate = &announcement.aggregate;
+                let aggregate = &announcement.proposal;
                 aggregate.study_id == experiment.study_id
                     && aggregate.experiment_id == experiment.experiment_id
                     && aggregate.revision_id == experiment.revision_id
@@ -565,7 +566,7 @@ pub(super) fn observed_replica_agreement(
                     && &aggregate.reducer_peer_id == peer_id
             })
             .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
-            .map(|announcement| announcement.aggregate.clone());
+            .map(|announcement| announcement.proposal.clone());
         if let Some(candidate) = candidate {
             latest.insert(peer_id.clone(), candidate);
         }

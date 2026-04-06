@@ -54,5 +54,6 @@ pub use schema::{
     SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode, SocialProfile,
     SupportedWorkload, TargetArtifactManifest, TelemetrySummary, TrustBundleExport, TrustScore,
     TrustedIssuerStatus, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats,
-    ValidatorCanaryPolicy, WindowActivation, WindowId, WorkDisposition,
+    ValidationQuorumCertificate, ValidatorCanaryPolicy, WindowActivation, WindowId,
+    WorkDisposition,
 };

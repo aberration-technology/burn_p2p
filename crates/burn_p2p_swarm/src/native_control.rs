@@ -6,6 +6,7 @@ pub struct NativeControlPlaneShell {
     local_peer_id: Libp2pPeerId,
     swarm: Swarm<NativeControlPlaneBehaviour>,
     snapshot: ControlPlaneSnapshot,
+    hot_index: ControlPlaneHotIndex,
     artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
     chunks: BTreeMap<(ArtifactId, ChunkId), ArtifactChunkPayload>,
     subscribed_topics: BTreeSet<String>,
@@ -45,6 +46,9 @@ impl NativeControlPlaneShell {
             // libp2p gossipsub envelope instead of accepting unsigned or partial
             // metadata from permissive peers.
             .validation_mode(gossipsub::ValidationMode::Strict)
+            .message_id_fn(|message| {
+                gossipsub::MessageId::from(pubsub_semantic_message_id(&message.data))
+            })
             .build()
             .map_err(|error| SwarmError::Runtime(error.to_string()))?;
         let identify_config = identify::Config::new(
@@ -106,6 +110,7 @@ impl NativeControlPlaneShell {
             local_peer_id,
             swarm,
             snapshot: ControlPlaneSnapshot::default(),
+            hot_index: ControlPlaneHotIndex::default(),
             artifacts: BTreeMap::new(),
             chunks: BTreeMap::new(),
             subscribed_topics: BTreeSet::new(),
@@ -183,45 +188,47 @@ impl NativeControlPlaneShell {
 
     /// Performs the publish control operation.
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
-        push_unique(&mut self.snapshot.control_announcements, announcement);
+        self.snapshot.insert_control_announcement(announcement);
     }
 
     /// Performs the publish head operation.
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
-        push_unique(&mut self.snapshot.head_announcements, announcement);
+        self.snapshot.insert_head_announcement(announcement);
     }
 
     /// Performs the publish lease operation.
     pub fn publish_lease(&mut self, announcement: LeaseAnnouncement) {
-        push_unique(&mut self.snapshot.lease_announcements, announcement);
+        self.snapshot.insert_lease_announcement(announcement);
     }
 
     /// Performs the publish merge operation.
     pub fn publish_merge(&mut self, announcement: MergeAnnouncement) {
-        push_unique(&mut self.snapshot.merge_announcements, announcement);
+        insert_merge_announcement_with_index(&mut self.snapshot, &mut self.hot_index, announcement);
     }
 
     /// Performs the publish merge window operation.
     pub fn publish_merge_window(&mut self, announcement: MergeWindowAnnouncement) {
-        push_unique(&mut self.snapshot.merge_window_announcements, announcement);
+        self.snapshot.insert_merge_window_announcement(announcement);
     }
 
     /// Performs the publish reducer assignment operation.
     pub fn publish_reducer_assignment(&mut self, announcement: ReducerAssignmentAnnouncement) {
-        push_unique(
-            &mut self.snapshot.reducer_assignment_announcements,
-            announcement,
-        );
+        self.snapshot
+            .insert_reducer_assignment_announcement(announcement);
     }
 
     /// Performs the publish update operation.
     pub fn publish_update(&mut self, announcement: UpdateEnvelopeAnnouncement) {
-        push_unique(&mut self.snapshot.update_announcements, announcement);
+        self.snapshot.insert_update_announcement(announcement);
     }
 
     /// Performs the publish aggregate operation.
-    pub fn publish_aggregate(&mut self, announcement: AggregateAnnouncement) {
-        push_unique(&mut self.snapshot.aggregate_announcements, announcement);
+    pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {
+        insert_aggregate_proposal_announcement_with_index(
+            &mut self.snapshot,
+            &mut self.hot_index,
+            announcement,
+        );
     }
 
     /// Performs the publish reduction certificate operation.
@@ -229,38 +236,46 @@ impl NativeControlPlaneShell {
         &mut self,
         announcement: ReductionCertificateAnnouncement,
     ) {
-        push_unique(
-            &mut self.snapshot.reduction_certificate_announcements,
+        insert_reduction_certificate_announcement_with_index(
+            &mut self.snapshot,
+            &mut self.hot_index,
+            announcement,
+        );
+    }
+
+    /// Performs the publish validation quorum operation.
+    pub fn publish_validation_quorum(&mut self, announcement: ValidationQuorumAnnouncement) {
+        insert_validation_quorum_announcement_with_index(
+            &mut self.snapshot,
+            &mut self.hot_index,
             announcement,
         );
     }
 
     /// Performs the publish reducer load operation.
     pub fn publish_reducer_load(&mut self, announcement: ReducerLoadAnnouncement) {
-        push_unique(&mut self.snapshot.reducer_load_announcements, announcement);
+        self.snapshot.insert_reducer_load_announcement(announcement);
     }
 
     /// Performs the publish auth operation.
     pub fn publish_auth(&mut self, announcement: PeerAuthAnnouncement) {
-        push_unique(&mut self.snapshot.auth_announcements, announcement);
+        self.snapshot.insert_auth_announcement(announcement);
     }
 
     /// Performs the publish directory operation.
     pub fn publish_directory(&mut self, announcement: ExperimentDirectoryAnnouncement) {
-        push_unique(&mut self.snapshot.directory_announcements, announcement);
+        self.snapshot.insert_directory_announcement(announcement);
     }
 
     /// Performs the publish peer directory operation.
     pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
-        push_unique(
-            &mut self.snapshot.peer_directory_announcements,
-            announcement,
-        );
+        self.snapshot
+            .insert_peer_directory_announcement(announcement);
     }
 
     /// Performs the publish metrics operation.
     pub fn publish_metrics(&mut self, announcement: MetricsAnnouncement) {
-        push_metrics_announcement(&mut self.snapshot.metrics_announcements, announcement);
+        self.snapshot.insert_metrics_announcement(announcement);
     }
 
     /// Performs the snapshot operation.
@@ -664,7 +679,11 @@ impl NativeControlPlaneShell {
                                 Ok(envelope) => {
                                     let kind = pubsub_payload_kind(&envelope.payload).to_owned();
                                     let topic = envelope.topic_path.clone();
-                                    apply_pubsub_payload(&mut self.snapshot, envelope.payload);
+                                    apply_pubsub_payload_with_index(
+                                        &mut self.snapshot,
+                                        &mut self.hot_index,
+                                        envelope.payload,
+                                    );
                                     LiveControlPlaneEvent::PubsubMessage {
                                         peer_id: propagation_source.to_string(),
                                         topic,
@@ -878,8 +897,8 @@ impl NativeControlPlaneShell {
         self.inner.publish_update(announcement);
     }
 
-    pub fn publish_aggregate(&mut self, announcement: AggregateAnnouncement) {
-        self.inner.publish_aggregate(announcement);
+    pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {
+        self.inner.publish_aggregate_proposal(announcement);
     }
 
     pub fn publish_reduction_certificate(
@@ -887,6 +906,10 @@ impl NativeControlPlaneShell {
         announcement: ReductionCertificateAnnouncement,
     ) {
         self.inner.publish_reduction_certificate(announcement);
+    }
+
+    pub fn publish_validation_quorum(&mut self, announcement: ValidationQuorumAnnouncement) {
+        self.inner.publish_validation_quorum(announcement);
     }
 
     pub fn publish_reducer_load(&mut self, announcement: ReducerLoadAnnouncement) {

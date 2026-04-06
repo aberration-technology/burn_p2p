@@ -412,6 +412,39 @@ pub struct ReductionCertificate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Summarizes the validator quorum that accepted a validation aggregate.
+pub struct ValidationQuorumCertificate {
+    /// The quorum cert ID.
+    pub quorum_cert_id: ContentId,
+    /// The study ID.
+    pub study_id: StudyId,
+    /// The experiment ID.
+    pub experiment_id: ExperimentId,
+    /// The revision ID.
+    pub revision_id: RevisionId,
+    /// The window ID.
+    pub window_id: WindowId,
+    /// The base head ID.
+    pub base_head_id: HeadId,
+    /// The aggregate ID.
+    pub aggregate_id: ContentId,
+    /// The aggregate artifact ID.
+    pub aggregate_artifact_id: ArtifactId,
+    /// The merged head ID this quorum accepted.
+    pub merged_head_id: HeadId,
+    /// The validator quorum.
+    pub validator_quorum: u16,
+    /// The coordinator that emitted the compact quorum record.
+    pub coordinator: PeerId,
+    /// The attesting validators.
+    pub attesting_validators: Vec<PeerId>,
+    /// The contributing reduction certificate IDs.
+    pub reduction_ids: Vec<ContentId>,
+    /// The issued at.
+    pub issued_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Captures merge window state.
 pub struct MergeWindowState {
     /// The merge window ID.

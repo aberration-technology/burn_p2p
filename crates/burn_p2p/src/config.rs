@@ -1186,8 +1186,9 @@ pub(crate) enum RuntimeCommand {
     PublishMergeWindow(MergeWindowAnnouncement),
     PublishReducerAssignment(ReducerAssignmentAnnouncement),
     PublishUpdate(UpdateEnvelopeAnnouncement),
-    PublishAggregate(AggregateAnnouncement),
+    PublishAggregateProposal(AggregateProposalAnnouncement),
     PublishReductionCertificate(ReductionCertificateAnnouncement),
+    PublishValidationQuorum(ValidationQuorumAnnouncement),
     PublishReducerLoad(ReducerLoadAnnouncement),
     PublishAuth(PeerAuthAnnouncement),
     PublishDirectory(ExperimentDirectoryAnnouncement),
@@ -1300,11 +1301,16 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to send update announcement: {error}"))
     }
 
-    /// Performs the publish aggregate operation.
-    pub fn publish_aggregate(&self, announcement: AggregateAnnouncement) -> anyhow::Result<()> {
+    /// Performs the publish aggregate proposal operation.
+    pub fn publish_aggregate_proposal(
+        &self,
+        announcement: AggregateProposalAnnouncement,
+    ) -> anyhow::Result<()> {
         self.tx
-            .send(RuntimeCommand::PublishAggregate(announcement))
-            .map_err(|error| anyhow::anyhow!("failed to send aggregate announcement: {error}"))
+            .send(RuntimeCommand::PublishAggregateProposal(announcement))
+            .map_err(|error| {
+                anyhow::anyhow!("failed to send aggregate proposal announcement: {error}")
+            })
     }
 
     /// Performs the publish reduction certificate operation.
@@ -1316,6 +1322,18 @@ impl ControlHandle {
             .send(RuntimeCommand::PublishReductionCertificate(announcement))
             .map_err(|error| {
                 anyhow::anyhow!("failed to send reduction certificate announcement: {error}")
+            })
+    }
+
+    /// Performs the publish validation quorum operation.
+    pub fn publish_validation_quorum(
+        &self,
+        announcement: ValidationQuorumAnnouncement,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishValidationQuorum(announcement))
+            .map_err(|error| {
+                anyhow::anyhow!("failed to send validation quorum announcement: {error}")
             })
     }
 

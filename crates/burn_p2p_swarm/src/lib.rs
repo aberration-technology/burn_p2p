@@ -24,7 +24,7 @@ use burn_p2p_core::{
     ContentId, ControlCertificate, DatasetViewId, ExperimentDirectoryEntry, HeadDescriptor, HeadId,
     MergeCertificate, MergeWindowState, MetricsLiveEvent, MicroShardId, NetworkId,
     PeerAuthEnvelope, PeerId, ReducerAssignment, ReducerLoadReport, ReductionCertificate,
-    TelemetrySummary, UpdateAnnounce,
+    TelemetrySummary, UpdateAnnounce, ValidationQuorumCertificate,
 };
 use burn_p2p_experiment::ExperimentControlEnvelope;
 use chrono::{DateTime, Utc};
@@ -49,13 +49,20 @@ use tokio::{
 
 pub use browser_edge::*;
 pub use control_shell::*;
+#[cfg(test)]
+pub(crate) use events::apply_pubsub_payload;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use events::push_unique;
 pub use events::*;
+pub(crate) use events::{
+    ControlPlaneHotIndex, apply_pubsub_payload_with_index,
+    insert_aggregate_proposal_announcement_with_index, insert_merge_announcement_with_index,
+    insert_reduction_certificate_announcement_with_index,
+    insert_validation_quorum_announcement_with_index, pubsub_semantic_message_id,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use events::{
-    NativeControlPlaneBehaviour, NativeControlPlaneBehaviourEvent, apply_pubsub_payload,
-    pubsub_payload_kind, push_unique,
+    NativeControlPlaneBehaviour, NativeControlPlaneBehaviourEvent, pubsub_payload_kind,
 };
 pub use memory_control::*;
 pub use memory_swarm::*;

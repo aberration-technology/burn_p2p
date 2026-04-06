@@ -80,8 +80,8 @@ pub use burn_p2p_core::{
     RejectionReason, ReleaseTrainManifest, RevisionId, RevisionManifest, RevocationEpoch,
     RobustnessAlert, RobustnessDecision, RobustnessPolicy, RobustnessPreset, SocialMode,
     SocialProfile, StudyId, SupportedWorkload, TargetArtifactManifest, TelemetrySummary,
-    TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats, WindowActivation, WindowId,
-    WorkloadId,
+    TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats, ValidationQuorumCertificate,
+    WindowActivation, WindowId, WorkloadId,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,
@@ -110,7 +110,7 @@ pub use burn_p2p_security::{
     ValidatorPolicy, create_peer_auth_envelope,
 };
 pub use burn_p2p_swarm::{
-    AggregateAnnouncement, AlertNotice, AlertSeverity, ArtifactChunkPayload,
+    AggregateProposalAnnouncement, AlertNotice, AlertSeverity, ArtifactChunkPayload,
     ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, ChunkFetchRequest,
     ChunkFetchResponse, ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse,
     ControlPlaneShell, ControlPlaneSnapshot, ExperimentDirectoryAnnouncement, ExperimentOverlaySet,
@@ -122,7 +122,7 @@ pub use burn_p2p_swarm::{
     ProtocolSet, ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement,
     ReducerLoadAnnouncement, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
-    TransportKind, UpdateEnvelopeAnnouncement,
+    TransportKind, UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
 pub use config::{
     ArtifactTransferPhase, ArtifactTransferState, AuthConfig, ClientReenrollmentStatus,

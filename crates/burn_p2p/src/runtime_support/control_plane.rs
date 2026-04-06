@@ -276,12 +276,12 @@ pub(crate) fn run_control_plane(
                     snapshot.control_plane = shell.snapshot().clone();
                     snapshot.updated_at = Utc::now();
                 }
-                Ok(RuntimeCommand::PublishAggregate(announcement)) => {
+                Ok(RuntimeCommand::PublishAggregateProposal(announcement)) => {
                     let overlay = announcement.overlay.clone();
                     let _ = shell.subscribe_topic(overlay.clone());
-                    shell.publish_aggregate(announcement.clone());
-                    if let Err(error) =
-                        shell.publish_pubsub(overlay, PubsubPayload::Aggregate(announcement))
+                    shell.publish_aggregate_proposal(announcement.clone());
+                    if let Err(error) = shell
+                        .publish_pubsub(overlay, PubsubPayload::AggregateProposal(announcement))
                     {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error = Some(error.to_string());
@@ -296,6 +296,20 @@ pub(crate) fn run_control_plane(
                     shell.publish_reduction_certificate(announcement.clone());
                     if let Err(error) = shell
                         .publish_pubsub(overlay, PubsubPayload::ReductionCertificate(announcement))
+                    {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = lock_telemetry_state(&state);
+                    snapshot.control_plane = shell.snapshot().clone();
+                    snapshot.updated_at = Utc::now();
+                }
+                Ok(RuntimeCommand::PublishValidationQuorum(announcement)) => {
+                    let overlay = announcement.overlay.clone();
+                    let _ = shell.subscribe_topic(overlay.clone());
+                    shell.publish_validation_quorum(announcement.clone());
+                    if let Err(error) =
+                        shell.publish_pubsub(overlay, PubsubPayload::ValidationQuorum(announcement))
                     {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error = Some(error.to_string());

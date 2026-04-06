@@ -297,12 +297,12 @@ pub struct UpdateEnvelopeAnnouncement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Represents an aggregate announcement.
-pub struct AggregateAnnouncement {
+/// Represents an aggregate proposal announcement.
+pub struct AggregateProposalAnnouncement {
     /// The overlay.
     pub overlay: OverlayTopic,
-    /// The aggregate.
-    pub aggregate: AggregateEnvelope,
+    /// The proposed aggregate.
+    pub proposal: AggregateEnvelope,
     /// The announced at.
     pub announced_at: DateTime<Utc>,
 }
@@ -314,6 +314,17 @@ pub struct ReductionCertificateAnnouncement {
     pub overlay: OverlayTopic,
     /// The certificate.
     pub certificate: ReductionCertificate,
+    /// The announced at.
+    pub announced_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a compact validator quorum announcement.
+pub struct ValidationQuorumAnnouncement {
+    /// The overlay.
+    pub overlay: OverlayTopic,
+    /// The certificate.
+    pub certificate: ValidationQuorumCertificate,
     /// The announced at.
     pub announced_at: DateTime<Utc>,
 }
@@ -388,10 +399,12 @@ pub struct ControlPlaneSnapshot {
     pub reducer_assignment_announcements: Vec<ReducerAssignmentAnnouncement>,
     /// The update announcements.
     pub update_announcements: Vec<UpdateEnvelopeAnnouncement>,
-    /// The aggregate announcements.
-    pub aggregate_announcements: Vec<AggregateAnnouncement>,
+    /// The aggregate proposal announcements.
+    pub aggregate_proposal_announcements: Vec<AggregateProposalAnnouncement>,
     /// The reduction certificate announcements.
     pub reduction_certificate_announcements: Vec<ReductionCertificateAnnouncement>,
+    /// The validation quorum announcements.
+    pub validation_quorum_announcements: Vec<ValidationQuorumAnnouncement>,
     /// The reducer load announcements.
     pub reducer_load_announcements: Vec<ReducerLoadAnnouncement>,
     /// The auth announcements.
@@ -408,6 +421,128 @@ impl ControlPlaneSnapshot {
     /// Trims live metrics announcements to the bounded recent tail kept in memory.
     pub fn clamp_metrics_announcements(&mut self) {
         cap_metrics_announcements(&mut self.metrics_announcements);
+    }
+
+    pub(crate) fn insert_control_announcement(&mut self, announcement: ControlAnnouncement) {
+        push_unique(&mut self.control_announcements, announcement);
+    }
+
+    pub(crate) fn insert_head_announcement(&mut self, announcement: HeadAnnouncement) {
+        push_unique(&mut self.head_announcements, announcement);
+    }
+
+    pub(crate) fn insert_lease_announcement(&mut self, announcement: LeaseAnnouncement) {
+        push_unique(&mut self.lease_announcements, announcement);
+    }
+
+    pub(crate) fn insert_merge_window_announcement(
+        &mut self,
+        announcement: MergeWindowAnnouncement,
+    ) {
+        push_unique(&mut self.merge_window_announcements, announcement);
+    }
+
+    pub(crate) fn insert_reducer_assignment_announcement(
+        &mut self,
+        announcement: ReducerAssignmentAnnouncement,
+    ) {
+        push_unique(&mut self.reducer_assignment_announcements, announcement);
+    }
+
+    pub(crate) fn insert_update_announcement(&mut self, announcement: UpdateEnvelopeAnnouncement) {
+        push_unique(&mut self.update_announcements, announcement);
+    }
+
+    pub(crate) fn insert_reducer_load_announcement(
+        &mut self,
+        announcement: ReducerLoadAnnouncement,
+    ) {
+        push_unique(&mut self.reducer_load_announcements, announcement);
+    }
+
+    pub(crate) fn insert_auth_announcement(&mut self, announcement: PeerAuthAnnouncement) {
+        push_unique(&mut self.auth_announcements, announcement);
+    }
+
+    pub(crate) fn insert_directory_announcement(
+        &mut self,
+        announcement: ExperimentDirectoryAnnouncement,
+    ) {
+        push_unique(&mut self.directory_announcements, announcement);
+    }
+
+    pub(crate) fn insert_peer_directory_announcement(
+        &mut self,
+        announcement: PeerDirectoryAnnouncement,
+    ) {
+        push_unique(&mut self.peer_directory_announcements, announcement);
+    }
+
+    pub(crate) fn insert_metrics_announcement(&mut self, announcement: MetricsAnnouncement) {
+        push_metrics_announcement(&mut self.metrics_announcements, announcement);
+    }
+
+    pub fn merge_from_semantic(&mut self, remote: &ControlPlaneSnapshot) {
+        for announcement in &remote.control_announcements {
+            self.insert_control_announcement(announcement.clone());
+        }
+        for announcement in &remote.head_announcements {
+            self.insert_head_announcement(announcement.clone());
+        }
+        for announcement in &remote.lease_announcements {
+            self.insert_lease_announcement(announcement.clone());
+        }
+        let mut index = ControlPlaneHotIndex::default();
+        rebuild_hot_index(self, &mut index);
+        for announcement in &remote.merge_announcements {
+            insert_merge_announcement_with_index(self, &mut index, announcement.clone());
+        }
+        for announcement in &remote.merge_window_announcements {
+            self.insert_merge_window_announcement(announcement.clone());
+        }
+        for announcement in &remote.reducer_assignment_announcements {
+            self.insert_reducer_assignment_announcement(announcement.clone());
+        }
+        for announcement in &remote.update_announcements {
+            self.insert_update_announcement(announcement.clone());
+        }
+        for announcement in &remote.aggregate_proposal_announcements {
+            insert_aggregate_proposal_announcement_with_index(
+                self,
+                &mut index,
+                announcement.clone(),
+            );
+        }
+        for announcement in &remote.reduction_certificate_announcements {
+            insert_reduction_certificate_announcement_with_index(
+                self,
+                &mut index,
+                announcement.clone(),
+            );
+        }
+        for announcement in &remote.validation_quorum_announcements {
+            insert_validation_quorum_announcement_with_index(
+                self,
+                &mut index,
+                announcement.clone(),
+            );
+        }
+        for announcement in &remote.reducer_load_announcements {
+            self.insert_reducer_load_announcement(announcement.clone());
+        }
+        for announcement in &remote.auth_announcements {
+            self.insert_auth_announcement(announcement.clone());
+        }
+        for announcement in &remote.directory_announcements {
+            self.insert_directory_announcement(announcement.clone());
+        }
+        for announcement in &remote.peer_directory_announcements {
+            self.insert_peer_directory_announcement(announcement.clone());
+        }
+        for announcement in &remote.metrics_announcements {
+            self.insert_metrics_announcement(announcement.clone());
+        }
+        self.clamp_metrics_announcements();
     }
 }
 
@@ -471,10 +606,12 @@ pub enum PubsubPayload {
     ReducerAssignment(ReducerAssignmentAnnouncement),
     /// Uses the update variant.
     Update(UpdateEnvelopeAnnouncement),
-    /// Uses the aggregate variant.
-    Aggregate(AggregateAnnouncement),
+    /// Uses the aggregate proposal variant.
+    AggregateProposal(AggregateProposalAnnouncement),
     /// Uses the reduction certificate variant.
     ReductionCertificate(ReductionCertificateAnnouncement),
+    /// Uses the validation quorum variant.
+    ValidationQuorum(ValidationQuorumAnnouncement),
     /// Uses the reducer load variant.
     ReducerLoad(ReducerLoadAnnouncement),
     /// Uses the auth variant.
@@ -557,6 +694,40 @@ impl From<mdns::Event> for NativeControlPlaneBehaviourEvent {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AggregateProposalAnnouncementKey {
+    overlay_path: String,
+    aggregate_id: ContentId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReductionCertificateAnnouncementKey {
+    overlay_path: String,
+    aggregate_id: ContentId,
+    validator: PeerId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ValidationQuorumAnnouncementKey {
+    overlay_path: String,
+    aggregate_id: ContentId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MergeAnnouncementKey {
+    overlay_path: String,
+    merged_head_id: HeadId,
+    validator: PeerId,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ControlPlaneHotIndex {
+    aggregate_proposal_announcements: BTreeMap<AggregateProposalAnnouncementKey, usize>,
+    reduction_certificate_announcements: BTreeMap<ReductionCertificateAnnouncementKey, usize>,
+    validation_quorum_announcements: BTreeMap<ValidationQuorumAnnouncementKey, usize>,
+    merge_announcements: BTreeMap<MergeAnnouncementKey, usize>,
+}
+
 pub(crate) fn push_unique<T: PartialEq>(values: &mut Vec<T>, value: T) {
     if !values.contains(&value) {
         values.push(value);
@@ -571,9 +742,529 @@ pub(crate) fn cap_tail<T>(values: &mut Vec<T>, max_len: usize) {
 }
 
 const MAX_METRICS_ANNOUNCEMENTS: usize = 64;
+const MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS: usize = 256;
+const MAX_REDUCTION_CERTIFICATE_ANNOUNCEMENTS: usize = 256;
+const MAX_VALIDATION_QUORUM_ANNOUNCEMENTS: usize = 128;
+const MAX_MERGE_ANNOUNCEMENTS: usize = 256;
+const MAX_DISTINCT_WINDOWS_PER_OVERLAY: usize = 8;
 
 pub(crate) fn cap_metrics_announcements(values: &mut Vec<MetricsAnnouncement>) {
     cap_tail(values, MAX_METRICS_ANNOUNCEMENTS);
+}
+
+fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
+    values.sort();
+    values.dedup();
+}
+
+fn canonicalize_aggregate_proposal_announcement(announcement: &mut AggregateProposalAnnouncement) {
+    sort_and_dedup(&mut announcement.proposal.contributor_peers);
+    sort_and_dedup(&mut announcement.proposal.child_aggregate_ids);
+    sort_and_dedup(&mut announcement.proposal.providers);
+}
+
+fn canonicalize_reduction_certificate_announcement(
+    announcement: &mut ReductionCertificateAnnouncement,
+) {
+    sort_and_dedup(&mut announcement.certificate.cross_checked_reducers);
+}
+
+fn canonicalize_validation_quorum_announcement(announcement: &mut ValidationQuorumAnnouncement) {
+    sort_and_dedup(&mut announcement.certificate.attesting_validators);
+    sort_and_dedup(&mut announcement.certificate.reduction_ids);
+}
+
+fn canonicalize_merge_announcement(announcement: &mut MergeAnnouncement) {
+    sort_and_dedup(&mut announcement.certificate.contribution_receipts);
+}
+
+fn aggregate_proposal_announcement_key(
+    announcement: &AggregateProposalAnnouncement,
+) -> AggregateProposalAnnouncementKey {
+    AggregateProposalAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        aggregate_id: announcement.proposal.aggregate_id.clone(),
+    }
+}
+
+fn reduction_certificate_announcement_key(
+    announcement: &ReductionCertificateAnnouncement,
+) -> ReductionCertificateAnnouncementKey {
+    ReductionCertificateAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        aggregate_id: announcement.certificate.aggregate_id.clone(),
+        validator: announcement.certificate.validator.clone(),
+    }
+}
+
+fn validation_quorum_announcement_key(
+    announcement: &ValidationQuorumAnnouncement,
+) -> ValidationQuorumAnnouncementKey {
+    ValidationQuorumAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        aggregate_id: announcement.certificate.aggregate_id.clone(),
+    }
+}
+
+fn merge_announcement_key(announcement: &MergeAnnouncement) -> MergeAnnouncementKey {
+    MergeAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        merged_head_id: announcement.certificate.merged_head_id.clone(),
+        validator: announcement.certificate.validator.clone(),
+    }
+}
+
+fn aggregate_proposal_semantic_fingerprint(announcement: &AggregateProposalAnnouncement) -> String {
+    let mut contributor_peers = announcement.proposal.contributor_peers.clone();
+    let mut child_aggregate_ids = announcement.proposal.child_aggregate_ids.clone();
+    sort_and_dedup(&mut contributor_peers);
+    sort_and_dedup(&mut child_aggregate_ids);
+    let stats_fingerprint = format!(
+        "{}:{}:{}:{}:{}",
+        announcement.proposal.stats.late_updates,
+        announcement.proposal.stats.sum_sample_weight.to_bits(),
+        announcement.proposal.stats.sum_quality_weight.to_bits(),
+        announcement
+            .proposal
+            .stats
+            .sum_weighted_delta_norm
+            .to_bits(),
+        announcement.proposal.stats.max_update_norm.to_bits()
+    );
+    format!(
+        "{}|{}|{}|{}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        announcement.overlay.path,
+        announcement.proposal.aggregate_id,
+        announcement.proposal.study_id,
+        announcement.proposal.experiment_id,
+        announcement.proposal.revision_id,
+        announcement.proposal.window_id.0,
+        announcement.proposal.tier,
+        announcement.proposal.base_head_id,
+        announcement.proposal.aggregate_artifact_id,
+        announcement.proposal.reducer_peer_id,
+        contributor_peers
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        child_aggregate_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        announcement.proposal.stats.accepted_updates,
+        announcement.proposal.stats.duplicate_updates,
+        announcement.proposal.stats.dropped_updates,
+        stats_fingerprint,
+    )
+}
+
+fn reduction_certificate_semantic_fingerprint(
+    announcement: &ReductionCertificateAnnouncement,
+) -> String {
+    let mut reducers = announcement.certificate.cross_checked_reducers.clone();
+    sort_and_dedup(&mut reducers);
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        announcement.overlay.path,
+        announcement.certificate.study_id,
+        announcement.certificate.experiment_id,
+        announcement.certificate.revision_id,
+        announcement.certificate.window_id.0,
+        announcement.certificate.base_head_id,
+        announcement.certificate.aggregate_id,
+        reducers
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn validation_quorum_semantic_fingerprint(announcement: &ValidationQuorumAnnouncement) -> String {
+    let mut validators = announcement.certificate.attesting_validators.clone();
+    let mut reduction_ids = announcement.certificate.reduction_ids.clone();
+    sort_and_dedup(&mut validators);
+    sort_and_dedup(&mut reduction_ids);
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        announcement.overlay.path,
+        announcement.certificate.study_id,
+        announcement.certificate.experiment_id,
+        announcement.certificate.revision_id,
+        announcement.certificate.window_id.0,
+        announcement.certificate.base_head_id,
+        announcement.certificate.aggregate_id,
+        announcement.certificate.aggregate_artifact_id,
+        announcement.certificate.merged_head_id,
+        validators
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        reduction_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn merge_announcement_semantic_fingerprint(announcement: &MergeAnnouncement) -> String {
+    let mut receipts = announcement.certificate.contribution_receipts.clone();
+    sort_and_dedup(&mut receipts);
+    format!(
+        "{}|{}|{}|{}|{}|{}|{:?}|{}",
+        announcement.overlay.path,
+        announcement.certificate.study_id,
+        announcement.certificate.experiment_id,
+        announcement.certificate.revision_id,
+        announcement.certificate.base_head_id,
+        announcement.certificate.merged_head_id,
+        announcement.certificate.policy,
+        receipts
+            .iter()
+            .map(|receipt| receipt.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn hash_message_id(bytes: &[u8]) -> String {
+    ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(bytes)).to_string()
+}
+
+pub(crate) fn pubsub_semantic_message_id(bytes: &[u8]) -> String {
+    let semantic_bytes = match serde_json::from_slice::<PubsubEnvelope>(bytes) {
+        Ok(envelope) => match &envelope.payload {
+            PubsubPayload::AggregateProposal(announcement) => {
+                aggregate_proposal_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::ReductionCertificate(announcement) => {
+                reduction_certificate_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::ValidationQuorum(announcement) => {
+                validation_quorum_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::Merge(announcement) => {
+                merge_announcement_semantic_fingerprint(announcement).into_bytes()
+            }
+            _ => burn_p2p_core::deterministic_cbor(&envelope.payload)
+                .unwrap_or_else(|_| serde_json::to_vec(&envelope.payload).unwrap_or_default()),
+        },
+        Err(_) => bytes.to_vec(),
+    };
+    hash_message_id(&semantic_bytes)
+}
+
+fn coalesce_aggregate_proposal_announcements(
+    existing: &mut AggregateProposalAnnouncement,
+    mut incoming: AggregateProposalAnnouncement,
+) {
+    canonicalize_aggregate_proposal_announcement(&mut incoming);
+    existing.announced_at = existing.announced_at.max(incoming.announced_at);
+    existing.proposal.published_at = existing
+        .proposal
+        .published_at
+        .max(incoming.proposal.published_at);
+    existing
+        .proposal
+        .providers
+        .extend(incoming.proposal.providers);
+    existing
+        .proposal
+        .contributor_peers
+        .extend(incoming.proposal.contributor_peers);
+    existing
+        .proposal
+        .child_aggregate_ids
+        .extend(incoming.proposal.child_aggregate_ids);
+    canonicalize_aggregate_proposal_announcement(existing);
+}
+
+fn aggregate_validator_count(
+    values: &[ReductionCertificateAnnouncement],
+    overlay_path: &str,
+    aggregate_id: &ContentId,
+) -> usize {
+    values
+        .iter()
+        .filter(|announcement| {
+            announcement.overlay.path == overlay_path
+                && announcement.certificate.aggregate_id == *aggregate_id
+        })
+        .map(|announcement| announcement.certificate.validator.clone())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn latest_windows_by_overlay<T, FOverlay, FWindow>(
+    values: &[T],
+    overlay_of: FOverlay,
+    window_of: FWindow,
+) -> BTreeMap<String, BTreeSet<u64>>
+where
+    FOverlay: Fn(&T) -> &str,
+    FWindow: Fn(&T) -> u64,
+{
+    let mut overlay_windows = BTreeMap::<String, BTreeSet<u64>>::new();
+    for value in values {
+        overlay_windows
+            .entry(overlay_of(value).to_owned())
+            .or_default()
+            .insert(window_of(value));
+    }
+    overlay_windows
+        .into_iter()
+        .map(|(overlay, windows)| {
+            let retained = windows
+                .into_iter()
+                .rev()
+                .take(MAX_DISTINCT_WINDOWS_PER_OVERLAY)
+                .collect::<BTreeSet<_>>();
+            (overlay, retained)
+        })
+        .collect()
+}
+
+fn cap_aggregate_proposal_announcements(values: &mut Vec<AggregateProposalAnnouncement>) {
+    let retained_windows = latest_windows_by_overlay(
+        values,
+        |announcement| announcement.overlay.path.as_str(),
+        |announcement| announcement.proposal.window_id.0,
+    );
+    values.retain(|announcement| {
+        retained_windows
+            .get(&announcement.overlay.path)
+            .is_some_and(|windows| windows.contains(&announcement.proposal.window_id.0))
+    });
+    values.sort_by(|left, right| {
+        left.proposal
+            .window_id
+            .cmp(&right.proposal.window_id)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS);
+}
+
+fn cap_reduction_certificate_announcements(values: &mut Vec<ReductionCertificateAnnouncement>) {
+    let retained_windows = latest_windows_by_overlay(
+        values,
+        |announcement| announcement.overlay.path.as_str(),
+        |announcement| announcement.certificate.window_id.0,
+    );
+    values.retain(|announcement| {
+        retained_windows
+            .get(&announcement.overlay.path)
+            .is_some_and(|windows| windows.contains(&announcement.certificate.window_id.0))
+    });
+    values.sort_by(|left, right| {
+        left.certificate
+            .window_id
+            .cmp(&right.certificate.window_id)
+            .then(left.certificate.issued_at.cmp(&right.certificate.issued_at))
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_REDUCTION_CERTIFICATE_ANNOUNCEMENTS);
+}
+
+fn cap_validation_quorum_announcements(values: &mut Vec<ValidationQuorumAnnouncement>) {
+    let retained_windows = latest_windows_by_overlay(
+        values,
+        |announcement| announcement.overlay.path.as_str(),
+        |announcement| announcement.certificate.window_id.0,
+    );
+    values.retain(|announcement| {
+        retained_windows
+            .get(&announcement.overlay.path)
+            .is_some_and(|windows| windows.contains(&announcement.certificate.window_id.0))
+    });
+    values.sort_by(|left, right| {
+        left.certificate
+            .window_id
+            .cmp(&right.certificate.window_id)
+            .then(left.certificate.issued_at.cmp(&right.certificate.issued_at))
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_VALIDATION_QUORUM_ANNOUNCEMENTS);
+}
+
+fn cap_merge_announcements(values: &mut Vec<MergeAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.certificate
+            .issued_at
+            .cmp(&right.certificate.issued_at)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_MERGE_ANNOUNCEMENTS);
+}
+
+pub(crate) fn rebuild_hot_index(snapshot: &ControlPlaneSnapshot, index: &mut ControlPlaneHotIndex) {
+    index.aggregate_proposal_announcements = snapshot
+        .aggregate_proposal_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| {
+            (aggregate_proposal_announcement_key(announcement), position)
+        })
+        .collect();
+    index.reduction_certificate_announcements = snapshot
+        .reduction_certificate_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| {
+            (
+                reduction_certificate_announcement_key(announcement),
+                position,
+            )
+        })
+        .collect();
+    index.validation_quorum_announcements = snapshot
+        .validation_quorum_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| {
+            (validation_quorum_announcement_key(announcement), position)
+        })
+        .collect();
+    index.merge_announcements = snapshot
+        .merge_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| (merge_announcement_key(announcement), position))
+        .collect();
+}
+
+pub(crate) fn insert_aggregate_proposal_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    mut announcement: AggregateProposalAnnouncement,
+) {
+    canonicalize_aggregate_proposal_announcement(&mut announcement);
+    let key = aggregate_proposal_announcement_key(&announcement);
+    let fingerprint = aggregate_proposal_semantic_fingerprint(&announcement);
+    match index.aggregate_proposal_announcements.get(&key).copied() {
+        Some(position) => {
+            if aggregate_proposal_semantic_fingerprint(
+                &snapshot.aggregate_proposal_announcements[position],
+            ) == fingerprint
+            {
+                coalesce_aggregate_proposal_announcements(
+                    &mut snapshot.aggregate_proposal_announcements[position],
+                    announcement,
+                );
+            }
+        }
+        None => snapshot.aggregate_proposal_announcements.push(announcement),
+    }
+    cap_aggregate_proposal_announcements(&mut snapshot.aggregate_proposal_announcements);
+    rebuild_hot_index(snapshot, index);
+}
+
+pub(crate) fn insert_reduction_certificate_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    mut announcement: ReductionCertificateAnnouncement,
+) {
+    canonicalize_reduction_certificate_announcement(&mut announcement);
+    let key = reduction_certificate_announcement_key(&announcement);
+    let fingerprint = reduction_certificate_semantic_fingerprint(&announcement);
+    match index.reduction_certificate_announcements.get(&key).copied() {
+        Some(position) => {
+            if reduction_certificate_semantic_fingerprint(
+                &snapshot.reduction_certificate_announcements[position],
+            ) == fingerprint
+            {
+                snapshot.reduction_certificate_announcements[position].announced_at = snapshot
+                    .reduction_certificate_announcements[position]
+                    .announced_at
+                    .max(announcement.announced_at);
+                snapshot.reduction_certificate_announcements[position]
+                    .certificate
+                    .issued_at = snapshot.reduction_certificate_announcements[position]
+                    .certificate
+                    .issued_at
+                    .max(announcement.certificate.issued_at);
+            }
+        }
+        None => {
+            let validator_count = aggregate_validator_count(
+                &snapshot.reduction_certificate_announcements,
+                &announcement.overlay.path,
+                &announcement.certificate.aggregate_id,
+            );
+            if validator_count < usize::from(announcement.certificate.validator_quorum.max(1)) {
+                snapshot
+                    .reduction_certificate_announcements
+                    .push(announcement);
+            }
+        }
+    }
+    cap_reduction_certificate_announcements(&mut snapshot.reduction_certificate_announcements);
+    rebuild_hot_index(snapshot, index);
+}
+
+pub(crate) fn insert_validation_quorum_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    mut announcement: ValidationQuorumAnnouncement,
+) {
+    canonicalize_validation_quorum_announcement(&mut announcement);
+    let key = validation_quorum_announcement_key(&announcement);
+    let fingerprint = validation_quorum_semantic_fingerprint(&announcement);
+    match index.validation_quorum_announcements.get(&key).copied() {
+        Some(position) => {
+            if validation_quorum_semantic_fingerprint(
+                &snapshot.validation_quorum_announcements[position],
+            ) == fingerprint
+            {
+                snapshot.validation_quorum_announcements[position].announced_at = snapshot
+                    .validation_quorum_announcements[position]
+                    .announced_at
+                    .max(announcement.announced_at);
+                snapshot.validation_quorum_announcements[position]
+                    .certificate
+                    .issued_at = snapshot.validation_quorum_announcements[position]
+                    .certificate
+                    .issued_at
+                    .max(announcement.certificate.issued_at);
+            }
+        }
+        None => snapshot.validation_quorum_announcements.push(announcement),
+    }
+    cap_validation_quorum_announcements(&mut snapshot.validation_quorum_announcements);
+    rebuild_hot_index(snapshot, index);
+}
+
+pub(crate) fn insert_merge_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    mut announcement: MergeAnnouncement,
+) {
+    canonicalize_merge_announcement(&mut announcement);
+    let key = merge_announcement_key(&announcement);
+    let fingerprint = merge_announcement_semantic_fingerprint(&announcement);
+    match index.merge_announcements.get(&key).copied() {
+        Some(position) => {
+            if merge_announcement_semantic_fingerprint(&snapshot.merge_announcements[position])
+                == fingerprint
+            {
+                snapshot.merge_announcements[position].announced_at = snapshot.merge_announcements
+                    [position]
+                    .announced_at
+                    .max(announcement.announced_at);
+                snapshot.merge_announcements[position].certificate.issued_at = snapshot
+                    .merge_announcements[position]
+                    .certificate
+                    .issued_at
+                    .max(announcement.certificate.issued_at);
+            }
+        }
+        None => snapshot.merge_announcements.push(announcement),
+    }
+    cap_merge_announcements(&mut snapshot.merge_announcements);
+    rebuild_hot_index(snapshot, index);
 }
 
 pub(crate) fn push_metrics_announcement(
@@ -584,54 +1275,53 @@ pub(crate) fn push_metrics_announcement(
     cap_metrics_announcements(values);
 }
 
-pub(crate) fn apply_pubsub_payload(snapshot: &mut ControlPlaneSnapshot, payload: PubsubPayload) {
+pub(crate) fn apply_pubsub_payload_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    payload: PubsubPayload,
+) {
     match payload {
-        PubsubPayload::Control(announcement) => {
-            push_unique(&mut snapshot.control_announcements, announcement);
-        }
-        PubsubPayload::Head(announcement) => {
-            push_unique(&mut snapshot.head_announcements, announcement);
-        }
-        PubsubPayload::Lease(announcement) => {
-            push_unique(&mut snapshot.lease_announcements, announcement);
-        }
+        PubsubPayload::Control(announcement) => snapshot.insert_control_announcement(announcement),
+        PubsubPayload::Head(announcement) => snapshot.insert_head_announcement(announcement),
+        PubsubPayload::Lease(announcement) => snapshot.insert_lease_announcement(announcement),
         PubsubPayload::Merge(announcement) => {
-            push_unique(&mut snapshot.merge_announcements, announcement);
+            insert_merge_announcement_with_index(snapshot, index, announcement);
         }
         PubsubPayload::MergeWindow(announcement) => {
-            push_unique(&mut snapshot.merge_window_announcements, announcement);
+            snapshot.insert_merge_window_announcement(announcement);
         }
         PubsubPayload::ReducerAssignment(announcement) => {
-            push_unique(&mut snapshot.reducer_assignment_announcements, announcement);
+            snapshot.insert_reducer_assignment_announcement(announcement);
         }
-        PubsubPayload::Update(announcement) => {
-            push_unique(&mut snapshot.update_announcements, announcement);
-        }
-        PubsubPayload::Aggregate(announcement) => {
-            push_unique(&mut snapshot.aggregate_announcements, announcement);
+        PubsubPayload::Update(announcement) => snapshot.insert_update_announcement(announcement),
+        PubsubPayload::AggregateProposal(announcement) => {
+            insert_aggregate_proposal_announcement_with_index(snapshot, index, announcement);
         }
         PubsubPayload::ReductionCertificate(announcement) => {
-            push_unique(
-                &mut snapshot.reduction_certificate_announcements,
-                announcement,
-            );
+            insert_reduction_certificate_announcement_with_index(snapshot, index, announcement);
+        }
+        PubsubPayload::ValidationQuorum(announcement) => {
+            insert_validation_quorum_announcement_with_index(snapshot, index, announcement);
         }
         PubsubPayload::ReducerLoad(announcement) => {
-            push_unique(&mut snapshot.reducer_load_announcements, announcement);
+            snapshot.insert_reducer_load_announcement(announcement);
         }
-        PubsubPayload::Auth(announcement) => {
-            push_unique(&mut snapshot.auth_announcements, announcement);
-        }
+        PubsubPayload::Auth(announcement) => snapshot.insert_auth_announcement(announcement),
         PubsubPayload::Directory(announcement) => {
-            push_unique(&mut snapshot.directory_announcements, announcement);
+            snapshot.insert_directory_announcement(announcement);
         }
         PubsubPayload::PeerDirectory(announcement) => {
-            push_unique(&mut snapshot.peer_directory_announcements, announcement);
+            snapshot.insert_peer_directory_announcement(announcement);
         }
-        PubsubPayload::Metrics(announcement) => {
-            push_metrics_announcement(&mut snapshot.metrics_announcements, announcement);
-        }
+        PubsubPayload::Metrics(announcement) => snapshot.insert_metrics_announcement(announcement),
     }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn apply_pubsub_payload(snapshot: &mut ControlPlaneSnapshot, payload: PubsubPayload) {
+    let mut index = ControlPlaneHotIndex::default();
+    rebuild_hot_index(snapshot, &mut index);
+    apply_pubsub_payload_with_index(snapshot, &mut index, payload);
 }
 
 pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
@@ -643,8 +1333,9 @@ pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
         PubsubPayload::MergeWindow(_) => "merge-window",
         PubsubPayload::ReducerAssignment(_) => "reducer-assignment",
         PubsubPayload::Update(_) => "update",
-        PubsubPayload::Aggregate(_) => "aggregate",
+        PubsubPayload::AggregateProposal(_) => "aggregate-proposal",
         PubsubPayload::ReductionCertificate(_) => "reduction-certificate",
+        PubsubPayload::ValidationQuorum(_) => "validation-quorum",
         PubsubPayload::ReducerLoad(_) => "reducer-load",
         PubsubPayload::Auth(_) => "auth",
         PubsubPayload::Directory(_) => "directory",

@@ -4703,7 +4703,10 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
         Duration::from_secs(5),
         || {
             let snapshot = validator_telemetry.snapshot();
-            !snapshot.control_plane.aggregate_announcements.is_empty()
+            !snapshot
+                .control_plane
+                .aggregate_proposal_announcements
+                .is_empty()
                 && !snapshot
                     .control_plane
                     .reduction_certificate_announcements
@@ -4715,10 +4718,10 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
     let topology_snapshot = validator_telemetry.snapshot();
     let aggregate = topology_snapshot
         .control_plane
-        .aggregate_announcements
+        .aggregate_proposal_announcements
         .last()
-        .expect("aggregate announcement")
-        .aggregate
+        .expect("aggregate proposal announcement")
+        .proposal
         .clone();
     assert_eq!(aggregate.base_head_id, genesis_head.head_id);
     assert!(aggregate.stats.accepted_updates >= 1);
@@ -5301,4 +5304,272 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
     let _ = validator
         .await_termination()
         .expect("validator termination");
+}
+
+#[test]
+fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
+    let _guard = native_swarm_test_guard();
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+    let experiment = experiment();
+
+    let validator_a = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
+        "burn-p2p-quorum-validator-a-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ))))
+    .spawn()
+    .expect("validator a spawn");
+    let validator_a_telemetry = validator_a.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || !validator_a_telemetry.snapshot().listen_addresses.is_empty(),
+        "validator a did not start listening",
+    );
+    let validator_a_addr = validator_a_telemetry.snapshot().listen_addresses[0].clone();
+
+    let validator_b = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
+        "burn-p2p-quorum-validator-b-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ))))
+    .with_bootstrap_peer(validator_a_addr.clone())
+    .spawn()
+    .expect("validator b spawn");
+    let validator_b_telemetry = validator_b.telemetry();
+
+    wait_for(
+        Duration::from_secs(5),
+        || validator_a_telemetry.snapshot().connected_peers >= 1,
+        "validator a did not connect to validator b",
+    );
+    wait_for(
+        Duration::from_secs(5),
+        || validator_b_telemetry.snapshot().connected_peers >= 1,
+        "validator b did not connect to validator a",
+    );
+
+    let mut validator_a = validator_a;
+    let mut validator_b = validator_b;
+    let genesis_head = validator_a
+        .initialize_local_head(&experiment)
+        .expect("init genesis");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            validator_b
+                .sync_experiment_head(&experiment)
+                .expect("validator b sync")
+                .is_some()
+        },
+        "validator b did not sync genesis head",
+    );
+
+    let mut trainers = Vec::new();
+    for (index, learning_rate) in [0.25, 0.75].into_iter().enumerate() {
+        let trainer = NodeBuilder::new(SyntheticRuntimeProject {
+            dataset_root: dataset_dir.path().to_path_buf(),
+            learning_rate,
+            target_model: 10.0,
+        })
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
+            "burn-p2p-quorum-trainer-{index}-{}",
+            Utc::now().timestamp_nanos_opt().expect("nanos")
+        ))))
+        .with_bootstrap_peer(validator_a_addr.clone())
+        .spawn()
+        .expect("trainer spawn");
+        trainers.push(trainer);
+    }
+
+    wait_for(
+        Duration::from_secs(5),
+        || validator_a_telemetry.snapshot().connected_peers >= 3,
+        "validator a did not connect to validator b and both trainers",
+    );
+    for trainer in &trainers {
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                trainer
+                    .sync_experiment_head(&experiment)
+                    .expect("trainer sync")
+                    .is_some()
+            },
+            "trainer did not sync genesis head",
+        );
+    }
+
+    let mut trainer_outcomes = Vec::new();
+    for trainer in &mut trainers {
+        trainer_outcomes.push(
+            trainer
+                .train_window_once(&experiment)
+                .expect("trainer training window"),
+        );
+    }
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = validator_a_telemetry.snapshot();
+            snapshot.control_plane.update_announcements.len() >= 2
+        },
+        "validator a did not observe trainer updates",
+    );
+    let validator_a_peer_id = validator_a_telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("validator a peer id");
+    for outcome in &trainer_outcomes {
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                validator_a
+                    .sync_artifact_from_peer(
+                        &outcome.contribution.peer_id,
+                        outcome.head.artifact_id.clone(),
+                    )
+                    .is_ok()
+            },
+            "validator a did not warm the trainer artifact from the live network",
+        );
+        validator_a
+            .publish_artifact_from_store(&outcome.head.artifact_id)
+            .expect("validator a republish trainer artifact");
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                validator_b
+                    .sync_artifact_from_peer(&validator_a_peer_id, outcome.head.artifact_id.clone())
+                    .is_ok()
+            },
+            "validator b did not warm the trainer artifact from validator a",
+        );
+    }
+
+    let outcome_a = validator_a
+        .validate_candidates_once(&experiment)
+        .expect("validator a validate");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let a = validator_a_telemetry.snapshot();
+            a.control_plane.aggregate_proposal_announcements.len() == 1
+                && a.control_plane.reduction_certificate_announcements.len() == 1
+                && a.control_plane.validation_quorum_announcements.is_empty()
+                && a.control_plane.merge_announcements.is_empty()
+        },
+        "validator a did not publish the aggregate proposal before quorum and merge promotion",
+    );
+    let outcome_b = validator_b
+        .validate_candidates_once(&experiment)
+        .expect("validator b validate");
+    let promoted_results = vec![outcome_a, outcome_b]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert!(
+        promoted_results.len() <= 1,
+        "at most one validator should report itself as the promotion winner",
+    );
+
+    let convergence_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let a = validator_a_telemetry.snapshot();
+        let b = validator_b_telemetry.snapshot();
+        let observed_attesters = a
+            .control_plane
+            .reduction_certificate_announcements
+            .iter()
+            .chain(b.control_plane.reduction_certificate_announcements.iter())
+            .map(|announcement| announcement.certificate.validator.clone())
+            .collect::<BTreeSet<_>>();
+        if observed_attesters.len() >= 2
+            && a.control_plane.merge_announcements.len() == 1
+            && b.control_plane.merge_announcements.len() == 1
+            && a.control_plane.aggregate_proposal_announcements.len() == 1
+            && b.control_plane.aggregate_proposal_announcements.len() == 1
+            && a.control_plane.validation_quorum_announcements.len() == 1
+            && b.control_plane.validation_quorum_announcements.len() == 1
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < convergence_deadline,
+            "validators did not converge: attesters={:?}; a(reduction={}, aggregate={}, quorum={}, merge={}) b(reduction={}, aggregate={}, quorum={}, merge={})",
+            observed_attesters
+                .iter()
+                .map(|peer_id| peer_id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            a.control_plane.reduction_certificate_announcements.len(),
+            a.control_plane.aggregate_proposal_announcements.len(),
+            a.control_plane.validation_quorum_announcements.len(),
+            a.control_plane.merge_announcements.len(),
+            b.control_plane.reduction_certificate_announcements.len(),
+            b.control_plane.aggregate_proposal_announcements.len(),
+            b.control_plane.validation_quorum_announcements.len(),
+            b.control_plane.merge_announcements.len(),
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let quorum_certificate = validator_a_telemetry
+        .snapshot()
+        .control_plane
+        .validation_quorum_announcements
+        .last()
+        .expect("validation quorum")
+        .certificate
+        .clone();
+    let promoted_merge = validator_a_telemetry
+        .snapshot()
+        .control_plane
+        .merge_announcements
+        .last()
+        .expect("promoted merge")
+        .certificate
+        .clone();
+    assert_eq!(promoted_merge.base_head_id, genesis_head.head_id);
+    assert_eq!(
+        quorum_certificate.merged_head_id,
+        promoted_merge.merged_head_id
+    );
+    assert_eq!(quorum_certificate.attesting_validators.len(), 2);
+
+    let synced_a = validator_a
+        .sync_experiment_head(&experiment)
+        .expect("validator a sync")
+        .expect("validator a canonical head");
+    let synced_b = validator_b
+        .sync_experiment_head(&experiment)
+        .expect("validator b sync")
+        .expect("validator b canonical head");
+    assert_eq!(synced_a.head_id, promoted_merge.merged_head_id);
+    assert_eq!(synced_b.head_id, promoted_merge.merged_head_id);
+
+    for trainer in trainers {
+        trainer.shutdown().expect("trainer shutdown");
+        let _ = trainer.await_termination().expect("trainer termination");
+    }
+    validator_b.shutdown().expect("validator b shutdown");
+    let _ = validator_b
+        .await_termination()
+        .expect("validator b termination");
+    validator_a.shutdown().expect("validator a shutdown");
+    let _ = validator_a
+        .await_termination()
+        .expect("validator a termination");
 }
