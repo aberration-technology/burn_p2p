@@ -1,7 +1,6 @@
 use super::*;
 use crate::config::{
     ClientReenrollmentStatus, RuntimeCommand, TrustBundleState, default_node_runtime_state,
-    peer_id_from_event,
 };
 mod control_plane;
 mod persistence;
@@ -112,21 +111,131 @@ pub(crate) fn set_effective_limit_profile(
     telemetry: &TelemetryHandle,
     profile: Option<LimitProfile>,
 ) {
-    let mut snapshot = telemetry
-        .state
-        .lock()
-        .expect("telemetry state lock should not be poisoned");
+    let mut snapshot = lock_telemetry_state(&telemetry.state);
     snapshot.effective_limit_profile = profile;
     snapshot.updated_at = Utc::now();
 }
 
+pub(crate) fn lock_telemetry_state(
+    state: &Arc<Mutex<NodeTelemetrySnapshot>>,
+) -> std::sync::MutexGuard<'_, NodeTelemetrySnapshot> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub(crate) fn connected_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId> {
-    snapshot
-        .observed_peer_ids
-        .iter()
-        .cloned()
-        .chain(snapshot.recent_events.iter().filter_map(peer_id_from_event))
+    snapshot.observed_peer_ids.clone()
+}
+
+pub(crate) fn cached_connected_snapshots(
+    snapshot: &NodeTelemetrySnapshot,
+) -> Vec<(PeerId, ControlPlaneSnapshot)> {
+    let aggregate = &snapshot.control_plane;
+    connected_peer_ids(snapshot)
+        .into_iter()
+        .map(|peer_id| {
+            (
+                peer_id.clone(),
+                ControlPlaneSnapshot {
+                    control_announcements: aggregate.control_announcements.clone(),
+                    head_announcements: aggregate
+                        .head_announcements
+                        .iter()
+                        .filter(|announcement| {
+                            announcement.provider_peer_id.as_ref() == Some(&peer_id)
+                        })
+                        .cloned()
+                        .collect(),
+                    lease_announcements: aggregate.lease_announcements.clone(),
+                    merge_announcements: aggregate.merge_announcements.clone(),
+                    merge_window_announcements: aggregate.merge_window_announcements.clone(),
+                    reducer_assignment_announcements: aggregate
+                        .reducer_assignment_announcements
+                        .clone(),
+                    update_announcements: aggregate
+                        .update_announcements
+                        .iter()
+                        .filter(|announcement| announcement.update.peer_id == peer_id)
+                        .cloned()
+                        .collect(),
+                    aggregate_announcements: aggregate.aggregate_announcements.clone(),
+                    reduction_certificate_announcements: aggregate
+                        .reduction_certificate_announcements
+                        .clone(),
+                    reducer_load_announcements: aggregate.reducer_load_announcements.clone(),
+                    auth_announcements: aggregate
+                        .auth_announcements
+                        .iter()
+                        .filter(|announcement| announcement.peer_id == peer_id)
+                        .cloned()
+                        .collect(),
+                    directory_announcements: aggregate.directory_announcements.clone(),
+                    peer_directory_announcements: aggregate.peer_directory_announcements.clone(),
+                    metrics_announcements: aggregate.metrics_announcements.clone(),
+                },
+            )
+        })
         .collect()
+}
+
+pub(crate) fn merge_control_plane_snapshot(
+    target: &mut ControlPlaneSnapshot,
+    remote: &ControlPlaneSnapshot,
+) {
+    fn extend_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
+        for value in values {
+            if !target.contains(value) {
+                target.push(value.clone());
+            }
+        }
+    }
+
+    extend_unique(
+        &mut target.control_announcements,
+        &remote.control_announcements,
+    );
+    extend_unique(&mut target.head_announcements, &remote.head_announcements);
+    extend_unique(&mut target.lease_announcements, &remote.lease_announcements);
+    extend_unique(&mut target.merge_announcements, &remote.merge_announcements);
+    extend_unique(
+        &mut target.merge_window_announcements,
+        &remote.merge_window_announcements,
+    );
+    extend_unique(
+        &mut target.reducer_assignment_announcements,
+        &remote.reducer_assignment_announcements,
+    );
+    extend_unique(
+        &mut target.update_announcements,
+        &remote.update_announcements,
+    );
+    extend_unique(
+        &mut target.aggregate_announcements,
+        &remote.aggregate_announcements,
+    );
+    extend_unique(
+        &mut target.reduction_certificate_announcements,
+        &remote.reduction_certificate_announcements,
+    );
+    extend_unique(
+        &mut target.reducer_load_announcements,
+        &remote.reducer_load_announcements,
+    );
+    extend_unique(&mut target.auth_announcements, &remote.auth_announcements);
+    extend_unique(
+        &mut target.directory_announcements,
+        &remote.directory_announcements,
+    );
+    extend_unique(
+        &mut target.peer_directory_announcements,
+        &remote.peer_directory_announcements,
+    );
+    extend_unique(
+        &mut target.metrics_announcements,
+        &remote.metrics_announcements,
+    );
+    target.clamp_metrics_announcements();
 }
 
 pub(crate) fn matches_experiment_head(

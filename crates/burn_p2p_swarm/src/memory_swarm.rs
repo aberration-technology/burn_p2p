@@ -1,23 +1,25 @@
 use super::*;
 
 /// Represents a memory swarm shell.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct MemorySwarmShell {
     local_peer_id: Libp2pPeerId,
     swarm: Swarm<dummy::Behaviour>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl MemorySwarmShell {
     /// Creates a new value.
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, SwarmError> {
         Self::with_keypair(Keypair::generate_ed25519())
     }
 
     /// Returns a copy configured with the keypair.
-    pub fn with_keypair(keypair: Keypair) -> Self {
+    pub fn with_keypair(keypair: Keypair) -> Result<Self, SwarmError> {
         let local_peer_id = keypair.public().to_peer_id();
         let transport = MemoryTransport::default()
             .upgrade(upgrade::Version::V1)
-            .authenticate(libp2p::tls::Config::new(&keypair).expect("tls config should be valid"))
+            .authenticate(tls_config(&keypair)?)
             .multiplex(yamux::Config::default())
             .boxed();
         let swarm = Swarm::new(
@@ -27,10 +29,10 @@ impl MemorySwarmShell {
             Libp2pSwarmConfig::without_executor(),
         );
 
-        Self {
+        Ok(Self {
             local_peer_id,
             swarm,
-        }
+        })
     }
 
     /// Performs the local peer ID operation.
@@ -93,8 +95,57 @@ impl MemorySwarmShell {
     }
 }
 
-impl Default for MemorySwarmShell {
-    fn default() -> Self {
-        Self::new()
+/// Represents a memory swarm shell.
+#[cfg(target_arch = "wasm32")]
+pub struct MemorySwarmShell {
+    local_peer_id: Libp2pPeerId,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl MemorySwarmShell {
+    /// Creates a new value.
+    pub fn new() -> Result<Self, SwarmError> {
+        Self::with_keypair(Keypair::generate_ed25519())
+    }
+
+    /// Returns a copy configured with the keypair.
+    pub fn with_keypair(keypair: Keypair) -> Result<Self, SwarmError> {
+        Ok(Self {
+            local_peer_id: keypair.public().to_peer_id(),
+        })
+    }
+
+    /// Performs the local peer ID operation.
+    pub fn local_peer_id(&self) -> &Libp2pPeerId {
+        &self.local_peer_id
+    }
+
+    /// Performs the listen on operation.
+    pub fn listen_on(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory swarm transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the dial operation.
+    pub fn dial(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory swarm transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the connected peer count operation.
+    pub fn connected_peer_count(&self) -> usize {
+        0
+    }
+
+    /// Performs the poll event operation.
+    pub fn poll_event(&mut self, _cx: &mut Context<'_>) -> Poll<LiveSwarmEvent> {
+        Poll::Pending
+    }
+
+    /// Performs the wait event operation.
+    pub fn wait_event(&mut self, _timeout: Duration) -> Option<LiveSwarmEvent> {
+        None
     }
 }

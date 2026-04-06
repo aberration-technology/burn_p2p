@@ -1,0 +1,88 @@
+x-trainer-build: &trainer-build
+  context: ../..
+  args:
+    APP_MANIFEST_PATH: ${BURN_P2P_TRAINER_APP_MANIFEST_PATH:-crates/burn_p2p/Cargo.toml}
+    APP_TARGET_KIND: ${BURN_P2P_TRAINER_APP_TARGET_KIND:-example}
+    APP_TARGET_NAME: ${BURN_P2P_TRAINER_APP_TARGET_NAME:-synthetic_trainer}
+    APP_FEATURES: ${BURN_P2P_TRAINER_APP_FEATURES:-burn}
+    APP_NO_DEFAULT_FEATURES: ${BURN_P2P_TRAINER_APP_NO_DEFAULT_FEATURES:-false}
+
+services:
+  bootstrap:
+    build:
+      context: ../..
+      dockerfile: deploy/containers/bootstrap.Dockerfile
+      args:
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,browser-edge,browser-join,auth-static}
+    command: ["/config/trusted-browser.json"]
+    ports:
+      - "8787:8787"
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+    volumes:
+      - ../config/trusted-browser.json:/config/trusted-browser.json:ro
+      - burn-p2p-bootstrap-data:/var/lib/burn-p2p
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+  validator:
+    build:
+      context: ../..
+      dockerfile: deploy/containers/bootstrap.Dockerfile
+      args:
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_VALIDATOR_FEATURES:-admin-http,metrics,auth-static}
+    command: ["/config/reference-validator.json"]
+    depends_on:
+      - bootstrap
+    ports:
+      - "8788:8788"
+      - "4002:4002/tcp"
+      - "4002:4002/udp"
+    volumes:
+      - ../config/reference-validator.json:/config/reference-validator.json:ro
+      - burn-p2p-validator-data:/var/lib/burn-p2p
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+  trainer-cpu:
+    profiles: ["trainers"]
+    build:
+      <<: *trainer-build
+      dockerfile: deploy/containers/node-native.Dockerfile
+    depends_on:
+      - bootstrap
+      - validator
+    command: ${BURN_P2P_TRAINER_CPU_COMMAND:-/config/trainer.json}
+    volumes:
+      - ${BURN_P2P_TRAINER_CPU_CONFIG_PATH:-./trainer.json}:/config/trainer.json:ro
+      - burn-p2p-trainer-cpu-data:/var/lib/burn-p2p
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+  trainer-gpu:
+    profiles: ["trainers", "gpu"]
+    build:
+      <<: *trainer-build
+      dockerfile: deploy/containers/node-cuda.Dockerfile
+    depends_on:
+      - bootstrap
+      - validator
+    command: ${BURN_P2P_TRAINER_GPU_COMMAND:-/config/trainer-gpu.json}
+    volumes:
+      - ${BURN_P2P_TRAINER_GPU_CONFIG_PATH:-./trainer-gpu.json}:/config/trainer-gpu.json:ro
+      - burn-p2p-trainer-gpu-data:/var/lib/burn-p2p
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    gpus: all
+    restart: unless-stopped
+
+volumes:
+  burn-p2p-bootstrap-data: {}
+  burn-p2p-validator-data: {}
+  burn-p2p-trainer-cpu-data: {}
+  burn-p2p-trainer-gpu-data: {}

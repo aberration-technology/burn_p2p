@@ -3,11 +3,13 @@ use std::convert::Infallible;
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{TcpListener, UdpSocket};
 
-use libp2p::{Multiaddr, multiaddr::Protocol as MultiaddrProtocol};
+use libp2p::{Multiaddr, StreamProtocol, multiaddr::Protocol as MultiaddrProtocol};
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_identity::Keypair;
 use libp2p_request_response as request_response;
 use libp2p_swarm::SwarmEvent;
 
-use crate::{ControlPlaneRequest, ControlPlaneResponse};
+use crate::{ControlPlaneRequest, ControlPlaneResponse, ProtocolId, SwarmError};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::NativeControlPlaneBehaviourEvent;
@@ -83,6 +85,17 @@ pub(crate) fn other_native_control_name(
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn other_native_control_name<T>(_event: &SwarmEvent<T>) -> &'static str {
     "other"
+}
+
+pub(crate) fn stream_protocol(protocol: &ProtocolId) -> Result<StreamProtocol, SwarmError> {
+    StreamProtocol::try_from_owned(protocol.as_str().to_owned())
+        .map_err(|_| SwarmError::InvalidProtocolId(protocol.as_str().to_owned()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tls_config(keypair: &Keypair) -> Result<libp2p::tls::Config, SwarmError> {
+    libp2p::tls::Config::new(keypair)
+        .map_err(|error| SwarmError::Runtime(format!("failed to build tls config: {error}")))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

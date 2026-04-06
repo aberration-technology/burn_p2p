@@ -20,6 +20,28 @@ pub fn render_browser_app_static_html(
     browser_app::render_browser_app_static_html(bootstrap)
 }
 
+/// Renders a static browser-app shell without requiring callers to pass
+/// `burn_p2p_views` types across crate boundaries.
+pub fn render_browser_app_static_html_with_config(
+    app_name: &str,
+    asset_base_url: &str,
+    module_entry_path: &str,
+    stylesheet_path: Option<&str>,
+    default_edge_url: Option<&str>,
+    default_surface_key: &str,
+    refresh_interval_ms: u64,
+) -> String {
+    browser_app::render_browser_app_static_html_with_config(
+        app_name,
+        asset_base_url,
+        module_entry_path,
+        stylesheet_path,
+        default_edge_url,
+        default_surface_key,
+        refresh_interval_ms,
+    )
+}
+
 /// Renders a run-summary page for one experiment's artifact history.
 pub fn render_artifact_run_summaries_html(
     experiment_id: &str,

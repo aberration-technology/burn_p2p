@@ -36,7 +36,7 @@ Purpose:
 The demo runs one net with:
 
 - one validator / authority node
-- one helper node with bootstrap, relay-helper, and archive roles
+- one helper node acting as the net's cheap coherence seed plus archive helper
 - one viewer node with portal-viewer and browser-observer roles
 - three initial native trainers
 - one late-joining native trainer
@@ -66,6 +66,13 @@ The core example crate stays native-focused.
 - latency / bandwidth-shaped browser dataset fetch profiles
 - adversarial annex checks from `burn_p2p_testkit`
 - summary assertions over both the native run and the browser probe
+
+The helper node is deliberately not a validator. It exists to exercise the intended deployment
+split:
+
+- cheap coherence/bootstrap seed
+- separate validator / authority
+- separate trainers
 
 ## Files
 
@@ -180,18 +187,20 @@ just e2e-mnist
 
 ## What `cargo xtask e2e mnist` Proves
 
-The xtask lane runs the example, then:
+The xtask lane runs the example, keeps the native mnist fleet alive, then:
 
-- reads `browser-export.json`
-- reads `correctness.json`
+- reads `browser-live.json`
+- runs the browser wasm probe against the same live mnist run and browser edge
 - builds a browser portal bundle
 - runs Playwright against viewer / validate / train / network scenarios
 - builds a wasm browser probe from the same downstream example crate
-- runs live browser burn/webgpu training and eval against leased mnist shards
+- runs live browser burn/webgpu training and eval against the same leased mnist shard slice
 - runs fast and slow browser fetch profiles with injected latency/bandwidth
 - stores screenshots and trace zips
 - writes a compact core `summary.json`
 - writes a separate `correctness.json`
+- writes `browser-export.json` for the portal/capture surface
+- folds the live browser runtime and wasm training result directly into `correctness.json`
 
 Checks and exported signals covered by `summary.json`, `correctness.json`, and
 the top-level xtask artifact summary:
@@ -205,6 +214,13 @@ the top-level xtask artifact summary:
 - `browser_wasm_probe.browser_execution.live_browser_training`
 - `browser_wasm_probe.browser_execution.browser_latency_emulated`
 - `browser_wasm_probe.browser_execution.slower_profile_increased_total_time`
+- `correctness.browser_execution.trainer_runtime_and_wasm_training_coherent`
+- `correctness.browser_execution.same_network_context`
+- `correctness.browser_execution.same_experiment_context`
+- `correctness.browser_execution.same_revision_context`
+- `correctness.browser_execution.same_head_context`
+- `correctness.browser_execution.same_lease_context`
+- `correctness.browser_execution.same_leased_microshards`
 - `resilience.trainer_restart_reconnected`
 - `resilience.trainer_restart_resumed_training`
 - `correctness.adversarial.reports[*].malicious_update_acceptance_rate == 0.0`
@@ -221,7 +237,9 @@ Direct example output:
 
 - `summary.json`
 - `correctness.json`
+- `browser-live.json`
 - `browser-export.json`
+- `browser-probe-result.json`
 - `dataset/`
 - `nodes/`
 

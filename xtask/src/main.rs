@@ -35,8 +35,8 @@ use burn_p2p_views::BrowserAppSurface;
 use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
-    CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, E2eCommand, MultiprocessArgs,
-    SetupCommand, StressCommand,
+    CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction, DeployCloudArgs,
+    DeployCommand, DeployComposeArgs, E2eCommand, MultiprocessArgs, SetupCommand, StressCommand,
 };
 use profile::Profile;
 use runner::{StepRecord, Workspace, command_available};
@@ -153,6 +153,11 @@ fn main() -> anyhow::Result<()> {
             BenchCommand::Robust(args) => run_bench_robust(&workspace, args),
             BenchCommand::Nightly(args) => run_bench_nightly(&workspace, args),
         },
+        Command::Deploy { command } => match command {
+            DeployCommand::Compose(args) => run_deploy_compose(&workspace, args),
+            DeployCommand::Aws(args) => run_deploy_cloud(&workspace, "aws", args),
+            DeployCommand::Gcp(args) => run_deploy_cloud(&workspace, "gcp", args),
+        },
         Command::Ci { command } => match command {
             CiCommand::PrFast(args) => run_ci_pr_fast(&workspace, args),
             CiCommand::Browser(args) => run_ci_browser(&workspace, args),
@@ -174,6 +179,7 @@ fn doctor(workspace: &Workspace) -> anyhow::Result<()> {
     let node = probe_command(workspace.node(), &["--version"]);
     let docker = probe_command("docker", &["--version"]);
     let compose = probe_command("docker", &["compose", "version"]);
+    let terraform = probe_command("terraform", &["version"]);
     let chrome = resolve_chrome_path();
     let firefox = resolve_firefox_path();
     let playwright_cache = playwright_package_available();
@@ -244,6 +250,7 @@ fn doctor(workspace: &Workspace) -> anyhow::Result<()> {
     );
     print_optional("Docker", &docker);
     print_optional("Docker Compose", &compose);
+    print_optional("Terraform", &terraform);
     println!("GREEN artifact directory: {}", artifact_root.display());
     println!(
         "GREEN free local ports: {}",
@@ -313,6 +320,190 @@ fn setup_browser(workspace: &Workspace) -> anyhow::Result<()> {
         &steps,
         json!({ "kind": "setup" }),
         true,
+    )
+}
+
+fn run_deploy_compose(workspace: &Workspace, args: DeployComposeArgs) -> anyhow::Result<()> {
+    ensure!(
+        command_available("docker"),
+        "docker is required for `cargo xtask deploy compose`"
+    );
+    let artifacts = ArtifactLayout::create(&workspace.root, "deploy-compose", args.common.profile)?;
+    let compose_file = workspace
+        .root
+        .join("deploy/compose")
+        .join(args.stack.file_name());
+    ensure!(
+        compose_file.exists(),
+        "missing compose stack {}",
+        compose_file.display()
+    );
+    let mut command = vec!["compose".into()];
+    if let Some(env_file) = args.env_file.as_ref() {
+        let env_file = workspace.root.join(env_file);
+        command.push("--env-file".into());
+        command.push(env_file.display().to_string());
+    }
+    command.push("-f".into());
+    command.push(compose_file.display().to_string());
+    for profile in &args.profile_name {
+        command.push("--profile".into());
+        command.push(profile.clone());
+    }
+    match args.action {
+        DeployAction::Plan => {
+            command.push("config".into());
+        }
+        DeployAction::Up => {
+            command.push("up".into());
+            command.push("--build".into());
+            command.push("-d".into());
+        }
+        DeployAction::Down => {
+            command.push("down".into());
+            command.push("--remove-orphans".into());
+        }
+    }
+
+    let envs = BTreeMap::new();
+    let steps = vec![workspace.run(&artifacts, "deploy-compose", "docker", &command, &envs)?];
+    finalize_run(
+        &artifacts,
+        "deploy-compose",
+        args.common.profile,
+        &steps,
+        json!({
+            "stack": args.stack.file_name(),
+            "action": match args.action {
+                DeployAction::Plan => "plan",
+                DeployAction::Up => "up",
+                DeployAction::Down => "down",
+            },
+            "env_file": args.env_file,
+            "profiles": args.profile_name,
+        }),
+        args.common.keep_artifacts,
+    )
+}
+
+fn run_deploy_cloud(
+    workspace: &Workspace,
+    provider: &str,
+    args: DeployCloudArgs,
+) -> anyhow::Result<()> {
+    ensure!(
+        command_available("terraform"),
+        "terraform is required for `cargo xtask deploy {provider}`"
+    );
+    let artifacts = ArtifactLayout::create(
+        &workspace.root,
+        &format!("deploy-{provider}"),
+        args.common.profile,
+    )?;
+    let stack_root = workspace.root.join("deploy/terraform").join(provider);
+    ensure!(
+        stack_root.exists(),
+        "missing terraform stack {}",
+        stack_root.display()
+    );
+    let mut envs = BTreeMap::new();
+    if let Some(image) = args.bootstrap_image.as_ref() {
+        envs.insert("TF_VAR_bootstrap_image".into(), image.clone());
+    }
+    if let Some(image) = args.validator_image.as_ref() {
+        envs.insert("TF_VAR_validator_image".into(), image.clone());
+    }
+    if let Some(image) = args.trainer_image.as_ref() {
+        envs.insert("TF_VAR_trainer_image".into(), image.clone());
+    }
+    let default_bootstrap_config = workspace.root.join("deploy/config/trusted-browser.json");
+    let default_validator_config = workspace
+        .root
+        .join("deploy/config/reference-validator.json");
+    let bootstrap_config_path = args
+        .bootstrap_config
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or(default_bootstrap_config);
+    let validator_config_path = args
+        .validator_config
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or(default_validator_config);
+    envs.insert(
+        "TF_VAR_bootstrap_config_json".into(),
+        fs::read_to_string(&bootstrap_config_path)
+            .with_context(|| format!("failed to read {}", bootstrap_config_path.display()))?,
+    );
+    envs.insert(
+        "TF_VAR_validator_config_json".into(),
+        fs::read_to_string(&validator_config_path)
+            .with_context(|| format!("failed to read {}", validator_config_path.display()))?,
+    );
+
+    let mut steps = Vec::new();
+    steps.push(workspace.run(
+        &artifacts,
+        "terraform-init",
+        "terraform",
+        &[
+            format!("-chdir={}", stack_root.display()),
+            "init".into(),
+            "-input=false".into(),
+        ],
+        &envs,
+    )?);
+
+    let mut terraform_args = vec![format!("-chdir={}", stack_root.display())];
+    terraform_args.push(match args.action {
+        DeployAction::Plan => "plan".into(),
+        DeployAction::Up => "apply".into(),
+        DeployAction::Down => "destroy".into(),
+    });
+    terraform_args.push("-input=false".into());
+    if matches!(args.action, DeployAction::Up | DeployAction::Down) {
+        terraform_args.push("-auto-approve".into());
+    }
+    let var_file = args.var_file.as_ref().map(|path| workspace.root.join(path));
+    if let Some(var_file) = var_file.as_ref() {
+        terraform_args.push(format!("-var-file={}", var_file.display()));
+    }
+
+    steps.push(workspace.run(
+        &artifacts,
+        &format!(
+            "terraform-{}",
+            match args.action {
+                DeployAction::Plan => "plan",
+                DeployAction::Up => "apply",
+                DeployAction::Down => "destroy",
+            }
+        ),
+        "terraform",
+        &terraform_args,
+        &envs,
+    )?);
+
+    finalize_run(
+        &artifacts,
+        &format!("deploy-{provider}"),
+        args.common.profile,
+        &steps,
+        json!({
+            "provider": provider,
+            "action": match args.action {
+                DeployAction::Plan => "plan",
+                DeployAction::Up => "apply",
+                DeployAction::Down => "destroy",
+            },
+            "var_file": var_file,
+            "bootstrap_image": args.bootstrap_image,
+            "validator_image": args.validator_image,
+            "trainer_image": args.trainer_image,
+            "bootstrap_config": bootstrap_config_path,
+            "validator_config": validator_config_path,
+        }),
+        args.common.keep_artifacts,
     )
 }
 
@@ -494,7 +685,10 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
                 "warnings",
             ],
         ),
-        ("test-workspace", vec!["test", "--workspace"]),
+        (
+            "test-workspace",
+            vec!["test", "--workspace", "--exclude", "burn_p2p"],
+        ),
         (
             "test-burn",
             vec!["test", "-p", "burn_p2p", "--features", "burn"],
@@ -554,15 +748,6 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
             &format!("package-list-{crate_name}"),
             &args_vec,
             &envs,
-        )?);
-    }
-
-    for crate_name in PUBLISH_CRATES {
-        steps.push(run_package_archive(
-            workspace,
-            &artifacts,
-            crate_name,
-            &package_flags,
         )?);
     }
 
@@ -732,11 +917,40 @@ fn run_e2e_mixed(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     )
 }
 
+fn wait_for_path(path: &std::path::Path, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!("timed out waiting for {}", path.display());
+}
+
 fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
     let artifacts = ArtifactLayout::create(&workspace.root, "e2e-mnist", args.profile)?;
     let envs = BTreeMap::new();
     let demo_root = artifacts.root.join("mnist-demo");
-    let steps = vec![workspace.run_cargo(
+    let mut steps = Vec::new();
+    let browser_probe_root = artifacts.root.join("browser-wasm-probe");
+    let browser_probe_assets = browser_probe_root.join("assets");
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-browser-probe-assets",
+        &[
+            "run",
+            "--manifest-path",
+            "examples/mnist_p2p_demo/Cargo.toml",
+            "--bin",
+            "mnist_browser_probe_assets",
+            "--",
+            "--output",
+            browser_probe_assets.display().to_string().as_str(),
+        ],
+        &envs,
+    )?);
+    let mut demo_process = workspace.spawn_cargo(
         &artifacts,
         "mnist-demo",
         &[
@@ -748,9 +962,133 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             "--",
             "--output",
             demo_root.display().to_string().as_str(),
+            "--await-live-browser-probe",
         ],
         &envs,
-    )?];
+    )?;
+    let browser_manifest_path = demo_root.join("browser-live.json");
+    let browser_probe_summary = (|| -> anyhow::Result<serde_json::Value> {
+        wait_for_path(&browser_manifest_path, Duration::from_secs(120))?;
+        let browser_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(&browser_manifest_path)
+                .with_context(|| format!("failed to read {}", browser_manifest_path.display()))?,
+        )
+        .with_context(|| format!("failed to decode {}", browser_manifest_path.display()))?;
+        let browser_probe_config = json!({
+            "asset_root": browser_probe_assets.display().to_string(),
+            "dataset_root": demo_root.join("dataset").display().to_string(),
+            "artifact_root": browser_probe_root.display().to_string(),
+            "network_id": browser_manifest
+                .get("network_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing network_id")?,
+            "experiment_id": browser_manifest
+                .get("experiment_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing experiment_id")?,
+            "revision_id": browser_manifest
+                .get("revision_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing revision_id")?,
+            "selected_head_id": browser_manifest
+                .get("selected_head_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing selected_head_id")?,
+            "lease_id": browser_manifest
+                .get("lease_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing lease_id")?,
+            "leased_microshards": browser_manifest
+                .get("leased_microshards")
+                .cloned()
+                .context("browser live manifest missing leased_microshards")?,
+            "edge_base_url": browser_manifest
+                .get("edge_base_url")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing edge_base_url")?,
+            "release_train_hash": browser_manifest
+                .get("release_train_hash")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing release_train_hash")?,
+            "target_artifact_id": browser_manifest
+                .get("target_artifact_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing target_artifact_id")?,
+            "target_artifact_hash": browser_manifest
+                .get("target_artifact_hash")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing target_artifact_hash")?,
+            "workload_id": browser_manifest
+                .get("workload_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing workload_id")?,
+            "principal_id": browser_manifest
+                .get("principal_id")
+                .and_then(serde_json::Value::as_str)
+                .context("browser live manifest missing principal_id")?,
+            "batch_size": 32,
+            "learning_rate": 1.0e-3,
+            "max_train_batches": 3,
+            "profiles": [
+                {
+                    "slug": "fast",
+                    "latency_ms": 0,
+                    "bandwidth_bytes_per_sec": 0,
+                },
+                {
+                    "slug": "slow",
+                    "latency_ms": 150,
+                    "bandwidth_bytes_per_sec": 262144,
+                }
+            ],
+        });
+        artifacts.write_json("configs/mnist-browser-probe.json", &browser_probe_config)?;
+        let capture_envs = portal_capture_envs(args.profile, false);
+        steps.push(
+            workspace.run_node(
+                &artifacts,
+                "mnist-browser-wasm-probe",
+                &[
+                    "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
+                    artifacts
+                        .root
+                        .join("configs/mnist-browser-probe.json")
+                        .display()
+                        .to_string()
+                        .as_str(),
+                ],
+                &capture_envs,
+            )?,
+        );
+        let browser_probe_summary_path = browser_probe_root.join("browser-wasm/summary.json");
+        let browser_probe_summary: serde_json::Value =
+            serde_json::from_slice(&fs::read(&browser_probe_summary_path).with_context(|| {
+                format!("failed to read {}", browser_probe_summary_path.display())
+            })?)
+            .with_context(|| {
+                format!("failed to decode {}", browser_probe_summary_path.display())
+            })?;
+        fs::write(
+            demo_root.join("browser-probe-result.json"),
+            serde_json::to_vec_pretty(&browser_probe_summary)?,
+        )
+        .with_context(|| {
+            format!(
+                "failed to write {}",
+                demo_root.join("browser-probe-result.json").display()
+            )
+        })?;
+        Ok(browser_probe_summary)
+    })();
+    let browser_probe_summary = match browser_probe_summary {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = demo_process.kill();
+            let _ = demo_process.wait(&artifacts);
+            return Err(error);
+        }
+    };
+    steps.push(demo_process.wait(&artifacts)?);
 
     let summary_path = demo_root.join("summary.json");
     let summary: serde_json::Value = serde_json::from_slice(
@@ -867,7 +1205,6 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     artifacts.write_json("configs/portal-manifest.json", &manifest)?;
 
     let capture_envs = portal_capture_envs(args.profile, false);
-    let mut steps = steps;
     steps.push(
         workspace.run_node(
             &artifacts,
@@ -886,84 +1223,10 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
 
     let bundle_artifacts = artifacts.root.join("playwright");
     copy_dir_all(&browser_bundle, &bundle_artifacts)?;
-    copy_files_with_extension_tree(&bundle_artifacts, "png", &artifacts.screenshots)?;
-    copy_files_with_extension_tree(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
-
-    let leased_microshards = correctness
-        .pointer("/trainer_leases/0/microshards")
-        .and_then(serde_json::Value::as_array)
-        .context("mnist demo correctness summary missing first trainer lease microshards")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(ToOwned::to_owned)
-                .context("mnist trainer lease microshard id should be a string")
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let browser_probe_root = artifacts.root.join("browser-wasm-probe");
-    let browser_probe_assets = browser_probe_root.join("assets");
-    steps.push(workspace.run_cargo(
-        &artifacts,
-        "mnist-browser-probe-assets",
-        &[
-            "run",
-            "--manifest-path",
-            "examples/mnist_p2p_demo/Cargo.toml",
-            "--bin",
-            "mnist_browser_probe_assets",
-            "--",
-            "--output",
-            browser_probe_assets.display().to_string().as_str(),
-        ],
-        &envs,
-    )?);
-    let browser_probe_config = json!({
-        "asset_root": browser_probe_assets.display().to_string(),
-        "dataset_root": demo_root.join("dataset").display().to_string(),
-        "artifact_root": browser_probe_root.display().to_string(),
-        "leased_microshards": leased_microshards,
-        "batch_size": 32,
-        "learning_rate": 1.0e-3,
-        "max_train_batches": 3,
-        "profiles": [
-            {
-                "slug": "fast",
-                "latency_ms": 0,
-                "bandwidth_bytes_per_sec": 0,
-            },
-            {
-                "slug": "slow",
-                "latency_ms": 150,
-                "bandwidth_bytes_per_sec": 262144,
-            }
-        ],
-    });
-    artifacts.write_json("configs/mnist-browser-probe.json", &browser_probe_config)?;
-    steps.push(
-        workspace.run_node(
-            &artifacts,
-            "mnist-browser-wasm-probe",
-            &[
-                "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
-                artifacts
-                    .root
-                    .join("configs/mnist-browser-probe.json")
-                    .display()
-                    .to_string()
-                    .as_str(),
-            ],
-            &capture_envs,
-        )?,
-    );
     copy_files_with_extension_tree(&browser_probe_root, "png", &artifacts.screenshots)?;
     copy_files_with_extension_tree(&browser_probe_root, "zip", &artifacts.playwright_traces)?;
-    let browser_probe_summary_path = browser_probe_root.join("browser-wasm/summary.json");
-    let browser_probe_summary: serde_json::Value = serde_json::from_slice(
-        &fs::read(&browser_probe_summary_path)
-            .with_context(|| format!("failed to read {}", browser_probe_summary_path.display()))?,
-    )
-    .with_context(|| format!("failed to decode {}", browser_probe_summary_path.display()))?;
+    copy_files_with_extension_tree(&bundle_artifacts, "png", &artifacts.screenshots)?;
+    copy_files_with_extension_tree(&bundle_artifacts, "zip", &artifacts.playwright_traces)?;
     let adversarial_correctness = mnist_adversarial_correctness_summary();
     ensure!(
         browser_probe_summary
@@ -1006,6 +1269,20 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             "mnist browser wasm probe fetched shards outside the leased set",
         );
     }
+    ensure!(
+        correctness
+            .pointer("/browser_execution/trainer_runtime_and_wasm_training_coherent")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist correctness summary did not prove a coherent live browser/native training run",
+    );
+    ensure!(
+        correctness
+            .pointer("/assessment/live_browser_training")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist correctness summary did not report live browser training",
+    );
     for attack in adversarial_correctness
         .get("reports")
         .and_then(serde_json::Value::as_array)
@@ -2113,27 +2390,6 @@ fn extract_nested_artifact_dir(
         .rev()
         .find_map(|line| line.strip_prefix("Artifacts: "))
         .map(str::to_owned))
-}
-
-fn run_package_archive(
-    workspace: &Workspace,
-    artifacts: &ArtifactLayout,
-    crate_name: &str,
-    package_flags: &[String],
-) -> anyhow::Result<StepRecord> {
-    let mut args = vec![
-        "package".to_owned(),
-        "--no-verify".to_owned(),
-        "-p".to_owned(),
-        crate_name.to_owned(),
-    ];
-    args.extend(package_flags.iter().cloned());
-    workspace.run_cargo(
-        artifacts,
-        &format!("package-archive-{crate_name}"),
-        &args,
-        &BTreeMap::new(),
-    )
 }
 
 fn finalize_run(

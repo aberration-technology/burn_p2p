@@ -529,10 +529,12 @@ pub(super) fn reconcile_remote_trust_bundle(
                 }
 
                 {
-                    let admission_policy = auth_config
-                        .admission_policy
-                        .as_mut()
-                        .expect("auth admission policy should exist while reconciling trust");
+                    let Some(admission_policy) = auth_config.admission_policy.as_mut() else {
+                        snapshot.last_error = Some(
+                            "auth admission policy disappeared while reconciling trust".into(),
+                        );
+                        return false;
+                    };
                     if admission_policy.trusted_issuers != trust_bundle.trusted_issuers {
                         admission_policy.trusted_issuers = trust_bundle.trusted_issuers.clone();
                         changed = true;

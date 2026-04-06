@@ -1,4 +1,4 @@
-use burn_p2p_views::BrowserAppStaticBootstrap;
+use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
 use dioxus::prelude::*;
 use dioxus::ssr::render_element;
 
@@ -65,6 +65,26 @@ pub(super) fn render_browser_app_static_html(bootstrap: &BrowserAppStaticBootstr
         edge_url = escape_html_attr(bootstrap.default_edge_url.as_deref().unwrap_or_default()),
         body = body,
     )
+}
+
+pub(super) fn render_browser_app_static_html_with_config(
+    app_name: &str,
+    asset_base_url: &str,
+    module_entry_path: &str,
+    stylesheet_path: Option<&str>,
+    default_edge_url: Option<&str>,
+    default_surface_key: &str,
+    refresh_interval_ms: u64,
+) -> String {
+    render_browser_app_static_html(&BrowserAppStaticBootstrap {
+        app_name: app_name.into(),
+        asset_base_url: asset_base_url.into(),
+        module_entry_path: module_entry_path.into(),
+        stylesheet_path: stylesheet_path.map(str::to_owned),
+        default_edge_url: default_edge_url.map(str::to_owned),
+        default_surface: BrowserAppSurface::from_key(default_surface_key),
+        refresh_interval_ms,
+    })
 }
 
 fn escape_html_attr(value: &str) -> String {

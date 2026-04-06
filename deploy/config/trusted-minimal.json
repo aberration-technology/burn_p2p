@@ -1,0 +1,144 @@
+{
+  "spec": {
+    "preset": "BootstrapOnly",
+    "genesis": {
+      "network_id": "trusted-minimal-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Trusted Minimal Demo",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "trusted-minimal-profile"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [
+      "/ip4/0.0.0.0/tcp/4001",
+      "/ip4/0.0.0.0/udp/4001/quic-v1"
+    ],
+    "authority": null,
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": true
+    },
+    "admin_api": {
+      "supported_actions": [
+        "ExportDiagnostics",
+        "ExportReceipts"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": true
+    }
+  },
+  "http_bind_addr": "0.0.0.0:8787",
+  "admin_token": "local-admin",
+  "allow_dev_admin_token": true,
+  "optional_services": {
+    "browser_edge_enabled": false,
+    "browser_mode": "Disabled",
+    "social_mode": "Disabled",
+    "profile_mode": "Disabled"
+  },
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority",
+  "bootstrap_peer": {
+    "node": {
+      "identity": "Persistent",
+      "storage": {
+        "root": "/var/lib/burn-p2p/bootstrap-peer"
+      },
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": [
+        "/ip4/0.0.0.0/tcp/4001",
+        "/ip4/0.0.0.0/udp/4001/quic-v1"
+      ]
+    }
+  },
+  "auth": {
+    "authority_name": "trusted-minimal-auth",
+    "connector": {
+      "kind": "static"
+    },
+    "authority_key_path": "/var/lib/burn-p2p/auth/trusted-minimal-authority.key",
+    "project_family_id": "demo-family",
+    "required_release_train_hash": "demo-train",
+    "allowed_target_artifact_hashes": [
+      "demo-artifact-native"
+    ],
+    "session_ttl_seconds": 3600,
+    "minimum_revocation_epoch": 1,
+    "principals": [
+      {
+        "principal_id": "alice",
+        "display_name": "Alice",
+        "org_memberships": [
+          "burn-lab"
+        ],
+        "group_memberships": [
+          "trainers"
+        ],
+        "granted_roles": {
+          "roles": [
+            "TrainerGpu"
+          ]
+        },
+        "granted_scopes": [
+          "Connect",
+          "Discover",
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "allowed_networks": [
+          "trusted-minimal-demo"
+        ],
+        "custom_claims": {
+          "deployment_profile": "trusted-minimal"
+        }
+      }
+    ],
+    "directory_entries": [
+      {
+        "network_id": "trusted-minimal-demo",
+        "study_id": "study-auth",
+        "experiment_id": "exp-auth",
+        "workload_id": "auth-demo",
+        "display_name": "Authenticated Demo",
+        "model_schema_hash": "model-auth",
+        "dataset_view_id": "view-auth",
+        "resource_requirements": {
+          "minimum_roles": [
+            "TrainerGpu"
+          ],
+          "minimum_device_memory_bytes": 1024,
+          "minimum_system_memory_bytes": 4096,
+          "estimated_download_bytes": 65536,
+          "estimated_window_seconds": 45
+        },
+        "visibility": "OptIn",
+        "opt_in_policy": "Scoped",
+        "current_revision_id": "rev-auth",
+        "current_head_id": null,
+        "allowed_roles": {
+          "roles": [
+            "TrainerGpu"
+          ]
+        },
+        "allowed_scopes": [
+          {
+            "Train": {
+              "experiment_id": "exp-auth"
+            }
+          }
+        ],
+        "metadata": {
+          "owner": "burn-lab"
+        }
+      }
+    ]
+  }
+}

@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -34,6 +34,14 @@ use super::{
     PeerWindowMetrics, ReducerCohortMetrics, StorageConfig, SwarmAddress, TelemetrySummary,
     UpstreamAdapter, WindowCtx, WindowId, WindowReport,
 };
+
+fn native_swarm_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("native swarm test guard lock should not be poisoned")
+}
 
 fn mainnet() -> MainnetHandle {
     MainnetHandle {
@@ -1266,6 +1274,7 @@ fn prepare_keeps_the_old_handle_only_behavior() {
 
 #[test]
 fn spawn_starts_a_live_runtime_and_shutdown_returns_node() {
+    let _guard = native_swarm_test_guard();
     let storage_root = std::env::temp_dir().join(format!(
         "burn-p2p-facade-runtime-{}",
         Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -1458,6 +1467,95 @@ fn discovered_bootstrap_peer_survives_restart() {
 }
 
 #[test]
+fn peers_fan_out_beyond_bootstrap_seed_and_survive_seed_shutdown() {
+    let _guard = native_swarm_test_guard();
+    let bootstrap = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_roles(crate::PeerRoleSet::new([
+            crate::PeerRole::Bootstrap,
+            crate::PeerRole::RelayHelper,
+        ]))
+        .spawn()
+        .expect("bootstrap peer spawn");
+    let bootstrap_telemetry = bootstrap.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || !bootstrap_telemetry.snapshot().listen_addresses.is_empty(),
+        "bootstrap peer did not start listening",
+    );
+    let bootstrap_addr = bootstrap_telemetry.snapshot().listen_addresses[0].clone();
+
+    let trainer_a = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_bootstrap_peer(bootstrap_addr.clone())
+        .spawn()
+        .expect("trainer a spawn");
+    let trainer_b = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_bootstrap_peer(bootstrap_addr.clone())
+        .spawn()
+        .expect("trainer b spawn");
+
+    let trainer_a_telemetry = trainer_a.telemetry();
+    let trainer_b_telemetry = trainer_b.telemetry();
+
+    wait_for(
+        Duration::from_secs(20),
+        || bootstrap_telemetry.snapshot().connected_peers >= 2,
+        "bootstrap peer did not accept the initial seed connections",
+    );
+    wait_for(
+        Duration::from_secs(20),
+        || {
+            let snapshot = trainer_a_telemetry.snapshot();
+            snapshot.connected_peers >= 2
+                && snapshot
+                    .known_peer_addresses
+                    .iter()
+                    .any(|address| address != &bootstrap_addr)
+        },
+        "trainer a did not fan out beyond the bootstrap seed",
+    );
+    wait_for(
+        Duration::from_secs(20),
+        || {
+            let snapshot = trainer_b_telemetry.snapshot();
+            snapshot.connected_peers >= 2
+                && snapshot
+                    .known_peer_addresses
+                    .iter()
+                    .any(|address| address != &bootstrap_addr)
+        },
+        "trainer b did not fan out beyond the bootstrap seed",
+    );
+
+    bootstrap.shutdown().expect("bootstrap peer shutdown");
+    let _ = bootstrap
+        .await_termination()
+        .expect("bootstrap peer termination");
+
+    wait_for(
+        Duration::from_secs(30),
+        || trainer_a_telemetry.snapshot().connected_peers >= 1,
+        "trainer a lost the mesh after bootstrap shutdown",
+    );
+    wait_for(
+        Duration::from_secs(30),
+        || trainer_b_telemetry.snapshot().connected_peers >= 1,
+        "trainer b lost the mesh after bootstrap shutdown",
+    );
+
+    trainer_a.shutdown().expect("trainer a shutdown");
+    let _ = trainer_a
+        .await_termination()
+        .expect("trainer a termination");
+    trainer_b.shutdown().expect("trainer b shutdown");
+    let _ = trainer_b
+        .await_termination()
+        .expect("trainer b termination");
+}
+
+#[test]
 fn runtime_rebudgets_next_window_after_slow_observed_throughput() {
     let dataset_dir = tempdir().expect("dataset dir");
     let storage_root = std::env::temp_dir().join(format!(
@@ -1544,9 +1642,9 @@ fn runtime_rebudgets_next_window_after_fast_observed_throughput() {
         learning_rate: 1.0,
         target_model: 10.0,
         benchmark_work_units_per_second: 4.0,
-        benchmark_target_window_seconds: 10,
-        simulated_window_seconds: 5,
-        microshard_count: 128,
+        benchmark_target_window_seconds: 60,
+        simulated_window_seconds: 1,
+        microshard_count: 512,
         observed_lease_budgets: Arc::new(Mutex::new(Vec::new())),
     };
     create_adaptive_runtime_dataset(&project);
@@ -1571,7 +1669,7 @@ fn runtime_rebudgets_next_window_after_fast_observed_throughput() {
         .train_window_once(&experiment())
         .expect("second window");
 
-    assert_eq!(first.lease.budget_work_units, 40);
+    assert_eq!(first.lease.budget_work_units, 240);
     assert!(
         second.lease.budget_work_units > first.lease.budget_work_units,
         "expected second budget {} to be larger than first {}",
@@ -1852,6 +1950,11 @@ fn training_window_persists_peer_window_metrics() {
 fn metrics_retention_auto_scales_with_node_roles() {
     let trainer_budget =
         MetricsRetentionConfig::default().resolve_for_roles(&crate::PeerRoleSet::default_trainer());
+    let bootstrap_budget =
+        MetricsRetentionConfig::default().resolve_for_roles(&crate::PeerRoleSet::new([
+            crate::PeerRole::Bootstrap,
+            crate::PeerRole::RelayHelper,
+        ]));
     let operator_budget =
         MetricsRetentionConfig::default().resolve_for_roles(&crate::PeerRoleSet::new([
             crate::PeerRole::Bootstrap,
@@ -1859,6 +1962,7 @@ fn metrics_retention_auto_scales_with_node_roles() {
             crate::PeerRole::Validator,
         ]));
 
+    assert_eq!(bootstrap_budget, crate::MetricsRetentionBudget::peer_lean());
     assert!(
         trainer_budget.max_peer_window_entries_per_revision
             < operator_budget.max_peer_window_entries_per_revision
@@ -3310,6 +3414,7 @@ fn persisted_runtime_binding_survives_restart_without_with_network() {
 
 #[test]
 fn native_running_nodes_exchange_snapshots_over_tcp() {
+    let _guard = native_swarm_test_guard();
     let listener = NodeBuilder::new(())
         .with_mainnet(mainnet().genesis.clone())
         .spawn()
@@ -3419,6 +3524,7 @@ fn native_running_nodes_exchange_snapshots_over_tcp() {
 
 #[test]
 fn native_running_nodes_sync_artifacts_over_tcp() {
+    let _guard = native_swarm_test_guard();
     let listener_storage = std::env::temp_dir().join(format!(
         "burn-p2p-artifact-listener-{}",
         Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -3501,6 +3607,152 @@ fn native_running_nodes_sync_artifacts_over_tcp() {
     let _ = dialer.await_termination().expect("dialer termination");
     listener.shutdown().expect("listener shutdown");
     let _ = listener.await_termination().expect("listener termination");
+}
+
+#[test]
+fn cached_connected_snapshots_filter_peer_scoped_announcements() {
+    let peer_a = crate::PeerId::new("peer-a");
+    let peer_b = crate::PeerId::new("peer-b");
+    let experiment = experiment();
+    let overlay_set = experiment.overlay_set().expect("overlay set");
+    let mut snapshot =
+        crate::NodeTelemetrySnapshot::starting(&mainnet(), &crate::NodeConfig::default());
+    snapshot.observed_peer_ids.insert(peer_a.clone());
+    snapshot.observed_peer_ids.insert(peer_b.clone());
+    snapshot.control_plane.head_announcements = vec![
+        HeadAnnouncement {
+            overlay: overlay_set.heads.clone(),
+            provider_peer_id: Some(peer_a.clone()),
+            head: HeadDescriptor {
+                head_id: crate::HeadId::new("head-a"),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                artifact_id: crate::ArtifactId::new("artifact-a"),
+                parent_head_id: Some(crate::HeadId::new("head-0")),
+                global_step: 1,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: Utc::now(),
+        },
+        HeadAnnouncement {
+            overlay: overlay_set.heads.clone(),
+            provider_peer_id: Some(peer_b.clone()),
+            head: HeadDescriptor {
+                head_id: crate::HeadId::new("head-b"),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                artifact_id: crate::ArtifactId::new("artifact-b"),
+                parent_head_id: Some(crate::HeadId::new("head-a")),
+                global_step: 2,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: Utc::now(),
+        },
+    ];
+    snapshot.control_plane.update_announcements = vec![
+        crate::UpdateEnvelopeAnnouncement {
+            overlay: overlay_set.heads.clone(),
+            update: crate::UpdateAnnounce {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                window_id: WindowId(1),
+                base_head_id: crate::HeadId::new("head-0"),
+                peer_id: peer_a.clone(),
+                lease_id: None,
+                delta_artifact_id: crate::ArtifactId::new("delta-a"),
+                sample_weight: 1.0,
+                quality_weight: 1.0,
+                norm_stats: crate::UpdateNormStats {
+                    l2_norm: 0.0,
+                    max_abs: 0.0,
+                    clipped: false,
+                    non_finite_tensors: 0,
+                },
+                feature_sketch: None,
+                receipt_root: crate::ContentId::new("receipt-root-a"),
+                receipt_ids: vec![crate::ContributionReceiptId::new("receipt-a")],
+                providers: vec![peer_a.clone()],
+                announced_at: Utc::now(),
+            },
+        },
+        crate::UpdateEnvelopeAnnouncement {
+            overlay: overlay_set.heads.clone(),
+            update: crate::UpdateAnnounce {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                window_id: WindowId(1),
+                base_head_id: crate::HeadId::new("head-0"),
+                peer_id: peer_b.clone(),
+                lease_id: None,
+                delta_artifact_id: crate::ArtifactId::new("delta-b"),
+                sample_weight: 1.0,
+                quality_weight: 1.0,
+                norm_stats: crate::UpdateNormStats {
+                    l2_norm: 0.0,
+                    max_abs: 0.0,
+                    clipped: false,
+                    non_finite_tensors: 0,
+                },
+                feature_sketch: None,
+                receipt_root: crate::ContentId::new("receipt-root-b"),
+                receipt_ids: vec![crate::ContributionReceiptId::new("receipt-b")],
+                providers: vec![peer_b.clone()],
+                announced_at: Utc::now(),
+            },
+        },
+    ];
+    snapshot.control_plane.merge_announcements = vec![crate::MergeAnnouncement {
+        overlay: overlay_set.heads,
+        certificate: MergeCertificate {
+            merge_cert_id: crate::MergeCertId::new("merge-b"),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            base_head_id: crate::HeadId::new("head-a"),
+            merged_head_id: crate::HeadId::new("head-b"),
+            merged_artifact_id: crate::ArtifactId::new("artifact-b"),
+            policy: crate::MergePolicy::QualityWeightedEma,
+            issued_at: Utc::now(),
+            validator: peer_b.clone(),
+            contribution_receipts: vec![crate::ContributionReceiptId::new("receipt-b")],
+        },
+        announced_at: Utc::now(),
+    }];
+
+    let cached = crate::runtime_support::cached_connected_snapshots(&snapshot);
+    assert_eq!(cached.len(), 2);
+
+    let cached_a = cached
+        .iter()
+        .find(|(peer_id, _)| peer_id == &peer_a)
+        .expect("peer a snapshot");
+    assert_eq!(cached_a.1.head_announcements.len(), 1);
+    assert_eq!(
+        cached_a.1.head_announcements[0].provider_peer_id.as_ref(),
+        Some(&peer_a)
+    );
+    assert_eq!(cached_a.1.update_announcements.len(), 1);
+    assert_eq!(cached_a.1.update_announcements[0].update.peer_id, peer_a);
+    assert_eq!(cached_a.1.merge_announcements.len(), 1);
+
+    let cached_b = cached
+        .iter()
+        .find(|(peer_id, _)| peer_id == &peer_b)
+        .expect("peer b snapshot");
+    assert_eq!(cached_b.1.head_announcements.len(), 1);
+    assert_eq!(
+        cached_b.1.head_announcements[0].provider_peer_id.as_ref(),
+        Some(&peer_b)
+    );
+    assert_eq!(cached_b.1.update_announcements.len(), 1);
+    assert_eq!(cached_b.1.update_announcements[0].update.peer_id, peer_b);
+    assert_eq!(cached_b.1.merge_announcements.len(), 1);
 }
 
 #[test]
@@ -3778,6 +4030,7 @@ fn native_artifact_sync_rejects_unadmitted_peer() {
 
 #[test]
 fn family_runtime_switches_experiments_and_restores_selection() {
+    let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("switching storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());
     let expected_assignment = crate::SlotAssignmentState::new(
@@ -3889,6 +4142,7 @@ fn family_runtime_switches_experiments_and_restores_selection() {
 
 #[test]
 fn family_runtime_follows_live_directory_revision_updates() {
+    let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("directory switching storage");
     let mut running = NodeBuilder::new(switching_test_family())
         .for_workload(crate::WorkloadId::new("compiled"))
@@ -3980,6 +4234,7 @@ fn family_runtime_follows_live_directory_revision_updates() {
 
 #[test]
 fn family_runtime_applies_control_plane_pause_and_resume_at_window_boundaries() {
+    let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("control switching storage");
     let mut running = NodeBuilder::new(switching_test_family())
         .for_workload(crate::WorkloadId::new("compiled"))
@@ -4098,6 +4353,7 @@ fn family_runtime_applies_control_plane_pause_and_resume_at_window_boundaries() 
 
 #[test]
 fn family_runtime_restores_persisted_control_plane_state_after_restart() {
+    let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("persisted control storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());
     let stale_directory = vec![switching_directory_entry(
@@ -4247,6 +4503,7 @@ fn family_runtime_restores_persisted_control_plane_state_after_restart() {
 
 #[test]
 fn native_runtime_training_and_validation_progresses_across_peers() {
+    let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
     create_runtime_dataset(dataset_dir.path());
 
@@ -4716,6 +4973,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
 
 #[test]
 fn validator_restart_restores_canonical_head_for_late_joiners() {
+    let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
     create_runtime_dataset(dataset_dir.path());
 
@@ -4899,6 +5157,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
 
 #[test]
 fn validator_can_fan_in_many_native_trainers_in_one_round() {
+    let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
     create_runtime_dataset(dataset_dir.path());
     let experiment = experiment();

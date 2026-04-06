@@ -11,22 +11,7 @@ categories.workspace = true
 readme = "../../README.md"
 
 [features]
-default = [
-  "admin-http",
-  "metrics",
-  "metrics-indexer",
-  "artifact-publish",
-  "artifact-download",
-  "artifact-fs",
-  "browser-edge",
-  "browser-join",
-  "rbac",
-  "auth-static",
-  "auth-github",
-  "auth-oidc",
-  "auth-oauth",
-  "social",
-]
+default = []
 admin-http = []
 metrics = []
 metrics-indexer = ["metrics", "dep:burn_p2p_metrics"]

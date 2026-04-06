@@ -1,0 +1,150 @@
+variable "project_id" {
+  type        = string
+  description = "GCP project ID."
+}
+
+variable "region" {
+  type        = string
+  description = "GCP region."
+  default     = "us-central1"
+}
+
+variable "zone" {
+  type        = string
+  description = "GCP zone."
+  default     = "us-central1-a"
+}
+
+variable "name_prefix" {
+  type        = string
+  description = "Name prefix applied to resources."
+  default     = "burn-p2p"
+}
+
+variable "network" {
+  type        = string
+  description = "VPC network name or self_link."
+  default     = "default"
+}
+
+variable "subnetwork" {
+  type        = string
+  description = "Optional subnetwork name or self_link."
+  default     = ""
+}
+
+variable "bootstrap_count" {
+  type        = number
+  description = "Number of bootstrap/coherence seed nodes."
+  default     = 2
+}
+
+variable "validator_count" {
+  type        = number
+  description = "Number of validator nodes."
+  default     = 1
+}
+
+variable "trainer_count" {
+  type        = number
+  description = "Number of trainer nodes."
+  default     = 0
+}
+
+variable "bootstrap_machine_type" {
+  type        = string
+  description = "Machine type for bootstrap nodes."
+  default     = "e2-small"
+}
+
+variable "validator_machine_type" {
+  type        = string
+  description = "Machine type for validator nodes."
+  default     = "e2-standard-2"
+}
+
+variable "trainer_machine_type" {
+  type        = string
+  description = "Machine type for trainer nodes."
+  default     = "n1-standard-4"
+}
+
+variable "trainer_accelerator_type" {
+  type        = string
+  description = "GPU accelerator type for trainer nodes."
+  default     = "nvidia-tesla-t4"
+}
+
+variable "trainer_accelerator_count" {
+  type        = number
+  description = "Number of GPUs per trainer node."
+  default     = 1
+}
+
+variable "allowed_source_ranges" {
+  type        = list(string)
+  description = "Firewall ingress source ranges."
+  default     = ["0.0.0.0/0"]
+}
+
+variable "allowed_tcp_ports" {
+  type        = list(string)
+  description = "TCP ports exposed on the instances."
+  default     = ["22", "8787", "8788", "4001", "4002"]
+}
+
+variable "allowed_udp_ports" {
+  type        = list(string)
+  description = "UDP ports exposed on the instances."
+  default     = ["4001", "4002"]
+}
+
+variable "bootstrap_image" {
+  type        = string
+  description = "Container image for the bootstrap nodes."
+}
+
+variable "validator_image" {
+  type        = string
+  description = "Container image for the validator nodes."
+}
+
+variable "trainer_image" {
+  type        = string
+  description = "Container image for the trainer nodes."
+  default     = ""
+}
+
+variable "bootstrap_container_command" {
+  type        = string
+  description = "Arguments passed to the bootstrap image entrypoint."
+  default     = "/config/config.json"
+}
+
+variable "validator_container_command" {
+  type        = string
+  description = "Arguments passed to the validator image entrypoint."
+  default     = "/config/config.json"
+}
+
+variable "trainer_container_command" {
+  type        = string
+  description = "Arguments passed to the trainer image entrypoint."
+  default     = ""
+}
+
+variable "bootstrap_config_json" {
+  type        = string
+  description = "Bootstrap config JSON written onto each bootstrap host."
+}
+
+variable "validator_config_json" {
+  type        = string
+  description = "Validator config JSON written onto each validator host."
+}
+
+variable "trainer_config_json" {
+  type        = string
+  description = "Optional trainer config JSON written onto each trainer host."
+  default     = ""
+}

@@ -1,4 +1,4 @@
-use burn_p2p_core::{ClientPlatform, GenesisSpec, NetworkId};
+use burn_p2p_core::{ClientPlatform, GenesisSpec, NetworkId, PeerRole, PeerRoleSet};
 use libp2p::{Multiaddr, StreamProtocol};
 use serde::{Deserialize, Serialize};
 
@@ -291,8 +291,6 @@ pub enum TransportKind {
     WebTransport,
     /// Uses the web rtc kind.
     WebRtc,
-    /// Uses the relay reservation kind.
-    RelayReservation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,52 +300,90 @@ pub struct RuntimeTransportPolicy {
     pub environment: RuntimeEnvironment,
     /// The preferred transports.
     pub preferred_transports: Vec<TransportKind>,
+    /// The target number of direct peers to maintain before the runtime stops proactive dialing.
+    pub target_connected_peers: usize,
     /// The supports direct streams.
     pub supports_direct_streams: bool,
-    /// The require relay reservation for private nodes.
-    pub require_relay_reservation_for_private_nodes: bool,
+    /// The maximum number of established inbound connections accepted by the runtime.
+    pub max_established_incoming: Option<u32>,
+    /// The maximum number of established connections accepted by the runtime.
+    pub max_established_total: Option<u32>,
+    /// The maximum number of established connections accepted from one peer.
+    pub max_established_per_peer: Option<u32>,
+    #[serde(default)]
+    /// Enables local multicast discovery for development-oriented native swarms.
+    pub enable_local_discovery: bool,
     /// The export openmetrics.
     pub export_openmetrics: bool,
 }
 
 impl RuntimeTransportPolicy {
     /// Performs the native operation.
-    pub fn native() -> Self {
+    pub fn native_for_roles(roles: &PeerRoleSet) -> Self {
+        let bootstrap =
+            roles.contains(&PeerRole::Bootstrap) || roles.contains(&PeerRole::RelayHelper);
+        let operator = roles.contains(&PeerRole::Authority) || roles.contains(&PeerRole::Archive);
+        let validator = roles.contains(&PeerRole::Validator);
+
         Self {
             environment: RuntimeEnvironment::Native,
             preferred_transports: vec![
                 TransportKind::Quic,
                 TransportKind::Tcp,
                 TransportKind::WebSocket,
-                TransportKind::RelayReservation,
             ],
+            target_connected_peers: if bootstrap {
+                8
+            } else if operator || validator {
+                6
+            } else {
+                4
+            },
             supports_direct_streams: true,
-            require_relay_reservation_for_private_nodes: true,
+            max_established_incoming: if bootstrap {
+                Some(96)
+            } else if operator || validator {
+                Some(48)
+            } else {
+                Some(24)
+            },
+            max_established_total: if bootstrap {
+                Some(128)
+            } else if operator || validator {
+                Some(64)
+            } else {
+                Some(32)
+            },
+            max_established_per_peer: Some(1),
+            enable_local_discovery: false,
             export_openmetrics: true,
         }
     }
 
     /// Performs the browser operation.
-    pub fn browser() -> Self {
+    pub fn browser_for_roles(_roles: &PeerRoleSet) -> Self {
         Self {
             environment: RuntimeEnvironment::Browser,
             preferred_transports: vec![
                 TransportKind::WebTransport,
                 TransportKind::WebRtc,
                 TransportKind::WebSocket,
-                TransportKind::RelayReservation,
             ],
+            target_connected_peers: 3,
             supports_direct_streams: true,
-            require_relay_reservation_for_private_nodes: true,
+            max_established_incoming: None,
+            max_established_total: None,
+            max_established_per_peer: Some(1),
+            enable_local_discovery: false,
             export_openmetrics: true,
         }
     }
 
-    /// Performs the for platform operation.
-    pub fn for_platform(platform: ClientPlatform) -> Self {
+    /// Performs the for platform and roles operation.
+    pub fn for_platform_and_roles(platform: ClientPlatform, roles: &PeerRoleSet) -> Self {
         match platform {
-            ClientPlatform::Native => Self::native(),
-            ClientPlatform::Browser => Self::browser(),
+            ClientPlatform::Native => Self::native_for_roles(roles),
+            ClientPlatform::Browser => Self::browser_for_roles(roles),
         }
     }
 }
@@ -371,15 +407,16 @@ pub struct RuntimeBoundary {
 
 impl RuntimeBoundary {
     /// Performs the for platform operation.
-    pub fn for_platform(
+    pub fn for_platform_and_roles(
         genesis: &GenesisSpec,
         platform: ClientPlatform,
+        roles: &PeerRoleSet,
         bootstrap_addresses: Vec<SwarmAddress>,
         listen_addresses: Vec<SwarmAddress>,
     ) -> Result<Self, SwarmError> {
         Ok(Self {
             environment: platform.clone().into(),
-            transport_policy: RuntimeTransportPolicy::for_platform(platform),
+            transport_policy: RuntimeTransportPolicy::for_platform_and_roles(platform, roles),
             bootstrap_addresses,
             listen_addresses,
             protocols: ProtocolSet::for_network(&genesis.network_id)?,

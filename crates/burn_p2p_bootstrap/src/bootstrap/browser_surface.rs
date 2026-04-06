@@ -1,9 +1,7 @@
 use super::*;
 
 pub(super) fn browser_edge_mode(plan: &BootstrapPlan) -> BrowserEdgeMode {
-    if plan.supports_service(&burn_p2p_bootstrap::BootstrapService::Relay)
-        || plan.supports_service(&burn_p2p_bootstrap::BootstrapService::Kademlia)
-    {
+    if plan.supports_service(&burn_p2p_bootstrap::BootstrapService::CoherenceSeed) {
         if plan.supports_service(&burn_p2p_bootstrap::BootstrapService::Validator)
             || plan.supports_service(&burn_p2p_bootstrap::BootstrapService::Archive)
             || plan.supports_service(&burn_p2p_bootstrap::BootstrapService::Authority)

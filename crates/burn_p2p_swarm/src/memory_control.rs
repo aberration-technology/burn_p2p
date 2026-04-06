@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryControlPlaneShell {
     local_peer_id: Libp2pPeerId,
     swarm: Swarm<request_response::json::Behaviour<ControlPlaneRequest, ControlPlaneResponse>>,
@@ -7,24 +8,28 @@ pub struct MemoryControlPlaneShell {
     artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
     chunks: BTreeMap<(ArtifactId, ChunkId), ArtifactChunkPayload>,
     subscribed_topics: BTreeSet<String>,
+    pending_events: VecDeque<LiveControlPlaneEvent>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl MemoryControlPlaneShell {
     /// Creates a new value.
-    pub fn new(control_protocol: ProtocolId) -> Self {
+    pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
         Self::with_keypair(control_protocol, Keypair::generate_ed25519())
     }
 
     /// Returns a copy configured with the keypair.
-    pub fn with_keypair(control_protocol: ProtocolId, keypair: Keypair) -> Self {
+    pub fn with_keypair(
+        control_protocol: ProtocolId,
+        keypair: Keypair,
+    ) -> Result<Self, SwarmError> {
         let local_peer_id = keypair.public().to_peer_id();
         let transport = MemoryTransport::default()
             .upgrade(upgrade::Version::V1)
-            .authenticate(libp2p::tls::Config::new(&keypair).expect("tls config should be valid"))
+            .authenticate(tls_config(&keypair)?)
             .multiplex(yamux::Config::default())
             .boxed();
-        let protocol =
-            StreamProtocol::try_from_owned(control_protocol.as_str().to_owned()).expect("valid");
+        let protocol = stream_protocol(&control_protocol)?;
         let behaviour = request_response::json::Behaviour::new(
             [(protocol, ProtocolSupport::Full)],
             request_response::Config::default(),
@@ -36,14 +41,15 @@ impl MemoryControlPlaneShell {
             Libp2pSwarmConfig::without_executor(),
         );
 
-        Self {
+        Ok(Self {
             local_peer_id,
             swarm,
             snapshot: ControlPlaneSnapshot::default(),
             artifacts: BTreeMap::new(),
             chunks: BTreeMap::new(),
             subscribed_topics: BTreeSet::new(),
-        }
+            pending_events: VecDeque::new(),
+        })
     }
 
     /// Performs the local peer ID operation.
@@ -72,6 +78,16 @@ impl MemoryControlPlaneShell {
         self.swarm
             .dial(address)
             .map_err(|error| SwarmError::Dial(error.to_string()))
+    }
+
+    /// Disconnects one peer from the local swarm.
+    pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        let peer_id = peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        self.swarm
+            .disconnect_peer_id(peer_id)
+            .map_err(|_| SwarmError::Request("failed to disconnect peer".into()))
     }
 
     /// Performs the connected peer count operation.
@@ -148,6 +164,14 @@ impl MemoryControlPlaneShell {
         push_unique(&mut self.snapshot.directory_announcements, announcement);
     }
 
+    /// Performs the publish peer directory operation.
+    pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
+        push_unique(
+            &mut self.snapshot.peer_directory_announcements,
+            announcement,
+        );
+    }
+
     /// Performs the publish metrics operation.
     pub fn publish_metrics(&mut self, announcement: MetricsAnnouncement) {
         push_metrics_announcement(&mut self.snapshot.metrics_announcements, announcement);
@@ -189,13 +213,18 @@ impl MemoryControlPlaneShell {
 
     /// Performs the request snapshot operation.
     pub fn request_snapshot(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        self.request_snapshot_id(peer_id).map(|_| ())
+    }
+
+    fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm
+        Ok(self
+            .swarm
             .behaviour_mut()
-            .send_request(&peer_id, ControlPlaneRequest::Snapshot);
-        Ok(())
+            .send_request(&peer_id, ControlPlaneRequest::Snapshot)
+            .to_string())
     }
 
     /// Performs the request artifact manifest operation.
@@ -204,14 +233,26 @@ impl MemoryControlPlaneShell {
         peer_id: &str,
         artifact_id: ArtifactId,
     ) -> Result<(), SwarmError> {
+        self.request_artifact_manifest_id(peer_id, artifact_id)
+            .map(|_| ())
+    }
+
+    fn request_artifact_manifest_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+    ) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactManifest { artifact_id },
-        );
-        Ok(())
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .send_request(
+                &peer_id,
+                ControlPlaneRequest::ArtifactManifest { artifact_id },
+            )
+            .to_string())
     }
 
     /// Performs the request artifact chunk operation.
@@ -221,17 +262,30 @@ impl MemoryControlPlaneShell {
         artifact_id: ArtifactId,
         chunk_id: ChunkId,
     ) -> Result<(), SwarmError> {
+        self.request_artifact_chunk_id(peer_id, artifact_id, chunk_id)
+            .map(|_| ())
+    }
+
+    fn request_artifact_chunk_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+    ) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactChunk {
-                artifact_id,
-                chunk_id,
-            },
-        );
-        Ok(())
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .send_request(
+                &peer_id,
+                ControlPlaneRequest::ArtifactChunk {
+                    artifact_id,
+                    chunk_id,
+                },
+            )
+            .to_string())
     }
 
     /// Fetches the snapshot.
@@ -240,21 +294,35 @@ impl MemoryControlPlaneShell {
         peer_id: &str,
         timeout: Duration,
     ) -> Result<ControlPlaneSnapshot, SwarmError> {
-        self.request_snapshot(peer_id)?;
+        let request_id = self.request_snapshot_id(peer_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::SnapshotReceived { snapshot, .. }) => {
-                    return Ok(snapshot);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::SnapshotReceived {
+                        request_id: response_id,
+                        snapshot,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(snapshot);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("snapshot"))
     }
 
@@ -265,27 +333,35 @@ impl MemoryControlPlaneShell {
         artifact_id: ArtifactId,
         timeout: Duration,
     ) -> Result<Option<ArtifactDescriptor>, SwarmError> {
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactManifest { artifact_id },
-        );
+        let request_id = self.request_artifact_manifest_id(peer_id, artifact_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::ArtifactManifestReceived { descriptor, .. }) => {
-                    return Ok(descriptor);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::ArtifactManifestReceived {
+                        request_id: response_id,
+                        descriptor,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(descriptor);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("artifact-manifest"))
     }
 
@@ -297,30 +373,35 @@ impl MemoryControlPlaneShell {
         chunk_id: ChunkId,
         timeout: Duration,
     ) -> Result<Option<ArtifactChunkPayload>, SwarmError> {
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactChunk {
-                artifact_id,
-                chunk_id,
-            },
-        );
+        let request_id = self.request_artifact_chunk_id(peer_id, artifact_id, chunk_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::ArtifactChunkReceived { payload, .. }) => {
-                    return Ok(payload);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::ArtifactChunkReceived {
+                        request_id: response_id,
+                        payload,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(payload);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("artifact-chunk"))
     }
 
@@ -385,33 +466,43 @@ impl MemoryControlPlaneShell {
                             }
                         }
                     },
-                    request_response::Message::Response { response, .. } => match response {
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => match response {
                         ControlPlaneResponse::Snapshot(snapshot) => {
                             Poll::Ready(LiveControlPlaneEvent::SnapshotReceived {
                                 peer_id: peer.to_string(),
+                                request_id: request_id.to_string(),
                                 snapshot,
                             })
                         }
                         ControlPlaneResponse::ArtifactManifest(descriptor) => {
                             Poll::Ready(LiveControlPlaneEvent::ArtifactManifestReceived {
                                 peer_id: peer.to_string(),
+                                request_id: request_id.to_string(),
                                 descriptor,
                             })
                         }
                         ControlPlaneResponse::ArtifactChunk(payload) => {
                             Poll::Ready(LiveControlPlaneEvent::ArtifactChunkReceived {
                                 peer_id: peer.to_string(),
+                                request_id: request_id.to_string(),
                                 payload,
                             })
                         }
                     },
                 },
-                request_response::Event::OutboundFailure { peer, error, .. } => {
-                    Poll::Ready(LiveControlPlaneEvent::RequestFailure {
-                        peer_id: peer.to_string(),
-                        message: error.to_string(),
-                    })
-                }
+                request_response::Event::OutboundFailure {
+                    peer,
+                    request_id,
+                    error,
+                    ..
+                } => Poll::Ready(LiveControlPlaneEvent::RequestFailure {
+                    peer_id: peer.to_string(),
+                    request_id: Some(request_id.to_string()),
+                    message: error.to_string(),
+                }),
                 request_response::Event::InboundFailure { peer, error, .. } => {
                     Poll::Ready(LiveControlPlaneEvent::InboundFailure {
                         peer_id: peer.to_string(),
@@ -434,6 +525,10 @@ impl MemoryControlPlaneShell {
 
     /// Performs the wait event operation.
     pub fn wait_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Some(event);
+        }
+
         let deadline = Instant::now() + timeout;
         let waker = futures::task::noop_waker_ref();
 
@@ -445,5 +540,256 @@ impl MemoryControlPlaneShell {
                 Poll::Pending => std::thread::sleep(Duration::from_millis(10)),
             }
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct MemoryControlPlaneShell {
+    local_peer_id: Libp2pPeerId,
+    snapshot: ControlPlaneSnapshot,
+    artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
+    chunks: BTreeMap<(ArtifactId, ChunkId), ArtifactChunkPayload>,
+    subscribed_topics: BTreeSet<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl MemoryControlPlaneShell {
+    /// Creates a new value.
+    pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
+        Self::with_keypair(control_protocol, Keypair::generate_ed25519())
+    }
+
+    /// Returns a copy configured with the keypair.
+    pub fn with_keypair(
+        _control_protocol: ProtocolId,
+        keypair: Keypair,
+    ) -> Result<Self, SwarmError> {
+        Ok(Self {
+            local_peer_id: keypair.public().to_peer_id(),
+            snapshot: ControlPlaneSnapshot::default(),
+            artifacts: BTreeMap::new(),
+            chunks: BTreeMap::new(),
+            subscribed_topics: BTreeSet::new(),
+        })
+    }
+
+    /// Performs the local peer ID operation.
+    pub fn local_peer_id(&self) -> &Libp2pPeerId {
+        &self.local_peer_id
+    }
+
+    /// Performs the listen on operation.
+    pub fn listen_on(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the dial operation.
+    pub fn dial(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    pub fn disconnect_peer(&mut self, _peer_id: &str) -> Result<(), SwarmError> {
+        Ok(())
+    }
+
+    /// Performs the connected peer count operation.
+    pub fn connected_peer_count(&self) -> usize {
+        0
+    }
+
+    /// Performs the publish control operation.
+    pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
+        push_unique(&mut self.snapshot.control_announcements, announcement);
+    }
+
+    /// Performs the publish head operation.
+    pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
+        push_unique(&mut self.snapshot.head_announcements, announcement);
+    }
+
+    /// Performs the publish lease operation.
+    pub fn publish_lease(&mut self, announcement: LeaseAnnouncement) {
+        push_unique(&mut self.snapshot.lease_announcements, announcement);
+    }
+
+    /// Performs the publish merge operation.
+    pub fn publish_merge(&mut self, announcement: MergeAnnouncement) {
+        push_unique(&mut self.snapshot.merge_announcements, announcement);
+    }
+
+    /// Performs the publish merge window operation.
+    pub fn publish_merge_window(&mut self, announcement: MergeWindowAnnouncement) {
+        push_unique(&mut self.snapshot.merge_window_announcements, announcement);
+    }
+
+    /// Performs the publish reducer assignment operation.
+    pub fn publish_reducer_assignment(&mut self, announcement: ReducerAssignmentAnnouncement) {
+        push_unique(
+            &mut self.snapshot.reducer_assignment_announcements,
+            announcement,
+        );
+    }
+
+    /// Performs the publish update operation.
+    pub fn publish_update(&mut self, announcement: UpdateEnvelopeAnnouncement) {
+        push_unique(&mut self.snapshot.update_announcements, announcement);
+    }
+
+    /// Performs the publish aggregate operation.
+    pub fn publish_aggregate(&mut self, announcement: AggregateAnnouncement) {
+        push_unique(&mut self.snapshot.aggregate_announcements, announcement);
+    }
+
+    /// Performs the publish reduction certificate operation.
+    pub fn publish_reduction_certificate(
+        &mut self,
+        announcement: ReductionCertificateAnnouncement,
+    ) {
+        push_unique(
+            &mut self.snapshot.reduction_certificate_announcements,
+            announcement,
+        );
+    }
+
+    /// Performs the publish reducer load operation.
+    pub fn publish_reducer_load(&mut self, announcement: ReducerLoadAnnouncement) {
+        push_unique(&mut self.snapshot.reducer_load_announcements, announcement);
+    }
+
+    /// Performs the publish auth operation.
+    pub fn publish_auth(&mut self, announcement: PeerAuthAnnouncement) {
+        push_unique(&mut self.snapshot.auth_announcements, announcement);
+    }
+
+    /// Performs the publish directory operation.
+    pub fn publish_directory(&mut self, announcement: ExperimentDirectoryAnnouncement) {
+        push_unique(&mut self.snapshot.directory_announcements, announcement);
+    }
+
+    /// Performs the publish peer directory operation.
+    pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
+        push_unique(
+            &mut self.snapshot.peer_directory_announcements,
+            announcement,
+        );
+    }
+
+    /// Performs the publish metrics operation.
+    pub fn publish_metrics(&mut self, announcement: MetricsAnnouncement) {
+        push_metrics_announcement(&mut self.snapshot.metrics_announcements, announcement);
+    }
+
+    /// Performs the snapshot operation.
+    pub fn snapshot(&self) -> &ControlPlaneSnapshot {
+        &self.snapshot
+    }
+
+    /// Performs the subscribe topic operation.
+    pub fn subscribe_topic(&mut self, topic: OverlayTopic) -> Result<(), SwarmError> {
+        self.subscribed_topics.insert(topic.path);
+        Ok(())
+    }
+
+    /// Performs the publish pubsub operation.
+    pub fn publish_pubsub(
+        &mut self,
+        _topic: OverlayTopic,
+        _payload: PubsubPayload,
+    ) -> Result<(), SwarmError> {
+        Ok(())
+    }
+
+    /// Performs the publish artifact operation.
+    pub fn publish_artifact(
+        &mut self,
+        descriptor: ArtifactDescriptor,
+        chunks: Vec<ArtifactChunkPayload>,
+    ) {
+        let artifact_id = descriptor.artifact_id.clone();
+        self.artifacts.insert(artifact_id.clone(), descriptor);
+        for chunk in chunks {
+            self.chunks
+                .insert((artifact_id.clone(), chunk.chunk.chunk_id.clone()), chunk);
+        }
+    }
+
+    /// Performs the request snapshot operation.
+    pub fn request_snapshot(&mut self, _peer_id: &str) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the request artifact manifest operation.
+    pub fn request_artifact_manifest(
+        &mut self,
+        _peer_id: &str,
+        _artifact_id: ArtifactId,
+    ) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the request artifact chunk operation.
+    pub fn request_artifact_chunk(
+        &mut self,
+        _peer_id: &str,
+        _artifact_id: ArtifactId,
+        _chunk_id: ChunkId,
+    ) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Fetches the snapshot.
+    pub fn fetch_snapshot(
+        &mut self,
+        _peer_id: &str,
+        _timeout: Duration,
+    ) -> Result<ControlPlaneSnapshot, SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Fetches the artifact manifest.
+    pub fn fetch_artifact_manifest(
+        &mut self,
+        _peer_id: &str,
+        _artifact_id: ArtifactId,
+        _timeout: Duration,
+    ) -> Result<Option<ArtifactDescriptor>, SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Fetches the artifact chunk.
+    pub fn fetch_artifact_chunk(
+        &mut self,
+        _peer_id: &str,
+        _artifact_id: ArtifactId,
+        _chunk_id: ChunkId,
+        _timeout: Duration,
+    ) -> Result<Option<ArtifactChunkPayload>, SwarmError> {
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    /// Performs the poll event operation.
+    pub fn poll_event(&mut self, _cx: &mut Context<'_>) -> Poll<LiveControlPlaneEvent> {
+        Poll::Pending
+    }
+
+    /// Performs the wait event operation.
+    pub fn wait_event(&mut self, _timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        None
     }
 }

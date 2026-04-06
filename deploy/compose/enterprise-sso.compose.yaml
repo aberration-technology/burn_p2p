@@ -1,15 +1,21 @@
 services:
   burn-p2p-bootstrap:
-    image: ghcr.io/example/burn-p2p-bootstrap:latest
-    command: ["/app/burn-p2p-bootstrap", "/config/enterprise-sso.json"]
+    build:
+      context: ../..
+      dockerfile: deploy/containers/bootstrap.Dockerfile
+      args:
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,browser-edge,rbac,auth-oidc}
+    command: ["/config/enterprise-sso.json"]
     ports:
-      - "9000:9000"
+      - "8787:8787"
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
     volumes:
-      - ../../crates/burn_p2p_bootstrap/examples/enterprise-sso.json:/config/enterprise-sso.json:ro
-      - burn-p2p-data:/var/lib/burn-p2p
+      - ../config/enterprise-sso.json:/config/enterprise-sso.json:ro
+      - burn-p2p-bootstrap-data:/var/lib/burn-p2p
     environment:
-      RUST_LOG: info
+      RUST_LOG: ${RUST_LOG:-info}
     restart: unless-stopped
 
 volumes:
-  burn-p2p-data: {}
+  burn-p2p-bootstrap-data: {}

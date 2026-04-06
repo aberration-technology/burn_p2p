@@ -37,7 +37,10 @@ pub use crate::app_render::{
     render_head_artifact_view_html,
 };
 pub use crate::browser_edge::{BrowserEdgeSnapshot, BrowserEdgeSnapshotConfig};
-pub use crate::daemon::{ActiveExperiment, BootstrapEmbeddedDaemon, BootstrapEmbeddedDaemonConfig};
+pub use crate::daemon::{
+    ActiveExperiment, BootstrapEmbeddedDaemon, BootstrapEmbeddedDaemonConfig, BootstrapPeerDaemon,
+    BootstrapPeerDaemonConfig,
+};
 pub use crate::deploy::{
     AdminApiPlan, AdminCapability, ArchivePlan, AuthorityPlan, BootstrapPlan, BootstrapPreset,
     BootstrapService, BootstrapSpec, TelemetryExportPlan,
@@ -149,7 +152,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    #[cfg(any(feature = "browser-edge", feature = "metrics-indexer"))]
+    #[cfg(feature = "metrics-indexer")]
     use burn_p2p::DatasetViewId;
     use burn_p2p::{
         ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
@@ -181,8 +184,9 @@ mod tests {
     use super::render_dashboard_html;
     use super::{
         ActiveExperiment, AdminAction, AdminResult, BootstrapAdminState,
-        BootstrapEmbeddedDaemonConfig, BootstrapPlan, BootstrapPreset, BootstrapService,
-        BootstrapSpec, HeadQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
+        BootstrapEmbeddedDaemonConfig, BootstrapPeerDaemonConfig, BootstrapPlan, BootstrapPreset,
+        BootstrapService, BootstrapSpec, HeadQuery, ReceiptQuery, ReducerLoadQuery,
+        render_openmetrics,
     };
 
     fn genesis() -> burn_p2p_core::GenesisSpec {
@@ -522,7 +526,7 @@ mod tests {
     fn preset_derives_expected_services_and_roles() {
         let plan = plan(BootstrapPreset::AllInOne);
 
-        assert!(plan.supports_service(&BootstrapService::Relay));
+        assert!(plan.supports_service(&BootstrapService::CoherenceSeed));
         assert!(plan.supports_service(&BootstrapService::Authority));
         assert!(plan.supports_service(&BootstrapService::Archive));
         assert!(plan.roles.contains(&burn_p2p_core::PeerRole::Bootstrap));
@@ -1371,6 +1375,62 @@ mod tests {
         let _ = trainer.await_termination().expect("trainer termination");
         daemon.shutdown().expect("daemon shutdown");
         daemon.await_termination().expect("daemon termination");
+    }
+
+    #[test]
+    fn bootstrap_peer_daemon_runs_without_workload_state() {
+        let storage = TempDir::new().expect("bootstrap peer tempdir");
+        let daemon = plan(BootstrapPreset::BootstrapOnly)
+            .spawn_bootstrap_peer_daemon(BootstrapPeerDaemonConfig {
+                node: NodeConfig {
+                    identity: burn_p2p::IdentityConfig::Persistent,
+                    storage: Some(StorageConfig::new(storage.path())),
+                    dataset: None,
+                    auth: None,
+                    network_manifest: None,
+                    client_release_manifest: None,
+                    selected_workload_id: None,
+                    metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
+                    bootstrap_peers: Vec::new(),
+                    listen_addresses: vec![
+                        burn_p2p_swarm::SwarmAddress::new("/ip4/127.0.0.1/tcp/0")
+                            .expect("listen address"),
+                    ],
+                },
+            })
+            .expect("spawn bootstrap peer daemon");
+        let telemetry = daemon.telemetry();
+
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                let snapshot = telemetry.snapshot();
+                snapshot.local_peer_id.is_some() && !snapshot.listen_addresses.is_empty()
+            },
+            "bootstrap peer daemon did not become ready",
+        );
+
+        let snapshot = telemetry.snapshot();
+        assert!(
+            snapshot
+                .configured_roles
+                .contains(&burn_p2p::PeerRole::Bootstrap)
+        );
+        assert!(
+            snapshot
+                .configured_roles
+                .contains(&burn_p2p::PeerRole::RelayHelper)
+        );
+        assert!(
+            !snapshot
+                .configured_roles
+                .contains(&burn_p2p::PeerRole::Validator)
+        );
+
+        daemon.shutdown().expect("bootstrap peer daemon shutdown");
+        daemon
+            .await_termination()
+            .expect("bootstrap peer daemon termination");
     }
 
     #[cfg(feature = "social")]

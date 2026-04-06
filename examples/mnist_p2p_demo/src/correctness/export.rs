@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use burn_p2p::{BrowserEdgeSnapshot, HeadId, LeaseId, MicroShardId, PeerId};
+use burn_p2p::{BrowserEdgeSnapshot, ExperimentId, HeadId, LeaseId, MicroShardId, PeerId, RevisionId};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_views::BrowserAppSurface;
 use chrono::{DateTime, Utc};
@@ -84,6 +84,10 @@ pub struct BrowserRoleExerciseSummary {
     pub role: String,
     pub runtime_state: String,
     pub active_assignment: bool,
+    #[serde(default)]
+    pub active_experiment_id: Option<ExperimentId>,
+    #[serde(default)]
+    pub active_revision_id: Option<RevisionId>,
     pub active_head_id: Option<HeadId>,
     pub transport: Option<String>,
     pub command_completed: bool,
@@ -134,6 +138,28 @@ pub struct DemoAssessmentSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrowserExecutionSummary {
+    pub live_browser_training: bool,
+    pub browser_latency_emulated: bool,
+    pub slower_profile_increased_total_time: bool,
+    pub same_network_context: bool,
+    pub same_experiment_context: bool,
+    pub same_revision_context: bool,
+    pub same_head_context: bool,
+    pub same_lease_context: bool,
+    pub same_leased_microshards: bool,
+    pub session_enrolled: bool,
+    pub receipt_submission_accepted: bool,
+    pub runtime_state: Option<String>,
+    pub transport: Option<String>,
+    pub active_assignment: bool,
+    pub emitted_receipt_id: Option<String>,
+    pub accepted_receipt_ids: Vec<String>,
+    pub trainer_runtime_and_wasm_training_coherent: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoreMnistSummary {
     pub generated_at: DateTime<Utc>,
     pub network_id: String,
@@ -151,6 +177,7 @@ pub struct MnistCorrectnessSummary {
     pub trainer_leases: Vec<TrainerLeaseSummary>,
     pub browser_roles: Vec<BrowserRoleExerciseSummary>,
     pub browser_dataset_access: BrowserDatasetAccessSummary,
+    pub browser_execution: BrowserExecutionSummary,
     pub resilience: ResilienceDrillSummary,
     pub dynamics: MnistDynamicsSummary,
     pub assessment: DemoAssessmentSummary,

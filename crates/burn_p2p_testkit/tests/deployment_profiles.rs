@@ -65,6 +65,10 @@ fn bootstrap_tree(features: &str) -> anyhow::Result<String> {
     ])
 }
 
+fn read_repo_file(relative: &str) -> anyhow::Result<String> {
+    Ok(std::fs::read_to_string(workspace_root().join(relative))?)
+}
+
 #[test]
 fn trusted_minimal_profile_builds_without_optional_stacks() -> anyhow::Result<()> {
     let features = "admin-http,metrics,auth-static";
@@ -140,5 +144,52 @@ fn mixed_native_browser_profile_builds_without_social() -> anyhow::Result<()> {
         !tree.contains("burn_p2p_social"),
         "mixed-native-browser should not depend on burn_p2p_social\n{tree}"
     );
+    Ok(())
+}
+
+#[test]
+fn split_fleet_compose_exposes_bootstrap_validator_and_trainer_roles() -> anyhow::Result<()> {
+    let compose = read_repo_file("deploy/compose/split-fleet.compose.yaml")?;
+    for required in [
+        "bootstrap:",
+        "validator:",
+        "trainer-cpu:",
+        "trainer-gpu:",
+        "deploy/containers/bootstrap.Dockerfile",
+        "deploy/containers/node-native.Dockerfile",
+        "deploy/containers/node-cuda.Dockerfile",
+    ] {
+        anyhow::ensure!(
+            compose.contains(required),
+            "split-fleet compose should contain {required}\n{compose}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn terraform_reference_stacks_model_split_fleet() -> anyhow::Result<()> {
+    let aws = read_repo_file("deploy/terraform/aws/main.tf")?;
+    let gcp = read_repo_file("deploy/terraform/gcp/main.tf")?;
+    for required in [
+        "aws_instance\" \"bootstrap",
+        "aws_instance\" \"validator",
+        "aws_instance\" \"trainer",
+    ] {
+        anyhow::ensure!(
+            aws.contains(required),
+            "aws terraform should contain {required}\n{aws}"
+        );
+    }
+    for required in [
+        "google_compute_instance\" \"bootstrap",
+        "google_compute_instance\" \"validator",
+        "google_compute_instance\" \"trainer",
+    ] {
+        anyhow::ensure!(
+            gcp.contains(required),
+            "gcp terraform should contain {required}\n{gcp}"
+        );
+    }
     Ok(())
 }

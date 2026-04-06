@@ -17,7 +17,7 @@ use burn_p2p_app::{
     AppArtifactRow, AppDiagnosticsView, AppExperimentRow, AppHeadRow, AppLeaderboardRow,
     AppLoginProvider, AppMetricRow, AppMetricsPanel, AppPaths, AppPeerStatusRow,
     AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView, AppTransportSurface, AppTrustView,
-    render_browser_app_static_html,
+    render_browser_app_static_html_with_config,
 };
 use burn_p2p_core::{
     BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
@@ -28,7 +28,7 @@ use burn_p2p_core::{
     SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
-use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_views::BrowserAppSurface;
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -187,7 +187,15 @@ pub fn write_browser_portal_capture_bundle(
         fs::create_dir_all(&scenario_dir)?;
         fs::write(
             scenario_dir.join("index.html"),
-            render_browser_app_static_html(&scenario_bootstrap(&spec.slug, spec.default_surface)),
+            render_browser_app_static_html_with_config(
+                "burn_p2p",
+                "",
+                "../../assets/browser-app-loader.js",
+                Some("../../assets/browser-app.css"),
+                Some(&format!("/{}", spec.slug)),
+                spec.default_surface.as_str(),
+                15_000,
+            ),
         )?;
         fs::write(
             scenario_dir.join("snapshot.json"),
@@ -240,18 +248,6 @@ pub fn write_browser_portal_capture_bundle(
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     Ok(manifest)
-}
-
-fn scenario_bootstrap(slug: &str, default_surface: BrowserAppSurface) -> BrowserAppStaticBootstrap {
-    BrowserAppStaticBootstrap {
-        app_name: "burn_p2p".into(),
-        asset_base_url: String::new(),
-        module_entry_path: "../../assets/browser-app-loader.js".into(),
-        stylesheet_path: Some("../../assets/browser-app.css".into()),
-        default_edge_url: Some(format!("/{slug}")),
-        default_surface,
-        refresh_interval_ms: 15_000,
-    }
 }
 
 fn browser_portal_snapshot(snapshot: &AppSnapshotView) -> BrowserEdgeSnapshot {

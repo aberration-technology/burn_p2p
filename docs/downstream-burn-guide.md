@@ -45,7 +45,7 @@ evaluation behavior, or hyperparameters.
 
 Example reference:
 
-- [burn_ndarray_runtime.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/examples/burn_ndarray_runtime.rs)
+- [burn_ndarray_runtime.rs](../crates/burn_p2p/examples/burn_ndarray_runtime.rs)
 
 ### 2. Add the runtime hooks
 
@@ -304,13 +304,13 @@ integrations should document:
 ## Suggested Starting Points
 
 - Minimal family/workload example:
-  [family_workload_minimal.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/examples/family_workload_minimal.rs)
+  [family_workload_minimal.rs](../crates/burn_p2p/examples/family_workload_minimal.rs)
 - Minimal native example:
-  [synthetic_trainer.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/examples/synthetic_trainer.rs)
+  [synthetic_trainer.rs](../crates/burn_p2p/examples/synthetic_trainer.rs)
 - Burn example:
-  [burn_ndarray_runtime.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/examples/burn_ndarray_runtime.rs)
+  [burn_ndarray_runtime.rs](../crates/burn_p2p/examples/burn_ndarray_runtime.rs)
 - Embedded daemon example:
-  [embedded_runtime_daemon.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p_bootstrap/examples/embedded_runtime_daemon.rs)
+  [embedded_runtime_daemon.rs](../crates/burn_p2p_bootstrap/examples/embedded_runtime_daemon.rs)
 
 ## Recommended Next Improvements For This Guide
 

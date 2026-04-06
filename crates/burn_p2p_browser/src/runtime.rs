@@ -1,6 +1,6 @@
 use burn_p2p::{
-    BrowserJoinPolicy, BrowserRole, ContentId, ExperimentId, NetworkId, RevisionId,
-    RuntimeTransportPolicy,
+    BrowserJoinPolicy, BrowserRole, ContentId, ExperimentId, NetworkId, PeerRole, PeerRoleSet,
+    RevisionId, RuntimeTransportPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -186,7 +186,9 @@ impl BrowserRuntimeConfig {
             target_artifact_hash,
             receipt_submit_path: "/receipts/browser".into(),
             role: BrowserRuntimeRole::BrowserObserver,
-            transport: BrowserTransportPolicy::from(RuntimeTransportPolicy::browser()),
+            transport: BrowserTransportPolicy::from(RuntimeTransportPolicy::browser_for_roles(
+                &PeerRoleSet::new([PeerRole::BrowserObserver]),
+            )),
             selected_experiment: None,
             selected_revision: None,
         }

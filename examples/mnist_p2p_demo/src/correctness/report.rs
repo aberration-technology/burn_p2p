@@ -9,8 +9,9 @@ use crate::{
     correctness::{
         browser::{browser_scenarios, exercise_browser_roles, probe_browser_http_shard_fetch},
         export::{
-            CoreMnistSummary, DemoAssessmentSummary, ExperimentRunSummary, MnistCorrectnessSummary,
-            MnistRunExport, NodeSummary, ResilienceDrillSummary,
+            BrowserExecutionSummary, CoreMnistSummary, DemoAssessmentSummary,
+            ExperimentRunSummary, MnistCorrectnessSummary, MnistRunExport, NodeSummary,
+            ResilienceDrillSummary,
         },
     },
 };
@@ -74,6 +75,8 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
             .training
             .lease,
     )?;
+    let browser_execution =
+        browser_execution_summary(run, &browser_roles, run.browser_probe_summary.as_ref())?;
     let resilience = ResilienceDrillSummary {
         restarted_trainer_label: run.restarted_trainer_label.clone(),
         trainer_restart_reconnected: run.trainer_restart_reconnected,
@@ -81,7 +84,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
     };
     let assessment = DemoAssessmentSummary {
         live_native_training: true,
-        live_browser_training: false,
+        live_browser_training: browser_execution.trainer_runtime_and_wasm_training_coherent,
         browser_runtime_roles_exercised: browser_roles.iter().all(|role| {
             role.active_assignment
                 && (!role.role.contains("trainer") && !role.role.contains("verifier")
@@ -92,7 +95,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         notes: vec![
             "native trainer and validator nodes run real burn mnist training on one machine".into(),
             "browser viewer, verifier, and trainer roles are exercised through the browser runtime state machine and portal surfaces".into(),
-            "the core demo keeps browser runtime drills lightweight; xtask correctness runs the live burn/webgpu wasm probe separately".into(),
+            "when the hidden live-browser hook is enabled, the mnist e2e run keeps the native fleet alive while a browser burn/webgpu worker enrolls against the same browser edge, trains on the leased shard slice, and submits a live receipt".into(),
             "dataset shards are fetched from the prepared http dataset origin lease-by-lease; they are not gossiped over the peer overlay".into(),
         ],
     };
@@ -177,6 +180,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
             .collect(),
         browser_roles,
         browser_dataset_access,
+        browser_execution,
         resilience,
         dynamics: dynamics_summary(
             &run.baseline_outcomes,
@@ -194,5 +198,175 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         summary,
         correctness,
         browser_scenarios,
+    })
+}
+
+fn browser_execution_summary(
+    run: &CoreMnistRun,
+    browser_roles: &[crate::correctness::export::BrowserRoleExerciseSummary],
+    browser_probe_summary: Option<&serde_json::Value>,
+) -> anyhow::Result<BrowserExecutionSummary> {
+    let Some(browser_probe_summary) = browser_probe_summary else {
+        return Ok(BrowserExecutionSummary {
+            live_browser_training: false,
+            browser_latency_emulated: false,
+            slower_profile_increased_total_time: false,
+            same_network_context: false,
+            same_experiment_context: false,
+            same_revision_context: false,
+            same_head_context: false,
+            same_lease_context: false,
+            same_leased_microshards: false,
+            session_enrolled: false,
+            receipt_submission_accepted: false,
+            runtime_state: None,
+            transport: None,
+            active_assignment: false,
+            emitted_receipt_id: None,
+            accepted_receipt_ids: Vec::new(),
+            trainer_runtime_and_wasm_training_coherent: false,
+            notes: vec![
+                "live browser participation was not requested for this demo run".into(),
+            ],
+        });
+    };
+
+    let network_id = run.network_manifest.network_id.as_str();
+    let experiment_id = run.baseline_head.experiment_id.as_str();
+    let revision_id = run.baseline_head.revision_id.as_str();
+    let selected_head_id = run.baseline_head.head_id.as_str();
+    let lease = &run
+        .baseline_outcomes
+        .first()
+        .context("mnist demo did not produce a baseline trainer lease")?
+        .training
+        .lease;
+    let browser_trainer = browser_roles
+        .iter()
+        .find(|role| role.role == "browser-trainer-wgpu")
+        .context("mnist correctness summary missing browser trainer role drill")?;
+
+    let probe_network_id = browser_probe_summary
+        .pointer("/run_context/network_id")
+        .and_then(serde_json::Value::as_str)
+        .context("browser probe summary missing run_context.network_id")?;
+    let probe_experiment_id = browser_probe_summary
+        .pointer("/run_context/experiment_id")
+        .and_then(serde_json::Value::as_str)
+        .context("browser probe summary missing run_context.experiment_id")?;
+    let probe_revision_id = browser_probe_summary
+        .pointer("/run_context/revision_id")
+        .and_then(serde_json::Value::as_str)
+        .context("browser probe summary missing run_context.revision_id")?;
+    let probe_selected_head_id = browser_probe_summary
+        .pointer("/run_context/selected_head_id")
+        .and_then(serde_json::Value::as_str)
+        .context("browser probe summary missing run_context.selected_head_id")?;
+    let probe_lease_id = browser_probe_summary
+        .pointer("/run_context/lease_id")
+        .and_then(serde_json::Value::as_str)
+        .context("browser probe summary missing run_context.lease_id")?;
+    let probe_leased_microshards = browser_probe_summary
+        .get("leased_microshards")
+        .and_then(serde_json::Value::as_array)
+        .context("browser probe summary missing leased_microshards")?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+
+    let accepted_receipt_ids = browser_probe_summary
+        .pointer("/browser_execution/accepted_receipt_ids")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let emitted_receipt_id = browser_probe_summary
+        .pointer("/browser_execution/emitted_receipt_id")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let runtime_state = browser_probe_summary
+        .pointer("/browser_execution/runtime_state")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let transport = browser_probe_summary
+        .pointer("/browser_execution/transport")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let active_assignment = browser_probe_summary
+        .pointer("/browser_execution/active_assignment")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let live_browser_training = browser_probe_summary
+        .pointer("/browser_execution/live_browser_training")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let browser_latency_emulated = browser_probe_summary
+        .pointer("/browser_execution/browser_latency_emulated")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let slower_profile_increased_total_time = browser_probe_summary
+        .pointer("/browser_execution/slower_profile_increased_total_time")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let session_enrolled = browser_probe_summary
+        .pointer("/browser_execution/session_enrolled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let receipt_submission_accepted = browser_probe_summary
+        .pointer("/browser_execution/receipt_submission_accepted")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+
+    let same_network_context = probe_network_id == network_id;
+    let same_experiment_context = probe_experiment_id == experiment_id;
+    let same_revision_context = probe_revision_id == revision_id;
+    let same_head_context = probe_selected_head_id == selected_head_id;
+    let same_lease_context = probe_lease_id == lease.lease_id.as_str();
+    let same_leased_microshards = probe_leased_microshards
+        == lease
+            .microshards
+            .iter()
+            .map(|microshard| microshard.as_str())
+            .collect::<Vec<_>>();
+    let trainer_runtime_and_wasm_training_coherent = live_browser_training
+        && same_network_context
+        && same_experiment_context
+        && same_revision_context
+        && same_head_context
+        && same_lease_context
+        && same_leased_microshards
+        && session_enrolled
+        && receipt_submission_accepted
+        && browser_trainer.command_completed
+        && browser_trainer.active_assignment
+        && active_assignment;
+
+    Ok(BrowserExecutionSummary {
+        live_browser_training,
+        browser_latency_emulated,
+        slower_profile_increased_total_time,
+        same_network_context,
+        same_experiment_context,
+        same_revision_context,
+        same_head_context,
+        same_lease_context,
+        same_leased_microshards,
+        session_enrolled,
+        receipt_submission_accepted,
+        runtime_state,
+        transport,
+        active_assignment,
+        emitted_receipt_id,
+        accepted_receipt_ids,
+        trainer_runtime_and_wasm_training_coherent,
+        notes: vec![
+            "the browser worker enrolled against the live browser edge while the native mnist fleet was still running".into(),
+            "browser burn/webgpu training consumed the same lease-scoped shard slice from the prepared dataset origin".into(),
+            "browser shard bytes remained http-backed; shard transport was not exercised over the peer overlay".into(),
+        ],
     })
 }

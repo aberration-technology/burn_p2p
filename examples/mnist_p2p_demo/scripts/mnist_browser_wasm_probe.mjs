@@ -170,6 +170,23 @@ async function startServer(config) {
 
 async function runProfile(page, profile, config, requestLog, origin) {
   const datasetBaseUrl = `${origin}/profile/${profile.slug}/dataset`;
+  const liveParticipant =
+    profile.slug === "fast" && config.edge_base_url
+      ? {
+          edge_base_url: config.edge_base_url,
+          network_id: config.network_id,
+          experiment_id: config.experiment_id,
+          revision_id: config.revision_id,
+          selected_head_id: config.selected_head_id,
+          lease_id: config.lease_id,
+          leased_microshards: config.leased_microshards,
+          release_train_hash: config.release_train_hash,
+          target_artifact_id: config.target_artifact_id,
+          target_artifact_hash: config.target_artifact_hash,
+          workload_id: config.workload_id,
+          principal_id: config.principal_id,
+        }
+      : null;
   const result = await Promise.race([
     page.evaluate(async (probeConfig) => {
       const startedAt = performance.now();
@@ -212,6 +229,7 @@ async function runProfile(page, profile, config, requestLog, origin) {
         batch_size: probeConfig.batchSize,
         learning_rate: probeConfig.learningRate,
         max_train_batches: probeConfig.maxTrainBatches,
+        live_participant: probeConfig.liveParticipant,
       });
       return {
         manifestFetchTimeMs,
@@ -229,6 +247,7 @@ async function runProfile(page, profile, config, requestLog, origin) {
       batchSize: config.batch_size,
       learningRate: config.learning_rate,
       maxTrainBatches: config.max_train_batches,
+      liveParticipant,
     }),
     new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`browser mnist profile ${profile.slug} timed out`)), 45_000),
@@ -255,6 +274,7 @@ async function runProfile(page, profile, config, requestLog, origin) {
     train_record_count: result.trainRecordCount,
     eval_record_count: result.evalRecordCount,
     wasm: result.wasmResult,
+    live_participant: result.wasmResult.live_participant ?? null,
     total_page_time_ms: Number(result.totalPageTimeMs.toFixed(3)),
   };
 }
@@ -330,19 +350,38 @@ async function main() {
       profiles.push(await runProfile(page, profile, config, server.requestLog, server.origin));
     }
 
+    const liveParticipantSummary =
+      profiles.find((profile) => profile.live_participant)?.live_participant ?? null;
     const summary = {
       measured_at: new Date().toISOString(),
       origin: server.origin,
+      run_context: {
+        network_id: config.network_id ?? null,
+        experiment_id: config.experiment_id ?? null,
+        revision_id: config.revision_id ?? null,
+        selected_head_id: config.selected_head_id ?? null,
+        lease_id: config.lease_id ?? null,
+      },
       leased_microshards: config.leased_microshards,
       browser_runtime: browserRuntime,
       profiles,
       browser_execution: {
-        live_browser_training: profiles.every((profile) => profile.wasm?.backend === "burn-webgpu-wasm"),
+        live_browser_training:
+          profiles.every((profile) => profile.wasm?.backend === "burn-webgpu-wasm") &&
+          !!liveParticipantSummary?.receipt_submission_accepted,
         browser_latency_emulated: profiles.some((profile) => profile.latency_ms > 0),
         slower_profile_increased_total_time:
           profiles.length < 2
             ? true
             : profiles[profiles.length - 1].total_page_time_ms > profiles[0].total_page_time_ms,
+        session_enrolled: !!liveParticipantSummary?.session_enrolled,
+        receipt_submission_accepted:
+          !!liveParticipantSummary?.receipt_submission_accepted,
+        runtime_state: liveParticipantSummary?.runtime_state ?? null,
+        transport: liveParticipantSummary?.transport ?? null,
+        active_assignment: !!liveParticipantSummary?.active_assignment,
+        emitted_receipt_id: liveParticipantSummary?.emitted_receipt_id ?? null,
+        accepted_receipt_ids: liveParticipantSummary?.accepted_receipt_ids ?? [],
       },
     };
 

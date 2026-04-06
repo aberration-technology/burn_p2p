@@ -353,6 +353,7 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
             .collect(),
         auth_announcements: Vec::new(),
         directory_announcements: vec![directory_announcement(16)],
+        peer_directory_announcements: Vec::new(),
         metrics_announcements: Vec::new(),
     }
 }

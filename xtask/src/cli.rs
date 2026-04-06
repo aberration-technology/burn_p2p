@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::profile::Profile;
 
@@ -44,6 +44,11 @@ pub enum Command {
     Bench {
         #[command(subcommand)]
         command: BenchCommand,
+    },
+    /// Run deployment helpers for local compose or cloud terraform stacks.
+    Deploy {
+        #[command(subcommand)]
+        command: DeployCommand,
     },
     /// Run the same grouped lanes used by CI workflows.
     Ci {
@@ -129,6 +134,16 @@ pub enum BenchCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum DeployCommand {
+    /// Run a local docker compose deployment stack.
+    Compose(DeployComposeArgs),
+    /// Run the AWS terraform deployment wrapper.
+    Aws(DeployCloudArgs),
+    /// Run the GCP terraform deployment wrapper.
+    Gcp(DeployCloudArgs),
+}
+
+#[derive(Debug, Subcommand)]
 pub enum CiCommand {
     /// Run the lean PR fast lane locally.
     PrFast(CiArgs),
@@ -200,6 +215,81 @@ pub struct ChaosArgs {
 pub struct BenchArgs {
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DeployComposeStack {
+    BootstrapEdge,
+    SplitFleet,
+    TrustedMinimal,
+    TrustedBrowser,
+    EnterpriseSso,
+    CommunityWeb,
+}
+
+impl DeployComposeStack {
+    pub fn file_name(&self) -> &'static str {
+        match self {
+            Self::BootstrapEdge => "bootstrap-edge.compose.yaml",
+            Self::SplitFleet => "split-fleet.compose.yaml",
+            Self::TrustedMinimal => "trusted-minimal.compose.yaml",
+            Self::TrustedBrowser => "trusted-browser.compose.yaml",
+            Self::EnterpriseSso => "enterprise-sso.compose.yaml",
+            Self::CommunityWeb => "community-web.compose.yaml",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DeployAction {
+    Plan,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DeployComposeArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    /// Compose action to run.
+    #[arg(long, value_enum, default_value_t = DeployAction::Up)]
+    pub action: DeployAction,
+    /// Compose stack under deploy/compose/.
+    #[arg(long, value_enum, default_value_t = DeployComposeStack::BootstrapEdge)]
+    pub stack: DeployComposeStack,
+    /// Optional env file passed through to docker compose.
+    #[arg(long)]
+    pub env_file: Option<String>,
+    /// Additional compose profile to enable.
+    #[arg(long)]
+    pub profile_name: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DeployCloudArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    /// Terraform action to run.
+    #[arg(long, value_enum, default_value_t = DeployAction::Plan)]
+    pub action: DeployAction,
+    /// Optional terraform var-file.
+    #[arg(long)]
+    pub var_file: Option<String>,
+    /// Bootstrap image URI.
+    #[arg(long)]
+    pub bootstrap_image: Option<String>,
+    /// Validator image URI.
+    #[arg(long)]
+    pub validator_image: Option<String>,
+    /// Trainer image URI.
+    #[arg(long)]
+    pub trainer_image: Option<String>,
+    /// Optional bootstrap config path passed as TF_VAR_bootstrap_config_json.
+    #[arg(long)]
+    pub bootstrap_config: Option<String>,
+    /// Optional validator config path passed as TF_VAR_validator_config_json.
+    #[arg(long)]
+    pub validator_config: Option<String>,
 }
 
 #[derive(Debug, Args, Clone)]

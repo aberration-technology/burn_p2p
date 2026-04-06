@@ -13,6 +13,11 @@ pub enum LiveSwarmEvent {
         /// The peer ID.
         peer_id: String,
     },
+    /// Uses the connection closed variant.
+    ConnectionClosed {
+        /// The peer ID.
+        peer_id: String,
+    },
     /// Uses the outgoing connection error variant.
     OutgoingConnectionError {
         /// The peer ID.
@@ -39,6 +44,9 @@ impl From<SwarmEvent<Infallible>> for LiveSwarmEvent {
                 address: SwarmAddress(address.to_string()),
             },
             SwarmEvent::ConnectionEstablished { peer_id, .. } => Self::ConnectionEstablished {
+                peer_id: peer_id.to_string(),
+            },
+            SwarmEvent::ConnectionClosed { peer_id, .. } => Self::ConnectionClosed {
                 peer_id: peer_id.to_string(),
             },
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -342,6 +350,19 @@ pub struct ExperimentDirectoryAnnouncement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a peer directory announcement shared on the main control topic.
+pub struct PeerDirectoryAnnouncement {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The peer ID being advertised.
+    pub peer_id: PeerId,
+    /// The listen addresses currently advertised for that peer.
+    pub addresses: Vec<SwarmAddress>,
+    /// The announced at.
+    pub announced_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a metrics update announcement shared over an experiment metrics topic.
 pub struct MetricsAnnouncement {
     /// The overlay.
@@ -377,6 +398,8 @@ pub struct ControlPlaneSnapshot {
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     /// The directory announcements.
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
+    /// The peer directory announcements.
+    pub peer_directory_announcements: Vec<PeerDirectoryAnnouncement>,
     /// The metrics announcements.
     pub metrics_announcements: Vec<MetricsAnnouncement>,
 }
@@ -458,6 +481,8 @@ pub enum PubsubPayload {
     Auth(PeerAuthAnnouncement),
     /// Uses the directory variant.
     Directory(ExperimentDirectoryAnnouncement),
+    /// Uses the peer directory variant.
+    PeerDirectory(PeerDirectoryAnnouncement),
     /// Uses the metrics variant.
     Metrics(MetricsAnnouncement),
 }
@@ -481,7 +506,8 @@ pub(crate) struct NativeControlPlaneBehaviour {
         request_response::json::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
     pub(crate) gossipsub: gossipsub::Behaviour,
     pub(crate) identify: identify::Behaviour,
-    pub(crate) mdns: mdns::tokio::Behaviour,
+    pub(crate) connection_limits: connection_limits::Behaviour,
+    pub(crate) mdns: libp2p::swarm::behaviour::toggle::Toggle<mdns::tokio::Behaviour>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -490,6 +516,13 @@ pub(crate) enum NativeControlPlaneBehaviourEvent {
     Gossipsub(Box<gossipsub::Event>),
     Identify(Box<identify::Event>),
     Mdns(mdns::Event),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<Infallible> for NativeControlPlaneBehaviourEvent {
+    fn from(value: Infallible) -> Self {
+        match value {}
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -592,6 +625,9 @@ pub(crate) fn apply_pubsub_payload(snapshot: &mut ControlPlaneSnapshot, payload:
         PubsubPayload::Directory(announcement) => {
             push_unique(&mut snapshot.directory_announcements, announcement);
         }
+        PubsubPayload::PeerDirectory(announcement) => {
+            push_unique(&mut snapshot.peer_directory_announcements, announcement);
+        }
         PubsubPayload::Metrics(announcement) => {
             push_metrics_announcement(&mut snapshot.metrics_announcements, announcement);
         }
@@ -612,6 +648,7 @@ pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
         PubsubPayload::ReducerLoad(_) => "reducer-load",
         PubsubPayload::Auth(_) => "auth",
         PubsubPayload::Directory(_) => "directory",
+        PubsubPayload::PeerDirectory(_) => "peer-directory",
         PubsubPayload::Metrics(_) => "metrics",
     }
 }
@@ -629,6 +666,11 @@ pub enum LiveControlPlaneEvent {
         /// The peer ID.
         peer_id: String,
     },
+    /// Uses the connection closed variant.
+    ConnectionClosed {
+        /// The peer ID.
+        peer_id: String,
+    },
     /// Uses the snapshot requested variant.
     SnapshotRequested {
         /// The peer ID.
@@ -638,6 +680,8 @@ pub enum LiveControlPlaneEvent {
     SnapshotReceived {
         /// The peer ID.
         peer_id: String,
+        /// The outbound request ID.
+        request_id: String,
         /// The snapshot.
         snapshot: ControlPlaneSnapshot,
     },
@@ -652,6 +696,8 @@ pub enum LiveControlPlaneEvent {
     ArtifactManifestReceived {
         /// The peer ID.
         peer_id: String,
+        /// The outbound request ID.
+        request_id: String,
         /// The descriptor.
         descriptor: Option<ArtifactDescriptor>,
     },
@@ -668,6 +714,8 @@ pub enum LiveControlPlaneEvent {
     ArtifactChunkReceived {
         /// The peer ID.
         peer_id: String,
+        /// The outbound request ID.
+        request_id: String,
         /// The payload.
         payload: Option<ArtifactChunkPayload>,
     },
@@ -713,6 +761,8 @@ pub enum LiveControlPlaneEvent {
     RequestFailure {
         /// The peer ID.
         peer_id: String,
+        /// The outbound request ID, when the failure originated from a request-response exchange.
+        request_id: Option<String>,
         /// The message.
         message: String,
     },

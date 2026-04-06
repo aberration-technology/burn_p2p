@@ -14,7 +14,7 @@ that works well for:
 - optional burn integration
 - optional publication backends
 - optional auth providers
-- optional portal hosts
+- optional app hosts
 - optional browser-edge capabilities
 
 that works less well for:
@@ -33,13 +33,13 @@ reason:
 current design aims for:
 
 - one small core downstream dependency for training: `burn_p2p`
-- separate composition crates for browser, portal, and bootstrap
+- separate composition crates for browser, app, and bootstrap/coherence-seed deployment
 - feature flags inside those composition crates where it helps
 
 ## Design Notes
 
 - `burn_p2p` is the main downstream entrypoint
-- browser runtime, portal ui, bootstrap services, publication backends, and
+- browser runtime, app ui, bootstrap/browser-edge services, publication backends, and
   social surfaces stay in separate crates
 - separation keeps downstream compile graphs smaller than a single mega-crate
 - optional features are used mainly inside composition crates such as
@@ -51,7 +51,7 @@ closest current match to a bevy-style setup:
 
 - `burn_p2p` is the single cargo entry for native p2p training
 - `burn_p2p = { features = ["burn"] }` is the ready-to-go burn path
-- `burn_p2p_bootstrap` is the ready-to-go edge/bootstrap path
+- `burn_p2p_bootstrap` is the ready-to-go coherence-seed + browser-edge path
 - `burn_p2p_app` is the ready-to-go reference ui path
 
 current repo does **not** try to make one crate auto-import every other crate.
@@ -66,7 +66,7 @@ that is intentional:
 clean future direction, if a broader single-entry facade is wanted:
 
 - keep `burn_p2p` as the core runtime crate
-- add a separate product/meta crate that re-exports browser, portal, and
+- add a separate product/meta crate that re-exports browser, app, and
   bootstrap surfaces behind features
 - avoid turning `burn_p2p` itself into a kitchen-sink crate
 
@@ -80,7 +80,7 @@ main downstream runtime crate.
 
 notes:
 
-- `burn_p2p` intentionally does not auto-pull the browser runtime, portal ui,
+- `burn_p2p` intentionally does not auto-pull the browser runtime, app ui,
   or bootstrap services
 - downstream burn users usually want:
 
@@ -107,12 +107,12 @@ optional reference ui/product surface.
 
 | feature | default | enables | intended use |
 | --- | --- | --- | --- |
-| `readonly` | yes | read-only portal rendering | static or view-only portal surfaces |
-| `interactive` | no | interactive portal actions on top of `readonly` | browser or operator flows with mutations |
+| `readonly` | yes | read-only app rendering | static or view-only app surfaces |
+| `interactive` | no | interactive app actions on top of `readonly` | browser or operator flows with mutations |
 | `social` | no | social widgets and related rendering seams | deployments using social surfaces |
 | `browser-join` | no | browser join/onboarding ui on top of `interactive` | browser training or browser admission flows |
-| `web-client` | no | dioxus web host | wasm/browser portal host |
-| `desktop-client` | no | dioxus desktop host, native node host bridge | native desktop portal window |
+| `web-client` | no | dioxus web host | wasm/browser app host |
+| `desktop-client` | no | dioxus desktop host, native node host bridge | native desktop app window |
 
 notes:
 
@@ -123,31 +123,32 @@ notes:
 
 ## `burn_p2p_bootstrap`
 
-bootstrap/admin/browser-edge composition crate.
+coherence-seed/admin/browser-edge composition crate.
 
 | feature | default | enables | intended use |
 | --- | --- | --- | --- |
-| `admin-http` | yes | admin/status http surface | operational bootstrap service |
-| `metrics` | yes | metrics routes and metrics state | operator metrics |
-| `metrics-indexer` | yes | metrics indexing with `burn_p2p_metrics` | indexed metrics views |
-| `artifact-publish` | yes | publication plumbing | artifact publication flows |
-| `artifact-download` | yes | download endpoints on top of publication | browser/native artifact downloads |
-| `artifact-fs` | yes | filesystem publication backend | local or single-node storage |
+| `admin-http` | no | admin/status http surface | operational bootstrap service |
+| `metrics` | no | metrics routes and metrics state | operator metrics |
+| `metrics-indexer` | no | metrics indexing with `burn_p2p_metrics` | indexed metrics views |
+| `artifact-publish` | no | publication plumbing | artifact publication flows |
+| `artifact-download` | no | download endpoints on top of publication | browser/native artifact downloads |
+| `artifact-fs` | no | filesystem publication backend | local or single-node storage |
 | `artifact-s3` | no | s3 publication backend | cloud/object-store publication |
-| `browser-edge` | yes | served browser/native ui snapshots, html, and edge http/json surface | bootstrap edge deployments serving portal state |
-| `browser-join` | yes | browser participant join/onboarding additions on top of `browser-edge` | browser trainer/verifier deployments |
-| `rbac` | yes | role-based access control hooks | guarded admin/public surfaces |
-| `auth-static` | yes | static auth provider | local/dev/simple deployments |
-| `auth-github` | yes | github auth provider | github login deployments |
-| `auth-oidc` | yes | oidc auth provider | enterprise sso |
-| `auth-oauth` | yes | generic oauth auth provider | hosted oauth providers |
+| `browser-edge` | no | served browser/native ui snapshots, html, and edge http/json surface | coherence-seed / bootstrap edge deployments serving app state |
+| `browser-join` | no | browser participant join/onboarding additions on top of `browser-edge` | browser trainer/verifier deployments |
+| `rbac` | no | role-based access control hooks | guarded admin/public surfaces |
+| `auth-static` | no | static auth provider | local/dev/simple deployments |
+| `auth-github` | no | github auth provider | github login deployments |
+| `auth-oidc` | no | oidc auth provider | enterprise sso |
+| `auth-oauth` | no | generic oauth auth provider | hosted oauth providers |
 | `auth-external` | no | external auth bridge | custom auth services |
-| `social` | yes | social/profile/leaderboard extras | community-facing deployments |
+| `social` | no | social/profile/leaderboard extras | community-facing deployments |
 
 notes:
 
-- defaults intentionally build a rich reference deployment
-- lean operators should usually disable defaults and opt in deliberately
+- defaults are intentionally empty
+- operators opt into only the admin, browser-edge, publication, and auth
+  surfaces they actually need
 
 example:
 

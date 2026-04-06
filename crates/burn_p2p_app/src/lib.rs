@@ -33,7 +33,8 @@ pub use models::{
 pub use native_client::{NodeAppHostConfig, NodeAppHostSource, launch_node_app};
 pub use render::{
     browser_app_stylesheet, render_artifact_run_summaries_html, render_artifact_run_view_html,
-    render_browser_app_static_html, render_dashboard_html, render_head_artifact_view_html,
+    render_browser_app_static_html, render_browser_app_static_html_with_config,
+    render_dashboard_html, render_head_artifact_view_html,
 };
 
 #[cfg(test)]

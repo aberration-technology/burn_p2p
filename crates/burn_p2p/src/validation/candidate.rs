@@ -31,13 +31,17 @@ pub(super) fn collect_validation_candidate_heads(
             if !matches_experiment_head(&announcement.head, experiment) {
                 continue;
             }
-            if peer_id == local_peer_id {
+            let provider_peer_id = announcement
+                .provider_peer_id
+                .clone()
+                .unwrap_or_else(|| peer_id.clone());
+            if provider_peer_id == *local_peer_id {
                 continue;
             }
             if expected_parent_head_id != announcement.head.parent_head_id.as_ref() {
                 continue;
             }
-            candidate_heads.push((peer_id.clone(), announcement.head.clone()));
+            candidate_heads.push((provider_peer_id, announcement.head.clone()));
         }
     }
     candidate_heads

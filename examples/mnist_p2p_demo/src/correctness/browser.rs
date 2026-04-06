@@ -227,7 +227,7 @@ pub fn exercise_browser_roles(
                     ..BrowserTrainingBudget::default()
                 },
             })),
-            Some("browser trainer currently exercises capability, assignment, transport, and receipt flow; burn wasm model execution is not wired into the mnist demo yet".into()),
+            Some("browser trainer exercises capability, assignment, transport, and receipt flow in the runtime drill; the e2e mnist harness pairs it with live burn/webgpu wasm execution against the same leased shards".into()),
         ),
     ])
 }
@@ -427,6 +427,16 @@ fn exercise_browser_role(
         role: browser_role_label(&role).into(),
         runtime_state: browser_runtime_state_label(runtime.state.as_ref()).into(),
         active_assignment: runtime.storage.active_assignment.is_some(),
+        active_experiment_id: runtime
+            .storage
+            .active_assignment
+            .as_ref()
+            .map(|assignment| assignment.experiment_id.clone()),
+        active_revision_id: runtime
+            .storage
+            .active_assignment
+            .as_ref()
+            .map(|assignment| assignment.revision_id.clone()),
         active_head_id: runtime.storage.last_head_id.clone(),
         transport: runtime
             .transport

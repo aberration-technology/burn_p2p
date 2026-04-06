@@ -166,30 +166,44 @@ fn protocol_set_is_derived_from_network_id() {
 
 #[test]
 fn browser_transport_policy_prefers_browser_transports() {
-    let policy = RuntimeTransportPolicy::browser();
+    let policy = RuntimeTransportPolicy::browser_for_roles(&PeerRoleSet::default_trainer());
     assert_eq!(
         policy.preferred_transports,
         vec![
             TransportKind::WebTransport,
             TransportKind::WebRtc,
             TransportKind::WebSocket,
-            TransportKind::RelayReservation,
         ]
     );
+    assert!(!policy.enable_local_discovery);
 }
 
 #[test]
 fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
-    let policy = RuntimeTransportPolicy::native();
+    let policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
     assert_eq!(
         policy.preferred_transports,
         vec![
             TransportKind::Quic,
             TransportKind::Tcp,
             TransportKind::WebSocket,
-            TransportKind::RelayReservation,
         ]
     );
+    assert!(!policy.enable_local_discovery);
+}
+
+#[test]
+fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
+    let policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]));
+
+    assert_eq!(policy.target_connected_peers, 8);
+    assert_eq!(policy.max_established_incoming, Some(96));
+    assert_eq!(policy.max_established_total, Some(128));
+    assert_eq!(policy.max_established_per_peer, Some(1));
+    assert!(!policy.enable_local_discovery);
 }
 
 #[test]
@@ -299,7 +313,7 @@ fn migration_plan_only_switches_changed_topics() {
 
 #[test]
 fn runtime_boundary_derives_protocols_from_genesis() {
-    let runtime = RuntimeBoundary::for_platform(
+    let runtime = RuntimeBoundary::for_platform_and_roles(
         &burn_p2p_core::GenesisSpec {
             network_id: NetworkId::new("network"),
             protocol_version: Version::new(0, 1, 0),
@@ -308,12 +322,16 @@ fn runtime_boundary_derives_protocols_from_genesis() {
             metadata: BTreeMap::new(),
         },
         ClientPlatform::Browser,
+        &PeerRoleSet::default_trainer(),
         vec![SwarmAddress::new("/dns4/bootstrap.example.com/tcp/4001/ws").expect("addr")],
         vec![SwarmAddress::new("/ip4/0.0.0.0/udp/4001/quic-v1").expect("addr")],
     )
     .expect("runtime");
 
-    assert_eq!(runtime.transport_policy, RuntimeTransportPolicy::browser());
+    assert_eq!(
+        runtime.transport_policy,
+        RuntimeTransportPolicy::browser_for_roles(&PeerRoleSet::default_trainer())
+    );
     assert_eq!(
         runtime.protocols.control.as_str(),
         "/burn-p2p/network/v1/control"
@@ -508,8 +526,8 @@ fn control_envelope_announcements_are_usable() {
 
 #[test]
 fn memory_swarm_shell_listens_and_connects_over_memory_transport() {
-    let mut listener = MemorySwarmShell::new();
-    let mut dialer = MemorySwarmShell::new();
+    let mut listener = MemorySwarmShell::new().expect("memory swarm listener");
+    let mut dialer = MemorySwarmShell::new().expect("memory swarm dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
     let dialer_peer_id = dialer.local_peer_id().to_string();
 
@@ -565,8 +583,10 @@ fn memory_swarm_shell_listens_and_connects_over_memory_transport() {
 #[test]
 fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
-    let mut listener = MemoryControlPlaneShell::new(protocols.control.clone());
-    let mut dialer = MemoryControlPlaneShell::new(protocols.control);
+    let mut listener =
+        MemoryControlPlaneShell::new(protocols.control.clone()).expect("memory control listener");
+    let mut dialer =
+        MemoryControlPlaneShell::new(protocols.control).expect("memory control dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
 
     let now = Utc::now();
@@ -716,6 +736,7 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
             reducer_load_announcements: listener.snapshot().reducer_load_announcements.clone(),
             auth_announcements: listener.snapshot().auth_announcements.clone(),
             directory_announcements: listener.snapshot().directory_announcements.clone(),
+            peer_directory_announcements: listener.snapshot().peer_directory_announcements.clone(),
             metrics_announcements: listener.snapshot().metrics_announcements.clone(),
         }
     );
@@ -724,7 +745,8 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
 #[test]
 fn memory_control_plane_shell_survives_reconnect_snapshot_storms() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("storm-net")).expect("protocols");
-    let mut listener = MemoryControlPlaneShell::new(protocols.control.clone());
+    let mut listener =
+        MemoryControlPlaneShell::new(protocols.control.clone()).expect("memory control listener");
     let listener_peer_id = listener.local_peer_id().to_string();
     let now = Utc::now();
     listener.publish_head(HeadAnnouncement {
@@ -760,7 +782,8 @@ fn memory_control_plane_shell_survives_reconnect_snapshot_storms() {
     }));
 
     for reconnect_attempt in 0..6 {
-        let mut dialer = MemoryControlPlaneShell::new(protocols.control.clone());
+        let mut dialer =
+            MemoryControlPlaneShell::new(protocols.control.clone()).expect("memory control dialer");
         dialer.dial(listen_addr.clone()).expect("dial");
 
         let connect_deadline = Instant::now() + Duration::from_secs(5);
@@ -965,9 +988,16 @@ fn browser_edge_control_plane_client_collects_unique_metrics_events_by_polling()
 #[test]
 fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
-    let mut listener =
-        NativeControlPlaneShell::new(protocols.control.clone()).expect("native listener");
-    let mut dialer = NativeControlPlaneShell::new(protocols.control).expect("native dialer");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
 
     let now = Utc::now();
@@ -1068,9 +1098,16 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp
 #[test]
 fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_quic() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
-    let mut listener =
-        NativeControlPlaneShell::new(protocols.control.clone()).expect("native listener");
-    let mut dialer = NativeControlPlaneShell::new(protocols.control).expect("native dialer");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
 
     let now = Utc::now();
@@ -1167,9 +1204,16 @@ fn native_control_plane_shell_propagates_control_announcements_over_pubsub() {
     let network_id = NetworkId::new("network");
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
     let control_overlay = OverlayTopic::control(network_id.clone());
-    let mut listener =
-        NativeControlPlaneShell::new(protocols.control.clone()).expect("native listener");
-    let mut dialer = NativeControlPlaneShell::new(protocols.control).expect("native dialer");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
 
     let now = Utc::now();
     let announcement = ControlAnnouncement {
@@ -1304,9 +1348,16 @@ fn native_control_plane_shell_propagates_control_announcements_over_pubsub() {
 #[test]
 fn native_control_plane_shell_transfers_artifact_manifests_and_chunks_over_tcp() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
-    let mut listener =
-        NativeControlPlaneShell::new(protocols.control.clone()).expect("native listener");
-    let mut dialer = NativeControlPlaneShell::new(protocols.control).expect("native dialer");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
 
     let descriptor = ArtifactDescriptor {
         artifact_id: ArtifactId::new("artifact-1"),

@@ -78,3 +78,9 @@ unsafe_code = "forbid"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+[profile.dev.package."libp2p-request-response"]
+debug-assertions = false
+
+[profile.test.package."libp2p-request-response"]
+debug-assertions = false

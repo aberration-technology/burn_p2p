@@ -25,16 +25,12 @@ impl BootstrapPreset {
     pub fn services(&self) -> BTreeSet<BootstrapService> {
         match self {
             Self::BootstrapOnly => BTreeSet::from([
-                BootstrapService::Relay,
-                BootstrapService::Rendezvous,
-                BootstrapService::Kademlia,
+                BootstrapService::CoherenceSeed,
                 BootstrapService::AdminApi,
                 BootstrapService::TelemetryExport,
             ]),
             Self::BootstrapArchive => BTreeSet::from([
-                BootstrapService::Relay,
-                BootstrapService::Rendezvous,
-                BootstrapService::Kademlia,
+                BootstrapService::CoherenceSeed,
                 BootstrapService::Archive,
                 BootstrapService::AdminApi,
                 BootstrapService::TelemetryExport,
@@ -47,9 +43,7 @@ impl BootstrapPreset {
                 BootstrapService::TelemetryExport,
             ]),
             Self::AllInOne => BTreeSet::from([
-                BootstrapService::Relay,
-                BootstrapService::Rendezvous,
-                BootstrapService::Kademlia,
+                BootstrapService::CoherenceSeed,
                 BootstrapService::Authority,
                 BootstrapService::Validator,
                 BootstrapService::Archive,
@@ -86,12 +80,11 @@ impl BootstrapPreset {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// Enumerates the supported bootstrap service values.
 pub enum BootstrapService {
-    /// Uses the relay variant.
-    Relay,
-    /// Uses the rendezvous variant.
-    Rendezvous,
-    /// Uses the kademlia variant.
-    Kademlia,
+    /// Uses the coherence seed variant.
+    ///
+    /// This is a cheap swarm/control-plane seed that helps peers discover one another
+    /// and recover mesh connectivity. It is not a libp2p relay/rendezvous/kademlia node.
+    CoherenceSeed,
     /// Uses the authority variant.
     Authority,
     /// Uses the validator variant.
@@ -236,9 +229,10 @@ impl BootstrapSpec {
         Ok(BootstrapPlan {
             preset: self.preset.clone(),
             roles: self.preset.roles(),
-            runtime: RuntimeBoundary::for_platform(
+            runtime: RuntimeBoundary::for_platform_and_roles(
                 &self.genesis,
                 self.platform,
+                &self.preset.roles(),
                 self.bootstrap_addresses,
                 self.listen_addresses,
             )?,

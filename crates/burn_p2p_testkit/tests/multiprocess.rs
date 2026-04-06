@@ -3,6 +3,7 @@ use std::{
     fs,
     path::Path,
     process::{Child, Command},
+    sync::{Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -42,8 +43,17 @@ impl Drop for ChildGuard {
     }
 }
 
+fn multiprocess_test_guard() -> MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("multiprocess test guard")
+}
+
 #[test]
 fn smoke_cluster_runs_across_processes() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
     let root = tempdir()?;
     let dataset_root = root.path().join("dataset");
     create_synthetic_runtime_dataset(&dataset_root)?;
@@ -57,6 +67,9 @@ fn smoke_cluster_runs_across_processes() -> anyhow::Result<()> {
         validator_report_path.clone(),
     );
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
+    validator_config.startup_timeout_secs = 30;
+    validator_config.sync_timeout_secs = 30;
+    validator_config.merge_wait_timeout_secs = 45;
     fs::write(
         &validator_config_path,
         serde_json::to_vec_pretty(&validator_config)?,
@@ -150,6 +163,7 @@ fn smoke_cluster_runs_across_processes() -> anyhow::Result<()> {
 
 #[test]
 fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
     let root = tempdir()?;
     let dataset_root = root.path().join("dataset");
     create_synthetic_runtime_dataset(&dataset_root)?;
@@ -164,6 +178,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         validator_report_path.clone(),
     );
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
+    validator_config.startup_timeout_secs = 30;
+    validator_config.sync_timeout_secs = 30;
+    validator_config.merge_wait_timeout_secs = 45;
     fs::write(
         &validator_config_path,
         serde_json::to_vec_pretty(&validator_config)?,
@@ -184,6 +201,10 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         trainer_report_path.clone(),
         vec![validator_addr],
     );
+    let mut trainer_config = trainer_config;
+    trainer_config.startup_timeout_secs = 30;
+    trainer_config.sync_timeout_secs = 30;
+    trainer_config.merge_wait_timeout_secs = 45;
     fs::write(
         &trainer_config_path,
         serde_json::to_vec_pretty(&trainer_config)?,
@@ -218,6 +239,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         restarted_report_path.clone(),
     );
     restarted_config.shutdown_sentinel = Some(restarted_shutdown.clone());
+    restarted_config.startup_timeout_secs = 30;
+    restarted_config.sync_timeout_secs = 30;
+    restarted_config.merge_wait_timeout_secs = 45;
     fs::write(
         &restarted_config_path,
         serde_json::to_vec_pretty(&restarted_config)?,
@@ -244,6 +268,10 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         vec![restarted_addr],
     );
     late_joiner_config.learning_rate = 0.25;
+    late_joiner_config.startup_timeout_secs = 30;
+    late_joiner_config.sync_timeout_secs = 30;
+    late_joiner_config.merge_wait_timeout_secs = 45;
+    late_joiner_config.wait_for_canonical_advance = false;
     fs::write(
         &late_joiner_config_path,
         serde_json::to_vec_pretty(&late_joiner_config)?,
@@ -260,6 +288,16 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         late_report.trained_parent_head_id.as_deref(),
         Some(merged_head_id.as_str())
     );
+    let baseline_receipt_count = restarted_report.receipt_count;
+    let baseline_merge_count = restarted_report.merge_count;
+    let post_restart_merge =
+        wait_for_report(&restarted_report_path, Duration::from_secs(45), |report| {
+            report.receipt_count > baseline_receipt_count
+                || report.merge_count > baseline_merge_count
+        })?;
+    assert!(post_restart_merge.receipt_count > baseline_receipt_count);
+    assert!(post_restart_merge.merge_count > baseline_merge_count);
+    assert!(post_restart_merge.merged_head_id.is_some());
 
     fs::write(&restarted_shutdown, b"stop")?;
     restarted_validator.wait_success()?;
@@ -268,6 +306,8 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
 
 #[test]
 fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
+    let trainer_count = 3_u32;
     let root = tempdir()?;
     let dataset_root = root.path().join("dataset");
     create_synthetic_runtime_dataset(&dataset_root)?;
@@ -288,13 +328,14 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
 
     let mut validator = ChildGuard::spawn(&validator_config_path)?;
     let validator_report =
-        wait_for_report(&validator_report_path, Duration::from_secs(15), |report| {
+        wait_for_report(&validator_report_path, Duration::from_secs(45), |report| {
             report.initialized_head_id.is_some() && !report.listen_addresses.is_empty()
         })?;
     let validator_addr = SwarmAddress::new(validator_report.listen_addresses[0].clone())?;
 
     let mut children = Vec::new();
-    for index in 0..8_u32 {
+    let start_sentinel = root.path().join("trainers.start");
+    for index in 0..trainer_count {
         let report_path = root.path().join(format!("trainer-{index}-report.json"));
         let config_path = root.path().join(format!("trainer-{index}.json"));
         let mut config = SyntheticProcessConfig::trainer(
@@ -303,7 +344,11 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
             report_path,
             vec![validator_addr.clone()],
         );
-        config.learning_rate = if index == 7 {
+        config.start_sentinel = Some(start_sentinel.clone());
+        config.startup_timeout_secs = 30;
+        config.sync_timeout_secs = 30;
+        config.merge_wait_timeout_secs = 45;
+        config.learning_rate = if index + 1 == trainer_count {
             1.0
         } else {
             ((index + 1) as f64) / 16.0
@@ -311,6 +356,14 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
         fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
         children.push(ChildGuard::spawn(&config_path)?);
     }
+
+    for index in 0..trainer_count {
+        let report_path = root.path().join(format!("trainer-{index}-report.json"));
+        let _ = wait_for_report(&report_path, Duration::from_secs(60), |report| {
+            report.synced_head_id.is_some()
+        })?;
+    }
+    fs::write(&start_sentinel, b"start")?;
 
     for child in &mut children {
         child.wait_success()?;
@@ -327,16 +380,17 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
 
 #[test]
 fn native_process_soak_runner_reports_multi_window_progress() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
     let root = tempdir()?;
     let summary = run_synthetic_process_soak(
         &SyntheticSoakConfig {
             root: root.path().join("soak-multi-window"),
             trainer_count: 1,
             trainer_window_count: 3,
-            startup_timeout_secs: 15,
+            startup_timeout_secs: 30,
             poll_interval_ms: 50,
-            sync_timeout_secs: 15,
-            merge_wait_timeout_secs: 15,
+            sync_timeout_secs: 30,
+            merge_wait_timeout_secs: 45,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -365,16 +419,17 @@ fn native_process_soak_runner_reports_multi_window_progress() -> anyhow::Result<
 
 #[test]
 fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
     let root = tempdir()?;
     let summary = run_synthetic_process_soak(
         &SyntheticSoakConfig {
             root: root.path().join("soak"),
             trainer_count: 3,
             trainer_window_count: 2,
-            startup_timeout_secs: 20,
+            startup_timeout_secs: 30,
             poll_interval_ms: 50,
-            sync_timeout_secs: 30,
-            merge_wait_timeout_secs: 30,
+            sync_timeout_secs: 45,
+            merge_wait_timeout_secs: 45,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;

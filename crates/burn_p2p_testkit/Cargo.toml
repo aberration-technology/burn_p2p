@@ -9,7 +9,22 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 burn_p2p = { path = "../burn_p2p" }
-burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap" }
+burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap", default-features = false, features = [
+  "admin-http",
+  "metrics",
+  "metrics-indexer",
+  "artifact-publish",
+  "artifact-download",
+  "artifact-fs",
+  "browser-edge",
+  "browser-join",
+  "rbac",
+  "auth-static",
+  "auth-github",
+  "auth-oidc",
+  "auth-oauth",
+  "social",
+] }
 burn_p2p_engine = { path = "../burn_p2p_engine" }
 burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
 burn_p2p_core = { path = "../burn_p2p_core" }

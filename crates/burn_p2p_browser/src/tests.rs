@@ -135,7 +135,9 @@ fn browser_app_connect_config_target_builders_choose_expected_presets() {
 
 #[test]
 fn browser_transport_policy_tracks_swarm_browser_transport_order() {
-    let policy = BrowserTransportPolicy::from(burn_p2p::RuntimeTransportPolicy::browser());
+    let policy = BrowserTransportPolicy::from(burn_p2p::RuntimeTransportPolicy::browser_for_roles(
+        &PeerRoleSet::default_trainer(),
+    ));
     assert_eq!(
         policy.preferred,
         vec![

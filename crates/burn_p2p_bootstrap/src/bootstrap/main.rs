@@ -31,10 +31,11 @@ use burn_p2p_auth_oauth::OAuthIdentityConnector;
 use burn_p2p_auth_oidc::OidcIdentityConnector;
 use burn_p2p_bootstrap::{
     AdminAction, AdminCapability, AuthPolicyRollout, BootstrapAdminState, BootstrapEmbeddedDaemon,
-    BootstrapEmbeddedDaemonConfig, BootstrapPlan, BootstrapSpec, BrowserDirectorySnapshot,
-    BrowserEdgeMode, BrowserEdgeSnapshotConfig, BrowserLoginProvider,
-    BrowserReceiptSubmissionResponse, BrowserTransportSurface, ReceiptQuery, ReenrollmentStatus,
-    TrustBundleExport, TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
+    BootstrapEmbeddedDaemonConfig, BootstrapPeerDaemon, BootstrapPeerDaemonConfig, BootstrapPlan,
+    BootstrapService, BootstrapSpec, BrowserDirectorySnapshot, BrowserEdgeMode,
+    BrowserEdgeSnapshotConfig, BrowserLoginProvider, BrowserReceiptSubmissionResponse,
+    BrowserTransportSurface, ReceiptQuery, ReenrollmentStatus, TrustBundleExport,
+    TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
 };
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 use burn_p2p_bootstrap::{
@@ -92,6 +93,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .transpose()?
         .map(Arc::new);
+    let bootstrap_peer = if let Some(peer) = config.bootstrap_peer.clone().or_else(|| {
+        if config.embedded_runtime.is_none()
+            && plan.supports_service(&BootstrapService::CoherenceSeed)
+        {
+            Some(BootstrapPeerDaemonConfig::default())
+        } else {
+            None
+        }
+    }) {
+        Some(plan.spawn_bootstrap_peer_daemon(peer)?)
+    } else {
+        None
+    };
     let embedded_runtime = if let Some(runtime) = config.embedded_runtime.clone() {
         let dataset_root = runtime
             .node
@@ -131,10 +145,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let state = embedded_runtime
-        .as_ref()
-        .map(BootstrapEmbeddedDaemon::admin_state)
-        .unwrap_or(state);
+    let state = if let Some(daemon) = embedded_runtime.as_ref() {
+        daemon.admin_state()
+    } else if let Some(daemon) = bootstrap_peer.as_ref() {
+        daemon.admin_state()
+    } else {
+        state
+    };
     {
         let mut state_lock = state
             .lock()
@@ -154,7 +171,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let control_handle = embedded_runtime
         .as_ref()
-        .map(BootstrapEmbeddedDaemon::control_handle);
+        .map(BootstrapEmbeddedDaemon::control_handle)
+        .or_else(|| {
+            bootstrap_peer
+                .as_ref()
+                .map(BootstrapPeerDaemon::control_handle)
+        });
     let bind_addr = config
         .http_bind_addr
         .clone()

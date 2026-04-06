@@ -28,6 +28,10 @@ use semver::Version;
 
 use crate::{
     args::Args,
+    correctness::live_browser::{
+        LiveBrowserEdgeConfig, LiveBrowserEdgeServer, wait_for_live_browser_probe,
+        write_live_browser_manifest,
+    },
     data::{MnistDatasetConfig, PreparedMnistData, prepare_mnist_dataset},
     model::{MnistMetricItem, MnistModel},
 };
@@ -69,6 +73,7 @@ pub(crate) struct CoreMnistRun {
     pub trainer_restart_reconnected: bool,
     pub trainer_restart_resumed_training: bool,
     pub late_joiner_synced_checkpoint: bool,
+    pub browser_probe_summary: Option<serde_json::Value>,
 }
 
 pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
@@ -434,6 +439,64 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             &storage_root.join("trainer-late"),
         ),
     ];
+    let browser_probe_summary = if args.await_live_browser_probe {
+        let baseline_lease = baseline_outcomes
+            .first()
+            .context("mnist demo did not produce a baseline trainer lease for live browser probe")?
+            .training
+            .lease
+            .clone();
+        let directory_entries = experiment_directory_entries(
+            &network_manifest,
+            &supported_workload,
+            &prepared_data,
+            [&baseline_head, &low_lr_head],
+        );
+        let leaderboard = leaderboard_entries(
+            [
+                ("trainer-a1", node_records[3].peer_id.clone()),
+                ("trainer-a2", node_records[4].peer_id.clone()),
+                ("trainer-b", node_records[5].peer_id.clone()),
+                ("validator", node_records[1].peer_id.clone()),
+                ("viewer", node_records[2].peer_id.clone()),
+                ("helper", node_records[0].peer_id.clone()),
+                ("trainer-late", node_records[6].peer_id.clone()),
+            ],
+            &baseline_outcomes,
+            &low_lr_outcomes,
+            &merge_certificates,
+        );
+        let (browser_edge_server, browser_manifest) = LiveBrowserEdgeServer::spawn(
+            LiveBrowserEdgeConfig {
+                network_manifest: network_manifest.clone(),
+                release_manifest: release_manifest.clone(),
+                workload_id: supported_workload.workload_id.clone(),
+                directory_entries,
+                heads: vec![
+                    baseline_genesis.clone(),
+                    baseline_head.clone(),
+                    low_lr_genesis.clone(),
+                    low_lr_head.clone(),
+                ],
+                leaderboard_entries: leaderboard,
+                metrics_catchup: metrics_catchup.clone(),
+                selected_head_id: baseline_head.head_id.clone(),
+                selected_experiment_id: baseline_head.experiment_id.clone(),
+                selected_revision_id: baseline_head.revision_id.clone(),
+                active_lease_id: baseline_lease.lease_id.clone(),
+                leased_microshards: baseline_lease.microshards.clone(),
+            },
+        )?;
+        write_live_browser_manifest(&output, &browser_manifest)?;
+        let browser_probe_summary = wait_for_live_browser_probe(
+            &output,
+            Duration::from_secs(args.live_browser_probe_timeout_secs),
+        )?;
+        drop(browser_edge_server);
+        Some(browser_probe_summary)
+    } else {
+        None
+    };
 
     shutdown_node(late_joiner)?;
     shutdown_node(trainer_b)?;
@@ -461,6 +524,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         trainer_restart_reconnected,
         trainer_restart_resumed_training,
         late_joiner_synced_checkpoint,
+        browser_probe_summary,
     })
 }
 

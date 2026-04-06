@@ -13,8 +13,8 @@ use crate::{
 };
 use burn_p2p::{
     ControlHandle, ExperimentHandle, IdentityConfig, LiveControlPlaneEvent, MetricsRetentionConfig,
-    NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload, RunningNode, StorageConfig,
-    TelemetryHandle,
+    MetricsRetentionPreset, NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload,
+    RunningNode, StorageConfig, TelemetryHandle,
 };
 use burn_p2p_core::{ExperimentId, PeerId, RevisionId, StudyId};
 use chrono::Utc;
@@ -84,6 +84,124 @@ impl Default for BootstrapEmbeddedDaemonConfig {
             validation_interval_millis: 250,
             training_interval_millis: None,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures a cheap swarm-only bootstrap peer.
+pub struct BootstrapPeerDaemonConfig {
+    /// The node.
+    pub node: NodeConfig,
+}
+
+impl Default for BootstrapPeerDaemonConfig {
+    fn default() -> Self {
+        Self {
+            node: NodeConfig {
+                identity: IdentityConfig::Persistent,
+                storage: Some(StorageConfig::new(".burn_p2p-bootstrap-peer")),
+                dataset: None,
+                auth: None,
+                network_manifest: None,
+                client_release_manifest: None,
+                selected_workload_id: None,
+                metrics_retention: MetricsRetentionConfig {
+                    preset: MetricsRetentionPreset::PeerLean,
+                    ..MetricsRetentionConfig::default()
+                },
+                bootstrap_peers: Vec::new(),
+                listen_addresses: Vec::new(),
+            },
+        }
+    }
+}
+
+/// Represents a swarm-only bootstrap peer daemon.
+pub struct BootstrapPeerDaemon {
+    plan: BootstrapPlan,
+    admin_state: Arc<Mutex<BootstrapAdminState>>,
+    telemetry: TelemetryHandle,
+    control: ControlHandle,
+    shutdown_requested: Arc<AtomicBool>,
+    worker: Option<JoinHandle<anyhow::Result<()>>>,
+}
+
+impl std::fmt::Debug for BootstrapPeerDaemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapPeerDaemon")
+            .field("network_id", &self.plan.network_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BootstrapPeerDaemon {
+    /// Performs the plan operation.
+    pub fn plan(&self) -> &BootstrapPlan {
+        &self.plan
+    }
+
+    /// Performs the telemetry operation.
+    pub fn telemetry(&self) -> TelemetryHandle {
+        self.telemetry.clone()
+    }
+
+    /// Performs the control handle operation.
+    pub fn control_handle(&self) -> ControlHandle {
+        self.control.clone()
+    }
+
+    /// Performs the admin state operation.
+    pub fn admin_state(&self) -> Arc<Mutex<BootstrapAdminState>> {
+        Arc::clone(&self.admin_state)
+    }
+
+    /// Performs the diagnostics operation.
+    pub fn diagnostics(&self, remaining_work_units: Option<u64>) -> BootstrapDiagnostics {
+        self.admin_state
+            .lock()
+            .expect("bootstrap peer state should not be poisoned")
+            .diagnostics(&self.plan, Utc::now(), remaining_work_units)
+    }
+
+    /// Performs the diagnostics bundle operation.
+    pub fn diagnostics_bundle(
+        &self,
+        remaining_work_units: Option<u64>,
+    ) -> BootstrapDiagnosticsBundle {
+        self.admin_state
+            .lock()
+            .expect("bootstrap peer state should not be poisoned")
+            .diagnostics_bundle(&self.plan, Utc::now(), remaining_work_units)
+    }
+
+    /// Performs the shutdown operation.
+    pub fn shutdown(&self) -> anyhow::Result<()> {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+        let _ = self.control.shutdown();
+        Ok(())
+    }
+
+    /// Performs the await termination operation.
+    pub fn await_termination(self) -> anyhow::Result<()> {
+        let BootstrapPeerDaemon {
+            plan: _plan,
+            admin_state,
+            telemetry,
+            control,
+            shutdown_requested,
+            worker,
+        } = self;
+        drop(control);
+        drop(telemetry);
+        drop(admin_state);
+        drop(shutdown_requested);
+
+        if let Some(worker) = worker {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("bootstrap peer daemon panicked"))??;
+        }
+        Ok(())
     }
 }
 
@@ -177,6 +295,46 @@ impl BootstrapEmbeddedDaemon {
 }
 
 impl BootstrapPlan {
+    /// Performs the spawn bootstrap peer daemon operation.
+    pub fn spawn_bootstrap_peer_daemon(
+        &self,
+        config: BootstrapPeerDaemonConfig,
+    ) -> anyhow::Result<BootstrapPeerDaemon> {
+        let mut builder = NodeBuilder::new(())
+            .with_mainnet(self.genesis.clone())
+            .with_roles(self.roles.clone());
+        builder = apply_runtime_node_config(builder, self, &config.node);
+        let running = builder.spawn()?;
+        let telemetry = running.telemetry();
+        let control = running.control_handle();
+        let admin_state = Arc::new(Mutex::new(BootstrapAdminState::default()));
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let plan = self.clone();
+        let admin_state_thread = Arc::clone(&admin_state);
+        let shutdown_requested_thread = Arc::clone(&shutdown_requested);
+
+        let worker = thread::Builder::new()
+            .name("burn-p2p-bootstrap-peer".into())
+            .spawn(move || {
+                bootstrap_peer_daemon_loop(
+                    plan,
+                    running,
+                    admin_state_thread,
+                    shutdown_requested_thread,
+                )
+            })
+            .map_err(|error| anyhow::anyhow!("failed to spawn bootstrap peer worker: {error}"))?;
+
+        Ok(BootstrapPeerDaemon {
+            plan: self.clone(),
+            admin_state,
+            telemetry,
+            control,
+            shutdown_requested,
+            worker: Some(worker),
+        })
+    }
+
     /// Performs the spawn embedded daemon operation.
     pub fn spawn_embedded_daemon<P>(
         &self,
@@ -189,7 +347,7 @@ impl BootstrapPlan {
         let mut builder = NodeBuilder::new(project)
             .with_mainnet(self.genesis.clone())
             .with_roles(self.roles.clone());
-        builder = apply_node_config(builder, &config.node);
+        builder = apply_runtime_node_config(builder, self, &config.node);
         let running = builder.spawn()?;
         let telemetry = running.telemetry();
         let control = running.control_handle();
@@ -223,7 +381,11 @@ impl BootstrapPlan {
     }
 }
 
-fn apply_node_config<P>(builder: NodeBuilder<P>, config: &NodeConfig) -> NodeBuilder<P> {
+fn apply_runtime_node_config<P>(
+    builder: NodeBuilder<P>,
+    plan: &BootstrapPlan,
+    config: &NodeConfig,
+) -> NodeBuilder<P> {
     let builder = builder.with_identity(config.identity.clone());
     let builder = match config.storage.clone() {
         Some(storage) => builder.with_storage(storage),
@@ -234,8 +396,47 @@ fn apply_node_config<P>(builder: NodeBuilder<P>, config: &NodeConfig) -> NodeBui
         None => builder,
     };
     builder
-        .with_bootstrap_peers(config.bootstrap_peers.clone())
-        .with_listen_addresses(config.listen_addresses.clone())
+        .with_metrics_retention(config.metrics_retention.clone())
+        .with_bootstrap_peers(if config.bootstrap_peers.is_empty() {
+            plan.runtime.bootstrap_addresses.clone()
+        } else {
+            config.bootstrap_peers.clone()
+        })
+        .with_listen_addresses(if config.listen_addresses.is_empty() {
+            plan.runtime.listen_addresses.clone()
+        } else {
+            config.listen_addresses.clone()
+        })
+}
+
+fn bootstrap_peer_daemon_loop(
+    plan: BootstrapPlan,
+    running: RunningNode<()>,
+    admin_state: Arc<Mutex<BootstrapAdminState>>,
+    shutdown_requested: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    wait_for_runtime_ready(&running.telemetry(), Duration::from_secs(5))?;
+
+    loop {
+        if shutdown_requested.load(Ordering::SeqCst) {
+            break;
+        }
+
+        {
+            let snapshot = running.telemetry().snapshot();
+            let mut state = admin_state
+                .lock()
+                .expect("bootstrap peer state should not be poisoned");
+            refresh_admin_state_from_runtime(&mut state, &snapshot, running.config())?;
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    running.shutdown()?;
+    let _ = running.await_termination()?;
+    let _ = plan;
+    Ok(())
 }
 
 fn embedded_daemon_loop<P>(
@@ -409,6 +610,7 @@ fn observed_peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> 
             peer_id: Some(peer_id),
             ..
         } => Some(PeerId::new(peer_id.clone())),
+        LiveControlPlaneEvent::ConnectionClosed { .. } => None,
         LiveControlPlaneEvent::NewListenAddr { .. }
         | LiveControlPlaneEvent::TopicSubscribed { .. }
         | LiveControlPlaneEvent::IncomingConnectionError { .. }

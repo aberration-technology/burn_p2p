@@ -1,0 +1,14 @@
+target
+artifacts
+.git
+.github
+.idea
+.vscode
+node_modules
+**/node_modules
+**/.DS_Store
+**/*.log
+deploy/terraform/.terraform
+deploy/terraform/**/.terraform
+deploy/terraform/**/*.tfstate
+deploy/terraform/**/*.tfstate.*

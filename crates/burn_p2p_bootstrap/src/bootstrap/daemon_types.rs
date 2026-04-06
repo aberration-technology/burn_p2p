@@ -11,6 +11,7 @@ pub(super) struct BootstrapDaemonConfig {
     pub optional_services: BootstrapOptionalServicesConfig,
     pub remaining_work_units: Option<u64>,
     pub admin_signer_peer_id: Option<PeerId>,
+    pub bootstrap_peer: Option<BootstrapPeerDaemonConfig>,
     pub embedded_runtime: Option<BootstrapEmbeddedDaemonConfig>,
     pub auth: Option<BootstrapAuthConfig>,
     #[serde(default)]

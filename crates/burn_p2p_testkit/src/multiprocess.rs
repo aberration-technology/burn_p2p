@@ -66,6 +66,8 @@ pub struct SyntheticProcessConfig {
     pub dataset_root: PathBuf,
     /// The report path.
     pub report_path: PathBuf,
+    /// The start sentinel.
+    pub start_sentinel: Option<PathBuf>,
     /// The shutdown sentinel.
     pub shutdown_sentinel: Option<PathBuf>,
     /// The bootstrap peers.
@@ -86,6 +88,8 @@ pub struct SyntheticProcessConfig {
     pub sync_timeout_secs: u64,
     /// The merge wait timeout secs.
     pub merge_wait_timeout_secs: u64,
+    /// Whether a trainer process must observe the canonical head advance after publishing.
+    pub wait_for_canonical_advance: bool,
     /// The window count.
     pub window_count: u32,
 }
@@ -103,6 +107,7 @@ impl SyntheticProcessConfig {
             storage_root: storage_root.into(),
             dataset_root: dataset_root.into(),
             report_path: report_path.into(),
+            start_sentinel: None,
             shutdown_sentinel: None,
             bootstrap_peers: Vec::new(),
             listen_addresses: Vec::new(),
@@ -113,6 +118,7 @@ impl SyntheticProcessConfig {
             poll_interval_ms: 50,
             sync_timeout_secs: 15,
             merge_wait_timeout_secs: 15,
+            wait_for_canonical_advance: true,
             window_count: 1,
         }
     }
@@ -130,6 +136,7 @@ impl SyntheticProcessConfig {
             storage_root: storage_root.into(),
             dataset_root: dataset_root.into(),
             report_path: report_path.into(),
+            start_sentinel: None,
             shutdown_sentinel: None,
             bootstrap_peers,
             listen_addresses: Vec::new(),
@@ -140,6 +147,7 @@ impl SyntheticProcessConfig {
             poll_interval_ms: 50,
             sync_timeout_secs: 15,
             merge_wait_timeout_secs: 15,
+            wait_for_canonical_advance: true,
             window_count: 1,
         }
     }
@@ -603,6 +611,11 @@ pub fn run_synthetic_process_node(
         }
     };
 
+    if result.is_ok() {
+        let drain_grace = Duration::from_millis(config.poll_interval_ms.max(50) * 5);
+        thread::sleep(drain_grace);
+    }
+
     let shutdown_result = node.shutdown();
     let await_result = node.await_termination();
     match (result, shutdown_result, await_result) {
@@ -687,11 +700,31 @@ fn run_trainer_process(
     let poll_interval = Duration::from_millis(config.poll_interval_ms.max(10));
     let sync_timeout = Duration::from_secs(config.sync_timeout_secs);
     let merge_timeout = Duration::from_secs(config.merge_wait_timeout_secs);
+    let mut start_barrier_pending = true;
 
     for _ in 0..config.window_count.max(1) {
         let synced_head = wait_for_synced_head(node, experiment, sync_timeout, poll_interval)?;
         report.synced_head_id = Some(synced_head.head_id.to_string());
         write_report(&config.report_path, report)?;
+
+        if start_barrier_pending && let Some(start_sentinel) = config.start_sentinel.as_ref() {
+            let barrier_timeout = Duration::from_secs(
+                config
+                    .merge_wait_timeout_secs
+                    .max(
+                        config
+                            .startup_timeout_secs
+                            .saturating_add(config.sync_timeout_secs),
+                    )
+                    .max(30),
+            );
+            wait_for(
+                barrier_timeout,
+                || start_sentinel.exists(),
+                "timed out waiting for training start sentinel",
+            )?;
+            start_barrier_pending = false;
+        }
 
         let outcome = train_window_once_with_retry(node, experiment, sync_timeout, poll_interval)?;
         report.trained_head_id = Some(outcome.head.head_id.to_string());
@@ -702,19 +735,21 @@ fn run_trainer_process(
         refresh_report_counts(report, &config.storage_root)?;
         write_report(&config.report_path, report)?;
 
-        let observed_head = wait_for_canonical_advance(
-            node,
-            experiment,
-            &synced_head.head_id,
-            merge_timeout,
-            poll_interval,
-            report,
-            ReportPaths {
-                report_path: &config.report_path,
-                storage_root: &config.storage_root,
-            },
-        )?;
-        report.observed_canonical_head_id = Some(observed_head.head_id.to_string());
+        if config.wait_for_canonical_advance {
+            let observed_head = wait_for_canonical_advance(
+                node,
+                experiment,
+                &synced_head.head_id,
+                merge_timeout,
+                poll_interval,
+                report,
+                ReportPaths {
+                    report_path: &config.report_path,
+                    storage_root: &config.storage_root,
+                },
+            )?;
+            report.observed_canonical_head_id = Some(observed_head.head_id.to_string());
+        }
     }
 
     Ok(())
@@ -801,6 +836,7 @@ fn is_transient_runtime_error(error: &anyhow::Error) -> bool {
         || message.contains("Failed to dial")
         || message.contains("timed out")
         || message.contains("no connected peer provided artifact")
+        || message.contains("no connected peer provided chunk")
 }
 
 struct ReportPaths<'a> {
@@ -818,11 +854,9 @@ fn wait_for_canonical_advance(
     paths: ReportPaths<'_>,
 ) -> anyhow::Result<burn_p2p::HeadDescriptor> {
     let deadline = Instant::now() + timeout;
-    let mut last_observed_head = None;
     while Instant::now() < deadline {
         match node.sync_experiment_head(experiment) {
             Ok(Some(head)) => {
-                last_observed_head = Some(head.clone());
                 report.observed_canonical_head_id = Some(head.head_id.to_string());
                 report.error = None;
                 refresh_report_counts(report, paths.storage_root)?;
@@ -847,7 +881,6 @@ fn wait_for_canonical_advance(
         while Instant::now() < serve_deadline {
             match node.sync_experiment_head(experiment) {
                 Ok(Some(head)) => {
-                    last_observed_head = Some(head.clone());
                     report.observed_canonical_head_id = Some(head.head_id.to_string());
                     report.error = None;
                     refresh_report_counts(report, paths.storage_root)?;
@@ -863,17 +896,6 @@ fn wait_for_canonical_advance(
                 }
             }
             thread::sleep(poll_interval);
-        }
-
-        if let Some(head) = last_observed_head {
-            return Ok(head);
-        }
-        if let Ok(Some(head)) = node.sync_experiment_head(experiment) {
-            report.observed_canonical_head_id = Some(head.head_id.to_string());
-            report.error = None;
-            refresh_report_counts(report, paths.storage_root)?;
-            write_report(paths.report_path, report)?;
-            return Ok(head);
         }
     }
 
@@ -982,6 +1004,7 @@ pub fn run_synthetic_process_soak(
 
     for round in 0..round_count {
         let mut trainers = Vec::new();
+        let round_start_sentinel = config.root.join(format!("round-{round}.start"));
         for index in 0..trainer_count {
             let report_path = config
                 .root
@@ -995,6 +1018,7 @@ pub fn run_synthetic_process_soak(
                 report_path.clone(),
                 vec![validator_addr.clone()],
             );
+            trainer_config.start_sentinel = Some(round_start_sentinel.clone());
             trainer_config.persist_identity = true;
             trainer_config.startup_timeout_secs = config.startup_timeout_secs;
             trainer_config.poll_interval_ms = config.poll_interval_ms;
@@ -1012,6 +1036,15 @@ pub fn run_synthetic_process_soak(
                 SyntheticProcessChild::spawn(node_binary, &config_path)?,
             ));
         }
+
+        for (report_path, _) in &trainers {
+            let _ = wait_for_process_report(
+                report_path,
+                Duration::from_secs(config.sync_timeout_secs.max(5)),
+                |report| report.synced_head_id.is_some(),
+            )?;
+        }
+        fs::write(&round_start_sentinel, b"start")?;
 
         for (report_path, child) in &mut trainers {
             child.wait_success()?;

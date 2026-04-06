@@ -2,12 +2,13 @@
 use super::BootstrapArtifactPublicationConfig;
 use super::{
     BootstrapAuthConfig, BootstrapAuthConnectorConfig, BootstrapAuthPrincipal,
-    BootstrapDaemonConfig, BootstrapOptionalServicesConfig, HttpRequest, HttpServerContext,
-    auth_directory_entries, build_auth_portal, current_revocation_epoch, current_trust_bundle,
-    default_issuer_key_id, handle_connection, load_or_create_keypair, persist_daemon_config,
-    retire_trusted_issuers, rollout_auth_policy, rotate_authority_material,
-    validate_compiled_feature_support_with,
+    BootstrapDaemonConfig, BootstrapEmbeddedDaemonConfig, BootstrapOptionalServicesConfig,
+    BootstrapPeerDaemonConfig, HttpRequest, HttpServerContext, auth_directory_entries,
+    build_auth_portal, current_revocation_epoch, current_trust_bundle, default_issuer_key_id,
+    handle_connection, load_or_create_keypair, persist_daemon_config, retire_trusted_issuers,
+    rollout_auth_policy, rotate_authority_material, validate_compiled_feature_support_with,
 };
+use crate::compiled_feature_set;
 #[cfg(feature = "artifact-s3")]
 use std::io::ErrorKind;
 use std::{
@@ -29,11 +30,7 @@ use burn_p2p::{
     IdentityConnector, LoginRequest, MetricValue, NodeEnrollmentRequest, PeerId, PeerRole,
     PeerRoleSet, PrincipalId, ProfileMode, SocialMode, TrustedIssuer,
 };
-#[cfg(any(
-    feature = "browser-edge",
-    feature = "metrics-indexer",
-    feature = "artifact-s3"
-))]
+#[cfg(any(feature = "metrics-indexer", feature = "artifact-s3"))]
 use burn_p2p::{DatasetViewId, WorkloadId};
 #[cfg(any(feature = "metrics-indexer", feature = "artifact-s3"))]
 use burn_p2p::{HeadEvalReport, HeadEvalStatus, MetricTrustClass};
@@ -479,6 +476,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -694,6 +692,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -898,6 +897,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -1043,6 +1043,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -1197,6 +1198,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -1308,6 +1310,7 @@ fn capabilities_endpoint_reports_compiled_and_active_services() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: Some(auth_config),
             artifact_publication: None,
@@ -1372,6 +1375,7 @@ fn disabled_optional_services_hide_routes_and_capabilities() {
             },
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -1459,6 +1463,7 @@ fn portal_hides_disabled_browser_auth_and_social_flows() {
             },
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -1515,6 +1520,7 @@ fn startup_validation_rejects_uncompiled_optional_services() {
         },
         remaining_work_units: None,
         admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+        bootstrap_peer: None,
         embedded_runtime: None,
         auth: Some(sample_auth_config(temp.path())),
         artifact_publication: None,
@@ -1528,6 +1534,26 @@ fn startup_validation_rejects_uncompiled_optional_services() {
 }
 
 #[test]
+fn startup_validation_rejects_mixed_bootstrap_peer_and_embedded_runtime() {
+    let config = BootstrapDaemonConfig {
+        spec: sample_spec(),
+        http_bind_addr: None,
+        admin_token: None,
+        allow_dev_admin_token: false,
+        optional_services: BootstrapOptionalServicesConfig::default(),
+        remaining_work_units: None,
+        admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+        bootstrap_peer: Some(BootstrapPeerDaemonConfig::default()),
+        embedded_runtime: Some(BootstrapEmbeddedDaemonConfig::default()),
+        auth: None,
+        artifact_publication: None,
+    };
+    let error = validate_compiled_feature_support_with(&compiled_feature_set(), &config)
+        .expect_err("mixed bootstrap peer and embedded runtime should be rejected");
+    assert!(error.to_string().contains("mutually exclusive"));
+}
+
+#[test]
 fn startup_validation_rejects_untrusted_external_auth_config() {
     let temp = tempdir().expect("temp dir");
     let mut config = BootstrapDaemonConfig {
@@ -1538,6 +1564,7 @@ fn startup_validation_rejects_untrusted_external_auth_config() {
         optional_services: BootstrapOptionalServicesConfig::default(),
         remaining_work_units: None,
         admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+        bootstrap_peer: None,
         embedded_runtime: None,
         auth: Some(sample_auth_config_with_connector(
             temp.path(),
@@ -1733,6 +1760,7 @@ fn http_routes_serve_status_and_static_auth_flow() {
         optional_services: BootstrapOptionalServicesConfig::default(),
         remaining_work_units: Some(120),
         admin_signer_peer_id: Some(burn_p2p::PeerId::new("bootstrap-authority")),
+        bootstrap_peer: None,
         embedded_runtime: None,
         auth: Some(sample_auth_config(temp.path())),
         artifact_publication: None,
@@ -2126,6 +2154,7 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2223,6 +2252,7 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2318,6 +2348,7 @@ fn external_routes_issue_trusted_header_sessions() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2404,6 +2435,7 @@ fn auth_portal_refreshes_and_logs_out_sessions() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2528,6 +2560,7 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2598,6 +2631,7 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2659,6 +2693,7 @@ fn admin_token_is_dev_only_and_disabled_by_default() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2693,6 +2728,7 @@ fn admin_token_is_dev_only_and_disabled_by_default() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -2729,6 +2765,7 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
         optional_services: BootstrapOptionalServicesConfig::default(),
         remaining_work_units: None,
         admin_signer_peer_id: Some(burn_p2p::PeerId::new("bootstrap-authority")),
+        bootstrap_peer: None,
         embedded_runtime: None,
         auth: Some(auth_config.clone()),
         artifact_publication: None,
@@ -3245,6 +3282,7 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: None,
@@ -3997,6 +4035,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: Some(BootstrapArtifactPublicationConfig {
@@ -4255,6 +4294,7 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
             artifact_publication: Some(BootstrapArtifactPublicationConfig {

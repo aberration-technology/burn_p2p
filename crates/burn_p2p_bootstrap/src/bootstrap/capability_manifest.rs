@@ -125,6 +125,11 @@ pub(super) fn validate_compiled_feature_support_with(
     compiled: &CompiledFeatureSet,
     config: &BootstrapDaemonConfig,
 ) -> Result<(), BootstrapCompositionError> {
+    if config.bootstrap_peer.is_some() && config.embedded_runtime.is_some() {
+        return Err(BootstrapCompositionError::InvalidServiceConfig(
+            "bootstrap_peer and embedded_runtime are mutually exclusive; split cheap coherence nodes from workload runtimes",
+        ));
+    }
     if config.optional_services.browser_edge_enabled
         && !compiled.features.contains(&EdgeFeature::App)
     {

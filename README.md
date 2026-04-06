@@ -72,7 +72,7 @@ p2p overlay.
 
 - `burn_p2p`: core runtime
 - `burn_p2p_browser`: browser runtime
-- `burn_p2p_bootstrap`: bootstrap/browser-edge http surface
+- `burn_p2p_bootstrap`: bootstrap coherence-seed + browser-edge http surface
 - `burn_p2p_app`: reference dioxus ui
 
 same experiment layout works across native and browser peers. browser-facing

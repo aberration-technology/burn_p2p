@@ -4625,6 +4625,8 @@ dependencies = [
  "clap",
  "console_error_panic_hook",
  "getrandom 0.4.2",
+ "libp2p-identity",
+ "reqwest",
  "semver",
  "serde",
  "serde-wasm-bindgen",

@@ -20,7 +20,7 @@ use burn_p2p_browser::{
 use burn_p2p_core::{SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload};
 use burn_p2p_swarm::{
     HeadAnnouncement, LiveControlPlaneEvent, MemoryControlPlaneShell, NativeControlPlaneShell,
-    OverlayChannel, OverlayTopic, ProtocolSet, SwarmAddress,
+    OverlayChannel, OverlayTopic, ProtocolSet, RuntimeTransportPolicy, SwarmAddress,
 };
 use chrono::Utc;
 use semver::Version;
@@ -334,8 +334,10 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
     let head = browser_head(&study_id, &experiment_id, &revision_id);
 
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
-    let mut listener = MemoryControlPlaneShell::new(protocols.control.clone());
-    let mut dialer = MemoryControlPlaneShell::new(protocols.control);
+    let mut listener =
+        MemoryControlPlaneShell::new(protocols.control.clone()).expect("memory control listener");
+    let mut dialer =
+        MemoryControlPlaneShell::new(protocols.control).expect("memory control dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
     listener.publish_directory(ExperimentDirectoryAnnouncement {
         network_id: network_id.clone(),
@@ -447,9 +449,16 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
     let head = browser_head(&study_id, &experiment_id, &revision_id);
 
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
-    let mut listener =
-        NativeControlPlaneShell::new(protocols.control.clone()).expect("native listener");
-    let mut dialer = NativeControlPlaneShell::new(protocols.control).expect("native dialer");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
     let listener_peer_id = listener.local_peer_id().to_string();
     listener.publish_directory(ExperimentDirectoryAnnouncement {
         network_id: network_id.clone(),

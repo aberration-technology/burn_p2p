@@ -15,36 +15,56 @@ pub struct NativeControlPlaneShell {
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeControlPlaneShell {
     /// Creates a new value.
-    pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
-        Self::with_keypair(control_protocol, Keypair::generate_ed25519())
+    pub fn new(
+        control_protocol: ProtocolId,
+        transport_policy: RuntimeTransportPolicy,
+    ) -> Result<Self, SwarmError> {
+        Self::with_keypair(
+            control_protocol,
+            Keypair::generate_ed25519(),
+            transport_policy,
+        )
     }
 
     /// Returns a copy configured with the keypair.
     pub fn with_keypair(
         control_protocol: ProtocolId,
         keypair: Keypair,
+        transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
         let runtime = TokioRuntimeBuilder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .map_err(|error| SwarmError::Runtime(error.to_string()))?;
+        let behaviour_keypair = keypair.clone();
         let local_peer_id = keypair.public().to_peer_id();
-        let protocol =
-            StreamProtocol::try_from_owned(control_protocol.as_str().to_owned()).expect("valid");
+        let protocol = stream_protocol(&control_protocol)?;
         let gossip_config = gossipsub::ConfigBuilder::default()
-            .validation_mode(gossipsub::ValidationMode::Permissive)
+            // Control-plane pubsub always signs messages, so require the full
+            // libp2p gossipsub envelope instead of accepting unsigned or partial
+            // metadata from permissive peers.
+            .validation_mode(gossipsub::ValidationMode::Strict)
             .build()
             .map_err(|error| SwarmError::Runtime(error.to_string()))?;
         let identify_config = identify::Config::new(
             format!("{}/identify/1.0.0", control_protocol.as_str()),
             keypair.public(),
         );
+        let gossipsub_behaviour = gossipsub::Behaviour::new(
+            gossipsub::MessageAuthenticity::Signed(behaviour_keypair),
+            gossip_config.clone(),
+        )
+        .map_err(|error| SwarmError::Runtime(error.to_string()))?;
         #[cfg(not(target_arch = "wasm32"))]
-        let mdns_behaviour = {
+        let mdns_behaviour = if transport_policy.enable_local_discovery {
             let _guard = runtime.enter();
-            mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)
-                .map_err(|error| SwarmError::Runtime(error.to_string()))?
+            Some(
+                mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?,
+            )
+        } else {
+            None
         };
         let swarm = {
             let _guard = runtime.enter();
@@ -52,24 +72,30 @@ impl NativeControlPlaneShell {
                 .with_tokio()
                 .with_tcp(
                     libp2p::tcp::Config::default(),
-                    libp2p::tls::Config::new,
+                    tls_config,
                     yamux::Config::default,
                 )
                 .map_err(|error| SwarmError::Runtime(error.to_string()))?
                 .with_quic()
-                .with_behaviour(move |key| NativeControlPlaneBehaviour {
+                .with_behaviour(move |_| NativeControlPlaneBehaviour {
                     request_response: request_response::json::Behaviour::new(
                         [(protocol, ProtocolSupport::Full)],
                         request_response::Config::default(),
                     ),
-                    gossipsub: gossipsub::Behaviour::new(
-                        gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossip_config.clone(),
-                    )
-                    .expect("gossipsub behaviour should be valid"),
+                    gossipsub: gossipsub_behaviour,
                     identify: identify::Behaviour::new(identify_config.clone()),
+                    connection_limits: connection_limits::Behaviour::new(
+                        connection_limits::ConnectionLimits::default()
+                            .with_max_established_incoming(
+                                transport_policy.max_established_incoming,
+                            )
+                            .with_max_established(transport_policy.max_established_total)
+                            .with_max_established_per_peer(
+                                transport_policy.max_established_per_peer,
+                            ),
+                    ),
                     #[cfg(not(target_arch = "wasm32"))]
-                    mdns: mdns_behaviour,
+                    mdns: mdns_behaviour.into(),
                 })
                 .map_err(|error| SwarmError::Runtime(error.to_string()))?
                 .build()
@@ -138,6 +164,16 @@ impl NativeControlPlaneShell {
         self.swarm
             .dial(address)
             .map_err(|error| SwarmError::Dial(error.to_string()))
+    }
+
+    /// Disconnects one peer from the local swarm.
+    pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        let peer_id = peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        self.swarm
+            .disconnect_peer_id(peer_id)
+            .map_err(|_| SwarmError::Request("failed to disconnect peer".into()))
     }
 
     /// Performs the connected peer count operation.
@@ -214,6 +250,14 @@ impl NativeControlPlaneShell {
         push_unique(&mut self.snapshot.directory_announcements, announcement);
     }
 
+    /// Performs the publish peer directory operation.
+    pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
+        push_unique(
+            &mut self.snapshot.peer_directory_announcements,
+            announcement,
+        );
+    }
+
     /// Performs the publish metrics operation.
     pub fn publish_metrics(&mut self, announcement: MetricsAnnouncement) {
         push_metrics_announcement(&mut self.snapshot.metrics_announcements, announcement);
@@ -277,14 +321,19 @@ impl NativeControlPlaneShell {
 
     /// Performs the request snapshot operation.
     pub fn request_snapshot(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        self.request_snapshot_id(peer_id).map(|_| ())
+    }
+
+    fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm
+        Ok(self
+            .swarm
             .behaviour_mut()
             .request_response
-            .send_request(&peer_id, ControlPlaneRequest::Snapshot);
-        Ok(())
+            .send_request(&peer_id, ControlPlaneRequest::Snapshot)
+            .to_string())
     }
 
     /// Performs the request artifact manifest operation.
@@ -293,14 +342,27 @@ impl NativeControlPlaneShell {
         peer_id: &str,
         artifact_id: ArtifactId,
     ) -> Result<(), SwarmError> {
+        self.request_artifact_manifest_id(peer_id, artifact_id)
+            .map(|_| ())
+    }
+
+    fn request_artifact_manifest_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+    ) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().request_response.send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactManifest { artifact_id },
-        );
-        Ok(())
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(
+                &peer_id,
+                ControlPlaneRequest::ArtifactManifest { artifact_id },
+            )
+            .to_string())
     }
 
     /// Performs the request artifact chunk operation.
@@ -310,17 +372,31 @@ impl NativeControlPlaneShell {
         artifact_id: ArtifactId,
         chunk_id: ChunkId,
     ) -> Result<(), SwarmError> {
+        self.request_artifact_chunk_id(peer_id, artifact_id, chunk_id)
+            .map(|_| ())
+    }
+
+    fn request_artifact_chunk_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+    ) -> Result<String, SwarmError> {
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        self.swarm.behaviour_mut().request_response.send_request(
-            &peer_id,
-            ControlPlaneRequest::ArtifactChunk {
-                artifact_id,
-                chunk_id,
-            },
-        );
-        Ok(())
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(
+                &peer_id,
+                ControlPlaneRequest::ArtifactChunk {
+                    artifact_id,
+                    chunk_id,
+                },
+            )
+            .to_string())
     }
 
     /// Fetches the snapshot.
@@ -329,21 +405,35 @@ impl NativeControlPlaneShell {
         peer_id: &str,
         timeout: Duration,
     ) -> Result<ControlPlaneSnapshot, SwarmError> {
-        self.request_snapshot(peer_id)?;
+        let request_id = self.request_snapshot_id(peer_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::SnapshotReceived { snapshot, .. }) => {
-                    return Ok(snapshot);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::SnapshotReceived {
+                        request_id: response_id,
+                        snapshot,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(snapshot);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("snapshot"))
     }
 
@@ -354,21 +444,35 @@ impl NativeControlPlaneShell {
         artifact_id: ArtifactId,
         timeout: Duration,
     ) -> Result<Option<ArtifactDescriptor>, SwarmError> {
-        self.request_artifact_manifest(peer_id, artifact_id)?;
+        let request_id = self.request_artifact_manifest_id(peer_id, artifact_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::ArtifactManifestReceived { descriptor, .. }) => {
-                    return Ok(descriptor);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::ArtifactManifestReceived {
+                        request_id: response_id,
+                        descriptor,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(descriptor);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("artifact-manifest"))
     }
 
@@ -380,21 +484,35 @@ impl NativeControlPlaneShell {
         chunk_id: ChunkId,
         timeout: Duration,
     ) -> Result<Option<ArtifactChunkPayload>, SwarmError> {
-        self.request_artifact_chunk(peer_id, artifact_id, chunk_id)?;
+        let request_id = self.request_artifact_chunk_id(peer_id, artifact_id, chunk_id)?;
+        let mut deferred_events = VecDeque::new();
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            match self.wait_event(Duration::from_millis(50)) {
-                Some(LiveControlPlaneEvent::ArtifactChunkReceived { payload, .. }) => {
-                    return Ok(payload);
+            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::ArtifactChunkReceived {
+                        request_id: response_id,
+                        payload,
+                        ..
+                    } if response_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Ok(payload);
+                    }
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
                 }
-                Some(LiveControlPlaneEvent::RequestFailure { message, .. }) => {
-                    return Err(SwarmError::Request(message));
-                }
-                Some(_) | None => {}
             }
         }
 
+        self.pending_events.extend(deferred_events);
         Err(SwarmError::TimedOut("artifact-chunk"))
     }
 
@@ -488,35 +606,43 @@ impl NativeControlPlaneShell {
                                         }
                                     }
                                 },
-                                request_response::Message::Response { response, .. } => {
-                                    match response {
-                                        ControlPlaneResponse::Snapshot(snapshot) => {
-                                            LiveControlPlaneEvent::SnapshotReceived {
-                                                peer_id: peer.to_string(),
-                                                snapshot,
-                                            }
-                                        }
-                                        ControlPlaneResponse::ArtifactManifest(descriptor) => {
-                                            LiveControlPlaneEvent::ArtifactManifestReceived {
-                                                peer_id: peer.to_string(),
-                                                descriptor,
-                                            }
-                                        }
-                                        ControlPlaneResponse::ArtifactChunk(payload) => {
-                                            LiveControlPlaneEvent::ArtifactChunkReceived {
-                                                peer_id: peer.to_string(),
-                                                payload,
-                                            }
+                                request_response::Message::Response {
+                                    request_id,
+                                    response,
+                                } => match response {
+                                    ControlPlaneResponse::Snapshot(snapshot) => {
+                                        LiveControlPlaneEvent::SnapshotReceived {
+                                            peer_id: peer.to_string(),
+                                            request_id: request_id.to_string(),
+                                            snapshot,
                                         }
                                     }
-                                }
+                                    ControlPlaneResponse::ArtifactManifest(descriptor) => {
+                                        LiveControlPlaneEvent::ArtifactManifestReceived {
+                                            peer_id: peer.to_string(),
+                                            request_id: request_id.to_string(),
+                                            descriptor,
+                                        }
+                                    }
+                                    ControlPlaneResponse::ArtifactChunk(payload) => {
+                                        LiveControlPlaneEvent::ArtifactChunkReceived {
+                                            peer_id: peer.to_string(),
+                                            request_id: request_id.to_string(),
+                                            payload,
+                                        }
+                                    }
+                                },
                             },
-                            request_response::Event::OutboundFailure { peer, error, .. } => {
-                                LiveControlPlaneEvent::RequestFailure {
-                                    peer_id: peer.to_string(),
-                                    message: error.to_string(),
-                                }
-                            }
+                            request_response::Event::OutboundFailure {
+                                peer,
+                                request_id,
+                                error,
+                                ..
+                            } => LiveControlPlaneEvent::RequestFailure {
+                                peer_id: peer.to_string(),
+                                request_id: Some(request_id.to_string()),
+                                message: error.to_string(),
+                            },
                             request_response::Event::InboundFailure { peer, error, .. } => {
                                 LiveControlPlaneEvent::InboundFailure {
                                     peer_id: peer.to_string(),
@@ -648,6 +774,11 @@ impl NativeControlPlaneShell {
                             peer_id: peer_id.to_string(),
                         }
                     }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        LiveControlPlaneEvent::ConnectionClosed {
+                            peer_id: peer_id.to_string(),
+                        }
+                    }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         LiveControlPlaneEvent::OutgoingConnectionError {
                             peer_id: peer_id.map(|peer_id| peer_id.to_string()),
@@ -674,16 +805,27 @@ pub struct NativeControlPlaneShell {
 
 #[cfg(target_arch = "wasm32")]
 impl NativeControlPlaneShell {
-    pub fn new(control_protocol: ProtocolId) -> Result<Self, SwarmError> {
-        Self::with_keypair(control_protocol, Keypair::generate_ed25519())
+    pub fn new(
+        control_protocol: ProtocolId,
+        transport_policy: RuntimeTransportPolicy,
+    ) -> Result<Self, SwarmError> {
+        Self::with_keypair(
+            control_protocol,
+            Keypair::generate_ed25519(),
+            transport_policy,
+        )
     }
 
     pub fn with_keypair(
         control_protocol: ProtocolId,
         keypair: Keypair,
+        transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
         Ok(Self {
-            inner: MemoryControlPlaneShell::with_keypair(control_protocol, keypair),
+            inner: {
+                let _ = transport_policy;
+                MemoryControlPlaneShell::with_keypair(control_protocol, keypair)?
+            },
         })
     }
 
@@ -697,6 +839,10 @@ impl NativeControlPlaneShell {
 
     pub fn dial(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
         self.inner.dial(address)
+    }
+
+    pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        self.inner.disconnect_peer(peer_id)
     }
 
     pub fn connected_peer_count(&self) -> usize {
@@ -753,6 +899,10 @@ impl NativeControlPlaneShell {
 
     pub fn publish_directory(&mut self, announcement: ExperimentDirectoryAnnouncement) {
         self.inner.publish_directory(announcement);
+    }
+
+    pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
+        self.inner.publish_peer_directory(announcement);
     }
 
     pub fn publish_metrics(&mut self, announcement: MetricsAnnouncement) {

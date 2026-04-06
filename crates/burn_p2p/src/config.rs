@@ -616,11 +616,12 @@ impl MetricsRetentionConfig {
     pub fn resolve_for_roles(&self, roles: &PeerRoleSet) -> MetricsRetentionBudget {
         let mut budget = match self.preset {
             MetricsRetentionPreset::Auto => {
-                if roles.contains(&PeerRole::Bootstrap)
-                    || roles.contains(&PeerRole::Authority)
-                    || roles.contains(&PeerRole::Archive)
-                {
+                if roles.contains(&PeerRole::Authority) || roles.contains(&PeerRole::Archive) {
                     MetricsRetentionBudget::operator()
+                } else if roles.contains(&PeerRole::Bootstrap)
+                    || roles.contains(&PeerRole::RelayHelper)
+                {
+                    MetricsRetentionBudget::peer_lean()
                 } else if roles.contains(&PeerRole::Validator) {
                     MetricsRetentionBudget::peer_balanced()
                 } else {
@@ -1045,7 +1046,9 @@ impl NodeTelemetrySnapshot {
     }
 
     pub(crate) fn push_event(&mut self, event: LiveControlPlaneEvent) {
-        if let Some(peer_id) = peer_id_from_event(&event) {
+        if let LiveControlPlaneEvent::ConnectionClosed { peer_id } = &event {
+            self.observed_peer_ids.remove(&PeerId::new(peer_id.clone()));
+        } else if let Some(peer_id) = peer_id_from_event(&event) {
             self.observed_peer_ids.insert(peer_id);
         }
         self.recent_events.push(event);
@@ -1138,6 +1141,7 @@ pub(crate) fn peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId
         | LiveControlPlaneEvent::PeerIdentified { peer_id, .. } => {
             Some(PeerId::new(peer_id.clone()))
         }
+        LiveControlPlaneEvent::ConnectionClosed { .. } => None,
         LiveControlPlaneEvent::PeersDiscovered { peers }
         | LiveControlPlaneEvent::PeersExpired { peers } => peers
             .first()
@@ -1167,7 +1171,7 @@ impl TelemetryHandle {
     pub fn snapshot(&self) -> NodeTelemetrySnapshot {
         self.state
             .lock()
-            .expect("telemetry state lock should not be poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 }
@@ -1209,6 +1213,9 @@ pub(crate) enum RuntimeCommand {
         chunk_id: ChunkId,
         timeout: Duration,
         reply: mpsc::Sender<Result<Option<ArtifactChunkPayload>, String>>,
+    },
+    DialAddress {
+        address: SwarmAddress,
     },
     RequestSnapshot {
         peer_id: String,
@@ -1353,6 +1360,13 @@ impl ControlHandle {
                 peer_id: peer_id.into(),
             })
             .map_err(|error| anyhow::anyhow!("failed to request snapshot: {error}"))
+    }
+
+    /// Requests an outbound dial to a swarm address.
+    pub fn dial_address(&self, address: SwarmAddress) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::DialAddress { address })
+            .map_err(|error| anyhow::anyhow!("failed to request dial: {error}"))
     }
 
     /// Fetches the snapshot.

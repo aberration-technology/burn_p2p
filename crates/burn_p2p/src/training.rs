@@ -207,7 +207,7 @@ impl<P> RunningNode<P> {
             let mut snapshot = telemetry
                 .state
                 .lock()
-                .expect("telemetry state lock should not be poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             snapshot.set_node_state(NodeRuntimeState::LeasePending);
             snapshot.set_primary_slot_state(SlotRuntimeState::FetchingShards(
                 prepared.assignment.clone(),
@@ -236,7 +236,7 @@ impl<P> RunningNode<P> {
             let mut snapshot = telemetry
                 .state
                 .lock()
-                .expect("telemetry state lock should not be poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             snapshot.set_node_state(NodeRuntimeState::TrainingWindow);
             snapshot
                 .set_primary_slot_state(SlotRuntimeState::Training(prepared.assignment.clone()));

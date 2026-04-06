@@ -118,11 +118,11 @@ pub use burn_p2p_swarm::{
     MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement, MergeWindowAnnouncement,
     MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse, MicroShardProviderRecord,
     MigrationCoordinator, MigrationPlan, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
-    PeerAuthAnnouncement, PeerObservation, PeerStore, ProtocolId, ProtocolSet, ProviderPointer,
-    PubsubPayload, ReducerAssignmentAnnouncement, ReducerLoadAnnouncement,
-    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy,
-    SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement, TransportKind,
-    UpdateEnvelopeAnnouncement,
+    PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId,
+    ProtocolSet, ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement,
+    ReducerLoadAnnouncement, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment,
+    RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
+    TransportKind, UpdateEnvelopeAnnouncement,
 };
 pub use config::{
     ArtifactTransferPhase, ArtifactTransferState, AuthConfig, ClientReenrollmentStatus,
@@ -141,18 +141,19 @@ pub use project_family::{
     P2pProjectFamily, P2pWorkload, SelectedWorkloadProject, SingleWorkloadProjectFamily,
 };
 use runtime_support::{
-    assess_head_lag, connected_peer_ids, effective_limit_profile, latest_head_from_snapshot,
-    latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
-    latest_reducer_assignment_from_snapshot, load_head_state, load_known_peers,
-    load_latest_merge_certificate, load_primary_slot_assignment, matches_experiment_head,
-    metric_quality, next_window_id, open_runtime_merge_window, persist_auth_state,
-    persist_head_state, persist_in_flight_transfer_states, persist_json, persist_limit_profile,
-    persist_primary_slot_assignment, persist_runtime_binding_state, persist_runtime_security_state,
-    persist_window_id, remove_artifact_transfer_state, resolve_canonical_head, resolve_identity,
-    restore_auth_config, restore_control_plane_state, restore_in_flight_transfer_states,
-    restore_runtime_binding_config, restore_runtime_security_state, run_control_plane,
-    runtime_assign_reducers, runtime_limit_policy, runtime_merge_topology_policy,
-    runtime_robustness_policy, runtime_topology_peers, runtime_validator_peers, runtime_validators,
+    assess_head_lag, cached_connected_snapshots, connected_peer_ids, effective_limit_profile,
+    latest_head_from_snapshot, latest_merge_window_from_connected_snapshots,
+    latest_merge_window_from_snapshot, latest_reducer_assignment_from_snapshot, load_head_state,
+    load_known_peers, load_latest_merge_certificate, load_primary_slot_assignment,
+    matches_experiment_head, metric_quality, next_window_id, open_runtime_merge_window,
+    persist_auth_state, persist_head_state, persist_in_flight_transfer_states, persist_json,
+    persist_limit_profile, persist_primary_slot_assignment, persist_runtime_binding_state,
+    persist_runtime_security_state, persist_window_id, remove_artifact_transfer_state,
+    resolve_canonical_head, resolve_identity, restore_auth_config, restore_control_plane_state,
+    restore_in_flight_transfer_states, restore_runtime_binding_config,
+    restore_runtime_security_state, run_control_plane, runtime_assign_reducers,
+    runtime_limit_policy, runtime_merge_topology_policy, runtime_robustness_policy,
+    runtime_topology_peers, runtime_validator_peers, runtime_validators,
     set_effective_limit_profile, update_announces_from_connected_snapshots,
     update_feature_sketch_from_metrics, update_norm_stats, verify_snapshot_admission,
 };
@@ -458,9 +459,10 @@ impl<P> RunningNode<P> {
             restore_runtime_security_state(storage, &mut snapshot)?;
             restore_in_flight_transfer_states(storage, &mut snapshot)?;
         }
-        let boundary = RuntimeBoundary::for_platform(
+        let boundary = RuntimeBoundary::for_platform_and_roles(
             &node.mainnet.genesis,
             burn_p2p_core::ClientPlatform::Native,
+            &node.mainnet.roles,
             bootstrap_addresses,
             listen_addresses.clone(),
         )?;
@@ -471,7 +473,7 @@ impl<P> RunningNode<P> {
         if let Some(storage) = node.config.storage.as_ref() {
             let snapshot = shared_state
                 .lock()
-                .expect("telemetry state lock should not be poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             persist_runtime_security_state(storage, &snapshot)?;
         }
         let telemetry = TelemetryHandle {
@@ -553,7 +555,7 @@ impl<P> RunningNode<P> {
             .telemetry
             .state
             .lock()
-            .expect("telemetry state lock should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let persist_security_state = node_state != NodeRuntimeState::ShuttingDown;
         snapshot.set_node_state(node_state);
         if let Some(slot_state) = slot_state {
@@ -572,7 +574,7 @@ impl<P> RunningNode<P> {
             .telemetry
             .state
             .lock()
-            .expect("telemetry state lock should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshot.set_lag_status(lag_state, head_lag_steps, lag_policy);
         if let Some(storage) = self.config().storage.as_ref()
             && let Err(error) = persist_runtime_security_state(storage, &snapshot)
@@ -617,7 +619,7 @@ impl<P> RunningNode<P> {
             .telemetry
             .state
             .lock()
-            .expect("telemetry state lock should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshot.update_transfer_state(transfer_state);
         self.persist_transfer_snapshot(&mut snapshot);
     }
@@ -627,13 +629,33 @@ impl<P> RunningNode<P> {
             .telemetry
             .state
             .lock()
-            .expect("telemetry state lock should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshot.clear_transfer_state(artifact_id);
         self.persist_transfer_snapshot(&mut snapshot);
         if let Some(storage) = self.config().storage.as_ref()
             && let Err(error) = remove_artifact_transfer_state(storage, artifact_id)
         {
             snapshot.last_error = Some(format!("failed to clear transfer state: {error}"));
+        }
+    }
+
+    fn redial_known_candidates(&self, candidates: &[PeerId]) {
+        if candidates.is_empty() {
+            return;
+        }
+        let telemetry_snapshot = self.telemetry().snapshot();
+        let connected = connected_peer_ids(&telemetry_snapshot);
+        let dial_targets = telemetry_snapshot
+            .control_plane
+            .peer_directory_announcements
+            .iter()
+            .filter(|announcement| candidates.contains(&announcement.peer_id))
+            .filter(|announcement| !connected.contains(&announcement.peer_id))
+            .flat_map(|announcement| announcement.addresses.iter().cloned())
+            .filter(|address| !telemetry_snapshot.listen_addresses.contains(address))
+            .collect::<BTreeSet<_>>();
+        for address in dial_targets {
+            let _ = self.control.dial_address(address);
         }
     }
 
@@ -756,25 +778,28 @@ impl<P> RunningNode<P> {
         timeout: Duration,
     ) -> anyhow::Result<Vec<(PeerId, ControlPlaneSnapshot)>> {
         let admission_policy = self.effective_admission_policy();
-        let snapshots = connected_peer_ids(&self.telemetry().snapshot())
+        let telemetry_snapshot = self.telemetry().snapshot();
+        let mut snapshots = cached_connected_snapshots(&telemetry_snapshot)
             .into_iter()
-            .map(|peer_id| {
-                let snapshot = self.control.fetch_snapshot(peer_id.as_str(), timeout)?;
-                if let Some(policy) = admission_policy.as_ref() {
-                    let report = verify_snapshot_admission(policy, &peer_id, &snapshot)?;
-                    if !matches!(report.decision(), AdmissionDecision::Allow) {
-                        return Err(anyhow::anyhow!(
-                            "peer {} is not admitted for snapshot sync",
-                            peer_id.as_str()
-                        ));
-                    }
+            .collect::<BTreeMap<_, _>>();
+        for peer_id in connected_peer_ids(&telemetry_snapshot) {
+            let Ok(snapshot) = self.control.fetch_snapshot(peer_id.as_str(), timeout) else {
+                continue;
+            };
+            if let Some(policy) = admission_policy.as_ref() {
+                let Ok(report) = verify_snapshot_admission(policy, &peer_id, &snapshot) else {
+                    snapshots.remove(&peer_id);
+                    continue;
+                };
+                if !matches!(report.decision(), AdmissionDecision::Allow) {
+                    snapshots.remove(&peer_id);
+                    continue;
                 }
-                Ok((peer_id, snapshot))
-            })
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>();
+            }
+            snapshots.insert(peer_id, snapshot);
+        }
 
-        Ok(snapshots)
+        Ok(snapshots.into_iter().collect())
     }
 
     /// Performs the artifact store operation.
@@ -848,11 +873,15 @@ impl<P> RunningNode<P> {
         }
 
         let telemetry_snapshot = self.telemetry().snapshot();
+        let connected_peers = connected_peer_ids(&telemetry_snapshot)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         let mut candidate_peers = vec![peer_id.clone()];
         candidate_peers.extend(
-            connected_peer_ids(&telemetry_snapshot)
-                .into_iter()
-                .filter(|candidate| candidate != peer_id),
+            connected_peers
+                .iter()
+                .filter(|candidate| *candidate != peer_id)
+                .cloned(),
         );
         let mut transfer_state = telemetry_snapshot
             .in_flight_transfers
@@ -880,6 +909,19 @@ impl<P> RunningNode<P> {
         }
         self.record_transfer_state(transfer_state.clone());
 
+        let provider_addresses = telemetry_snapshot
+            .control_plane
+            .peer_directory_announcements
+            .iter()
+            .filter(|announcement| transfer_state.source_peers.contains(&announcement.peer_id))
+            .filter(|announcement| !connected_peers.contains(&announcement.peer_id))
+            .flat_map(|announcement| announcement.addresses.iter().cloned())
+            .filter(|address| !telemetry_snapshot.listen_addresses.contains(address))
+            .collect::<BTreeSet<_>>();
+        for address in provider_addresses {
+            let _ = self.control.dial_address(address);
+        }
+
         let auth_policy = admission_policy.as_ref();
         let mut selected_provider = transfer_state.provider_peer_id.clone();
         let mut descriptor = transfer_state.descriptor.clone();
@@ -887,8 +929,9 @@ impl<P> RunningNode<P> {
             transfer_state.set_phase(ArtifactTransferPhase::LocatingProvider);
             self.record_transfer_state(transfer_state.clone());
 
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(10);
             while Instant::now() < deadline && selected_provider.is_none() {
+                self.redial_known_candidates(&transfer_state.source_peers);
                 for candidate in &transfer_state.source_peers {
                     if let Some(policy) = auth_policy {
                         let Ok(snapshot) = self
@@ -932,15 +975,62 @@ impl<P> RunningNode<P> {
             .clone()
             .or_else(|| transfer_state.source_peers.first().cloned())
             .ok_or_else(|| {
+                let snapshot = self.telemetry().snapshot();
                 anyhow::anyhow!(
-                    "no connected peer provided artifact {}",
-                    artifact_id.as_str()
+                    "no connected peer provided artifact {}; connected_peers={:?}; source_peers={:?}; peer_directory={:?}",
+                    artifact_id.as_str(),
+                    connected_peer_ids(&snapshot)
+                        .into_iter()
+                        .map(|peer_id| peer_id.to_string())
+                        .collect::<Vec<_>>(),
+                    transfer_state
+                        .source_peers
+                        .iter()
+                        .map(|peer_id| peer_id.to_string())
+                        .collect::<Vec<_>>(),
+                    snapshot
+                        .control_plane
+                        .peer_directory_announcements
+                        .iter()
+                        .map(|announcement| (
+                            announcement.peer_id.to_string(),
+                            announcement
+                                .addresses
+                                .iter()
+                                .map(|address| address.as_str().to_owned())
+                                .collect::<Vec<_>>()
+                        ))
+                        .collect::<Vec<_>>(),
                 )
             })?;
         let descriptor = descriptor.ok_or_else(|| {
+            let snapshot = self.telemetry().snapshot();
             anyhow::anyhow!(
-                "no connected peer provided artifact {}",
-                artifact_id.as_str()
+                "no connected peer provided artifact {}; connected_peers={:?}; source_peers={:?}; selected_provider={:?}; peer_directory={:?}",
+                artifact_id.as_str(),
+                connected_peer_ids(&snapshot)
+                    .into_iter()
+                    .map(|peer_id| peer_id.to_string())
+                    .collect::<Vec<_>>(),
+                transfer_state
+                    .source_peers
+                    .iter()
+                    .map(|peer_id| peer_id.to_string())
+                    .collect::<Vec<_>>(),
+                selected_provider.as_ref().map(|peer_id| peer_id.to_string()),
+                snapshot
+                    .control_plane
+                    .peer_directory_announcements
+                    .iter()
+                    .map(|announcement| (
+                        announcement.peer_id.to_string(),
+                        announcement
+                            .addresses
+                            .iter()
+                            .map(|address| address.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>(),
             )
         })?;
         if transfer_state.provider_peer_id.as_ref() != Some(&provider)
@@ -962,9 +1052,10 @@ impl<P> RunningNode<P> {
                 }
                 continue;
             }
-            let chunk_deadline = Instant::now() + Duration::from_secs(5);
+            let chunk_deadline = Instant::now() + Duration::from_secs(10);
             let mut stored = false;
             while Instant::now() < chunk_deadline && !stored {
+                self.redial_known_candidates(&provider_candidates);
                 for candidate in &provider_candidates {
                     match self.control.fetch_artifact_chunk(
                         candidate.as_str(),
@@ -989,10 +1080,32 @@ impl<P> RunningNode<P> {
             }
 
             if !stored {
+                let snapshot = self.telemetry().snapshot();
                 return Err(anyhow::anyhow!(
-                    "no connected peer provided chunk {} for artifact {}",
+                    "no connected peer provided chunk {} for artifact {}; provider_candidates={:?}; connected_peers={:?}; peer_directory={:?}",
                     chunk.chunk_id.as_str(),
-                    descriptor.artifact_id.as_str()
+                    descriptor.artifact_id.as_str(),
+                    provider_candidates
+                        .iter()
+                        .map(|peer_id| peer_id.to_string())
+                        .collect::<Vec<_>>(),
+                    connected_peer_ids(&snapshot)
+                        .into_iter()
+                        .map(|peer_id| peer_id.to_string())
+                        .collect::<Vec<_>>(),
+                    snapshot
+                        .control_plane
+                        .peer_directory_announcements
+                        .iter()
+                        .map(|announcement| (
+                            announcement.peer_id.to_string(),
+                            announcement
+                                .addresses
+                                .iter()
+                                .map(|address| address.as_str().to_owned())
+                                .collect::<Vec<_>>()
+                        ))
+                        .collect::<Vec<_>>(),
                 ));
             }
         }

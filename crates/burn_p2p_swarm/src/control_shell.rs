@@ -13,15 +13,16 @@ impl ControlPlaneShell {
         control_protocol: ProtocolId,
         keypair: Keypair,
         addresses: impl IntoIterator<Item = SwarmAddress>,
+        transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
         let addresses = addresses.into_iter().collect::<Vec<_>>();
         if addresses.iter().all(SwarmAddress::is_memory) {
             Ok(Self::Memory(Box::new(
-                MemoryControlPlaneShell::with_keypair(control_protocol, keypair),
+                MemoryControlPlaneShell::with_keypair(control_protocol, keypair)?,
             )))
         } else {
             Ok(Self::Native(Box::new(
-                NativeControlPlaneShell::with_keypair(control_protocol, keypair)?,
+                NativeControlPlaneShell::with_keypair(control_protocol, keypair, transport_policy)?,
             )))
         }
     }
@@ -47,6 +48,14 @@ impl ControlPlaneShell {
         match self {
             Self::Memory(shell) => shell.dial(address),
             Self::Native(shell) => shell.dial(address),
+        }
+    }
+
+    /// Disconnects one peer from the local swarm.
+    pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.disconnect_peer(peer_id),
+            Self::Native(shell) => shell.disconnect_peer(peer_id),
         }
     }
 
@@ -154,6 +163,14 @@ impl ControlPlaneShell {
         match self {
             Self::Memory(shell) => shell.publish_directory(announcement),
             Self::Native(shell) => shell.publish_directory(announcement),
+        }
+    }
+
+    /// Performs the publish peer directory operation.
+    pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
+        match self {
+            Self::Memory(shell) => shell.publish_peer_directory(announcement),
+            Self::Native(shell) => shell.publish_peer_directory(announcement),
         }
     }
 

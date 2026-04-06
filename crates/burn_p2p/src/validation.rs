@@ -89,7 +89,7 @@ impl<P> RunningNode<P> {
                         .telemetry
                         .state
                         .lock()
-                        .expect("telemetry state lock should not be poisoned");
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     snapshot.last_error = Some(reason.clone());
                 }
                 self.update_runtime_state(
@@ -677,7 +677,7 @@ impl<P> RunningNode<P> {
             let mut snapshot = telemetry
                 .state
                 .lock()
-                .expect("telemetry state lock should not be poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             snapshot.set_robustness_state(
                 prepared.robustness_policy.clone(),
                 robustness.cohort_report.clone(),

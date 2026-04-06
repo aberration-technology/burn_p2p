@@ -43,6 +43,6 @@ For implementation-heavy areas, prefer the code directly:
   `crates/burn_p2p_auth_*/src/`
 - dataloader planning and cache/fetch flow: `crates/burn_p2p_dataloader/src/`
 - deployment examples: `crates/burn_p2p_bootstrap/examples/` and
-  `deploy/compose/`
+  `deploy/`
 - crate boundaries and package metadata: workspace `Cargo.toml` files under
   `crates/`

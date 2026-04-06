@@ -26,8 +26,8 @@ use burn_p2p_core::{
     ArtifactDescriptor, ArtifactKind, AttestationLevel, ClientPlatform, ContentId,
     ContributionReceipt, ContributionReceiptId, DatasetId, DatasetManifest, DatasetView,
     ExperimentId, GenesisSpec, HeadDescriptor, HeadId, MergeCertId, MergeCertificate, MergePolicy,
-    MetricValue, NetworkId, PeerId, Precision, ProjectFamilyId, RevisionId, SignatureAlgorithm,
-    SignatureMetadata, StudyId, WindowActivation, WindowId,
+    MetricValue, NetworkId, PeerId, PeerRoleSet, Precision, ProjectFamilyId, RevisionId,
+    SignatureAlgorithm, SignatureMetadata, StudyId, WindowActivation, WindowId,
 };
 use burn_p2p_dataloader::{
     DataReceiptBuilder, DataloaderError, DatasetSizing, LeaseCache, LeasePlanner,
@@ -464,7 +464,9 @@ impl SimulationRunner {
                 .filter(|fixture| fixture.limit_profile.card.platform == ClientPlatform::Browser)
                 .map(|fixture| fixture.peer_id.clone())
                 .collect(),
-            transport_policy: RuntimeTransportPolicy::browser(),
+            transport_policy: RuntimeTransportPolicy::browser_for_roles(
+                &PeerRoleSet::default_trainer(),
+            ),
             cache_namespace: format!("burn-p2p-cache-{}", spec.network_id.as_str()),
         };
 

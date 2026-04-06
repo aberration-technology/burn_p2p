@@ -11,7 +11,7 @@ use burn_p2p::{
     PrincipalSession, RevisionId, RevisionManifest, StudyId, WindowActivation, WindowId,
     WorkloadId,
 };
-use burn_p2p_app::render_browser_app_static_html;
+use burn_p2p_app::render_browser_app_static_html_with_config;
 use burn_p2p_bootstrap::{
     BootstrapAdminState, BrowserDirectorySnapshot, BrowserLeaderboardSnapshot,
 };
@@ -24,7 +24,7 @@ use burn_p2p_core::{
     ContributionReceipt, ContributionReceiptId, LeaderboardSnapshot, SchemaEnvelope,
     SignatureAlgorithm, SignatureMetadata, SignedPayload,
 };
-use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_views::BrowserAppSurface;
 use chrono::{Duration, Utc};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use semver::Version;
@@ -271,17 +271,18 @@ fn benchmark_receipt() -> ContributionReceipt {
 }
 
 fn bench_portal_load(c: &mut Criterion) {
-    let bootstrap = BrowserAppStaticBootstrap {
-        app_name: "burn_p2p".into(),
-        asset_base_url: "https://cdn.example/burn-p2p".into(),
-        module_entry_path: "assets/browser-app.js".into(),
-        stylesheet_path: Some("assets/browser-app.css".into()),
-        default_edge_url: Some("https://edge.example".into()),
-        default_surface: BrowserAppSurface::Viewer,
-        refresh_interval_ms: 15_000,
-    };
     c.bench_function("browser_path/static_shell_render", |b| {
-        b.iter(|| render_browser_app_static_html(criterion::black_box(&bootstrap)));
+        b.iter(|| {
+            render_browser_app_static_html_with_config(
+                criterion::black_box("burn_p2p"),
+                criterion::black_box("https://cdn.example/burn-p2p"),
+                criterion::black_box("assets/browser-app.js"),
+                criterion::black_box(Some("assets/browser-app.css")),
+                criterion::black_box(Some("https://edge.example")),
+                criterion::black_box(BrowserAppSurface::Viewer.as_str()),
+                criterion::black_box(15_000),
+            )
+        });
     });
 }
 
