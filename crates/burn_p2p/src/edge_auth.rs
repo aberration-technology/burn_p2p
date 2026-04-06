@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use burn_p2p_core::{BrowserLoginProvider, BrowserPortalSnapshot, TrustBundleExport};
+use burn_p2p_core::{BrowserEdgeSnapshot, BrowserLoginProvider, TrustBundleExport};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -10,11 +10,11 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Configures one portal-backed enrollment and auth session flow.
-pub struct PortalEnrollmentConfig {
-    /// The network identifier expected by the portal.
+/// Configures one edge-backed enrollment and auth session flow.
+pub struct EdgeEnrollmentConfig {
+    /// The network identifier expected by the edge.
     pub network_id: NetworkId,
-    /// The project family identifier expected by the portal.
+    /// The project family identifier expected by the edge.
     pub project_family_id: ProjectFamilyId,
     /// The required release train hash.
     pub release_train_hash: ContentId,
@@ -38,31 +38,31 @@ pub struct PortalEnrollmentConfig {
     pub session_ttl_secs: i64,
 }
 
-impl PortalEnrollmentConfig {
+impl EdgeEnrollmentConfig {
     /// Creates a config from the bootstrap edge snapshot and the selected
     /// target artifact.
-    pub fn from_portal_snapshot(
-        snapshot: &BrowserPortalSnapshot,
+    pub fn from_edge_snapshot(
+        snapshot: &BrowserEdgeSnapshot,
         target_artifact_id: impl Into<String>,
         target_artifact_hash: ContentId,
         requested_scopes: BTreeSet<ExperimentScope>,
         session_ttl_secs: i64,
-    ) -> Result<Self, PortalAuthClientError> {
+    ) -> Result<Self, EdgeAuthClientError> {
         let trust_bundle = snapshot
             .trust_bundle
             .as_ref()
-            .ok_or(PortalAuthClientError::MissingTrustBundle)?;
+            .ok_or(EdgeAuthClientError::MissingTrustBundle)?;
         let provider = snapshot
             .login_providers
             .first()
-            .ok_or(PortalAuthClientError::MissingLoginProvider)?;
+            .ok_or(EdgeAuthClientError::MissingLoginProvider)?;
 
         if !snapshot.allowed_target_artifact_hashes.is_empty()
             && !snapshot
                 .allowed_target_artifact_hashes
                 .contains(&target_artifact_hash)
         {
-            return Err(PortalAuthClientError::UnapprovedTargetArtifact(
+            return Err(EdgeAuthClientError::UnapprovedTargetArtifact(
                 target_artifact_hash,
             ));
         }
@@ -86,7 +86,7 @@ impl PortalEnrollmentConfig {
         })
     }
 
-    /// Returns the first provider advertised by the portal snapshot.
+    /// Returns the first provider advertised by the edge snapshot.
     pub fn selected_provider<'a>(
         &'a self,
         providers: &'a [BrowserLoginProvider],
@@ -99,8 +99,8 @@ impl PortalEnrollmentConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-/// Captures persisted portal-backed session state.
-pub struct PortalSessionState {
+/// Captures persisted edge-backed session state.
+pub struct EdgeSessionState {
     /// The active authenticated session, if any.
     pub session: Option<PrincipalSession>,
     /// The issued node certificate, if any.
@@ -113,7 +113,7 @@ pub struct PortalSessionState {
     pub reenrollment_required: bool,
 }
 
-impl PortalSessionState {
+impl EdgeSessionState {
     /// Returns the active session identifier.
     pub fn session_id(&self) -> Option<&ContentId> {
         self.session.as_ref().map(|session| &session.session_id)
@@ -134,7 +134,7 @@ impl PortalSessionState {
     }
 
     /// Applies one fresh enrollment result to the persisted session state.
-    pub fn apply_enrollment(&mut self, result: &PortalEnrollmentResult) {
+    pub fn apply_enrollment(&mut self, result: &EdgeEnrollmentResult) {
         self.session = Some(result.session.clone());
         self.certificate = Some(result.certificate.clone());
         self.trust_bundle = result.trust_bundle.clone();
@@ -156,7 +156,7 @@ impl PortalSessionState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Identity material used when exchanging one authenticated session for a node
 /// certificate.
-pub struct PortalPeerIdentity {
+pub struct EdgePeerIdentity {
     /// The peer identifier.
     pub peer_id: PeerId,
     /// Hex-encoded peer public key.
@@ -169,7 +169,7 @@ pub struct PortalPeerIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enrollment request sent to the bootstrap edge.
-pub struct PortalPeerEnrollmentRequest {
+pub struct EdgePeerEnrollmentRequest {
     /// Authenticated session identifier.
     pub session_id: ContentId,
     /// Release train hash expected by the edge.
@@ -192,7 +192,7 @@ pub struct PortalPeerEnrollmentRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Result of one complete login + enrollment flow.
-pub struct PortalEnrollmentResult {
+pub struct EdgeEnrollmentResult {
     /// Login start record returned by the edge.
     pub login: LoginStart,
     /// Authenticated principal session.
@@ -209,32 +209,32 @@ pub struct PortalEnrollmentResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Logout response returned by the edge.
-pub struct PortalLogoutResponse {
+pub struct EdgeLogoutResponse {
     /// Whether the session was accepted for logout.
     pub logged_out: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
-/// Error returned by the shared portal auth client.
-pub enum PortalAuthClientError {
+/// Error returned by the shared edge auth client.
+pub enum EdgeAuthClientError {
     #[error("http client error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("json decode error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("portal snapshot is missing a trust bundle")]
+    #[error("edge snapshot is missing a trust bundle")]
     MissingTrustBundle,
-    #[error("portal snapshot did not expose a login provider")]
+    #[error("edge snapshot did not expose a login provider")]
     MissingLoginProvider,
-    #[error("portal enrollment config is missing a callback path")]
+    #[error("edge enrollment config is missing a callback path")]
     MissingCallbackPath,
-    #[error("portal enrollment config is missing a device-flow path")]
+    #[error("edge enrollment config is missing a device-flow path")]
     MissingDevicePath,
-    #[error("target artifact {0} is not approved by the portal edge")]
+    #[error("target artifact {0} is not approved by the edge")]
     UnapprovedTargetArtifact(ContentId),
 }
 
 #[derive(Clone, Debug)]
-/// Shared auth and certificate client for bootstrap portal endpoints.
+/// Shared auth and certificate client for bootstrap edge endpoints.
 ///
 /// Native peers, desktop surfaces, and browser workers can all use the same
 /// edge contract:
@@ -245,12 +245,12 @@ pub enum PortalAuthClientError {
 ///
 /// ```no_run
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-/// use burn_p2p::{ContentId, PortalAuthClient, PortalEnrollmentConfig};
+/// use burn_p2p::{ContentId, EdgeAuthClient, EdgeEnrollmentConfig};
 /// use std::collections::BTreeSet;
 ///
-/// let client = PortalAuthClient::new(
+/// let client = EdgeAuthClient::new(
 ///     "https://edge.example",
-///     PortalEnrollmentConfig {
+///     EdgeEnrollmentConfig {
 ///         network_id: burn_p2p::NetworkId::new("demo"),
 ///         project_family_id: burn_p2p::ProjectFamilyId::new("family"),
 ///         release_train_hash: ContentId::new("release-train"),
@@ -271,16 +271,16 @@ pub enum PortalAuthClientError {
 /// # Ok(())
 /// # }
 /// ```
-pub struct PortalAuthClient {
+pub struct EdgeAuthClient {
     http: reqwest::Client,
     edge_base_url: String,
-    enrollment: PortalEnrollmentConfig,
+    enrollment: EdgeEnrollmentConfig,
 }
 
-impl PortalAuthClient {
+impl EdgeAuthClient {
     /// Creates a portal client pinned to one bootstrap edge base URL and one
     /// enrollment config.
-    pub fn new(edge_base_url: impl Into<String>, enrollment: PortalEnrollmentConfig) -> Self {
+    pub fn new(edge_base_url: impl Into<String>, enrollment: EdgeEnrollmentConfig) -> Self {
         Self {
             http: reqwest::Client::new(),
             edge_base_url: edge_base_url.into().trim_end_matches('/').to_owned(),
@@ -294,7 +294,7 @@ impl PortalAuthClient {
     }
 
     /// Returns the configured enrollment contract.
-    pub fn enrollment(&self) -> &PortalEnrollmentConfig {
+    pub fn enrollment(&self) -> &EdgeEnrollmentConfig {
         &self.enrollment
     }
 
@@ -303,9 +303,9 @@ impl PortalAuthClient {
     pub fn build_enrollment_request(
         &self,
         session: &PrincipalSession,
-        identity: &PortalPeerIdentity,
-    ) -> PortalPeerEnrollmentRequest {
-        PortalPeerEnrollmentRequest {
+        identity: &EdgePeerIdentity,
+    ) -> EdgePeerEnrollmentRequest {
+        EdgePeerEnrollmentRequest {
             session_id: session.session_id.clone(),
             release_train_hash: self.enrollment.release_train_hash.clone(),
             target_artifact_hash: self.enrollment.target_artifact_hash.clone(),
@@ -319,7 +319,7 @@ impl PortalAuthClient {
     }
 
     /// Fetches the current trust bundle from the edge.
-    pub async fn fetch_trust_bundle(&self) -> Result<TrustBundleExport, PortalAuthClientError> {
+    pub async fn fetch_trust_bundle(&self) -> Result<TrustBundleExport, EdgeAuthClientError> {
         self.get_json(&self.enrollment.trust_bundle_path).await
     }
 
@@ -327,7 +327,7 @@ impl PortalAuthClient {
     pub async fn begin_login(
         &self,
         principal_hint: Option<String>,
-    ) -> Result<LoginStart, PortalAuthClientError> {
+    ) -> Result<LoginStart, EdgeAuthClientError> {
         self.post_json(
             &self.enrollment.login_path,
             &LoginRequest {
@@ -343,12 +343,12 @@ impl PortalAuthClient {
     pub async fn begin_device_login(
         &self,
         principal_hint: Option<String>,
-    ) -> Result<LoginStart, PortalAuthClientError> {
+    ) -> Result<LoginStart, EdgeAuthClientError> {
         let path = self
             .enrollment
             .device_path
             .as_ref()
-            .ok_or(PortalAuthClientError::MissingDevicePath)?;
+            .ok_or(EdgeAuthClientError::MissingDevicePath)?;
         self.post_json(
             path,
             &LoginRequest {
@@ -365,7 +365,7 @@ impl PortalAuthClient {
         &self,
         login: &LoginStart,
         principal_id: PrincipalId,
-    ) -> Result<PrincipalSession, PortalAuthClientError> {
+    ) -> Result<PrincipalSession, EdgeAuthClientError> {
         self.complete_login(login, Some(principal_id), None).await
     }
 
@@ -375,7 +375,7 @@ impl PortalAuthClient {
         &self,
         login: &LoginStart,
         provider_code: impl Into<String>,
-    ) -> Result<PrincipalSession, PortalAuthClientError> {
+    ) -> Result<PrincipalSession, EdgeAuthClientError> {
         self.complete_login(login, None, Some(provider_code.into()))
             .await
     }
@@ -385,9 +385,9 @@ impl PortalAuthClient {
         login: &LoginStart,
         principal_id: Option<PrincipalId>,
         provider_code: Option<String>,
-    ) -> Result<PrincipalSession, PortalAuthClientError> {
+    ) -> Result<PrincipalSession, EdgeAuthClientError> {
         if self.enrollment.callback_path.is_empty() {
-            return Err(PortalAuthClientError::MissingCallbackPath);
+            return Err(EdgeAuthClientError::MissingCallbackPath);
         }
 
         self.post_json(
@@ -405,8 +405,8 @@ impl PortalAuthClient {
     /// Exchanges an authenticated session for a node certificate.
     pub async fn enroll(
         &self,
-        request: &PortalPeerEnrollmentRequest,
-    ) -> Result<NodeCertificate, PortalAuthClientError> {
+        request: &EdgePeerEnrollmentRequest,
+    ) -> Result<NodeCertificate, EdgeAuthClientError> {
         self.post_json(&self.enrollment.enroll_path, request).await
     }
 
@@ -415,8 +415,8 @@ impl PortalAuthClient {
         &self,
         principal_hint: Option<String>,
         principal_id: PrincipalId,
-        identity: &PortalPeerIdentity,
-    ) -> Result<PortalEnrollmentResult, PortalAuthClientError> {
+        identity: &EdgePeerIdentity,
+    ) -> Result<EdgeEnrollmentResult, EdgeAuthClientError> {
         let login = self.begin_login(principal_hint).await?;
         let session = self.complete_static_login(&login, principal_id).await?;
         let certificate = self
@@ -428,7 +428,7 @@ impl PortalAuthClient {
             .map(|bundle| bundle.reenrollment.is_some())
             .unwrap_or(false);
 
-        Ok(PortalEnrollmentResult {
+        Ok(EdgeEnrollmentResult {
             login,
             session,
             certificate,
@@ -442,7 +442,7 @@ impl PortalAuthClient {
     pub async fn refresh_session(
         &self,
         session_id: &ContentId,
-    ) -> Result<PrincipalSession, PortalAuthClientError> {
+    ) -> Result<PrincipalSession, EdgeAuthClientError> {
         self.post_json(
             "/refresh",
             &serde_json::json!({
@@ -456,7 +456,7 @@ impl PortalAuthClient {
     pub async fn logout_session(
         &self,
         session_id: &ContentId,
-    ) -> Result<PortalLogoutResponse, PortalAuthClientError> {
+    ) -> Result<EdgeLogoutResponse, EdgeAuthClientError> {
         self.post_json(
             "/logout",
             &serde_json::json!({
@@ -489,7 +489,7 @@ impl PortalAuthClient {
         format!("{}{}", self.edge_base_url, path)
     }
 
-    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, PortalAuthClientError> {
+    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, EdgeAuthClientError> {
         let response = self
             .http
             .get(self.endpoint_url(path))
@@ -503,7 +503,7 @@ impl PortalAuthClient {
         &self,
         path: &str,
         body: &impl Serialize,
-    ) -> Result<T, PortalAuthClientError> {
+    ) -> Result<T, EdgeAuthClientError> {
         let response = self
             .http
             .post(self.endpoint_url(path))
@@ -520,8 +520,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portal_enrollment_config_captures_device_flow_when_available() {
-        let snapshot = BrowserPortalSnapshot {
+    fn edge_enrollment_config_captures_device_flow_when_available() {
+        let snapshot = BrowserEdgeSnapshot {
             network_id: NetworkId::new("demo"),
             edge_mode: burn_p2p_core::BrowserEdgeMode::Peer,
             browser_mode: crate::BrowserMode::Observer,
@@ -567,7 +567,7 @@ mod tests {
             captured_at: Utc::now(),
         };
 
-        let config = PortalEnrollmentConfig::from_portal_snapshot(
+        let config = EdgeEnrollmentConfig::from_edge_snapshot(
             &snapshot,
             "native-peer",
             ContentId::new("artifact"),

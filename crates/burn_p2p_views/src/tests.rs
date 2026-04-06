@@ -16,7 +16,7 @@ use burn_p2p_swarm::{AlertNotice, AlertSeverity, OverlayChannel, OverlayTopic};
 use chrono::{Duration, Utc};
 
 use crate::{
-    AggregateDagView, AuthPortalView, AuthorityActionRecord, BrowserAppClientView,
+    AggregateDagView, AuthAppView, AuthorityActionRecord, BrowserAppClientView,
     BrowserAppExperimentSummary, BrowserAppLeaderboardPreview, BrowserAppLiveView,
     BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppRouteLink, BrowserAppShellView,
     BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab,
@@ -27,7 +27,7 @@ use crate::{
     ExperimentVariantView, GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView,
     MergeQueueEntry, MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
     OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView,
-    ParticipantPortalView, ParticipantProfile, ReducerUtilizationView, RobustnessPanelView,
+    ParticipantAppView, ParticipantProfile, ReducerUtilizationView, RobustnessPanelView,
     ShardAssignmentHeatmap, StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
 };
 
@@ -61,7 +61,7 @@ fn participant_portal_sorts_receipts_and_tracks_latest() {
         merge_cert_id: None,
     };
 
-    let view = ParticipantPortalView::new(
+    let view = ParticipantAppView::new(
         ParticipantProfile {
             peer_id: PeerId::new("peer"),
             display_name: Some("peer".into()),
@@ -640,7 +640,7 @@ fn browser_experiment_picker_sorts_and_serializes_browser_state() {
 
 #[test]
 fn auth_portal_view_serializes_provider_and_trust_badges() {
-    let view = AuthPortalView {
+    let view = AuthAppView {
         network_id: NetworkId::new("net"),
         providers: vec![LoginProviderView {
             provider: AuthProvider::Static {
@@ -663,7 +663,7 @@ fn auth_portal_view_serializes_provider_and_trust_badges() {
     };
 
     let bytes = serde_json::to_vec(&view).expect("serialize auth portal");
-    let decoded: AuthPortalView = serde_json::from_slice(&bytes).expect("deserialize auth portal");
+    let decoded: AuthAppView = serde_json::from_slice(&bytes).expect("deserialize auth portal");
     assert_eq!(decoded.providers.len(), 1);
     assert_eq!(
         decoded.active_session.expect("session").trust_badges.len(),

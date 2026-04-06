@@ -698,7 +698,7 @@ pub enum UiPayload {
     /// Operator console payload.
     Operator(Box<OperatorConsoleView>),
     /// Participant portal payload.
-    Participant(Box<crate::ParticipantPortalView>),
+    Participant(Box<crate::ParticipantAppView>),
     /// Study-board payload.
     StudyBoard(StudyBoardView),
     /// Checkpoint-DAG payload.

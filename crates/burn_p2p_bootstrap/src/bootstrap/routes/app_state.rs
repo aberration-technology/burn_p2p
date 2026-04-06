@@ -7,7 +7,7 @@ pub(crate) fn current_browser_portal_snapshot(
     auth_state: Option<&Arc<AuthPortalState>>,
     request: &HttpRequest,
     remaining_work_units: Option<u64>,
-) -> Result<burn_p2p_bootstrap::BrowserPortalSnapshot, Box<dyn std::error::Error>> {
+) -> Result<burn_p2p_bootstrap::BrowserEdgeSnapshot, Box<dyn std::error::Error>> {
     let directory = current_browser_directory_snapshot(plan, auth_state, request)?;
     let (required_release_train_hash, allowed_target_artifact_hashes) = auth_state
         .map(|auth| {
@@ -23,7 +23,7 @@ pub(crate) fn current_browser_portal_snapshot(
         .expect("bootstrap admin state should not be poisoned")
         .browser_portal_snapshot(
             plan,
-            BrowserPortalSnapshotConfig {
+            BrowserEdgeSnapshotConfig {
                 captured_at: Utc::now(),
                 remaining_work_units,
                 directory,

@@ -384,7 +384,7 @@ mod tests {
             access_mode: PublicationAccessMode::Authenticated,
             allow_public_reads: false,
             supports_signed_urls: true,
-            portal_proxy_required: false,
+            edge_proxy_required: false,
             max_artifact_size_bytes: None,
             retention_ttl_secs: Some(DEFAULT_TARGET_RETENTION_TTL_SECS),
             allowed_artifact_profiles: BTreeSet::from([
@@ -732,7 +732,7 @@ mod tests {
             access_mode: PublicationAccessMode::Authenticated,
             allow_public_reads: false,
             supports_signed_urls: false,
-            portal_proxy_required: true,
+            edge_proxy_required: true,
             max_artifact_size_bytes: None,
             retention_ttl_secs: Some(120),
             allowed_artifact_profiles: BTreeSet::from([ArtifactProfile::ServeCheckpoint]),

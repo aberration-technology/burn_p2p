@@ -86,7 +86,7 @@ notes:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.5", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.6", features = ["burn"] }
 ```
 
 ## `burn_p2p_browser`
@@ -153,7 +153,7 @@ example:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.5", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.6", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",
@@ -211,22 +211,22 @@ smallest burn training app:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.5", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.6", features = ["burn"] }
 ```
 
 browser runtime app:
 
 ```toml
 [dependencies]
-burn_p2p_browser = "=0.21.0-pre.5"
-burn_p2p_views = "=0.21.0-pre.5"
+burn_p2p_browser = "=0.21.0-pre.6"
+burn_p2p_views = "=0.21.0-pre.6"
 ```
 
 browser or desktop reference ui:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.5", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.6", default-features = false, features = [
   "interactive",
   "browser-join",
   "web-client",
@@ -237,7 +237,7 @@ native desktop portal host:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.5", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.6", default-features = false, features = [
   "interactive",
   "desktop-client",
 ] }
@@ -247,7 +247,7 @@ reference bootstrap/browser-edge deployment:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.5", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.6", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",

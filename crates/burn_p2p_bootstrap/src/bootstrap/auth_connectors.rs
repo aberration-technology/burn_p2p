@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct PortalConnectorEndpoints {
+pub(super) struct EdgeConnectorEndpoints {
     pub(super) authorize_base_url: Option<String>,
     pub(super) exchange_url: Option<String>,
     pub(super) token_url: Option<String>,
@@ -16,9 +16,9 @@ pub(super) struct PortalConnectorEndpoints {
 pub(super) fn build_github_portal_connector(
     session_ttl: chrono::Duration,
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    Ok(PortalIdentityConnector::new(
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    Ok(EdgeIdentityConnector::new(
         vec![BrowserLoginProvider {
             label: "GitHub".into(),
             login_path: "/login/github".into(),
@@ -42,9 +42,9 @@ pub(super) fn build_github_portal_connector(
 pub(super) fn build_github_portal_connector(
     _session_ttl: chrono::Duration,
     _principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    let PortalConnectorEndpoints {
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    let EdgeConnectorEndpoints {
         authorize_base_url,
         exchange_url,
         token_url,
@@ -72,9 +72,9 @@ pub(super) fn build_oidc_portal_connector(
     issuer: String,
     session_ttl: chrono::Duration,
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    Ok(PortalIdentityConnector::new(
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    Ok(EdgeIdentityConnector::new(
         vec![BrowserLoginProvider {
             label: "OIDC".into(),
             login_path: "/login/oidc".into(),
@@ -104,9 +104,9 @@ pub(super) fn build_oidc_portal_connector(
     _issuer: String,
     _session_ttl: chrono::Duration,
     _principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    let PortalConnectorEndpoints {
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    let EdgeConnectorEndpoints {
         authorize_base_url,
         exchange_url,
         token_url,
@@ -134,9 +134,9 @@ pub(super) fn build_oauth_portal_connector(
     provider: String,
     session_ttl: chrono::Duration,
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    Ok(PortalIdentityConnector::new(
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    Ok(EdgeIdentityConnector::new(
         vec![BrowserLoginProvider {
             label: "OAuth".into(),
             login_path: "/login/oauth".into(),
@@ -166,9 +166,9 @@ pub(super) fn build_oauth_portal_connector(
     _provider: String,
     _session_ttl: chrono::Duration,
     _principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-    endpoints: PortalConnectorEndpoints,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    let PortalConnectorEndpoints {
+    endpoints: EdgeConnectorEndpoints,
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    let EdgeConnectorEndpoints {
         authorize_base_url,
         exchange_url,
         token_url,
@@ -197,8 +197,8 @@ pub(super) fn build_external_portal_connector(
     trusted_principal_header: String,
     session_ttl: chrono::Duration,
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
-    Ok(PortalIdentityConnector::new(
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    Ok(EdgeIdentityConnector::new(
         vec![BrowserLoginProvider {
             label: format!("External ({authority})"),
             login_path: "/login/external".into(),
@@ -221,6 +221,6 @@ pub(super) fn build_external_portal_connector(
     _trusted_principal_header: String,
     _session_ttl: chrono::Duration,
     _principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
-) -> Result<PortalIdentityConnector, Box<dyn std::error::Error>> {
+) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
     Err(std::io::Error::other("auth-external feature not compiled").into())
 }

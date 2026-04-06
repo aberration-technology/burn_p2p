@@ -5,23 +5,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::Utc;
 
 use super::{
-    ActiveServiceSet, AdminMode, ArtifactAlias, ArtifactAliasScope, ArtifactAliasSourceReason,
-    ArtifactLiveEvent, ArtifactLiveEventKind, ArtifactProfile, AuthProvider, BackpressurePolicy,
-    BadgeAward, BadgeKind, BrowserMode, ClientPlatform, ClientReleaseManifest, CompiledFeatureSet,
-    ConfiguredServiceSet, DownloadDeliveryMode, DownloadTicket, EdgeAuthProvider, EdgeFeature,
-    EdgeServiceManifest, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
-    EvalProtocolOptions, ExperimentDirectoryEntry, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, ExportJob,
-    ExportJobStatus, HeadEvalReport, HeadEvalStatus, IdentityVisibility, LagPolicy, LagState,
-    LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, MergeStrategy, MergeTopologyPolicy,
-    MergeWindowMissPolicy, MetricTrustClass, MetricValue, MetricsLedgerSegment, MetricsLiveEvent,
-    MetricsLiveEventKind, MetricsMode, MetricsSnapshotManifest, MetricsSyncCursor, NetworkManifest,
-    NodeCertificate, NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
-    PeerWindowStatus, PortalMode, ProfileMode, PublicationAccessMode, PublicationMode,
-    PublicationTarget, PublicationTargetKind, PublishedArtifactRecord, PublishedArtifactStatus,
-    ReducerCohortMetrics, ReducerCohortStatus, RejectionReason, RobustnessPolicy, RobustnessPreset,
-    SchemaEnvelope, SocialMode, SocialProfile, SupportedWorkload, UpdateFeatureSketch,
-    WindowActivation, WindowId,
+    ActiveServiceSet, AdminMode, AppMode, ArtifactAlias, ArtifactAliasScope,
+    ArtifactAliasSourceReason, ArtifactLiveEvent, ArtifactLiveEventKind, ArtifactProfile,
+    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserMode, ClientPlatform,
+    ClientReleaseManifest, CompiledFeatureSet, ConfiguredServiceSet, DownloadDeliveryMode,
+    DownloadTicket, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest, EvalAggregationRule,
+    EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions, ExperimentDirectoryEntry,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
+    ExportJob, ExportJobStatus, HeadEvalReport, HeadEvalStatus, IdentityVisibility, LagPolicy,
+    LagState, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, MergeStrategy,
+    MergeTopologyPolicy, MergeWindowMissPolicy, MetricTrustClass, MetricValue,
+    MetricsLedgerSegment, MetricsLiveEvent, MetricsLiveEventKind, MetricsMode,
+    MetricsSnapshotManifest, MetricsSyncCursor, NetworkManifest, NodeCertificate,
+    NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics, PeerWindowStatus,
+    ProfileMode, PublicationAccessMode, PublicationMode, PublicationTarget, PublicationTargetKind,
+    PublishedArtifactRecord, PublishedArtifactStatus, ReducerCohortMetrics, ReducerCohortStatus,
+    RejectionReason, RobustnessPolicy, RobustnessPreset, SchemaEnvelope, SocialMode, SocialProfile,
+    SupportedWorkload, UpdateFeatureSketch, WindowActivation, WindowId,
 };
 use crate::{
     RevocationEpoch,
@@ -519,7 +519,7 @@ fn publication_schema_round_trips() {
         access_mode: PublicationAccessMode::Authenticated,
         allow_public_reads: false,
         supports_signed_urls: false,
-        portal_proxy_required: true,
+        edge_proxy_required: true,
         max_artifact_size_bytes: Some(128 * 1024 * 1024),
         retention_ttl_secs: Some(3600),
         allowed_artifact_profiles: BTreeSet::from([
@@ -586,7 +586,7 @@ fn publication_schema_round_trips() {
         principal_id: PrincipalId::new("principal-a"),
         issued_at: Utc::now(),
         expires_at: Utc::now(),
-        delivery_mode: DownloadDeliveryMode::PortalStream,
+        delivery_mode: DownloadDeliveryMode::EdgeStream,
     };
     let event = ArtifactLiveEvent {
         event_id: ContentId::new("event-a"),
@@ -641,7 +641,7 @@ fn edge_service_manifest_round_trips() {
     let manifest = EdgeServiceManifest {
         edge_id: PeerId::new("edge-1"),
         network_id: crate::NetworkId::new("network-a"),
-        portal_mode: PortalMode::Interactive,
+        app_mode: AppMode::Interactive,
         browser_mode: BrowserMode::Verifier,
         available_auth_providers: BTreeSet::from([
             EdgeAuthProvider::Static,
@@ -654,21 +654,21 @@ fn edge_service_manifest_round_trips() {
         compiled_feature_set: CompiledFeatureSet {
             features: BTreeSet::from([
                 EdgeFeature::AdminHttp,
-                EdgeFeature::Portal,
+                EdgeFeature::App,
                 EdgeFeature::AuthOidc,
             ]),
         },
         configured_service_set: ConfiguredServiceSet {
             features: BTreeSet::from([
                 EdgeFeature::AdminHttp,
-                EdgeFeature::Portal,
+                EdgeFeature::App,
                 EdgeFeature::AuthOidc,
             ]),
         },
         active_feature_set: ActiveServiceSet {
             features: BTreeSet::from([
                 EdgeFeature::AdminHttp,
-                EdgeFeature::Portal,
+                EdgeFeature::App,
                 EdgeFeature::AuthOidc,
             ]),
         },
@@ -700,7 +700,7 @@ fn lag_and_backpressure_policies_round_trip() {
             reducer_queue_depth_limit: 96,
             upload_concurrency_limit: 3,
             browser_transfer_budget_bytes: 8 * 1024 * 1024,
-            portal_feed_sample_rate: 2,
+            app_feed_sample_rate: 2,
         },
     );
 

@@ -1,7 +1,7 @@
 mod browser_app;
 mod operator_app;
 
-use crate::models::{PortalArtifactRunSummaryRow, PortalArtifactRunView, PortalHeadArtifactView};
+use crate::{AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView};
 
 /// Renders the operator-facing bootstrap dashboard HTML.
 pub fn render_dashboard_html(network_id: &str) -> String {
@@ -23,18 +23,18 @@ pub fn render_browser_app_static_html(
 /// Renders a run-summary page for one experiment's artifact history.
 pub fn render_artifact_run_summaries_html(
     experiment_id: &str,
-    rows: &[PortalArtifactRunSummaryRow],
-    portal_path: &str,
+    rows: &[AppArtifactRunSummaryRow],
+    app_path: &str,
 ) -> String {
-    operator_app::render_artifact_run_summaries_html(experiment_id, rows, portal_path)
+    operator_app::render_artifact_run_summaries_html(experiment_id, rows, app_path)
 }
 
 /// Renders one run-scoped artifact history/detail page.
-pub fn render_artifact_run_view_html(view: &PortalArtifactRunView) -> String {
+pub fn render_artifact_run_view_html(view: &AppArtifactRunView) -> String {
     operator_app::render_artifact_run_view_html(view)
 }
 
 /// Renders one head-scoped artifact detail page.
-pub fn render_head_artifact_view_html(view: &PortalHeadArtifactView) -> String {
+pub fn render_head_artifact_view_html(view: &AppHeadArtifactView) -> String {
     operator_app::render_head_artifact_view_html(view)
 }

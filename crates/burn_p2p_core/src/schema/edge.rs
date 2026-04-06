@@ -50,8 +50,8 @@ pub enum EdgeAuthProvider {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-/// Enumerates the supported portal modes.
-pub enum PortalMode {
+/// Enumerates the supported app modes.
+pub enum AppMode {
     /// Disables this capability.
     Disabled,
     /// Exposes read-only access.
@@ -122,8 +122,8 @@ pub enum EdgeFeature {
     AdminHttp,
     /// Uses the metrics variant.
     Metrics,
-    /// Uses the portal variant.
-    Portal,
+    /// Uses the app variant.
+    App,
     /// Uses the browser edge variant.
     BrowserEdge,
     /// Uses the RBAC variant.
@@ -170,7 +170,7 @@ pub struct ActiveServiceSet {
 ///
 /// This is intentionally separate from [`NetworkManifest`]. Network manifests
 /// describe trust-domain invariants and compatibility, while edge service
-/// manifests advertise optional deployment surfaces such as portal mode,
+/// manifests advertise optional deployment surfaces such as app mode,
 /// browser ingress, auth providers, social/profile visibility, and the active
 /// compiled feature set for one edge.
 pub struct EdgeServiceManifest {
@@ -178,8 +178,8 @@ pub struct EdgeServiceManifest {
     pub edge_id: PeerId,
     /// The network ID.
     pub network_id: NetworkId,
-    /// The portal mode.
-    pub portal_mode: PortalMode,
+    /// The app mode.
+    pub app_mode: AppMode,
     /// The browser mode.
     pub browser_mode: BrowserMode,
     /// The available auth providers.
@@ -270,8 +270,8 @@ pub enum BrowserEdgeMode {
 pub struct BrowserEdgePaths {
     /// The capabilities path.
     pub capabilities_path: String,
-    /// The portal snapshot path.
-    pub portal_snapshot_path: String,
+    /// The app snapshot path.
+    pub app_snapshot_path: String,
     /// The directory path.
     pub directory_path: String,
     /// The heads path.
@@ -342,7 +342,7 @@ impl Default for BrowserEdgePaths {
     fn default() -> Self {
         Self {
             capabilities_path: "/capabilities".into(),
-            portal_snapshot_path: "/portal/snapshot".into(),
+            app_snapshot_path: "/portal/snapshot".into(),
             directory_path: "/directory".into(),
             heads_path: "/heads".into(),
             signed_directory_path: "/directory/signed".into(),
@@ -422,12 +422,12 @@ pub struct BrowserDirectorySnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Captures a browser-facing portal snapshot.
+/// Captures a browser-facing app snapshot.
 ///
 /// This stays intentionally lean enough for browser clients and shared edge
 /// consumers. Bootstrap-specific diagnostics stay in deployment-facing view
 /// models rather than this transport contract.
-pub struct BrowserPortalSnapshot {
+pub struct BrowserEdgeSnapshot {
     /// The network ID.
     pub network_id: NetworkId,
     /// The edge mode.

@@ -316,8 +316,8 @@ impl RuntimeTransportPolicy {
         Self {
             environment: RuntimeEnvironment::Native,
             preferred_transports: vec![
-                TransportKind::Tcp,
                 TransportKind::Quic,
+                TransportKind::Tcp,
                 TransportKind::WebSocket,
                 TransportKind::RelayReservation,
             ],

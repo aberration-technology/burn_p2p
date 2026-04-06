@@ -77,7 +77,7 @@ struct MnistBrowserScenario {
     title: String,
     description: String,
     default_surface: BrowserAppSurface,
-    snapshot: burn_p2p::BrowserPortalSnapshot,
+    snapshot: burn_p2p::BrowserEdgeSnapshot,
     metrics_catchup: Vec<MetricsCatchupBundle>,
     #[serde(default)]
     runtime_states: Vec<String>,

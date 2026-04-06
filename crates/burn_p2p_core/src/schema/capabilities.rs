@@ -20,7 +20,7 @@ pub enum PeerRole {
     /// Uses the evaluator variant.
     Evaluator,
     /// Uses the portal viewer variant.
-    PortalViewer,
+    Viewer,
     /// Uses the browser observer variant.
     BrowserObserver,
     /// Uses the browser verifier variant.
@@ -182,7 +182,7 @@ impl ArtifactTargetKind {
 /// Enumerates the supported browser roles.
 pub enum BrowserRole {
     /// Uses the portal viewer variant.
-    PortalViewer,
+    Viewer,
     /// Allows observer behavior.
     Observer,
     /// Allows verifier behavior.

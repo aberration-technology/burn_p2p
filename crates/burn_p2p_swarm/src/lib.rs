@@ -32,7 +32,6 @@ use futures::{Stream, StreamExt};
 use libp2p::{Multiaddr, StreamProtocol};
 use libp2p_core::{Transport, transport::MemoryTransport, upgrade};
 use libp2p_identity::{Keypair, PeerId as Libp2pPeerId};
-use libp2p_plaintext as plaintext;
 use libp2p_request_response::{self as request_response, ProtocolSupport};
 use libp2p_swarm::{Config as Libp2pSwarmConfig, NetworkBehaviour, Swarm, SwarmEvent, dummy};
 use libp2p_yamux as yamux;
@@ -63,7 +62,6 @@ pub use memory_swarm::*;
 pub use native_control::*;
 use runtime_helpers::{
     materialize_listen_addr, other_control_name, other_name, other_native_control_name,
-    plaintext_config,
 };
 pub use stats::{
     MigrationCoordinator, MigrationPlan, PeerObservation, PeerStore, SwarmError, SwarmStats,

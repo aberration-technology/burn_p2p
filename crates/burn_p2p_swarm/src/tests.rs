@@ -179,13 +179,13 @@ fn browser_transport_policy_prefers_browser_transports() {
 }
 
 #[test]
-fn native_transport_policy_prefers_tcp_before_quic_for_current_runtime() {
+fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
     let policy = RuntimeTransportPolicy::native();
     assert_eq!(
         policy.preferred_transports,
         vec![
-            TransportKind::Tcp,
             TransportKind::Quic,
+            TransportKind::Tcp,
             TransportKind::WebSocket,
             TransportKind::RelayReservation,
         ]

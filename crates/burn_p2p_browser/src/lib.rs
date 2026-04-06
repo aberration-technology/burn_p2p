@@ -26,19 +26,19 @@ pub mod worker;
 
 pub use app::{BrowserAppConnectConfig, BrowserAppController, BrowserAppModel, BrowserAppTarget};
 pub use auth::{
-    BrowserAuthClientError, BrowserEnrollmentConfig, BrowserEnrollmentResult,
-    BrowserLogoutResponse, BrowserPeerEnrollmentRequest, BrowserPortalClient, BrowserSessionState,
+    BrowserAuthClientError, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserEnrollmentResult,
+    BrowserLogoutResponse, BrowserPeerEnrollmentRequest, BrowserSessionState,
     BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};
 pub use burn_p2p::{
-    PortalAuthClient, PortalAuthClientError, PortalEnrollmentConfig, PortalEnrollmentResult,
-    PortalLogoutResponse, PortalPeerEnrollmentRequest, PortalPeerIdentity, PortalSessionState,
+    EdgeAuthClient, EdgeAuthClientError, EdgeEnrollmentConfig, EdgeEnrollmentResult,
+    EdgeLogoutResponse, EdgePeerEnrollmentRequest, EdgePeerIdentity, EdgeSessionState,
 };
 pub use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
-    BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
-    BrowserPortalSnapshot, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
+    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
+    BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
+    BrowserLoginProvider, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
     ReenrollmentStatus, TrustBundleExport,
 };
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
@@ -49,10 +49,10 @@ pub use storage::{BrowserStorageSnapshot, BrowserStoredAssignment};
 pub use training::{BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingResult};
 pub use transport::{BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus};
 pub use ui_bindings::{
-    BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserPortalUiState, BrowserUiBindings,
-    browser_experiment_candidate_for_selection, browser_experiment_candidates_for_scopes,
-    browser_experiment_candidates_from_directory, browser_experiment_picker_view_from_directory,
-    browser_join_policies_from_directory, browser_portal_ui_state_from_directory,
+    BrowserAppUiState, BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserUiBindings,
+    browser_app_ui_state_from_directory, browser_experiment_candidate_for_selection,
+    browser_experiment_candidates_for_scopes, browser_experiment_candidates_from_directory,
+    browser_experiment_picker_view_from_directory, browser_join_policies_from_directory,
     recommended_browser_candidate_for_scopes, recommended_browser_join_policy,
     recommended_browser_join_policy_for_scopes, recommended_browser_runtime_state,
     recommended_browser_runtime_state_for_scopes,

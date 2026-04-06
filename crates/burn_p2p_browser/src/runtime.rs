@@ -10,7 +10,7 @@ use crate::BrowserTransportPolicy;
 /// Enumerates the supported browser runtime roles.
 pub enum BrowserRuntimeRole {
     /// Uses the portal viewer variant.
-    PortalViewer,
+    Viewer,
     /// Uses the browser observer variant.
     BrowserObserver,
     /// Uses the browser verifier variant.
@@ -25,7 +25,7 @@ impl BrowserRuntimeRole {
     /// Returns the browser role view.
     pub fn as_browser_role(&self) -> BrowserRole {
         match self {
-            Self::PortalViewer => BrowserRole::PortalViewer,
+            Self::Viewer => BrowserRole::Viewer,
             Self::BrowserObserver => BrowserRole::Observer,
             Self::BrowserVerifier => BrowserRole::Verifier,
             Self::BrowserTrainerWgpu => BrowserRole::TrainerWgpu,
@@ -53,7 +53,7 @@ pub enum BrowserJoinStage {
 /// Enumerates the supported browser runtime states.
 pub enum BrowserRuntimeState {
     /// Uses the portal only variant.
-    PortalOnly,
+    ViewerOnly,
     /// Uses the joining variant.
     Joining {
         /// The role.
@@ -100,7 +100,7 @@ impl BrowserRuntimeState {
     /// Performs the active role operation.
     pub fn active_role(&self) -> Option<BrowserRuntimeRole> {
         match self {
-            Self::PortalOnly => Some(BrowserRuntimeRole::PortalViewer),
+            Self::ViewerOnly => Some(BrowserRuntimeRole::Viewer),
             Self::Joining { role, .. } => Some(role.clone()),
             Self::Observer => Some(BrowserRuntimeRole::BrowserObserver),
             Self::Verifier => Some(BrowserRuntimeRole::BrowserVerifier),
@@ -129,7 +129,7 @@ impl BrowserRuntimeState {
         preferred_role: BrowserRuntimeRole,
     ) -> Self {
         match policy.recommended_role(preferred_role.as_browser_role()) {
-            Some(BrowserRole::PortalViewer) => Self::PortalOnly,
+            Some(BrowserRole::Viewer) => Self::ViewerOnly,
             Some(BrowserRole::Observer | BrowserRole::Fallback) => Self::Observer,
             Some(BrowserRole::Verifier) => Self::Verifier,
             Some(BrowserRole::TrainerWgpu) => Self::Trainer,

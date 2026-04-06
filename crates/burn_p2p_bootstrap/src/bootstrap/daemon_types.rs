@@ -234,7 +234,7 @@ pub(super) struct LogoutResponse {
     pub logged_out: bool,
 }
 
-pub(super) struct PortalIdentityConnector {
+pub(super) struct EdgeIdentityConnector {
     pub(super) login_providers: Vec<BrowserLoginProvider>,
     pub(super) login_paths: BTreeSet<String>,
     pub(super) callback_paths: BTreeSet<String>,
@@ -242,9 +242,9 @@ pub(super) struct PortalIdentityConnector {
     pub(super) inner: Box<dyn IdentityConnector + Send + Sync>,
 }
 
-impl std::fmt::Debug for PortalIdentityConnector {
+impl std::fmt::Debug for EdgeIdentityConnector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PortalIdentityConnector")
+        f.debug_struct("EdgeIdentityConnector")
             .field("login_providers", &self.login_providers)
             .field("login_paths", &self.login_paths)
             .field("callback_paths", &self.callback_paths)
@@ -253,7 +253,7 @@ impl std::fmt::Debug for PortalIdentityConnector {
     }
 }
 
-impl PortalIdentityConnector {
+impl EdgeIdentityConnector {
     pub(super) fn new(
         login_providers: Vec<BrowserLoginProvider>,
         trusted_principal_header: Option<String>,
@@ -302,7 +302,7 @@ impl PortalIdentityConnector {
     }
 }
 
-impl IdentityConnector for PortalIdentityConnector {
+impl IdentityConnector for EdgeIdentityConnector {
     fn begin_login(&self, req: LoginRequest) -> Result<burn_p2p::LoginStart, burn_p2p::AuthError> {
         self.inner.begin_login(req)
     }
@@ -335,7 +335,7 @@ impl IdentityConnector for PortalIdentityConnector {
 
 #[derive(Debug)]
 pub(super) struct AuthPortalState {
-    pub(super) connector: PortalIdentityConnector,
+    pub(super) connector: EdgeIdentityConnector,
     pub(super) login_providers: Vec<BrowserLoginProvider>,
     pub(super) authority_key_path: PathBuf,
     pub(super) network_id: NetworkId,

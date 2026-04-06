@@ -4,8 +4,6 @@ use std::convert::Infallible;
 use std::net::{TcpListener, UdpSocket};
 
 use libp2p::{Multiaddr, multiaddr::Protocol as MultiaddrProtocol};
-use libp2p_identity::Keypair;
-use libp2p_plaintext as plaintext;
 use libp2p_request_response as request_response;
 use libp2p_swarm::SwarmEvent;
 
@@ -85,10 +83,6 @@ pub(crate) fn other_native_control_name(
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn other_native_control_name<T>(_event: &SwarmEvent<T>) -> &'static str {
     "other"
-}
-
-pub(crate) fn plaintext_config(keypair: &Keypair) -> Result<plaintext::Config, Infallible> {
-    Ok(plaintext::Config::new(keypair))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

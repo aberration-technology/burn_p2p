@@ -13,12 +13,12 @@ fn format_artifact_metric_value(value: &burn_p2p_core::MetricValue) -> String {
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_alias_history_rows(
+fn app_alias_history_rows(
     alias_history: &[burn_p2p_core::ArtifactAlias],
-) -> Vec<burn_p2p_app::PortalArtifactAliasHistoryRow> {
+) -> Vec<burn_p2p_app::AppArtifactAliasHistoryRow> {
     alias_history
         .iter()
-        .map(|alias| burn_p2p_app::PortalArtifactAliasHistoryRow {
+        .map(|alias| burn_p2p_app::AppArtifactAliasHistoryRow {
             alias_name: alias.alias_name.clone(),
             scope: format!("{:?}", alias.scope),
             artifact_profile: format!("{:?}", alias.artifact_profile),
@@ -30,12 +30,12 @@ fn portal_alias_history_rows(
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_published_artifact_rows(
+fn app_published_artifact_rows(
     publications: &[burn_p2p_core::PublishedArtifactRecord],
-) -> Vec<burn_p2p_app::PortalPublishedArtifactRow> {
+) -> Vec<burn_p2p_app::AppPublishedArtifactRow> {
     publications
         .iter()
-        .map(|record| burn_p2p_app::PortalPublishedArtifactRow {
+        .map(|record| burn_p2p_app::AppPublishedArtifactRow {
             head_id: record.head_id.as_str().to_owned(),
             artifact_profile: format!("{:?}", record.artifact_profile),
             publication_target_id: record.publication_target_id.as_str().to_owned(),
@@ -49,12 +49,12 @@ fn portal_published_artifact_rows(
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_eval_summary_rows(
+fn app_eval_summary_rows(
     eval_reports: &[HeadEvalReport],
-) -> Vec<burn_p2p_app::PortalHeadEvalSummaryRow> {
+) -> Vec<burn_p2p_app::AppHeadEvalSummaryRow> {
     eval_reports
         .iter()
-        .map(|report| burn_p2p_app::PortalHeadEvalSummaryRow {
+        .map(|report| burn_p2p_app::AppHeadEvalSummaryRow {
             head_id: report.head_id.as_str().to_owned(),
             eval_protocol_id: report.eval_protocol_id.as_str().to_owned(),
             status: format!("{:?}", report.status),
@@ -78,12 +78,12 @@ fn portal_eval_summary_rows(
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_artifact_run_summary_rows(
+fn app_artifact_run_summary_rows(
     summaries: &[crate::ArtifactRunSummary],
-) -> Vec<burn_p2p_app::PortalArtifactRunSummaryRow> {
+) -> Vec<burn_p2p_app::AppArtifactRunSummaryRow> {
     summaries
         .iter()
-        .map(|summary| burn_p2p_app::PortalArtifactRunSummaryRow {
+        .map(|summary| burn_p2p_app::AppArtifactRunSummaryRow {
             experiment_id: summary.experiment_id.as_str().to_owned(),
             run_id: summary.run_id.as_str().to_owned(),
             latest_head_id: summary.latest_head_id.as_str().to_owned(),
@@ -105,7 +105,7 @@ fn portal_artifact_run_summary_rows(
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::PortalArtifactRunView {
+fn app_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::AppArtifactRunView {
     let aliases = view
         .aliases
         .iter()
@@ -130,7 +130,7 @@ fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::Port
                         .map(|job| job.publication_target_id.as_str().to_owned())
                 })
                 .unwrap_or_else(|| crate::DEFAULT_PUBLICATION_TARGET_ID.to_owned());
-            burn_p2p_app::PortalArtifactRow {
+            burn_p2p_app::AppArtifactRow {
                 alias_name: row.alias.alias_name.clone(),
                 scope: format!("{:?}", row.alias.scope),
                 artifact_profile: format!("{:?}", row.alias.artifact_profile),
@@ -167,7 +167,7 @@ fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::Port
         })
         .collect();
 
-    burn_p2p_app::PortalArtifactRunView {
+    burn_p2p_app::AppArtifactRunView {
         experiment_id: view.experiment_id.as_str().to_owned(),
         run_id: view.run_id.as_str().to_owned(),
         latest_head_id: view
@@ -178,7 +178,7 @@ fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::Port
         heads: view
             .heads
             .iter()
-            .map(|head| burn_p2p_app::PortalHeadRow {
+            .map(|head| burn_p2p_app::AppHeadRow {
                 experiment_id: head.experiment_id.as_str().to_owned(),
                 revision_id: head.revision_id.as_str().to_owned(),
                 head_id: head.head_id.as_str().to_owned(),
@@ -187,10 +187,10 @@ fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::Port
             })
             .collect(),
         aliases,
-        alias_history: portal_alias_history_rows(&view.alias_history),
-        eval_reports: portal_eval_summary_rows(&view.eval_reports),
-        publications: portal_published_artifact_rows(&view.published_artifacts),
-        portal_path: "/".into(),
+        alias_history: app_alias_history_rows(&view.alias_history),
+        eval_reports: app_eval_summary_rows(&view.eval_reports),
+        publications: app_published_artifact_rows(&view.published_artifacts),
+        app_path: "/".into(),
         json_view_path: format!(
             "/artifacts/runs/{}/{}",
             view.experiment_id.as_str(),
@@ -200,13 +200,11 @@ fn portal_artifact_run_view(view: &crate::ArtifactRunView) -> burn_p2p_app::Port
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
-fn portal_head_artifact_view(
-    view: &crate::HeadArtifactView,
-) -> burn_p2p_app::PortalHeadArtifactView {
+fn app_head_artifact_view(view: &crate::HeadArtifactView) -> burn_p2p_app::AppHeadArtifactView {
     let aliases = view
         .aliases
         .iter()
-        .map(|alias| burn_p2p_app::PortalArtifactRow {
+        .map(|alias| burn_p2p_app::AppArtifactRow {
             alias_name: alias.alias_name.clone(),
             scope: format!("{:?}", alias.scope),
             artifact_profile: format!("{:?}", alias.artifact_profile),
@@ -235,8 +233,8 @@ fn portal_head_artifact_view(
         })
         .collect();
 
-    burn_p2p_app::PortalHeadArtifactView {
-        head: burn_p2p_app::PortalHeadRow {
+    burn_p2p_app::AppHeadArtifactView {
+        head: burn_p2p_app::AppHeadRow {
             experiment_id: view.head.experiment_id.as_str().to_owned(),
             revision_id: view.head.revision_id.as_str().to_owned(),
             head_id: view.head.head_id.as_str().to_owned(),
@@ -246,15 +244,15 @@ fn portal_head_artifact_view(
         experiment_id: view.head.experiment_id.as_str().to_owned(),
         run_id: view.run_id.as_str().to_owned(),
         aliases,
-        alias_history: portal_alias_history_rows(&view.alias_history),
-        eval_reports: portal_eval_summary_rows(&view.eval_reports),
-        publications: portal_published_artifact_rows(&view.published_artifacts),
+        alias_history: app_alias_history_rows(&view.alias_history),
+        eval_reports: app_eval_summary_rows(&view.eval_reports),
+        publications: app_published_artifact_rows(&view.published_artifacts),
         available_profiles: view
             .available_profiles
             .iter()
             .map(|profile| format!("{profile:?}"))
             .collect(),
-        portal_path: "/".into(),
+        app_path: "/".into(),
         run_view_path: format!(
             "/portal/artifacts/runs/{}/{}",
             view.head.experiment_id.as_str(),
@@ -286,7 +284,7 @@ pub fn render_artifact_run_summaries_html(
 ) -> String {
     burn_p2p_app::render_artifact_run_summaries_html(
         experiment_id.as_str(),
-        &portal_artifact_run_summary_rows(summaries),
+        &app_artifact_run_summary_rows(summaries),
         "/",
     )
 }
@@ -294,13 +292,13 @@ pub fn render_artifact_run_summaries_html(
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 /// Performs the render artifact run view html operation.
 pub fn render_artifact_run_view_html(view: &crate::ArtifactRunView) -> String {
-    burn_p2p_app::render_artifact_run_view_html(&portal_artifact_run_view(view))
+    burn_p2p_app::render_artifact_run_view_html(&app_artifact_run_view(view))
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 /// Performs the render head artifact view html operation.
 pub fn render_head_artifact_view_html(view: &crate::HeadArtifactView) -> String {
-    burn_p2p_app::render_head_artifact_view_html(&portal_head_artifact_view(view))
+    burn_p2p_app::render_head_artifact_view_html(&app_head_artifact_view(view))
 }
 
 #[cfg(any(not(feature = "browser-edge"), not(feature = "artifact-publish")))]

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents the browser-facing transport classes exposed by an edge.
-pub struct PortalTransportSurface {
+pub struct AppTransportSurface {
     /// Whether direct WebRTC peer communication is available.
     pub webrtc_direct: bool,
     /// Whether the edge exposes a WebTransport gateway.
@@ -13,7 +13,7 @@ pub struct PortalTransportSurface {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents one login provider advertised by the edge.
-pub struct PortalLoginProvider {
+pub struct AppLoginProvider {
     /// Human-readable provider name.
     pub label: String,
     /// Path that begins the login flow.
@@ -25,10 +25,10 @@ pub struct PortalLoginProvider {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Collects the signed and unsigned portal-related paths exposed by the edge.
-pub struct PortalPaths {
-    /// Path for the live portal snapshot.
-    pub portal_snapshot_path: String,
+/// Collects the signed and unsigned app-related paths exposed by the edge.
+pub struct AppPaths {
+    /// Path for the live app snapshot.
+    pub app_snapshot_path: String,
     /// Path for the signed experiment directory snapshot.
     pub signed_directory_path: String,
     /// Path for the signed leaderboard snapshot.
@@ -44,8 +44,8 @@ pub struct PortalPaths {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Represents one experiment row in the reference portal.
-pub struct PortalExperimentRow {
+/// Represents one experiment row in the reference app.
+pub struct AppExperimentRow {
     /// Human-readable experiment name.
     pub display_name: String,
     /// Stable experiment identifier.
@@ -59,8 +59,8 @@ pub struct PortalExperimentRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Represents one leaderboard row in the reference portal.
-pub struct PortalLeaderboardRow {
+/// Represents one leaderboard row in the reference app.
+pub struct AppLeaderboardRow {
     /// Principal or display label shown in the board.
     pub principal_label: String,
     /// Current v1 leaderboard score.
@@ -71,7 +71,7 @@ pub struct PortalLeaderboardRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents one currently visible certified head in the portal.
-pub struct PortalHeadRow {
+pub struct AppHeadRow {
     /// Experiment identifier.
     pub experiment_id: String,
     /// Revision identifier.
@@ -86,7 +86,7 @@ pub struct PortalHeadRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Summarizes the live operational posture shown in the portal.
-pub struct PortalDiagnosticsView {
+pub struct AppDiagnosticsView {
     /// Number of currently connected peers.
     pub connected_peers: usize,
     /// Number of observed peers surfaced by the edge.
@@ -124,7 +124,7 @@ pub struct PortalDiagnosticsView {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Summarizes trust and release posture for the current edge.
-pub struct PortalTrustView {
+pub struct AppTrustView {
     /// Required release-train hash, if one is currently published.
     pub required_release_train_hash: Option<String>,
     /// Number of approved target artifacts in the active release train.
@@ -138,8 +138,8 @@ pub struct PortalTrustView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One browser/runtime state card rendered in the reference portal.
-pub struct PortalRuntimeStateCard {
+/// One browser/runtime state card rendered in the reference app.
+pub struct AppRuntimeStateCard {
     /// Short label for the runtime card.
     pub label: String,
     /// Human-readable state name.
@@ -155,8 +155,8 @@ pub struct PortalRuntimeStateCard {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One service-health row rendered in the reference portal.
-pub struct PortalServiceStatusRow {
+/// One service-health row rendered in the reference app.
+pub struct AppServiceStatusRow {
     /// Service label.
     pub service: String,
     /// Human-readable service state.
@@ -166,8 +166,8 @@ pub struct PortalServiceStatusRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One peer-status row rendered in the reference portal.
-pub struct PortalPeerStatusRow {
+/// One peer-status row rendered in the reference app.
+pub struct AppPeerStatusRow {
     /// Stable peer label shown to operators.
     pub peer_label: String,
     /// Human-readable role label.
@@ -185,8 +185,8 @@ pub struct PortalPeerStatusRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One labeled metrics row rendered in the reference portal.
-pub struct PortalMetricRow {
+/// One labeled metrics row rendered in the reference app.
+pub struct AppMetricRow {
     /// Human-readable label for the metric.
     pub label: String,
     /// Rendered metric value.
@@ -202,7 +202,7 @@ pub struct PortalMetricRow {
     /// Optional operator hint shown alongside the metric row.
     #[serde(default)]
     pub operator_hint: Option<String>,
-    /// Optional detail path for drilldowns from the current portal edge.
+    /// Optional detail path for drilldowns from the current app edge.
     #[serde(default)]
     pub detail_path: Option<String>,
     /// RFC3339 freshness timestamp.
@@ -210,8 +210,8 @@ pub struct PortalMetricRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One metrics panel in the reference portal.
-pub struct PortalMetricsPanel {
+/// One metrics panel in the reference app.
+pub struct AppMetricsPanel {
     /// Stable panel identifier.
     pub panel_id: String,
     /// Human-readable panel title.
@@ -219,12 +219,12 @@ pub struct PortalMetricsPanel {
     /// Short explanation of what the panel means.
     pub description: String,
     /// Rows rendered within the panel.
-    pub rows: Vec<PortalMetricRow>,
+    pub rows: Vec<AppMetricRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One downloadable or exportable artifact alias row rendered in the portal.
-pub struct PortalArtifactRow {
+pub struct AppArtifactRow {
     /// Alias label shown to users.
     pub alias_name: String,
     /// Human-readable alias scope.
@@ -253,15 +253,15 @@ pub struct PortalArtifactRow {
     pub head_view_path: String,
     /// Run history/detail path for the current alias, when available.
     pub run_view_path: Option<String>,
-    /// Export endpoint path used by the portal action.
+    /// Export endpoint path used by the app action.
     pub export_path: String,
-    /// Download-ticket endpoint path used by the portal action.
+    /// Download-ticket endpoint path used by the app action.
     pub download_ticket_path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One run-scoped summary row rendered in portal artifact history views.
-pub struct PortalArtifactRunSummaryRow {
+pub struct AppArtifactRunSummaryRow {
     /// Experiment identifier covered by the row.
     pub experiment_id: String,
     /// Run identifier covered by the row.
@@ -282,7 +282,7 @@ pub struct PortalArtifactRunSummaryRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One alias-history row rendered in dedicated artifact run/head pages.
-pub struct PortalArtifactAliasHistoryRow {
+pub struct AppArtifactAliasHistoryRow {
     /// Alias label that changed.
     pub alias_name: String,
     /// Alias scope label.
@@ -299,7 +299,7 @@ pub struct PortalArtifactAliasHistoryRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One published-artifact row rendered in dedicated artifact run/head pages.
-pub struct PortalPublishedArtifactRow {
+pub struct AppPublishedArtifactRow {
     /// Head attached to the publication.
     pub head_id: String,
     /// Artifact profile label.
@@ -320,7 +320,7 @@ pub struct PortalPublishedArtifactRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One evaluation-report row rendered in dedicated artifact run/head pages.
-pub struct PortalHeadEvalSummaryRow {
+pub struct AppHeadEvalSummaryRow {
     /// Head evaluated by the report.
     pub head_id: String,
     /// Evaluation protocol label.
@@ -338,8 +338,8 @@ pub struct PortalHeadEvalSummaryRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Dedicated run-scoped artifact history view rendered as HTML by the portal.
-pub struct PortalArtifactRunView {
+/// Dedicated run-scoped artifact history view rendered as HTML by the app.
+pub struct AppArtifactRunView {
     /// Experiment covered by the page.
     pub experiment_id: String,
     /// Run covered by the page.
@@ -347,42 +347,42 @@ pub struct PortalArtifactRunView {
     /// Latest head currently visible for the run.
     pub latest_head_id: Option<String>,
     /// Current heads in the run.
-    pub heads: Vec<PortalHeadRow>,
+    pub heads: Vec<AppHeadRow>,
     /// Current aliases in the run.
-    pub aliases: Vec<PortalArtifactRow>,
+    pub aliases: Vec<AppArtifactRow>,
     /// Historical alias resolutions for the run.
-    pub alias_history: Vec<PortalArtifactAliasHistoryRow>,
+    pub alias_history: Vec<AppArtifactAliasHistoryRow>,
     /// Evaluation reports attached to run heads.
-    pub eval_reports: Vec<PortalHeadEvalSummaryRow>,
+    pub eval_reports: Vec<AppHeadEvalSummaryRow>,
     /// Published artifacts attached to the run.
-    pub publications: Vec<PortalPublishedArtifactRow>,
-    /// Back link to the main portal page.
-    pub portal_path: String,
+    pub publications: Vec<AppPublishedArtifactRow>,
+    /// Back link to the main app page.
+    pub app_path: String,
     /// JSON API path for the run detail payload.
     pub json_view_path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Dedicated head-scoped artifact detail view rendered as HTML by the portal.
-pub struct PortalHeadArtifactView {
+/// Dedicated head-scoped artifact detail view rendered as HTML by the app.
+pub struct AppHeadArtifactView {
     /// Head currently being described.
-    pub head: PortalHeadRow,
+    pub head: AppHeadRow,
     /// Experiment the head belongs to.
     pub experiment_id: String,
     /// Run derived for the head.
     pub run_id: String,
     /// Current aliases that resolve to the head.
-    pub aliases: Vec<PortalArtifactRow>,
+    pub aliases: Vec<AppArtifactRow>,
     /// Historical alias resolutions for the head's run context.
-    pub alias_history: Vec<PortalArtifactAliasHistoryRow>,
+    pub alias_history: Vec<AppArtifactAliasHistoryRow>,
     /// Evaluation reports attached to the head.
-    pub eval_reports: Vec<PortalHeadEvalSummaryRow>,
+    pub eval_reports: Vec<AppHeadEvalSummaryRow>,
     /// Publication records attached to the head.
-    pub publications: Vec<PortalPublishedArtifactRow>,
+    pub publications: Vec<AppPublishedArtifactRow>,
     /// Available artifact profiles currently supported for the head.
     pub available_profiles: Vec<String>,
-    /// Back link to the main portal page.
-    pub portal_path: String,
+    /// Back link to the main app page.
+    pub app_path: String,
     /// HTML run-detail path for the head's run.
     pub run_view_path: String,
     /// JSON API path for the head detail payload.
@@ -390,11 +390,11 @@ pub struct PortalHeadArtifactView {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Represents the full reference portal snapshot consumed by the renderer.
-pub struct PortalSnapshotView {
+/// Represents the full reference app snapshot consumed by the renderer.
+pub struct AppSnapshotView {
     /// Network identifier.
     pub network_id: String,
-    /// RFC3339 timestamp when the portal snapshot was captured.
+    /// RFC3339 timestamp when the app snapshot was captured.
     pub captured_at: String,
     /// Whether interactive auth is enabled for this edge.
     pub auth_enabled: bool,
@@ -407,32 +407,32 @@ pub struct PortalSnapshotView {
     /// Whether profile surfaces are enabled for this edge.
     pub profile_enabled: bool,
     /// Login providers currently advertised by the edge.
-    pub login_providers: Vec<PortalLoginProvider>,
+    pub login_providers: Vec<AppLoginProvider>,
     /// Transport classes currently available to browser peers.
-    pub transports: PortalTransportSurface,
+    pub transports: AppTransportSurface,
     /// Snapshot and bundle paths surfaced by the edge.
-    pub paths: PortalPaths,
+    pub paths: AppPaths,
     /// Live diagnostic posture for the edge.
-    pub diagnostics: PortalDiagnosticsView,
+    pub diagnostics: AppDiagnosticsView,
     /// Trust and release posture for the edge.
-    pub trust: PortalTrustView,
+    pub trust: AppTrustView,
     /// Browser/runtime state cards currently visible from the edge.
     #[serde(default)]
-    pub runtime_states: Vec<PortalRuntimeStateCard>,
+    pub runtime_states: Vec<AppRuntimeStateCard>,
     /// Service-health rows currently visible from the edge.
     #[serde(default)]
-    pub service_statuses: Vec<PortalServiceStatusRow>,
+    pub service_statuses: Vec<AppServiceStatusRow>,
     /// Per-peer status rows currently visible from the edge.
     #[serde(default)]
-    pub peer_statuses: Vec<PortalPeerStatusRow>,
+    pub peer_statuses: Vec<AppPeerStatusRow>,
     /// Browser-visible experiment rows.
-    pub experiments: Vec<PortalExperimentRow>,
+    pub experiments: Vec<AppExperimentRow>,
     /// Currently visible certified heads.
-    pub heads: Vec<PortalHeadRow>,
+    pub heads: Vec<AppHeadRow>,
     /// Public leaderboard entries, when enabled.
-    pub leaderboard: Vec<PortalLeaderboardRow>,
+    pub leaderboard: Vec<AppLeaderboardRow>,
     /// Downloadable/exportable artifact aliases currently visible from the edge.
-    pub artifact_rows: Vec<PortalArtifactRow>,
+    pub artifact_rows: Vec<AppArtifactRow>,
     /// Metrics panels rendered from the optional metrics indexer.
-    pub metrics_panels: Vec<PortalMetricsPanel>,
+    pub metrics_panels: Vec<AppMetricsPanel>,
 }

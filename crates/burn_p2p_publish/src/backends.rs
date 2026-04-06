@@ -38,7 +38,7 @@ pub(crate) fn default_filesystem_target(root_dir: &Path) -> PublicationTarget {
         access_mode: PublicationAccessMode::Authenticated,
         allow_public_reads: false,
         supports_signed_urls: false,
-        portal_proxy_required: true,
+        edge_proxy_required: true,
         max_artifact_size_bytes: None,
         retention_ttl_secs: Some(DEFAULT_TARGET_RETENTION_TTL_SECS),
         allowed_artifact_profiles: BTreeSet::from([
@@ -151,13 +151,13 @@ pub(crate) fn publication_object_key(
 pub(crate) fn delivery_mode_for_target(target: &PublicationTarget) -> DownloadDeliveryMode {
     match target.kind {
         PublicationTargetKind::S3Compatible
-            if target.supports_signed_urls && !target.portal_proxy_required =>
+            if target.supports_signed_urls && !target.edge_proxy_required =>
         {
             DownloadDeliveryMode::RedirectToObjectStore
         }
         PublicationTargetKind::None
         | PublicationTargetKind::LocalFilesystem
-        | PublicationTargetKind::S3Compatible => DownloadDeliveryMode::PortalStream,
+        | PublicationTargetKind::S3Compatible => DownloadDeliveryMode::EdgeStream,
     }
 }
 

@@ -14,18 +14,18 @@ use burn_p2p::{
     WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_app::{
-    PortalArtifactRow, PortalDiagnosticsView, PortalExperimentRow, PortalHeadRow,
-    PortalLeaderboardRow, PortalLoginProvider, PortalMetricRow, PortalMetricsPanel, PortalPaths,
-    PortalPeerStatusRow, PortalRuntimeStateCard, PortalServiceStatusRow, PortalSnapshotView,
-    PortalTransportSurface, PortalTrustView, render_browser_app_static_html,
+    AppArtifactRow, AppDiagnosticsView, AppExperimentRow, AppHeadRow, AppLeaderboardRow,
+    AppLoginProvider, AppMetricRow, AppMetricsPanel, AppPaths, AppPeerStatusRow,
+    AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView, AppTransportSurface, AppTrustView,
+    render_browser_app_static_html,
 };
 use burn_p2p_core::{
-    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
     BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
-    BrowserLoginProvider, BrowserPortalSnapshot, BrowserTransportSurface as EdgeTransportSurface,
-    HeadEvalReport, HeadEvalStatus, LeaseId, MetricTrustClass, MetricsSnapshotManifest,
-    PeerWindowMetrics, PeerWindowStatus, RevocationEpoch, SchemaEnvelope, SignatureAlgorithm,
-    SignatureMetadata, SignedPayload, TrustBundleExport,
+    BrowserLoginProvider, BrowserTransportSurface as EdgeTransportSurface, HeadEvalReport,
+    HeadEvalStatus, LeaseId, MetricTrustClass, MetricsSnapshotManifest, PeerWindowMetrics,
+    PeerWindowStatus, RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata,
+    SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
 use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
@@ -111,7 +111,7 @@ pub struct BrowserPortalCaptureSpec {
     /// Browser workspace shown first when the static app loads.
     pub default_surface: BrowserAppSurface,
     /// Snapshot served to the browser app for the scenario.
-    pub snapshot: BrowserPortalSnapshot,
+    pub snapshot: BrowserEdgeSnapshot,
     /// Metrics catchup material served to the browser app for the scenario.
     #[serde(default)]
     pub metrics_catchup: Vec<MetricsCatchupBundle>,
@@ -129,7 +129,7 @@ pub struct BrowserPortalCaptureSpec {
 #[derive(Clone, Debug)]
 struct PortalScenarioSpec {
     scenario: PortalCaptureScenario,
-    snapshot: PortalSnapshotView,
+    snapshot: AppSnapshotView,
 }
 
 /// Writes the rendered portal scenario bundle consumed by the Playwright capture runner.
@@ -254,7 +254,7 @@ fn scenario_bootstrap(slug: &str, default_surface: BrowserAppSurface) -> Browser
     }
 }
 
-fn browser_portal_snapshot(snapshot: &PortalSnapshotView) -> BrowserPortalSnapshot {
+fn browser_portal_snapshot(snapshot: &AppSnapshotView) -> BrowserEdgeSnapshot {
     let network_id = NetworkId::new(&snapshot.network_id);
     let directory_entries =
         browser_directory_entries(snapshot, &network_id, &snapshot.browser_mode);
@@ -263,7 +263,7 @@ fn browser_portal_snapshot(snapshot: &PortalSnapshotView) -> BrowserPortalSnapsh
     let artifact_hash = ContentId::new("browser-capture-artifact");
     let paths = BrowserEdgePaths::default();
 
-    BrowserPortalSnapshot {
+    BrowserEdgeSnapshot {
         network_id: network_id.clone(),
         edge_mode: browser_edge_mode(snapshot.edge_mode.as_str()),
         browser_mode: browser_mode(snapshot.browser_mode.as_str()),
@@ -339,8 +339,8 @@ fn browser_portal_snapshot(snapshot: &PortalSnapshotView) -> BrowserPortalSnapsh
 }
 
 fn scenario_metrics_catchup(
-    snapshot: &PortalSnapshotView,
-    edge_snapshot: &BrowserPortalSnapshot,
+    snapshot: &AppSnapshotView,
+    edge_snapshot: &BrowserEdgeSnapshot,
 ) -> Vec<MetricsCatchupBundle> {
     let Some(entry) = edge_snapshot.directory.entries.first() else {
         return Vec::new();
@@ -455,7 +455,7 @@ fn browser_mode(value: &str) -> burn_p2p::BrowserMode {
 }
 
 fn browser_directory_entries(
-    snapshot: &PortalSnapshotView,
+    snapshot: &AppSnapshotView,
     network_id: &NetworkId,
     browser_mode: &str,
 ) -> Vec<ExperimentDirectoryEntry> {
@@ -560,7 +560,7 @@ fn apply_browser_revision_policy(entry: &mut ExperimentDirectoryEntry, browser_m
     });
 }
 
-fn browser_heads(snapshot: &PortalSnapshotView) -> Vec<HeadDescriptor> {
+fn browser_heads(snapshot: &AppSnapshotView) -> Vec<HeadDescriptor> {
     snapshot
         .heads
         .iter()
@@ -578,7 +578,7 @@ fn browser_heads(snapshot: &PortalSnapshotView) -> Vec<HeadDescriptor> {
         .collect()
 }
 
-fn browser_leaderboard_entries(snapshot: &PortalSnapshotView) -> Vec<BrowserLeaderboardEntry> {
+fn browser_leaderboard_entries(snapshot: &AppSnapshotView) -> Vec<BrowserLeaderboardEntry> {
     let desired_count = snapshot
         .leaderboard
         .len()
@@ -1127,7 +1127,7 @@ fn scenario_spec(
     slug: &str,
     title: &str,
     description: &str,
-    snapshot: PortalSnapshotView,
+    snapshot: AppSnapshotView,
     interactions: Vec<PortalCaptureInteraction>,
 ) -> PortalScenarioSpec {
     scenario_spec_with_viewport(slug, title, description, snapshot, None, interactions)
@@ -1137,7 +1137,7 @@ fn scenario_spec_with_viewport(
     slug: &str,
     title: &str,
     description: &str,
-    snapshot: PortalSnapshotView,
+    snapshot: AppSnapshotView,
     viewport: Option<PortalCaptureViewport>,
     interactions: Vec<PortalCaptureInteraction>,
 ) -> PortalScenarioSpec {
@@ -1191,7 +1191,7 @@ fn capture_default_surface(interactions: &[PortalCaptureInteraction]) -> Browser
 
 #[derive(Clone, Debug)]
 struct SnapshotBuilder {
-    snapshot: PortalSnapshotView,
+    snapshot: AppSnapshotView,
 }
 
 impl SnapshotBuilder {
@@ -1205,7 +1205,7 @@ impl SnapshotBuilder {
         self
     }
 
-    fn with_login_providers(mut self, login_providers: Vec<PortalLoginProvider>) -> Self {
+    fn with_login_providers(mut self, login_providers: Vec<AppLoginProvider>) -> Self {
         self.snapshot.login_providers = login_providers;
         self
     }
@@ -1220,47 +1220,47 @@ impl SnapshotBuilder {
         self
     }
 
-    fn with_experiments(mut self, experiments: Vec<PortalExperimentRow>) -> Self {
+    fn with_experiments(mut self, experiments: Vec<AppExperimentRow>) -> Self {
         self.snapshot.experiments = experiments;
         self
     }
 
-    fn with_heads(mut self, heads: Vec<PortalHeadRow>) -> Self {
+    fn with_heads(mut self, heads: Vec<AppHeadRow>) -> Self {
         self.snapshot.heads = heads;
         self
     }
 
-    fn with_leaderboard(mut self, leaderboard: Vec<PortalLeaderboardRow>) -> Self {
+    fn with_leaderboard(mut self, leaderboard: Vec<AppLeaderboardRow>) -> Self {
         self.snapshot.leaderboard = leaderboard;
         self
     }
 
-    fn with_artifact_rows(mut self, artifact_rows: Vec<PortalArtifactRow>) -> Self {
+    fn with_artifact_rows(mut self, artifact_rows: Vec<AppArtifactRow>) -> Self {
         self.snapshot.artifact_rows = artifact_rows;
         self
     }
 
-    fn with_metric_panels(mut self, metrics_panels: Vec<PortalMetricsPanel>) -> Self {
+    fn with_metric_panels(mut self, metrics_panels: Vec<AppMetricsPanel>) -> Self {
         self.snapshot.metrics_panels = metrics_panels;
         self
     }
 
-    fn with_runtime_states(mut self, runtime_states: Vec<PortalRuntimeStateCard>) -> Self {
+    fn with_runtime_states(mut self, runtime_states: Vec<AppRuntimeStateCard>) -> Self {
         self.snapshot.runtime_states = runtime_states;
         self
     }
 
-    fn with_service_states(mut self, service_statuses: Vec<PortalServiceStatusRow>) -> Self {
+    fn with_service_states(mut self, service_statuses: Vec<AppServiceStatusRow>) -> Self {
         self.snapshot.service_statuses = service_statuses;
         self
     }
 
-    fn with_peer_states(mut self, peer_statuses: Vec<PortalPeerStatusRow>) -> Self {
+    fn with_peer_states(mut self, peer_statuses: Vec<AppPeerStatusRow>) -> Self {
         self.snapshot.peer_statuses = peer_statuses;
         self
     }
 
-    fn build(mut self) -> PortalSnapshotView {
+    fn build(mut self) -> AppSnapshotView {
         if self.snapshot.service_statuses.is_empty() {
             self.snapshot.service_statuses = vec![service_row(
                 "portal",
@@ -1301,7 +1301,7 @@ impl SnapshotBuilder {
 
 fn scenario_snapshot(slug: &str) -> SnapshotBuilder {
     SnapshotBuilder {
-        snapshot: PortalSnapshotView {
+        snapshot: AppSnapshotView {
             network_id: "capture-net".into(),
             captured_at: "2026-04-04T18:00:00Z".into(),
             auth_enabled: true,
@@ -1310,13 +1310,13 @@ fn scenario_snapshot(slug: &str) -> SnapshotBuilder {
             social_enabled: true,
             profile_enabled: true,
             login_providers: Vec::new(),
-            transports: PortalTransportSurface {
+            transports: AppTransportSurface {
                 webrtc_direct: true,
                 webtransport_gateway: true,
                 wss_fallback: true,
             },
             paths: scenario_paths(slug),
-            diagnostics: PortalDiagnosticsView {
+            diagnostics: AppDiagnosticsView {
                 connected_peers: 1,
                 observed_peers: 8,
                 estimated_network_size: 48,
@@ -1338,7 +1338,7 @@ fn scenario_snapshot(slug: &str) -> SnapshotBuilder {
                     "artifact-publish".into(),
                 ],
             },
-            trust: PortalTrustView {
+            trust: AppTrustView {
                 required_release_train_hash: Some("release-train-main".into()),
                 approved_target_artifact_count: 2,
                 active_issuer_peer_id: Some("issuer-main".into()),
@@ -1357,9 +1357,9 @@ fn scenario_snapshot(slug: &str) -> SnapshotBuilder {
     }
 }
 
-fn scenario_paths(slug: &str) -> PortalPaths {
-    PortalPaths {
-        portal_snapshot_path: format!("/{slug}/portal/snapshot"),
+fn scenario_paths(slug: &str) -> AppPaths {
+    AppPaths {
+        app_snapshot_path: format!("/{slug}/portal/snapshot"),
         signed_directory_path: format!("/{slug}/directory/signed"),
         signed_leaderboard_path: format!("/{slug}/leaderboard/signed"),
         artifacts_aliases_path: format!("/{slug}/artifacts/aliases"),
@@ -1369,12 +1369,8 @@ fn scenario_paths(slug: &str) -> PortalPaths {
     }
 }
 
-fn login_provider(
-    label: &str,
-    login_path: &str,
-    callback_path: Option<&str>,
-) -> PortalLoginProvider {
-    PortalLoginProvider {
+fn login_provider(label: &str, login_path: &str, callback_path: Option<&str>) -> AppLoginProvider {
+    AppLoginProvider {
         label: label.into(),
         login_path: login_path.into(),
         callback_path: callback_path.map(str::to_owned),
@@ -1388,8 +1384,8 @@ fn experiment_row(
     revision_id: &str,
     has_head: bool,
     estimated_window_seconds: u64,
-) -> PortalExperimentRow {
-    PortalExperimentRow {
+) -> AppExperimentRow {
+    AppExperimentRow {
         display_name: display_name.into(),
         experiment_id: experiment_id.into(),
         revision_id: revision_id.into(),
@@ -1398,7 +1394,7 @@ fn experiment_row(
     }
 }
 
-fn sample_experiments(count: usize) -> Vec<PortalExperimentRow> {
+fn sample_experiments(count: usize) -> Vec<AppExperimentRow> {
     (1..=count)
         .map(|index| {
             experiment_row(
@@ -1412,9 +1408,9 @@ fn sample_experiments(count: usize) -> Vec<PortalExperimentRow> {
         .collect()
 }
 
-fn sample_heads(count: usize) -> Vec<PortalHeadRow> {
+fn sample_heads(count: usize) -> Vec<AppHeadRow> {
     (1..=count)
-        .map(|index| PortalHeadRow {
+        .map(|index| AppHeadRow {
             experiment_id: format!("exp-main-{index}"),
             revision_id: format!("rev-main-{index}"),
             head_id: format!("head-main-{index}"),
@@ -1424,9 +1420,9 @@ fn sample_heads(count: usize) -> Vec<PortalHeadRow> {
         .collect()
 }
 
-fn sample_leaderboard(count: usize) -> Vec<PortalLeaderboardRow> {
+fn sample_leaderboard(count: usize) -> Vec<AppLeaderboardRow> {
     (1..=count)
-        .map(|index| PortalLeaderboardRow {
+        .map(|index| AppLeaderboardRow {
             principal_label: format!("participant-{index}"),
             leaderboard_score_v1: index as f64 * 1.75,
             accepted_receipt_count: index * 2,
@@ -1438,9 +1434,9 @@ fn quality_panel(
     panel_id: &str,
     title: &str,
     description: &str,
-    rows: Vec<PortalMetricRow>,
-) -> PortalMetricsPanel {
-    PortalMetricsPanel {
+    rows: Vec<AppMetricRow>,
+) -> AppMetricsPanel {
+    AppMetricsPanel {
         panel_id: panel_id.into(),
         title: title.into(),
         description: description.into(),
@@ -1448,8 +1444,8 @@ fn quality_panel(
     }
 }
 
-fn metric_row(label: &str, value: &str, scope: &str, trust: &str, key: &str) -> PortalMetricRow {
-    PortalMetricRow {
+fn metric_row(label: &str, value: &str, scope: &str, trust: &str, key: &str) -> AppMetricRow {
+    AppMetricRow {
         label: label.into(),
         value: value.into(),
         scope: scope.into(),
@@ -1462,8 +1458,8 @@ fn metric_row(label: &str, value: &str, scope: &str, trust: &str, key: &str) -> 
     }
 }
 
-fn service_row(service: &str, status: &str, detail: &str) -> PortalServiceStatusRow {
-    PortalServiceStatusRow {
+fn service_row(service: &str, status: &str, detail: &str) -> AppServiceStatusRow {
+    AppServiceStatusRow {
         service: service.into(),
         status: status.into(),
         detail: detail.into(),
@@ -1476,8 +1472,8 @@ fn runtime_card(
     role: Option<&str>,
     detail: &str,
     progress_percent: Option<u8>,
-) -> PortalRuntimeStateCard {
-    PortalRuntimeStateCard {
+) -> AppRuntimeStateCard {
+    AppRuntimeStateCard {
         label: label.into(),
         state: state.into(),
         role: role.map(str::to_owned),
@@ -1493,8 +1489,8 @@ fn peer_row(
     status: &str,
     lag_label: Option<&str>,
     note: Option<&str>,
-) -> PortalPeerStatusRow {
-    PortalPeerStatusRow {
+) -> AppPeerStatusRow {
+    AppPeerStatusRow {
         peer_label: peer_label.into(),
         role: role.into(),
         platform: platform.into(),
@@ -1515,8 +1511,8 @@ struct ArtifactRowSpec<'a> {
     previous_head_id: Option<&'a str>,
 }
 
-fn artifact_row(spec: ArtifactRowSpec<'_>) -> PortalArtifactRow {
-    PortalArtifactRow {
+fn artifact_row(spec: ArtifactRowSpec<'_>) -> AppArtifactRow {
+    AppArtifactRow {
         alias_name: spec.alias_name.into(),
         scope: "Run".into(),
         artifact_profile: "ServeCheckpoint".into(),

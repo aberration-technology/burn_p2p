@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "anyhow",
  "burn",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_browser"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p",
  "burn_p2p_core",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_checkpoint"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_core"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "chrono",
  "ciborium",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_dataloader"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_engine"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn",
  "burn-store",
@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_experiment"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_limits"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_metrics"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_publish"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_checkpoint",
  "burn_p2p_core",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_security"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_swarm"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1190,7 +1190,6 @@ dependencies = [
  "libp2p-identify",
  "libp2p-identity",
  "libp2p-mdns",
- "libp2p-plaintext",
  "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-yamux",
@@ -1203,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_views"
-version = "0.21.0-pre.5"
+version = "0.21.0-pre.6"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -4096,11 +4095,11 @@ dependencies = [
  "libp2p-identity",
  "libp2p-mdns",
  "libp2p-metrics",
- "libp2p-plaintext",
  "libp2p-quic",
  "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
+ "libp2p-tls",
  "libp2p-upnp",
  "libp2p-yamux",
  "multiaddr",
@@ -4275,22 +4274,6 @@ dependencies = [
  "pin-project",
  "prometheus-client",
  "web-time",
-]
-
-[[package]]
-name = "libp2p-plaintext"
-version = "0.43.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e659439578fc6d305da8303834beb9d62f155f40e7f5b9d81c9f2b2c69d1926"
-dependencies = [
- "asynchronous-codec",
- "bytes",
- "futures",
- "libp2p-core",
- "libp2p-identity",
- "quick-protobuf",
- "quick-protobuf-codec",
- "tracing",
 ]
 
 [[package]]

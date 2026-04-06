@@ -11,8 +11,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BrowserAuthClientError, BrowserCapabilityReport, BrowserEnrollmentConfig, BrowserGpuSupport,
-    BrowserPortalClient, BrowserPortalSnapshot, BrowserRuntimeConfig, BrowserRuntimeRole,
+    BrowserAuthClientError, BrowserCapabilityReport, BrowserEdgeClient, BrowserEdgeSnapshot,
+    BrowserEnrollmentConfig, BrowserGpuSupport, BrowserRuntimeConfig, BrowserRuntimeRole,
     BrowserRuntimeState, BrowserSessionState, BrowserStorageSnapshot, BrowserTransportKind,
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
@@ -36,7 +36,7 @@ impl BrowserAppTarget {
     /// Returns the preferred runtime role for the target preset.
     pub fn preferred_role(&self) -> BrowserRuntimeRole {
         match self {
-            Self::Viewer => BrowserRuntimeRole::PortalViewer,
+            Self::Viewer => BrowserRuntimeRole::Viewer,
             Self::Observe => BrowserRuntimeRole::BrowserObserver,
             Self::Validate => BrowserRuntimeRole::BrowserVerifier,
             Self::Train => BrowserRuntimeRole::BrowserTrainerWgpu,
@@ -211,7 +211,7 @@ impl BrowserAppModel {
             .runtime
             .state
             .clone()
-            .unwrap_or(BrowserRuntimeState::PortalOnly);
+            .unwrap_or(BrowserRuntimeState::ViewerOnly);
         let storage = &self.runtime.storage;
         let session = &storage.session;
         let directory = storage
@@ -398,7 +398,7 @@ impl BrowserAppModel {
 #[derive(Clone, Debug)]
 /// Browser-owned controller for the static wasm app.
 pub struct BrowserAppController {
-    portal_client: BrowserPortalClient,
+    edge_client: BrowserEdgeClient,
     model: BrowserAppModel,
 }
 
@@ -463,9 +463,9 @@ impl BrowserAppController {
         selected_experiment: Option<(String, Option<String>)>,
     ) -> Result<Self, BrowserAuthClientError> {
         let edge_base_url = edge_base_url.into().trim_end_matches('/').to_owned();
-        let snapshot = fetch_portal_snapshot(&edge_base_url).await?;
-        let bindings = BrowserUiBindings::from_portal_snapshot(&edge_base_url, &snapshot);
-        let portal_client = BrowserPortalClient::new(
+        let snapshot = fetch_edge_snapshot(&edge_base_url).await?;
+        let bindings = BrowserUiBindings::from_edge_snapshot(&edge_base_url, &snapshot);
+        let edge_client = BrowserEdgeClient::new(
             bindings.clone(),
             BrowserEnrollmentConfig::for_runtime_sync(&snapshot),
         );
@@ -487,7 +487,7 @@ impl BrowserAppController {
             },
         );
         let mut controller = Self {
-            portal_client,
+            edge_client,
             model: BrowserAppModel::from_runtime(runtime),
         };
         let _ = controller.refresh().await?;
@@ -499,7 +499,7 @@ impl BrowserAppController {
         let mut runtime = self.model.runtime.clone();
         let session = runtime.storage.session.clone();
         let events = self
-            .portal_client
+            .edge_client
             .sync_worker_runtime(&mut runtime, Some(&session), true)
             .await?;
         let previous_error = self.model.last_error.clone();
@@ -514,26 +514,26 @@ impl BrowserAppController {
 
     /// Returns the current browser-app client view derived from the local runtime.
     pub fn view(&self) -> BrowserAppClientView {
-        self.model.view(self.portal_client.bindings())
+        self.model.view(self.edge_client.bindings())
     }
 }
 
-async fn fetch_portal_snapshot(
+async fn fetch_edge_snapshot(
     edge_base_url: &str,
-) -> Result<BrowserPortalSnapshot, BrowserAuthClientError> {
+) -> Result<BrowserEdgeSnapshot, BrowserAuthClientError> {
     reqwest::Client::new()
         .get(BrowserUiBindings::new(edge_base_url).endpoint_url("/portal/snapshot"))
         .send()
         .await?
         .error_for_status()?
-        .json::<BrowserPortalSnapshot>()
+        .json::<BrowserEdgeSnapshot>()
         .await
         .map_err(Into::into)
 }
 
 fn runtime_config_from_snapshot(
     edge_base_url: &str,
-    snapshot: &BrowserPortalSnapshot,
+    snapshot: &BrowserEdgeSnapshot,
     capability: &BrowserCapabilityReport,
     requested_role: BrowserRuntimeRole,
     selected_experiment: Option<(String, Option<String>)>,
@@ -580,16 +580,16 @@ fn runtime_config_from_snapshot(
 }
 
 fn preferred_runtime_role(
-    snapshot: &BrowserPortalSnapshot,
+    snapshot: &BrowserEdgeSnapshot,
     capability: &BrowserCapabilityReport,
     requested_role: BrowserRuntimeRole,
 ) -> BrowserRuntimeRole {
     if matches!(snapshot.browser_mode, BrowserMode::Disabled) {
-        return BrowserRuntimeRole::PortalViewer;
+        return BrowserRuntimeRole::Viewer;
     }
 
     match requested_role {
-        BrowserRuntimeRole::PortalViewer | BrowserRuntimeRole::BrowserObserver => {
+        BrowserRuntimeRole::Viewer | BrowserRuntimeRole::BrowserObserver => {
             BrowserRuntimeRole::BrowserObserver
         }
         BrowserRuntimeRole::BrowserVerifier => match capability.recommended_role {
@@ -659,7 +659,7 @@ fn experiment_previews(
                 .iter()
                 .take(4)
                 .map(|entry| {
-                    experiment_summary(entry, &BrowserRuntimeState::PortalOnly, capability)
+                    experiment_summary(entry, &BrowserRuntimeState::ViewerOnly, capability)
                 })
                 .collect()
         })
@@ -902,14 +902,14 @@ fn default_surface(state: &BrowserRuntimeState) -> BrowserAppSurface {
         BrowserRuntimeState::Joining { role, .. } => match role {
             BrowserRuntimeRole::BrowserVerifier => BrowserAppSurface::Validate,
             BrowserRuntimeRole::BrowserTrainerWgpu => BrowserAppSurface::Train,
-            BrowserRuntimeRole::PortalViewer
+            BrowserRuntimeRole::Viewer
             | BrowserRuntimeRole::BrowserObserver
             | BrowserRuntimeRole::BrowserFallback => BrowserAppSurface::Viewer,
         },
         BrowserRuntimeState::Verifier => BrowserAppSurface::Validate,
         BrowserRuntimeState::Trainer => BrowserAppSurface::Train,
         BrowserRuntimeState::Blocked { .. } => BrowserAppSurface::Network,
-        BrowserRuntimeState::PortalOnly
+        BrowserRuntimeState::ViewerOnly
         | BrowserRuntimeState::Observer
         | BrowserRuntimeState::BackgroundSuspended { .. }
         | BrowserRuntimeState::Catchup { .. } => BrowserAppSurface::Viewer,
@@ -918,7 +918,7 @@ fn default_surface(state: &BrowserRuntimeState) -> BrowserAppSurface {
 
 fn runtime_label(state: &BrowserRuntimeState) -> String {
     match state {
-        BrowserRuntimeState::PortalOnly => "portal".into(),
+        BrowserRuntimeState::ViewerOnly => "portal".into(),
         BrowserRuntimeState::Joining { role, .. } => format!("joining {}", role_label(role)),
         BrowserRuntimeState::Observer => "observe".into(),
         BrowserRuntimeState::Verifier => "validate".into(),
@@ -934,7 +934,7 @@ fn runtime_label(state: &BrowserRuntimeState) -> String {
 
 fn runtime_detail(state: &BrowserRuntimeState, storage: &BrowserStorageSnapshot) -> String {
     match state {
-        BrowserRuntimeState::PortalOnly => "signed snapshots only".into(),
+        BrowserRuntimeState::ViewerOnly => "signed snapshots only".into(),
         BrowserRuntimeState::Joining { stage, role } => {
             join_stage_detail(stage, role, storage).into()
         }
@@ -1041,7 +1041,7 @@ fn is_training_active(state: &BrowserRuntimeState) -> bool {
 
 fn role_label(role: &BrowserRuntimeRole) -> &'static str {
     match role {
-        BrowserRuntimeRole::PortalViewer => "portal",
+        BrowserRuntimeRole::Viewer => "portal",
         BrowserRuntimeRole::BrowserObserver => "observe",
         BrowserRuntimeRole::BrowserVerifier => "validate",
         BrowserRuntimeRole::BrowserTrainerWgpu => "train",

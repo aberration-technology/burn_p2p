@@ -49,7 +49,7 @@ pub(super) fn build_auth_portal(
 
     let session_ttl = chrono::Duration::seconds(config.session_ttl_seconds.max(1));
     let connector = match &config.connector {
-        BootstrapAuthConnectorConfig::Static => PortalIdentityConnector::new(
+        BootstrapAuthConnectorConfig::Static => EdgeIdentityConnector::new(
             vec![BrowserLoginProvider {
                 label: "Static".into(),
                 login_path: "/login/static".into(),
@@ -75,7 +75,7 @@ pub(super) fn build_auth_portal(
         } => build_github_portal_connector(
             session_ttl,
             principals.clone(),
-            PortalConnectorEndpoints {
+            EdgeConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),
@@ -100,7 +100,7 @@ pub(super) fn build_auth_portal(
             issuer.clone(),
             session_ttl,
             principals.clone(),
-            PortalConnectorEndpoints {
+            EdgeConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),
@@ -125,7 +125,7 @@ pub(super) fn build_auth_portal(
             provider.clone(),
             session_ttl,
             principals.clone(),
-            PortalConnectorEndpoints {
+            EdgeConnectorEndpoints {
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),

@@ -15,13 +15,13 @@
 #![forbid(unsafe_code)]
 
 mod admin;
+mod app_render;
 mod browser_edge;
 mod daemon;
 mod deploy;
 mod history;
 #[cfg(feature = "metrics-indexer")]
 mod metrics;
-mod portal;
 #[cfg(feature = "artifact-publish")]
 mod publication;
 mod state;
@@ -32,17 +32,17 @@ use burn_p2p_swarm::SwarmError;
 use thiserror::Error;
 
 pub use crate::admin::{AdminAction, AdminResult, AuthPolicyRollout};
-pub use crate::browser_edge::{BrowserPortalSnapshot, BrowserPortalSnapshotConfig};
+pub use crate::app_render::{
+    render_artifact_run_summaries_html, render_artifact_run_view_html, render_dashboard_html,
+    render_head_artifact_view_html,
+};
+pub use crate::browser_edge::{BrowserEdgeSnapshot, BrowserEdgeSnapshotConfig};
 pub use crate::daemon::{ActiveExperiment, BootstrapEmbeddedDaemon, BootstrapEmbeddedDaemonConfig};
 pub use crate::deploy::{
     AdminApiPlan, AdminCapability, ArchivePlan, AuthorityPlan, BootstrapPlan, BootstrapPreset,
     BootstrapService, BootstrapSpec, TelemetryExportPlan,
 };
 pub use crate::history::StoredEvalProtocolManifestRecord;
-pub use crate::portal::{
-    render_artifact_run_summaries_html, render_artifact_run_view_html, render_dashboard_html,
-    render_head_artifact_view_html,
-};
 pub use crate::state::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPeerDiagnostic,
     HeadQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,

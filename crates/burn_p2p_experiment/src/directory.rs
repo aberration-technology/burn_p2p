@@ -256,8 +256,8 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
             .get(BROWSER_VISIBILITY_POLICY_KEY)
             .and_then(|value| match value.as_str() {
                 "hidden" => Some(BrowserVisibilityPolicy::Hidden),
-                "portal-listed" => Some(BrowserVisibilityPolicy::PortalListed),
-                "authenticated-portal" => Some(BrowserVisibilityPolicy::AuthenticatedPortal),
+                "app-listed" => Some(BrowserVisibilityPolicy::AppListed),
+                "authenticated-portal" => Some(BrowserVisibilityPolicy::AuthenticatedApp),
                 "swarm-eligible" => Some(BrowserVisibilityPolicy::SwarmEligible),
                 _ => None,
             })
@@ -316,7 +316,7 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
     fn browser_role_allowed(&self, role: BrowserRole) -> bool {
         let policy = self.browser_role_policy();
         match role {
-            BrowserRole::PortalViewer => {
+            BrowserRole::Viewer => {
                 self.browser_visibility_policy() != BrowserVisibilityPolicy::Hidden
             }
             BrowserRole::Observer => policy.observer,
@@ -337,11 +337,11 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
         }
 
         match role {
-            BrowserRole::PortalViewer => {
+            BrowserRole::Viewer => {
                 matches!(
                     visibility,
-                    BrowserVisibilityPolicy::PortalListed
-                        | BrowserVisibilityPolicy::AuthenticatedPortal
+                    BrowserVisibilityPolicy::AppListed
+                        | BrowserVisibilityPolicy::AuthenticatedApp
                         | BrowserVisibilityPolicy::SwarmEligible
                 )
             }
@@ -439,8 +439,8 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
             BROWSER_VISIBILITY_POLICY_KEY.into(),
             match revision.visibility_policy {
                 BrowserVisibilityPolicy::Hidden => "hidden",
-                BrowserVisibilityPolicy::PortalListed => "portal-listed",
-                BrowserVisibilityPolicy::AuthenticatedPortal => "authenticated-portal",
+                BrowserVisibilityPolicy::AppListed => "app-listed",
+                BrowserVisibilityPolicy::AuthenticatedApp => "authenticated-portal",
                 BrowserVisibilityPolicy::SwarmEligible => "swarm-eligible",
             }
             .into(),

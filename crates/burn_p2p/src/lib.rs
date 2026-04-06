@@ -28,15 +28,15 @@ use std::{
 use chrono::{DateTime, Utc};
 use libp2p_identity::Keypair;
 use semver::Version;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 mod app_view;
 mod backend;
 mod browser_join;
 mod config;
+mod edge_auth;
 mod handles;
 mod metrics_runtime;
-mod portal;
 mod project_family;
 mod runtime_support;
 mod training;
@@ -57,10 +57,10 @@ pub use burn_p2p_checkpoint::{
     materialize_aggregate_artifact_bytes,
 };
 pub use burn_p2p_core::{
-    ActiveServiceSet, AdminMode, AggregateEnvelope, AggregateStats, AggregateTier,
+    ActiveServiceSet, AdminMode, AggregateEnvelope, AggregateStats, AggregateTier, AppMode,
     ArtifactDescriptor, ArtifactId, ArtifactKind, ArtifactTargetKind, AssignmentLease,
     AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability,
-    BrowserLoginProvider, BrowserMode, BrowserPortalSnapshot, BrowserRole, BrowserRolePolicy,
+    BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, BrowserRole, BrowserRolePolicy,
     BrowserVisibilityPolicy, CanaryEvalReport, CapabilityCard, CapabilityEstimate, ChunkId,
     ClientPlatform, ClientReleaseManifest, CohortRobustnessReport, CompiledFeatureSet,
     ConfiguredServiceSet, ContentId, ContributionReceipt, ContributionReceiptId,
@@ -75,13 +75,13 @@ pub use burn_p2p_core::{
     MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest, MicroShardId,
     NetworkEstimate, NetworkId, NetworkManifest, NodeCertId, NodeCertificate,
     NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
-    PeerWindowStatus, PortalMode, Precision, PrincipalId, ProfileMode, ProjectFamilyId,
-    ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport,
-    ReductionCertificate, RejectionReason, ReleaseTrainManifest, RevisionId, RevisionManifest,
-    RevocationEpoch, RobustnessAlert, RobustnessDecision, RobustnessPolicy, RobustnessPreset,
-    SocialMode, SocialProfile, StudyId, SupportedWorkload, TargetArtifactManifest,
-    TelemetrySummary, TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats,
-    WindowActivation, WindowId, WorkloadId,
+    PeerWindowStatus, Precision, PrincipalId, ProfileMode, ProjectFamilyId, ReducerAssignment,
+    ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport, ReductionCertificate,
+    RejectionReason, ReleaseTrainManifest, RevisionId, RevisionManifest, RevocationEpoch,
+    RobustnessAlert, RobustnessDecision, RobustnessPolicy, RobustnessPreset, SocialMode,
+    SocialProfile, StudyId, SupportedWorkload, TargetArtifactManifest, TelemetrySummary,
+    TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats, WindowActivation, WindowId,
+    WorkloadId,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,
@@ -130,12 +130,12 @@ pub use config::{
     MetricsRetentionPreset, NodeConfig, NodeRuntimeState, NodeTelemetrySnapshot, RuntimeStatus,
     SlotAssignmentState, SlotRuntimeState, StorageConfig, TelemetryHandle, TrustBundleState,
 };
+pub use edge_auth::{
+    EdgeAuthClient, EdgeAuthClientError, EdgeEnrollmentConfig, EdgeEnrollmentResult,
+    EdgeLogoutResponse, EdgePeerEnrollmentRequest, EdgePeerIdentity, EdgeSessionState,
+};
 pub use handles::{
     CheckpointSyncHandle, ExperimentHandle, ExperimentOverlayTopics, MainnetHandle, RoleSet,
-};
-pub use portal::{
-    PortalAuthClient, PortalAuthClientError, PortalEnrollmentConfig, PortalEnrollmentResult,
-    PortalLogoutResponse, PortalPeerEnrollmentRequest, PortalPeerIdentity, PortalSessionState,
 };
 pub use project_family::{
     P2pProjectFamily, P2pWorkload, SelectedWorkloadProject, SingleWorkloadProjectFamily,

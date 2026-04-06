@@ -220,9 +220,9 @@ pub enum BrowserVisibilityPolicy {
     /// Uses the hidden variant.
     Hidden,
     /// Uses the portal listed variant.
-    PortalListed,
+    AppListed,
     /// Uses the authenticated portal variant.
-    AuthenticatedPortal,
+    AuthenticatedApp,
     /// Uses the swarm eligible variant.
     SwarmEligible,
 }
@@ -412,7 +412,7 @@ pub struct BackpressurePolicy {
     /// The browser transfer budget bytes.
     pub browser_transfer_budget_bytes: u64,
     /// The portal feed sample rate.
-    pub portal_feed_sample_rate: u16,
+    pub app_feed_sample_rate: u16,
 }
 
 impl Default for BackpressurePolicy {
@@ -423,7 +423,7 @@ impl Default for BackpressurePolicy {
             reducer_queue_depth_limit: 64,
             upload_concurrency_limit: 4,
             browser_transfer_budget_bytes: 64 * 1024 * 1024,
-            portal_feed_sample_rate: 1,
+            app_feed_sample_rate: 1,
         }
     }
 }

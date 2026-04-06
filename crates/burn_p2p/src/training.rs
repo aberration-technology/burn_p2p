@@ -49,6 +49,14 @@ struct TrainingExecution<T> {
     data_fetch_time_ms: u64,
 }
 
+fn observed_elapsed_seconds(started_at: DateTime<Utc>, finished_at: DateTime<Utc>) -> u64 {
+    let elapsed_ms = finished_at
+        .signed_duration_since(started_at)
+        .num_milliseconds()
+        .max(1) as u64;
+    elapsed_ms.saturating_add(999) / 1000
+}
+
 impl<P> RunningNode<P> {
     /// Performs the train window once operation.
     pub fn train_window_once(
@@ -254,9 +262,10 @@ impl<P> RunningNode<P> {
         let throughput_sample_finished_at = std::cmp::max(Utc::now(), report.completed_at);
         let observed_throughput = ObservedThroughputUpdate {
             measured_work_units: planned.lease.selection.estimated_work_units.max(1),
-            elapsed_seconds: (throughput_sample_finished_at - throughput_sample_started_at)
-                .num_seconds()
-                .max(1) as u64,
+            elapsed_seconds: observed_elapsed_seconds(
+                throughput_sample_started_at,
+                throughput_sample_finished_at,
+            ),
             completed_windows: planned.window_id.0.min(u64::from(u32::MAX)) as u32,
             sampled_at: throughput_sample_finished_at,
         };

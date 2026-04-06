@@ -105,7 +105,7 @@ Compile/features:
 1. Start the daemon with the intended config profile.
 2. Query `/capabilities`.
 3. Confirm:
-   - `portal_mode`
+   - `app_mode`
    - `browser_mode`
    - `available_auth_providers`
    - `social_mode`

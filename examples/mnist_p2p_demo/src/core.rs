@@ -216,7 +216,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let viewer = build_service_project(1.0e-3)?
         .connect(
             BurnTarget::Custom(PeerRoleSet::new([
-                PeerRole::PortalViewer,
+                PeerRole::Viewer,
                 PeerRole::BrowserObserver,
             ])),
             release_manifest.clone(),
@@ -665,7 +665,7 @@ pub(crate) fn experiment_directory_entries(
             allowed_roles: PeerRoleSet::new([
                 PeerRole::TrainerCpu,
                 PeerRole::Validator,
-                PeerRole::PortalViewer,
+                PeerRole::Viewer,
                 PeerRole::BrowserObserver,
                 PeerRole::BrowserVerifier,
                 PeerRole::BrowserTrainerWgpu,

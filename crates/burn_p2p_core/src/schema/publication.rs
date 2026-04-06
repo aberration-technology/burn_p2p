@@ -155,7 +155,7 @@ pub enum DownloadDeliveryMode {
     /// The caller should be redirected to a signed or direct object-store URL.
     RedirectToObjectStore,
     /// The portal should stream the artifact body directly.
-    PortalStream,
+    EdgeStream,
     /// The requested artifact is still being exported.
     DeferredPendingExport,
 }
@@ -178,7 +178,7 @@ pub struct PublicationTarget {
     /// Whether the target supports signed URLs.
     pub supports_signed_urls: bool,
     /// Whether portal proxying is required for downloads.
-    pub portal_proxy_required: bool,
+    pub edge_proxy_required: bool,
     /// Maximum artifact size accepted by the target, when configured.
     pub max_artifact_size_bytes: Option<u64>,
     /// Retention TTL applied by the target, when configured.

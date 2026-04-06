@@ -378,14 +378,10 @@ impl BurnTarget {
     }
 }
 
+pub mod advanced;
 mod dataset;
 mod learner;
 pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
-pub mod advanced {
-    //! Advanced burn integration hooks for custom dataset, shard, and local
-    //! batch plumbing.
-    pub use super::learner::{BurnLearnerProjectBuilderAdvancedExt, BurnLocalDatasetConfig};
-}
 pub use learner::{BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders};
 
 /// Advanced learner-backed burn integration seam.

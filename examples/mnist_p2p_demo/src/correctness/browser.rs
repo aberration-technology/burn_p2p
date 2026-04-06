@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::Context;
 use burn_p2p::{
-    AssignmentLease, AuthProvider, BrowserLoginProvider, BrowserMode, BrowserPortalSnapshot,
+    AssignmentLease, AuthProvider, BrowserLoginProvider, BrowserMode, BrowserEdgeSnapshot,
     ContentId, ExperimentDirectoryEntry, ExperimentScope, HeadDescriptor, NetworkManifest, PeerId,
     PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, ShardCache, ShardFetchManifest,
 };
@@ -49,7 +49,7 @@ pub fn browser_scenarios(
     leaderboard_entries: Vec<BrowserLeaderboardEntry>,
     metrics_catchup: Vec<MetricsCatchupBundle>,
 ) -> Vec<BrowserScenarioExport> {
-    let build_snapshot = |browser_mode: BrowserMode| BrowserPortalSnapshot {
+    let build_snapshot = |browser_mode: BrowserMode| BrowserEdgeSnapshot {
         network_id: network_manifest.network_id.clone(),
         edge_mode: BrowserEdgeMode::Full,
         browser_mode,
@@ -484,7 +484,7 @@ fn browser_session(directory: &BrowserDirectorySnapshot) -> BrowserSessionState 
 
 fn browser_capability_for_role(role: &BrowserRuntimeRole) -> BrowserCapabilityReport {
     let recommended_role = match role {
-        BrowserRuntimeRole::PortalViewer | BrowserRuntimeRole::BrowserObserver => {
+        BrowserRuntimeRole::Viewer | BrowserRuntimeRole::BrowserObserver => {
             BrowserRuntimeRole::BrowserObserver
         }
         BrowserRuntimeRole::BrowserVerifier => BrowserRuntimeRole::BrowserVerifier,
@@ -506,7 +506,7 @@ fn browser_capability_for_role(role: &BrowserRuntimeRole) -> BrowserCapabilityRe
 
 fn browser_role_label(role: &BrowserRuntimeRole) -> &'static str {
     match role {
-        BrowserRuntimeRole::PortalViewer | BrowserRuntimeRole::BrowserObserver => "browser-viewer",
+        BrowserRuntimeRole::Viewer | BrowserRuntimeRole::BrowserObserver => "browser-viewer",
         BrowserRuntimeRole::BrowserVerifier => "browser-verifier",
         BrowserRuntimeRole::BrowserTrainerWgpu => "browser-trainer-wgpu",
         BrowserRuntimeRole::BrowserFallback => "browser-fallback",
@@ -515,7 +515,7 @@ fn browser_role_label(role: &BrowserRuntimeRole) -> &'static str {
 
 fn browser_runtime_state_label(state: Option<&BrowserRuntimeState>) -> &'static str {
     match state {
-        Some(BrowserRuntimeState::PortalOnly) => "portal-only",
+        Some(BrowserRuntimeState::ViewerOnly) => "portal-only",
         Some(BrowserRuntimeState::Joining { .. }) => "joining",
         Some(BrowserRuntimeState::Observer) => "observer",
         Some(BrowserRuntimeState::Verifier) => "verifier",

@@ -46,7 +46,7 @@ pub struct ContributionIdentityPanel {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// View model for the auth portal surface.
-pub struct AuthPortalView {
+pub struct AuthAppView {
     /// Current network identifier.
     pub network_id: NetworkId,
     /// Login providers currently available.
@@ -125,7 +125,7 @@ impl ExperimentPickerView {
 /// Enumerates the browser-specific experiment picker states.
 pub enum BrowserExperimentPickerState {
     /// Portal-only visibility with no peer participation.
-    PortalOnly,
+    ViewerOnly,
     /// Observer participation is recommended.
     Observer,
     /// Verifier participation is recommended.
@@ -228,7 +228,7 @@ pub struct CheckpointDownload {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Participant-facing portal view with receipts, telemetry, and downloads.
-pub struct ParticipantPortalView {
+pub struct ParticipantAppView {
     /// Linked profile summary.
     pub profile: ParticipantProfile,
     /// Current shard assignment, when present.
@@ -245,7 +245,7 @@ pub struct ParticipantPortalView {
     pub checkpoint_downloads: Vec<CheckpointDownload>,
 }
 
-impl ParticipantPortalView {
+impl ParticipantAppView {
     /// Creates a participant portal view and normalizes receipt ordering.
     pub fn new(
         profile: ParticipantProfile,

@@ -53,7 +53,7 @@ use burn_p2p_bootstrap::{
     BootstrapSpec,
 };
 use burn_p2p_browser::{
-    BrowserCapabilityReport, BrowserEnrollmentConfig, BrowserPortalClient, BrowserPortalSnapshot,
+    BrowserCapabilityReport, BrowserEdgeClient, BrowserEdgeSnapshot, BrowserEnrollmentConfig,
     BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState, BrowserSessionState,
     BrowserTransportStatus, BrowserUiBindings, BrowserValidationPlan, BrowserWorkerCommand,
     BrowserWorkerEvent, BrowserWorkerIdentity, BrowserWorkerRuntime,
@@ -498,7 +498,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -508,7 +508,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
             .json()
             .await
             .expect("decode portal snapshot");
-        let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -527,7 +527,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
             ]),
             session_ttl_secs: 300,
         };
-        let client = BrowserPortalClient::new(bindings, enrollment);
+        let client = BrowserEdgeClient::new(bindings, enrollment);
 
         let login = client
             .begin_login(Some("alice".into()))
@@ -713,7 +713,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -723,7 +723,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
             .json()
             .await
             .expect("decode portal snapshot");
-        let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -742,7 +742,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
             ]),
             session_ttl_secs: 300,
         };
-        let client = BrowserPortalClient::new(bindings, enrollment);
+        let client = BrowserEdgeClient::new(bindings, enrollment);
         let enrolled = client
             .enroll_static_principal(
                 Some("alice".into()),
@@ -917,7 +917,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -928,7 +928,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
             .await
             .expect("decode portal snapshot");
         assert_eq!(snapshot.login_providers[0].login_path, "/login/github");
-        let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -942,7 +942,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
             requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
             session_ttl_secs: 300,
         };
-        let client = BrowserPortalClient::new(bindings, enrollment);
+        let client = BrowserEdgeClient::new(bindings, enrollment);
         let login = client
             .begin_login(Some("alice".into()))
             .await
@@ -1062,7 +1062,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -1072,7 +1072,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             .json()
             .await
             .expect("decode portal snapshot");
-        let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -1086,7 +1086,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
             session_ttl_secs: 300,
         };
-        let client = BrowserPortalClient::new(bindings, enrollment);
+        let client = BrowserEdgeClient::new(bindings, enrollment);
         let login = client
             .begin_login(Some("alice".into()))
             .await
@@ -1216,7 +1216,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
             .get(format!("{}/portal/snapshot", server.base_url()))
             .send()
             .await
@@ -1226,7 +1226,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
             .json()
             .await
             .expect("decode portal snapshot");
-        let bindings = BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot);
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -1240,7 +1240,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
             requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
             session_ttl_secs: 300,
         };
-        let client = BrowserPortalClient::new(bindings, enrollment);
+        let client = BrowserEdgeClient::new(bindings, enrollment);
         let login = client
             .begin_login(Some("alice".into()))
             .await
@@ -1335,7 +1335,7 @@ fn capabilities_endpoint_reports_compiled_and_active_services() {
         "burn_p2p.edge_service_manifest"
     );
     let payload = &manifest["payload"]["payload"];
-    assert_eq!(payload["portal_mode"], "Interactive");
+    assert_eq!(payload["app_mode"], "Interactive");
     assert_eq!(payload["browser_mode"], "Trainer");
     assert_eq!(payload["social_mode"], "Public");
     assert_eq!(payload["admin_mode"], "Rbac");
@@ -1347,7 +1347,7 @@ fn capabilities_endpoint_reports_compiled_and_active_services() {
     let active = payload["active_feature_set"]["features"]
         .as_array()
         .expect("active features array");
-    assert!(active.contains(&serde_json::json!("Portal")));
+    assert!(active.contains(&serde_json::json!("App")));
     assert!(active.contains(&serde_json::json!("BrowserEdge")));
     assert!(active.contains(&serde_json::json!("Social")));
     assert!(active.contains(&serde_json::json!("AuthStatic")));
@@ -1395,13 +1395,13 @@ fn disabled_optional_services_hide_routes_and_capabilities() {
         },
     ));
     let payload = &manifest["payload"]["payload"];
-    assert_eq!(payload["portal_mode"], "Disabled");
+    assert_eq!(payload["app_mode"], "Disabled");
     assert_eq!(payload["browser_mode"], "Disabled");
     assert_eq!(payload["social_mode"], "Disabled");
     let active = payload["active_feature_set"]["features"]
         .as_array()
         .expect("active features array");
-    assert!(!active.contains(&serde_json::json!("Portal")));
+    assert!(!active.contains(&serde_json::json!("App")));
     assert!(!active.contains(&serde_json::json!("BrowserEdge")));
     assert!(!active.contains(&serde_json::json!("Social")));
 
@@ -1553,7 +1553,7 @@ fn startup_validation_rejects_untrusted_external_auth_config() {
         features: BTreeSet::from([
             EdgeFeature::AdminHttp,
             EdgeFeature::Metrics,
-            EdgeFeature::Portal,
+            EdgeFeature::App,
             EdgeFeature::BrowserEdge,
             EdgeFeature::Rbac,
             EdgeFeature::AuthExternal,
@@ -1958,7 +1958,7 @@ fn http_routes_serve_status_and_static_auth_flow() {
         "alice"
     );
     assert_eq!(
-        portal_snapshot["paths"]["portal_snapshot_path"],
+        portal_snapshot["paths"]["app_snapshot_path"],
         "/portal/snapshot"
     );
     assert_eq!(
@@ -3519,7 +3519,7 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
@@ -3529,8 +3529,8 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
                 .json()
                 .await
                 .expect("decode portal snapshot");
-            let client = BrowserPortalClient::new(
-                BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot),
+            let client = BrowserEdgeClient::new(
+                BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot),
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -3959,7 +3959,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
             access_mode: burn_p2p_core::PublicationAccessMode::Authenticated,
             allow_public_reads: false,
             supports_signed_urls: true,
-            portal_proxy_required: false,
+            edge_proxy_required: false,
             max_artifact_size_bytes: None,
             retention_ttl_secs: Some(300),
             allowed_artifact_profiles: BTreeSet::from([
@@ -4022,7 +4022,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
@@ -4032,8 +4032,8 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
                 .json()
                 .await
                 .expect("decode portal snapshot");
-            let client = BrowserPortalClient::new(
-                BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot),
+            let client = BrowserEdgeClient::new(
+                BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot),
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
@@ -4217,7 +4217,7 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
             access_mode: burn_p2p_core::PublicationAccessMode::Authenticated,
             allow_public_reads: false,
             supports_signed_urls: true,
-            portal_proxy_required: true,
+            edge_proxy_required: true,
             max_artifact_size_bytes: None,
             retention_ttl_secs: Some(300),
             allowed_artifact_profiles: BTreeSet::from([
@@ -4280,7 +4280,7 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
         .build()
         .expect("tokio runtime")
         .block_on(async move {
-            let snapshot: BrowserPortalSnapshot = reqwest::Client::new()
+            let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
                 .get(format!("{}/portal/snapshot", server.base_url()))
                 .send()
                 .await
@@ -4290,8 +4290,8 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
                 .json()
                 .await
                 .expect("decode portal snapshot");
-            let client = BrowserPortalClient::new(
-                BrowserUiBindings::from_portal_snapshot(server.base_url(), &snapshot),
+            let client = BrowserEdgeClient::new(
+                BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot),
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),

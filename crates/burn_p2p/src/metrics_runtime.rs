@@ -574,7 +574,7 @@ fn infer_backend_class(limit_profile: &LimitProfile, fallback_role: &PeerRole) -
                 BackendClass::BrowserWgpu
             }
             PeerRole::BrowserFallback => BackendClass::BrowserFallback,
-            PeerRole::PortalViewer => BackendClass::Viewer,
+            PeerRole::Viewer => BackendClass::Viewer,
             PeerRole::TrainerCpu => BackendClass::Cpu,
             PeerRole::TrainerGpu | PeerRole::Validator | PeerRole::Evaluator => BackendClass::Cpu,
             PeerRole::Bootstrap

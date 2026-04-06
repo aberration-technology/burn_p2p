@@ -41,8 +41,8 @@ impl BrowserJoinPolicy {
     }
 
     /// Returns whether the browser is limited to portal-only access.
-    pub fn allows_portal_only(&self) -> bool {
-        self.eligible_roles.contains(&BrowserRole::PortalViewer)
+    pub fn allows_viewer_only(&self) -> bool {
+        self.eligible_roles.contains(&BrowserRole::Viewer)
     }
 
     /// Returns the best role to recommend for the requested preference.
@@ -56,7 +56,7 @@ impl BrowserJoinPolicy {
             BrowserRole::Verifier,
             BrowserRole::Observer,
             BrowserRole::Fallback,
-            BrowserRole::PortalViewer,
+            BrowserRole::Viewer,
         ]
         .into_iter()
         .find(|role| self.eligible_roles.contains(role))
@@ -90,7 +90,7 @@ pub fn browser_join_policy_for_entry(
     }
 
     let eligible_roles = [
-        BrowserRole::PortalViewer,
+        BrowserRole::Viewer,
         BrowserRole::Observer,
         BrowserRole::Verifier,
         BrowserRole::TrainerWgpu,

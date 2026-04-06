@@ -52,7 +52,7 @@ impl NativeControlPlaneShell {
                 .with_tokio()
                 .with_tcp(
                     libp2p::tcp::Config::default(),
-                    plaintext_config,
+                    libp2p::tls::Config::new,
                     yamux::Config::default,
                 )
                 .map_err(|error| SwarmError::Runtime(error.to_string()))?

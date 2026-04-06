@@ -6,7 +6,7 @@ use burn_p2p::{
     ProjectFamilyId, RevisionId,
 };
 use burn_p2p_core::{
-    ArtifactLiveEvent, BrowserDirectorySnapshot, BrowserLeaderboardSnapshot, BrowserPortalSnapshot,
+    ArtifactLiveEvent, BrowserDirectorySnapshot, BrowserEdgeSnapshot, BrowserLeaderboardSnapshot,
     BrowserReceiptSubmissionResponse, MetricsLiveEvent, SchemaEnvelope, SignedPayload,
     TrustBundleExport,
 };
@@ -56,9 +56,9 @@ pub struct BrowserEnrollmentConfig {
 }
 
 impl BrowserEnrollmentConfig {
-    /// Creates a value from the portal snapshot.
-    pub fn from_portal_snapshot(
-        snapshot: &BrowserPortalSnapshot,
+    /// Creates a value from the app snapshot.
+    pub fn from_edge_snapshot(
+        snapshot: &BrowserEdgeSnapshot,
         target_artifact_id: impl Into<String>,
         target_artifact_hash: ContentId,
         requested_scopes: BTreeSet<ExperimentScope>,
@@ -102,7 +102,7 @@ impl BrowserEnrollmentConfig {
     }
 
     /// Creates a minimal config for viewer-first runtime sync without assuming auth enrollment.
-    pub fn for_runtime_sync(snapshot: &BrowserPortalSnapshot) -> Self {
+    pub fn for_runtime_sync(snapshot: &BrowserEdgeSnapshot) -> Self {
         let target_artifact_hash = snapshot
             .allowed_target_artifact_hashes
             .iter()
@@ -279,10 +279,10 @@ pub enum BrowserAuthClientError {
     #[error("UTF-8 decode error: {0}")]
     /// Uses the UTF-8 variant.
     Utf8(#[from] std::str::Utf8Error),
-    #[error("portal snapshot is missing a trust bundle")]
+    #[error("app snapshot is missing a trust bundle")]
     /// Uses the missing trust bundle variant.
     MissingTrustBundle,
-    #[error("portal snapshot did not expose a login provider")]
+    #[error("app snapshot did not expose a login provider")]
     /// Uses the missing login provider variant.
     MissingLoginProvider,
     #[error("browser enrollment config is missing a callback path")]
@@ -303,14 +303,14 @@ pub enum BrowserAuthClientError {
 }
 
 #[derive(Clone, Debug)]
-/// Represents a browser portal client.
-pub struct BrowserPortalClient {
+/// Represents the browser-side auth client for one browser-edge deployment.
+pub struct BrowserEdgeClient {
     http: reqwest::Client,
     bindings: BrowserUiBindings,
     enrollment: BrowserEnrollmentConfig,
 }
 
-impl BrowserPortalClient {
+impl BrowserEdgeClient {
     /// Creates a new value.
     pub fn new(bindings: BrowserUiBindings, enrollment: BrowserEnrollmentConfig) -> Self {
         Self {
@@ -361,11 +361,11 @@ impl BrowserPortalClient {
         }
     }
 
-    /// Fetches the portal snapshot.
-    pub async fn fetch_portal_snapshot(
+    /// Fetches the app snapshot.
+    pub async fn fetch_browser_edge_snapshot(
         &self,
-    ) -> Result<BrowserPortalSnapshot, BrowserAuthClientError> {
-        self.get_json(&self.bindings.paths.portal_snapshot_path, None)
+    ) -> Result<BrowserEdgeSnapshot, BrowserAuthClientError> {
+        self.get_json(&self.bindings.paths.app_snapshot_path, None)
             .await
     }
 
@@ -943,7 +943,7 @@ impl BrowserPortalClient {
         include_leaderboard: bool,
     ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
         let session_id = session.and_then(BrowserSessionState::session_id);
-        let portal_snapshot = self.fetch_portal_snapshot().await?;
+        let app_snapshot = self.fetch_browser_edge_snapshot().await?;
         let edge_snapshot = self
             .edge_control_plane_client()
             .fetch_snapshot(session_id)
@@ -998,9 +998,9 @@ impl BrowserPortalClient {
             .collect::<Vec<_>>();
         let transport = BrowserTransportStatus {
             active: None,
-            webrtc_direct_enabled: portal_snapshot.transports.webrtc_direct,
-            webtransport_enabled: portal_snapshot.transports.webtransport_gateway,
-            wss_fallback_enabled: portal_snapshot.transports.wss_fallback,
+            webrtc_direct_enabled: app_snapshot.transports.webrtc_direct,
+            webtransport_enabled: app_snapshot.transports.webtransport_gateway,
+            wss_fallback_enabled: app_snapshot.transports.wss_fallback,
             last_error: runtime.transport.last_error.clone(),
         };
         Ok(runtime.apply_edge_sync(

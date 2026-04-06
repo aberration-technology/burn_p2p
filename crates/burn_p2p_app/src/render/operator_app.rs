@@ -1,7 +1,6 @@
 use crate::models::{
-    PortalArtifactAliasHistoryRow, PortalArtifactRow, PortalArtifactRunSummaryRow,
-    PortalArtifactRunView, PortalHeadArtifactView, PortalHeadEvalSummaryRow, PortalHeadRow,
-    PortalPublishedArtifactRow,
+    AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
+    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppPublishedArtifactRow,
 };
 use dioxus::prelude::*;
 use dioxus::ssr::render_element;
@@ -85,8 +84,8 @@ pub(super) fn render_dashboard_html(network_id: &str) -> String {
 
 pub(super) fn render_artifact_run_summaries_html(
     experiment_id: &str,
-    rows: &[PortalArtifactRunSummaryRow],
-    portal_path: &str,
+    rows: &[AppArtifactRunSummaryRow],
+    app_path: &str,
 ) -> String {
     render_document(
         format!("Artifact runs for {experiment_id}"),
@@ -94,14 +93,14 @@ pub(super) fn render_artifact_run_summaries_html(
             ArtifactRunSummariesPage {
                 experiment_id: experiment_id.to_owned(),
                 rows: rows.to_vec(),
-                back_href: portal_path.to_owned(),
+                back_href: app_path.to_owned(),
             }
         },
         None,
     )
 }
 
-pub(super) fn render_artifact_run_view_html(view: &PortalArtifactRunView) -> String {
+pub(super) fn render_artifact_run_view_html(view: &AppArtifactRunView) -> String {
     render_document(
         format!("Artifact run {}", view.run_id),
         rsx! { ArtifactRunPage { view: view.clone() } },
@@ -109,7 +108,7 @@ pub(super) fn render_artifact_run_view_html(view: &PortalArtifactRunView) -> Str
     )
 }
 
-pub(super) fn render_head_artifact_view_html(view: &PortalHeadArtifactView) -> String {
+pub(super) fn render_head_artifact_view_html(view: &AppHeadArtifactView) -> String {
     render_document(
         format!("Artifact head {}", view.head.head_id),
         rsx! { ArtifactHeadPage { view: view.clone() } },
@@ -257,7 +256,7 @@ fn DashboardPage(network_id: String) -> Element {
 #[component]
 fn ArtifactRunSummariesPage(
     experiment_id: String,
-    rows: Vec<PortalArtifactRunSummaryRow>,
+    rows: Vec<AppArtifactRunSummaryRow>,
     back_href: String,
 ) -> Element {
     let run_count = rows.len().to_string();
@@ -341,7 +340,7 @@ fn ArtifactRunSummariesPage(
 }
 
 #[component]
-fn ArtifactRunPage(view: PortalArtifactRunView) -> Element {
+fn ArtifactRunPage(view: AppArtifactRunView) -> Element {
     let latest_head = view
         .latest_head_id
         .clone()
@@ -371,7 +370,7 @@ fn ArtifactRunPage(view: PortalArtifactRunView) -> Element {
                     LiveSummaryCard { label: "publications", value: view.publications.len().to_string(), element_id: None }
                 }
                 div { class: "operator-link-row",
-                    LinkPill { href: view.portal_path.clone(), label: "Back" }
+                    LinkPill { href: view.app_path.clone(), label: "Back" }
                     LinkPill { href: view.json_view_path.clone(), label: "View JSON" }
                 }
             }
@@ -385,7 +384,7 @@ fn ArtifactRunPage(view: PortalArtifactRunView) -> Element {
 }
 
 #[component]
-fn ArtifactHeadPage(view: PortalHeadArtifactView) -> Element {
+fn ArtifactHeadPage(view: AppHeadArtifactView) -> Element {
     rsx! {
         main { class: "operator-main",
             section { class: "panel hero-shell hero",
@@ -411,7 +410,7 @@ fn ArtifactHeadPage(view: PortalHeadArtifactView) -> Element {
                     LiveSummaryCard { label: "publications", value: view.publications.len().to_string(), element_id: None }
                 }
                 div { class: "operator-link-row",
-                    LinkPill { href: view.portal_path.clone(), label: "Back" }
+                    LinkPill { href: view.app_path.clone(), label: "Back" }
                     LinkPill { href: view.run_view_path.clone(), label: "Run history" }
                     LinkPill { href: view.json_view_path.clone(), label: "View JSON" }
                 }
@@ -438,7 +437,7 @@ fn ArtifactHeadPage(view: PortalHeadArtifactView) -> Element {
 }
 
 #[component]
-fn HeadSection(heads: Vec<PortalHeadRow>, aliases: Vec<PortalArtifactRow>) -> Element {
+fn HeadSection(heads: Vec<AppHeadRow>, aliases: Vec<AppArtifactRow>) -> Element {
     rsx! {
         section { class: "panel",
             div { class: "eyebrow", "heads" }
@@ -485,7 +484,7 @@ fn HeadSection(heads: Vec<PortalHeadRow>, aliases: Vec<PortalArtifactRow>) -> El
 }
 
 #[component]
-fn AliasSection(aliases: Vec<PortalArtifactRow>, empty: &'static str) -> Element {
+fn AliasSection(aliases: Vec<AppArtifactRow>, empty: &'static str) -> Element {
     rsx! {
         section { class: "panel",
             div { class: "eyebrow", "aliases" }
@@ -524,7 +523,7 @@ fn AliasSection(aliases: Vec<PortalArtifactRow>, empty: &'static str) -> Element
 }
 
 #[component]
-fn AliasHistorySection(rows: Vec<PortalArtifactAliasHistoryRow>, empty: &'static str) -> Element {
+fn AliasHistorySection(rows: Vec<AppArtifactAliasHistoryRow>, empty: &'static str) -> Element {
     rsx! {
         section { class: "panel",
             div { class: "eyebrow", "history" }
@@ -566,7 +565,7 @@ fn AliasHistorySection(rows: Vec<PortalArtifactAliasHistoryRow>, empty: &'static
 }
 
 #[component]
-fn EvalSection(rows: Vec<PortalHeadEvalSummaryRow>, empty: &'static str) -> Element {
+fn EvalSection(rows: Vec<AppHeadEvalSummaryRow>, empty: &'static str) -> Element {
     rsx! {
         section { class: "panel",
             div { class: "eyebrow", "evaluation" }
@@ -610,7 +609,7 @@ fn EvalSection(rows: Vec<PortalHeadEvalSummaryRow>, empty: &'static str) -> Elem
 }
 
 #[component]
-fn PublicationSection(rows: Vec<PortalPublishedArtifactRow>, empty: &'static str) -> Element {
+fn PublicationSection(rows: Vec<AppPublishedArtifactRow>, empty: &'static str) -> Element {
     rsx! {
         section { class: "panel",
             div { class: "eyebrow", "publication" }
@@ -653,7 +652,7 @@ fn PublicationSection(rows: Vec<PortalPublishedArtifactRow>, empty: &'static str
 }
 
 #[component]
-fn AliasRow(row: PortalArtifactRow) -> Element {
+fn AliasRow(row: AppArtifactRow) -> Element {
     let published = row
         .last_published_at
         .clone()
@@ -686,7 +685,7 @@ fn AliasRow(row: PortalArtifactRow) -> Element {
 }
 
 #[component]
-fn AliasCard(row: PortalArtifactRow) -> Element {
+fn AliasCard(row: AppArtifactRow) -> Element {
     let published = row
         .last_published_at
         .clone()
@@ -712,7 +711,7 @@ fn AliasCard(row: PortalArtifactRow) -> Element {
     }
 }
 
-fn alias_history_summary(row: &PortalArtifactRow) -> String {
+fn alias_history_summary(row: &AppArtifactRow) -> String {
     if row.history_count <= 1 && row.previous_head_id.is_none() {
         return String::new();
     }

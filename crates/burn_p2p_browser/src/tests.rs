@@ -16,12 +16,12 @@ use burn_p2p::{
     StudyId, WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
-    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
     BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
-    BrowserLoginProvider, BrowserPortalSnapshot, BrowserTransportSurface, LeaseId,
-    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
-    PeerWindowMetrics, ReenrollmentStatus, RevocationEpoch, SchemaEnvelope, SignatureAlgorithm,
-    SignatureMetadata, SignedPayload, TrustBundleExport,
+    BrowserLoginProvider, BrowserTransportSurface, LeaseId, MetricsLiveEvent, MetricsLiveEventKind,
+    MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics, ReenrollmentStatus,
+    RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
+    TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
 use chrono::Utc;
@@ -66,7 +66,7 @@ fn browser_runtime_defaults_to_observer_safe_policy() {
 fn browser_app_target_maps_to_expected_runtime_roles() {
     assert_eq!(
         BrowserAppTarget::Viewer.preferred_role(),
-        BrowserRuntimeRole::PortalViewer
+        BrowserRuntimeRole::Viewer
     );
     assert_eq!(
         BrowserAppTarget::Observe.preferred_role(),
@@ -420,7 +420,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
         requires_webgpu: false,
         max_browser_batch_size: None,
         recommended_browser_precision: None,
-        visibility_policy: BrowserVisibilityPolicy::PortalListed,
+        visibility_policy: BrowserVisibilityPolicy::AppListed,
         description: "portal only".into(),
     });
 
@@ -467,7 +467,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
             &BrowserCapabilityReport::default(),
             BrowserRuntimeRole::BrowserObserver,
         ),
-        Some(BrowserRuntimeState::PortalOnly)
+        Some(BrowserRuntimeState::ViewerOnly)
     );
 
     let blocked_snapshot = BrowserDirectorySnapshot {
@@ -583,7 +583,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
         ..BrowserSessionState::default()
     };
 
-    let ui_state = browser_portal_ui_state_from_directory(
+    let ui_state = browser_app_ui_state_from_directory(
         None,
         None,
         Some(&session_state),
@@ -608,7 +608,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
     );
     assert!(browser_picker.entries[0].fallback_from_preferred);
 
-    let unauthorized_ui_state = browser_portal_ui_state_from_directory(
+    let unauthorized_ui_state = browser_app_ui_state_from_directory(
         None,
         None,
         None,
@@ -1759,7 +1759,7 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
 fn edge_endpoints_match_browser_edge_contract() {
     let bindings = BrowserUiBindings::new("https://edge.example");
     assert_eq!(
-        bindings.endpoint_url(&bindings.paths.portal_snapshot_path),
+        bindings.endpoint_url(&bindings.paths.app_snapshot_path),
         "https://edge.example/portal/snapshot"
     );
     assert_eq!(bindings.paths.signed_directory_path, "/directory/signed");
@@ -1785,9 +1785,9 @@ fn edge_endpoints_do_not_duplicate_prefixed_paths() {
 }
 
 #[test]
-fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
+fn enrollment_config_and_bindings_can_be_derived_from_edge_snapshot() {
     let artifact_hash = ContentId::new("artifact-browser");
-    let snapshot = BrowserPortalSnapshot {
+    let snapshot = BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Verifier,
@@ -1848,8 +1848,8 @@ fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
         captured_at: Utc::now(),
     };
 
-    let bindings = BrowserUiBindings::from_portal_snapshot("https://edge.example", &snapshot);
-    let enrollment = BrowserEnrollmentConfig::from_portal_snapshot(
+    let bindings = BrowserUiBindings::from_edge_snapshot("https://edge.example", &snapshot);
+    let enrollment = BrowserEnrollmentConfig::from_edge_snapshot(
         &snapshot,
         "browser-wasm",
         artifact_hash,
@@ -1864,7 +1864,7 @@ fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
     .expect("derive enrollment config");
 
     assert_eq!(
-        bindings.endpoint_url(&bindings.paths.portal_snapshot_path),
+        bindings.endpoint_url(&bindings.paths.app_snapshot_path),
         "https://edge.example/portal/snapshot"
     );
     assert_eq!(enrollment.project_family_id.as_str(), "family-browser");
@@ -1875,7 +1875,7 @@ fn enrollment_config_and_bindings_can_be_derived_from_portal_snapshot() {
 #[test]
 fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
     let artifact_hash = ContentId::new("artifact-browser");
-    let mut snapshot = BrowserPortalSnapshot {
+    let mut snapshot = BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Verifier,
@@ -1931,8 +1931,8 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
     snapshot.paths.login_path = "/login/static".into();
     snapshot.paths.callback_path = "/callback/static".into();
 
-    let bindings = BrowserUiBindings::from_portal_snapshot("https://edge.example", &snapshot);
-    let enrollment = BrowserEnrollmentConfig::from_portal_snapshot(
+    let bindings = BrowserUiBindings::from_edge_snapshot("https://edge.example", &snapshot);
+    let enrollment = BrowserEnrollmentConfig::from_edge_snapshot(
         &snapshot,
         "browser-wasm",
         artifact_hash,
@@ -2388,7 +2388,7 @@ fn browser_portal_client_collects_multiple_metrics_live_events_from_sse_stream()
         },
     ];
     let (base_url, handle) = spawn_metrics_sse_server(events.clone());
-    let client = BrowserPortalClient::new(
+    let client = BrowserEdgeClient::new(
         BrowserUiBindings::new(base_url),
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
@@ -2452,7 +2452,7 @@ fn browser_portal_client_streams_metrics_events_into_worker_runtime() {
         },
     ];
     let (base_url, handle) = spawn_metrics_sse_server(events.clone());
-    let client = BrowserPortalClient::new(
+    let client = BrowserEdgeClient::new(
         BrowserUiBindings::new(base_url),
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
@@ -2993,7 +2993,7 @@ fn browser_portal_client_pumps_metrics_events_into_worker_without_duplicate_repl
         vec![second_event.clone()],
         vec![second_event.clone()],
     ]);
-    let client = BrowserPortalClient::new(
+    let client = BrowserEdgeClient::new(
         BrowserUiBindings::new(base_url),
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
@@ -3112,7 +3112,7 @@ fn browser_portal_client_pumps_edge_metrics_sync_into_worker_without_sse() {
         second_event.clone(),
         second_event.clone(),
     ]);
-    let client = BrowserPortalClient::new(
+    let client = BrowserEdgeClient::new(
         BrowserUiBindings::new(base_url),
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),

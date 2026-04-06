@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Captures a snapshot of browser portal.
-pub struct BrowserPortalSnapshot {
+pub struct BrowserEdgeSnapshot {
     /// The network ID.
     pub network_id: NetworkId,
     /// The edge mode.
@@ -53,8 +53,8 @@ pub struct BrowserPortalSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-/// Configures browser portal snapshot.
-pub struct BrowserPortalSnapshotConfig {
+/// Configures browser app snapshot.
+pub struct BrowserEdgeSnapshotConfig {
     /// The captured at.
     pub captured_at: DateTime<Utc>,
     /// The remaining work units.
@@ -102,13 +102,13 @@ impl BootstrapAdminState {
         )
     }
 
-    /// Performs the browser portal snapshot operation.
+    /// Performs the browser app snapshot operation.
     pub fn browser_portal_snapshot(
         &self,
         plan: &BootstrapPlan,
-        config: BrowserPortalSnapshotConfig,
-    ) -> BrowserPortalSnapshot {
-        BrowserPortalSnapshot {
+        config: BrowserEdgeSnapshotConfig,
+    ) -> BrowserEdgeSnapshot {
+        BrowserEdgeSnapshot {
             network_id: plan.genesis.network_id.clone(),
             edge_mode: config.edge_mode,
             browser_mode: config.browser_mode,

@@ -11,10 +11,10 @@ mod dashboard;
 mod robustness;
 
 pub use auth::{
-    AuthPortalView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
+    AuthAppView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
     BrowserExperimentPickerView, CheckpointDownload, ContributionIdentityPanel,
     ExperimentPickerCard, ExperimentPickerView, GitHubProfileLink, LoginProviderView,
-    ParticipantPortalView, ParticipantProfile, TrustBadgeView,
+    ParticipantAppView, ParticipantProfile, TrustBadgeView,
 };
 pub use browser_app::{
     BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppFocusPanel,

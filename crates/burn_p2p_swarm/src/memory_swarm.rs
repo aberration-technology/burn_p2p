@@ -17,7 +17,7 @@ impl MemorySwarmShell {
         let local_peer_id = keypair.public().to_peer_id();
         let transport = MemoryTransport::default()
             .upgrade(upgrade::Version::V1)
-            .authenticate(plaintext::Config::new(&keypair))
+            .authenticate(libp2p::tls::Config::new(&keypair).expect("tls config should be valid"))
             .multiplex(yamux::Config::default())
             .boxed();
         let swarm = Swarm::new(

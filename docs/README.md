@@ -9,8 +9,6 @@ snapshots, and design diaries are intentionally not kept here.
 
 ## Start Here
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): stable crate boundaries, layering, and
-  major end-to-end flows
 - [features.md](features.md): feature flags, crate composition, and common
   dependency shapes
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
@@ -46,3 +44,5 @@ For implementation-heavy areas, prefer the code directly:
 - dataloader planning and cache/fetch flow: `crates/burn_p2p_dataloader/src/`
 - deployment examples: `crates/burn_p2p_bootstrap/examples/` and
   `deploy/compose/`
+- crate boundaries and package metadata: workspace `Cargo.toml` files under
+  `crates/`

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use burn_p2p::{BrowserPortalSnapshot, HeadId, LeaseId, MicroShardId, PeerId};
+use burn_p2p::{BrowserEdgeSnapshot, HeadId, LeaseId, MicroShardId, PeerId};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_views::BrowserAppSurface;
 use chrono::{DateTime, Utc};
@@ -29,7 +29,7 @@ pub struct BrowserScenarioExport {
     pub title: String,
     pub description: String,
     pub default_surface: BrowserAppSurface,
-    pub snapshot: BrowserPortalSnapshot,
+    pub snapshot: BrowserEdgeSnapshot,
     pub metrics_catchup: Vec<MetricsCatchupBundle>,
     #[serde(default)]
     pub runtime_states: Vec<String>,

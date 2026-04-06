@@ -808,7 +808,7 @@ fn from_learner_custom_non_training_builder_does_not_require_training_dataset_ho
         description: "tiny network".into(),
     };
     let device = <LearnerBackend as Backend>::Device::default();
-    let roles = crate::PeerRoleSet::new([crate::PeerRole::PortalViewer]);
+    let roles = crate::PeerRoleSet::new([crate::PeerRole::Viewer]);
     let builder = from_learner(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),

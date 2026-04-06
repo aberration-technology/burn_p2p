@@ -96,7 +96,7 @@ impl BrowserWorkerRuntime {
 
     fn runtime_role_from_browser_role(role: BrowserRole) -> crate::BrowserRuntimeRole {
         match role {
-            BrowserRole::PortalViewer => crate::BrowserRuntimeRole::PortalViewer,
+            BrowserRole::Viewer => crate::BrowserRuntimeRole::Viewer,
             BrowserRole::Observer => crate::BrowserRuntimeRole::BrowserObserver,
             BrowserRole::Verifier => crate::BrowserRuntimeRole::BrowserVerifier,
             BrowserRole::TrainerWgpu => crate::BrowserRuntimeRole::BrowserTrainerWgpu,
@@ -106,7 +106,7 @@ impl BrowserWorkerRuntime {
 
     fn active_state_for_role(role: crate::BrowserRuntimeRole) -> BrowserRuntimeState {
         match role {
-            crate::BrowserRuntimeRole::PortalViewer => BrowserRuntimeState::PortalOnly,
+            crate::BrowserRuntimeRole::Viewer => BrowserRuntimeState::ViewerOnly,
             crate::BrowserRuntimeRole::BrowserObserver
             | crate::BrowserRuntimeRole::BrowserFallback => BrowserRuntimeState::Observer,
             crate::BrowserRuntimeRole::BrowserVerifier => BrowserRuntimeState::Verifier,
@@ -403,7 +403,7 @@ impl BrowserWorkerRuntime {
                 Some(BrowserRuntimeState::Catchup { role })
             }
             Some(BrowserRuntimeState::BackgroundSuspended { role: None }) => {
-                Some(BrowserRuntimeState::PortalOnly)
+                Some(BrowserRuntimeState::ViewerOnly)
             }
             Some(state) => Some(state),
             None => Some(BrowserRuntimeState::joining(
@@ -543,7 +543,7 @@ impl BrowserWorkerRuntime {
                         "no browser-visible experiments matched this session",
                     )
                 } else {
-                    BrowserRuntimeState::PortalOnly
+                    BrowserRuntimeState::ViewerOnly
                 }
             });
         self.state = Some(state);

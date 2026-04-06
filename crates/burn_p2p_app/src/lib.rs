@@ -23,12 +23,11 @@ mod render;
 mod web_client;
 
 pub use models::{
-    PortalArtifactAliasHistoryRow, PortalArtifactRow, PortalArtifactRunSummaryRow,
-    PortalArtifactRunView, PortalDiagnosticsView, PortalExperimentRow, PortalHeadArtifactView,
-    PortalHeadEvalSummaryRow, PortalHeadRow, PortalLeaderboardRow, PortalLoginProvider,
-    PortalMetricRow, PortalMetricsPanel, PortalPaths, PortalPeerStatusRow,
-    PortalPublishedArtifactRow, PortalRuntimeStateCard, PortalServiceStatusRow, PortalSnapshotView,
-    PortalTransportSurface, PortalTrustView,
+    AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
+    AppDiagnosticsView, AppExperimentRow, AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow,
+    AppLeaderboardRow, AppLoginProvider, AppMetricRow, AppMetricsPanel, AppPaths, AppPeerStatusRow,
+    AppPublishedArtifactRow, AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView,
+    AppTransportSurface, AppTrustView,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop-client"))]
 pub use native_client::{NodeAppHostConfig, NodeAppHostSource, launch_node_app};

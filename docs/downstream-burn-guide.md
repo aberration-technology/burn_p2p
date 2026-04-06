@@ -146,7 +146,7 @@ let viewer = burn_p2p::burn::from_learner(
 .connect(
     burn_p2p::burn::BurnTarget::Custom(
         burn_p2p::PeerRoleSet::new([
-            burn_p2p::PeerRole::PortalViewer,
+            burn_p2p::PeerRole::Viewer,
             burn_p2p::PeerRole::BrowserObserver,
         ]),
     ),
@@ -198,7 +198,7 @@ shared ui/auth contract now looks like:
 
 - browser runtime builds `burn_p2p_views::NodeAppClientView` through `BrowserAppController`
 - native runtime builds the same contract through `RunningNode::app_view(...)`
-- headless/native auth uses `burn_p2p::PortalAuthClient`
+- headless/native auth uses `burn_p2p::EdgeAuthClient`
 - `burn_p2p_app` now renders the same dioxus component tree on web and native hosts
 
 current host situation:

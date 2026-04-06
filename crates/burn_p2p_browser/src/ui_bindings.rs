@@ -5,10 +5,10 @@ use burn_p2p::{
     ExperimentDirectoryEntry, ExperimentId, ExperimentScope, RevisionId,
     browser_join_policy_for_entry,
 };
-use burn_p2p_core::{BrowserDirectorySnapshot, BrowserPortalSnapshot};
+use burn_p2p_core::{BrowserDirectorySnapshot, BrowserEdgeSnapshot};
 use burn_p2p_views::{
-    AuthPortalView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
-    BrowserExperimentPickerView, ExperimentPickerView, ParticipantPortalView,
+    AuthAppView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
+    BrowserExperimentPickerView, ExperimentPickerView, ParticipantAppView,
 };
 
 use crate::{
@@ -18,8 +18,8 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a browser edge endpoints.
 pub struct BrowserEdgeEndpoints {
-    /// The portal snapshot path.
-    pub portal_snapshot_path: String,
+    /// The app snapshot path.
+    pub app_snapshot_path: String,
     /// The directory path.
     pub directory_path: String,
     /// The heads path.
@@ -89,7 +89,7 @@ pub struct BrowserEdgeEndpoints {
 impl Default for BrowserEdgeEndpoints {
     fn default() -> Self {
         Self {
-            portal_snapshot_path: "/portal/snapshot".into(),
+            app_snapshot_path: "/portal/snapshot".into(),
             directory_path: "/directory".into(),
             heads_path: "/heads".into(),
             signed_directory_path: "/directory/signed".into(),
@@ -144,16 +144,16 @@ impl BrowserUiBindings {
         }
     }
 
-    /// Creates a value from the portal snapshot.
-    pub fn from_portal_snapshot(
+    /// Creates a value from the app snapshot.
+    pub fn from_edge_snapshot(
         edge_base_url: impl Into<String>,
-        snapshot: &BrowserPortalSnapshot,
+        snapshot: &BrowserEdgeSnapshot,
     ) -> Self {
         let primary_provider = snapshot.login_providers.first();
         Self {
             edge_base_url: edge_base_url.into().trim_end_matches('/').to_owned(),
             paths: BrowserEdgeEndpoints {
-                portal_snapshot_path: snapshot.paths.portal_snapshot_path.clone(),
+                app_snapshot_path: snapshot.paths.app_snapshot_path.clone(),
                 directory_path: snapshot.paths.directory_path.clone(),
                 heads_path: snapshot.paths.heads_path.clone(),
                 signed_directory_path: snapshot.paths.signed_directory_path.clone(),
@@ -224,15 +224,15 @@ impl BrowserUiBindings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Captures browser portal UI state.
-pub struct BrowserPortalUiState {
+pub struct BrowserAppUiState {
     /// The auth.
-    pub auth: Option<AuthPortalView>,
+    pub auth: Option<AuthAppView>,
     /// The experiment picker.
     pub experiment_picker: Option<ExperimentPickerView>,
     /// The browser experiment picker.
     pub browser_experiment_picker: Option<BrowserExperimentPickerView>,
     /// The participant.
-    pub participant: Option<ParticipantPortalView>,
+    pub participant: Option<ParticipantAppView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,15 +276,15 @@ fn scoped_browser_join_policy(
         .push("session scopes do not allow this experiment".into());
     policy
         .eligible_roles
-        .retain(|role| matches!(role, BrowserRole::PortalViewer));
+        .retain(|role| matches!(role, BrowserRole::Viewer));
     policy
 }
 
 fn browser_picker_state_from_runtime(state: &BrowserRuntimeState) -> BrowserExperimentPickerState {
     match state {
-        BrowserRuntimeState::PortalOnly => BrowserExperimentPickerState::PortalOnly,
+        BrowserRuntimeState::ViewerOnly => BrowserExperimentPickerState::ViewerOnly,
         BrowserRuntimeState::Joining { role, .. } => match role {
-            BrowserRuntimeRole::PortalViewer => BrowserExperimentPickerState::PortalOnly,
+            BrowserRuntimeRole::Viewer => BrowserExperimentPickerState::ViewerOnly,
             BrowserRuntimeRole::BrowserObserver | BrowserRuntimeRole::BrowserFallback => {
                 BrowserExperimentPickerState::Observer
             }
@@ -445,7 +445,7 @@ pub fn recommended_browser_candidate_for_scopes(
         .or_else(|| {
             candidates
                 .iter()
-                .find(|candidate| candidate.policy.allows_portal_only())
+                .find(|candidate| candidate.policy.allows_viewer_only())
                 .cloned()
         })
         .or_else(|| {
@@ -538,7 +538,7 @@ pub fn recommended_browser_join_policy(
         .chain(
             policies
                 .iter()
-                .filter(|policy| policy.allows_portal_only())
+                .filter(|policy| policy.allows_viewer_only())
                 .cloned(),
         )
         .chain(
@@ -614,17 +614,17 @@ pub fn recommended_browser_runtime_state_for_scopes(
 }
 
 /// Performs the browser portal UI state from directory operation.
-pub fn browser_portal_ui_state_from_directory(
-    auth: Option<AuthPortalView>,
-    participant: Option<ParticipantPortalView>,
+pub fn browser_app_ui_state_from_directory(
+    auth: Option<AuthAppView>,
+    participant: Option<ParticipantAppView>,
     session: Option<&BrowserSessionState>,
     directory: &BrowserDirectorySnapshot,
     target_artifact_id: &str,
     capability_report: &BrowserCapabilityReport,
     preferred_role: BrowserRuntimeRole,
-) -> BrowserPortalUiState {
+) -> BrowserAppUiState {
     let scopes = session_scopes(session);
-    BrowserPortalUiState {
+    BrowserAppUiState {
         auth,
         experiment_picker: Some(ExperimentPickerView::from_directory(
             directory.network_id.clone(),

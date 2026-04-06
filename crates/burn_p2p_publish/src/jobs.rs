@@ -341,7 +341,7 @@ impl PublicationStore {
                 let redirect_url = Some(download_redirect_url(target, &published.object_key)?);
                 (redirect_url, DownloadArtifactBody::Empty)
             }
-            DownloadDeliveryMode::PortalStream | DownloadDeliveryMode::DeferredPendingExport => {
+            DownloadDeliveryMode::EdgeStream | DownloadDeliveryMode::DeferredPendingExport => {
                 let body = match target.kind {
                     PublicationTargetKind::None => {
                         return Err(PublishError::DisabledPublicationTarget(

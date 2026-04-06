@@ -9,7 +9,7 @@ pub(super) fn compiled_feature_set() -> CompiledFeatureSet {
         features.insert(EdgeFeature::Metrics);
     }
     if cfg!(feature = "browser-edge") {
-        features.insert(EdgeFeature::Portal);
+        features.insert(EdgeFeature::App);
     }
     if cfg!(feature = "browser-join") {
         features.insert(EdgeFeature::BrowserEdge);
@@ -61,7 +61,7 @@ pub(super) fn configured_auth_providers(
 pub(super) fn configured_service_set(config: &BootstrapDaemonConfig) -> ConfiguredServiceSet {
     let mut features = BTreeSet::from([EdgeFeature::AdminHttp, EdgeFeature::Metrics]);
     if config.optional_services.browser_edge_enabled {
-        features.insert(EdgeFeature::Portal);
+        features.insert(EdgeFeature::App);
     }
     if config.optional_services.browser_mode != BrowserMode::Disabled {
         features.insert(EdgeFeature::BrowserEdge);
@@ -126,7 +126,7 @@ pub(super) fn validate_compiled_feature_support_with(
     config: &BootstrapDaemonConfig,
 ) -> Result<(), BootstrapCompositionError> {
     if config.optional_services.browser_edge_enabled
-        && !compiled.features.contains(&EdgeFeature::Portal)
+        && !compiled.features.contains(&EdgeFeature::App)
     {
         return Err(BootstrapCompositionError::MissingCompiledFeature {
             service: "browser edge",
@@ -207,16 +207,16 @@ pub(super) fn validate_compiled_feature_support_with(
     Ok(())
 }
 
-pub(super) fn portal_mode(
+pub(super) fn app_mode(
     config: &BootstrapDaemonConfig,
     auth_state: Option<&Arc<AuthPortalState>>,
-) -> PortalMode {
+) -> AppMode {
     if !config.optional_services.browser_edge_enabled {
-        PortalMode::Disabled
+        AppMode::Disabled
     } else if auth_state.is_some() {
-        PortalMode::Interactive
+        AppMode::Interactive
     } else {
-        PortalMode::Readonly
+        AppMode::Readonly
     }
 }
 
@@ -261,7 +261,7 @@ pub(super) fn edge_service_manifest(
     EdgeServiceManifest {
         edge_id: edge_id.clone(),
         network_id: plan.network_id().clone(),
-        portal_mode: portal_mode(config, auth_state),
+        app_mode: app_mode(config, auth_state),
         browser_mode: config.optional_services.browser_mode.clone(),
         available_auth_providers: configured_auth_providers(config),
         social_mode: config.optional_services.social_mode.clone(),

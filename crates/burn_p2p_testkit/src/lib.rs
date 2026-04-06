@@ -46,7 +46,7 @@ use burn_p2p_swarm::{PeerObservation, RuntimeTransportPolicy, SwarmError, SwarmS
 use burn_p2p_views::{
     CheckpointDagView, EmaFlowView, OperatorConsoleView, OperatorDiagnosticsView,
     OperatorPeerDiagnosticView, OperatorRobustnessSummaryView, OperatorTransferView,
-    ParticipantPortalView, ParticipantProfile, ShardAssignmentHeatmap, StudyBoardView,
+    ParticipantAppView, ParticipantProfile, ShardAssignmentHeatmap, StudyBoardView,
 };
 use chrono::{DateTime, Duration, Utc};
 use semver::{Version, VersionReq};
@@ -377,7 +377,7 @@ pub struct SimulationOutcome {
     /// The operator console.
     pub operator_console: OperatorConsoleView,
     /// The participant portals.
-    pub participant_portals: Vec<ParticipantPortalView>,
+    pub participant_portals: Vec<ParticipantAppView>,
     /// The study board.
     pub study_board: StudyBoardView,
     /// The checkpoint DAG.
@@ -1308,7 +1308,7 @@ fn build_participant_portals(
     lease_cache: &LeaseCache,
     windows: &[SimulatedWindow],
     checkpoint_catalog: &CheckpointCatalog,
-) -> Vec<ParticipantPortalView> {
+) -> Vec<ParticipantAppView> {
     peer_fixtures
         .iter()
         .map(|fixture| {
@@ -1339,7 +1339,7 @@ fn build_participant_portals(
                 })
                 .collect::<Vec<_>>();
 
-            ParticipantPortalView::new(
+            ParticipantAppView::new(
                 ParticipantProfile {
                     peer_id: fixture.peer_id.clone(),
                     display_name: Some(fixture.peer_id.as_str().into()),
