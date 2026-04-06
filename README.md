@@ -1,5 +1,8 @@
 # burn_p2p 🔥🤝
 
+[![GitHub License](https://img.shields.io/github/license/aberration-technology/burn_p2p)](https://raw.githubusercontent.com/aberration-technology/burn_p2p/main/LICENSE-MIT)
+[![crates.io](https://img.shields.io/crates/v/burn_p2p.svg)](https://crates.io/crates/burn_p2p)
+
 `burn_p2p` turns a burn learner into a decentralized training network.
 
 core shape:
