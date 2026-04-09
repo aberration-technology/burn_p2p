@@ -1264,7 +1264,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             &envs,
         )?,
     );
-    let browser_probe_summary = (|| -> anyhow::Result<serde_json::Value> {
+    let browser_probe_summary = {
         let mut browser_edge_process: Option<SpawnedStep> = None;
         let result = (|| -> anyhow::Result<serde_json::Value> {
             wait_for_path_from_step(
@@ -1500,7 +1500,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             let _ = browser_edge_process.wait(&artifacts);
         }
         result
-    })();
+    };
     let browser_probe_summary = match browser_probe_summary {
         Ok(summary) => summary,
         Err(error) => {
@@ -2488,6 +2488,13 @@ fn summarize_discovery_dynamics(
     } else {
         estimated_network_size.iter().sum::<f64>() / estimated_network_size.len() as f64
     };
+    let min_estimated_network_size = {
+        let value = estimated_network_size
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        if value.is_finite() { value } else { 0.0 }
+    };
 
     json!({
         "peer_count": spec.peer_count,
@@ -2515,9 +2522,7 @@ fn summarize_discovery_dynamics(
             "max": observed_peers.iter().copied().max().unwrap_or(0),
         },
         "estimated_network_size": {
-            "min": estimated_network_size.iter().copied().fold(f64::INFINITY, f64::min).is_finite().then_some(
-                estimated_network_size.iter().copied().fold(f64::INFINITY, f64::min)
-            ).unwrap_or(0.0),
+            "min": min_estimated_network_size,
             "mean": mean_estimated_network_size,
             "max": estimated_network_size.iter().copied().fold(0.0_f64, f64::max),
         },
@@ -3095,8 +3100,8 @@ fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<(
     let soak_config = SyntheticSoakConfig {
         root: artifacts.root.join("synthetic-soak"),
         workload_kind: SyntheticWorkloadKind::BurnLinear,
-        trainer_backend: trainer_backend.clone(),
-        validator_backend: trainer_backend.clone(),
+        trainer_backend,
+        validator_backend: trainer_backend,
         trainer_count,
         trainer_window_count,
         persistent_trainers: true,

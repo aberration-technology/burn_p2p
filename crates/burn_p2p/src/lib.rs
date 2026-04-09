@@ -1963,10 +1963,9 @@ impl<P> RunningNode<P> {
                 .handle
                 .as_ref()
                 .is_some_and(JoinHandle::is_finished)
+            && let Some(handle) = training_prefetch.handle.take()
         {
-            if let Some(handle) = training_prefetch.handle.take() {
-                let _ = handle.join();
-            }
+            let _ = handle.join();
         }
         if let Some(runtime_thread) = self.runtime_thread.take() {
             runtime_thread
@@ -1986,10 +1985,9 @@ impl<P> RunningNode<P> {
                 .handle
                 .as_ref()
                 .is_some_and(JoinHandle::is_finished)
+            && let Some(handle) = training_prefetch.handle.take()
         {
-            if let Some(handle) = training_prefetch.handle.take() {
-                let _ = handle.join();
-            }
+            let _ = handle.join();
         }
         if let Some(runtime_thread) = self.runtime_thread.take() {
             let deadline = Instant::now() + timeout;

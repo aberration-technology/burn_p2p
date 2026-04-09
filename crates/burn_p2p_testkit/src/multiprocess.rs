@@ -1404,14 +1404,16 @@ where
             let observed_head = wait_for_canonical_advance(
                 node,
                 experiment,
-                &synced_head.head_id,
-                &outcome,
-                merge_timeout,
-                poll_interval,
-                report,
-                ReportPaths {
-                    report_path: &config.report_path,
-                    storage_root: &config.storage_root,
+                CanonicalAdvanceWait {
+                    base_head_id: &synced_head.head_id,
+                    completed_window: &outcome,
+                    timeout: merge_timeout,
+                    poll_interval,
+                    report,
+                    paths: ReportPaths {
+                        report_path: &config.report_path,
+                        storage_root: &config.storage_root,
+                    },
                 },
             )?;
             report.observed_canonical_head_id = Some(observed_head.head_id.to_string());
@@ -1686,20 +1688,32 @@ struct ReportPaths<'a> {
     storage_root: &'a Path,
 }
 
+struct CanonicalAdvanceWait<'a> {
+    base_head_id: &'a burn_p2p::HeadId,
+    completed_window: &'a burn_p2p::TrainingWindowOutcome<BTreeMap<String, MetricValue>>,
+    timeout: Duration,
+    poll_interval: Duration,
+    report: &'a mut SyntheticProcessReport,
+    paths: ReportPaths<'a>,
+}
+
 fn wait_for_canonical_advance<W>(
     node: &burn_p2p::RunningNode<W>,
     experiment: &burn_p2p::ExperimentHandle,
-    base_head_id: &burn_p2p::HeadId,
-    completed_window: &burn_p2p::TrainingWindowOutcome<BTreeMap<String, MetricValue>>,
-    timeout: Duration,
-    poll_interval: Duration,
-    report: &mut SyntheticProcessReport,
-    paths: ReportPaths<'_>,
+    wait: CanonicalAdvanceWait<'_>,
 ) -> anyhow::Result<burn_p2p::HeadDescriptor>
 where
     W: P2pWorkload<WindowStats = BTreeMap<String, MetricValue>>,
     W::Model: Send + 'static,
 {
+    let CanonicalAdvanceWait {
+        base_head_id,
+        completed_window,
+        timeout,
+        poll_interval,
+        report,
+        paths,
+    } = wait;
     let deadline = Instant::now() + timeout;
     let mut republish_attempts = 0_u32;
     while Instant::now() < deadline {
@@ -2074,8 +2088,8 @@ pub fn run_synthetic_process_soak(
         dataset_root.clone(),
         validator_report_path.clone(),
     );
-    validator_config.workload_kind = config.workload_kind.clone();
-    validator_config.native_backend = config.validator_backend.clone();
+    validator_config.workload_kind = config.workload_kind;
+    validator_config.native_backend = config.validator_backend;
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
     validator_config.startup_timeout_secs = config.startup_timeout_secs;
     validator_config.poll_interval_ms = config.poll_interval_ms;
@@ -2112,8 +2126,8 @@ pub fn run_synthetic_process_soak(
                 report_path.clone(),
                 vec![validator_addr.clone()],
             );
-            trainer_config.workload_kind = config.workload_kind.clone();
-            trainer_config.native_backend = config.trainer_backend.clone();
+            trainer_config.workload_kind = config.workload_kind;
+            trainer_config.native_backend = config.trainer_backend;
             trainer_config.start_sentinel = Some(start_sentinel.clone());
             trainer_config.persist_identity = true;
             trainer_config.startup_timeout_secs = config.startup_timeout_secs;
@@ -2183,8 +2197,8 @@ pub fn run_synthetic_process_soak(
                     report_path.clone(),
                     vec![validator_addr.clone()],
                 );
-                trainer_config.workload_kind = config.workload_kind.clone();
-                trainer_config.native_backend = config.trainer_backend.clone();
+                trainer_config.workload_kind = config.workload_kind;
+                trainer_config.native_backend = config.trainer_backend;
                 trainer_config.start_sentinel = Some(round_start_sentinel.clone());
                 trainer_config.persist_identity = true;
                 trainer_config.startup_timeout_secs = config.startup_timeout_secs;
@@ -2238,9 +2252,9 @@ pub fn run_synthetic_process_soak(
     let validator_report = read_process_report(&validator_report_path).unwrap_or(validator_report);
 
     let mut summary = SyntheticSoakSummary {
-        workload_kind: config.workload_kind.clone(),
-        trainer_backend: config.trainer_backend.clone(),
-        validator_backend: config.validator_backend.clone(),
+        workload_kind: config.workload_kind,
+        trainer_backend: config.trainer_backend,
+        validator_backend: config.validator_backend,
         trainer_count: config.trainer_count,
         trainer_window_count: config.trainer_window_count,
         continuous_training: config.continuous_training,

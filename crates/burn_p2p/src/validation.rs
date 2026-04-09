@@ -41,7 +41,7 @@ use robustness::{PeerRobustnessState, project_robustness_state};
 const VALIDATION_QUORUM_WAIT: Duration = Duration::from_secs(5);
 const REDUCER_PROPOSAL_WAIT: Duration = Duration::from_secs(2);
 const VALIDATION_PREPARE_REMOTE_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(750);
-const VALIDATION_ARTIFACT_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
+const VALIDATION_ARTIFACT_SYNC_TIMEOUT: Duration = Duration::from_secs(15);
 const VALIDATION_PROMOTION_GRACE: Duration = Duration::from_millis(300);
 const VALIDATION_COORDINATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -659,6 +659,27 @@ impl<P> RunningNode<P> {
                 draft: None,
             }));
         }
+        {
+            let node = self
+                .node
+                .as_mut()
+                .expect("running node should retain prepared node");
+            let project = &mut node.project;
+            let device = project.runtime_device();
+            let cache = self
+                .validation_cache
+                .as_mut()
+                .and_then(|cache| cache.downcast_mut::<ValidationCandidateCache<P::Model>>())
+                .expect("validation candidate cache should be initialized");
+            if cache.base_model.is_none() {
+                cache.base_model = Some(load_validation_base_model(
+                    project,
+                    &prepared.current_head,
+                    &prepared.store,
+                    &device,
+                )?);
+            }
+        }
         for candidate in candidate_heads {
             let already_cached = self
                 .validation_cache
@@ -686,19 +707,6 @@ impl<P> RunningNode<P> {
                     .expect("running node should retain prepared node");
                 let project = &mut node.project;
                 let device = project.runtime_device();
-                let cache = self
-                    .validation_cache
-                    .as_mut()
-                    .and_then(|cache| cache.downcast_mut::<ValidationCandidateCache<P::Model>>())
-                    .expect("validation candidate cache should be initialized");
-                if cache.base_model.is_none() {
-                    cache.base_model = Some(load_validation_base_model(
-                        project,
-                        &prepared.current_head,
-                        &prepared.store,
-                        &device,
-                    )?);
-                }
                 load_validation_candidate_model(
                     project,
                     ValidationCandidateLoadArgs {
@@ -831,7 +839,7 @@ impl<P> RunningNode<P> {
             .collect::<Vec<_>>();
         candidate_models.sort_by(|left, right| {
             left.peer_id
-                .cmp(&right.peer_id)
+                .cmp(right.peer_id)
                 .then(left.head.head_id.cmp(&right.head.head_id))
                 .then(left.head.artifact_id.cmp(&right.head.artifact_id))
         });
@@ -999,14 +1007,13 @@ impl<P> RunningNode<P> {
                 Some(draft),
             )
         };
-        if let Some(draft) = cache_draft {
-            if let Some(cache) = self
+        if let Some(draft) = cache_draft
+            && let Some(cache) = self
                 .validation_cache
                 .as_mut()
                 .and_then(|cache| cache.downcast_mut::<ValidationCandidateCache<P::Model>>())
-            {
-                cache.draft = Some(draft);
-            }
+        {
+            cache.draft = Some(draft);
         }
         if robustness.canary_report.is_none() {
             let canary_report = build_validation_canary_report(
@@ -2173,7 +2180,7 @@ mod tests {
             experiment_id: ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
         };
-        let candidates = vec![
+        let candidates = [
             ValidationCandidate {
                 peer_id: PeerId::new("peer-good"),
                 head: HeadDescriptor {
@@ -2506,7 +2513,7 @@ mod tests {
                 quality_weight: 1.0,
                 model: (),
             };
-        let candidates = vec![
+        let candidates = [
             candidate("peer-a", "artifact-a", "head-a", 0.35),
             candidate("peer-b", "artifact-b", "head-b", 0.36),
             candidate("peer-c", "artifact-c", "head-c", 0.37),
@@ -2604,7 +2611,7 @@ mod tests {
             experiment_id: ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
         };
-        let candidates = vec![ValidationCandidate {
+        let candidates = [ValidationCandidate {
             peer_id: PeerId::new("peer-good"),
             head: HeadDescriptor {
                 head_id: HeadId::new("head-good"),

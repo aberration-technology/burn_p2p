@@ -647,12 +647,11 @@ impl<P> RunningNode<P> {
         }) {
             return Ok(());
         }
-        if let Some(mut stale_prefetch) = self.training_prefetch.take() {
-            if let Some(handle) = stale_prefetch.handle.take()
-                && handle.is_finished()
-            {
-                let _ = handle.join();
-            }
+        if let Some(mut stale_prefetch) = self.training_prefetch.take()
+            && let Some(handle) = stale_prefetch.handle.take()
+            && handle.is_finished()
+        {
+            let _ = handle.join();
         }
 
         let directory_entry = active_experiment_directory_entry(

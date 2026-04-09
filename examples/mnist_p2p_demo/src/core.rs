@@ -1767,6 +1767,7 @@ fn run_reducer_validation_round<P>(
 ) -> anyhow::Result<DemoValidationResult>
 where
     P: P2pWorkload + Send,
+    P::Model: Send + 'static,
 {
     let reduced = reducer
         .reduce_candidates_once(experiment)?
@@ -1943,6 +1944,7 @@ fn run_parallel_demo_validation_drivers<P>(
 )>
 where
     P: P2pWorkload + Send,
+    P::Model: Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
     thread::scope(|scope| {
@@ -1992,6 +1994,7 @@ fn run_demo_validation_driver<P>(
 ) -> anyhow::Result<(usize, Option<burn_p2p::ValidationOutcome>)>
 where
     P: P2pWorkload,
+    P::Model: Send + 'static,
 {
     let mut attempts = 0usize;
     let mut promoted = None;
@@ -2090,6 +2093,7 @@ fn run_demo_validation_attempt<P>(
 ) -> anyhow::Result<Option<burn_p2p::ValidationOutcome>>
 where
     P: P2pWorkload,
+    P::Model: Send + 'static,
 {
     *attempts += 1;
     let started_at = Instant::now();
