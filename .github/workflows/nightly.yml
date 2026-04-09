@@ -22,6 +22,7 @@ jobs:
         with:
           node-version: "20"
       - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
       - run: cargo xtask ci nightly --keep-artifacts
       - if: always()
         uses: actions/upload-artifact@v4

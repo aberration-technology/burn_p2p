@@ -238,7 +238,7 @@ fn trainer_runtime(network_id: &NetworkId) -> BrowserWorkerRuntime {
         browser_capability(),
         BrowserTransportStatus {
             active: None,
-            webrtc_direct_enabled: false,
+            webrtc_direct_enabled: true,
             webtransport_enabled: true,
             wss_fallback_enabled: true,
             last_error: None,
@@ -416,7 +416,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
     assert_eq!(runtime.state, Some(BrowserRuntimeState::Trainer));
     assert_eq!(
         runtime.transport.active,
-        Some(BrowserTransportKind::WebTransport)
+        Some(BrowserTransportKind::WebRtcDirect)
     );
 
     let post_sync = runtime.apply_command(
@@ -524,7 +524,7 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
         browser_capability(),
         BrowserTransportStatus {
             active: None,
-            webrtc_direct_enabled: false,
+            webrtc_direct_enabled: true,
             webtransport_enabled: true,
             wss_fallback_enabled: true,
             last_error: None,
@@ -555,6 +555,10 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
         Some(&session),
     );
     assert_eq!(runtime.state, Some(BrowserRuntimeState::Verifier));
+    assert_eq!(
+        runtime.transport.active,
+        Some(BrowserTransportKind::WebRtcDirect)
+    );
 
     let verify_events = runtime.apply_command(
         BrowserWorkerCommand::Verify(BrowserValidationPlan {

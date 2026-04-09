@@ -94,6 +94,40 @@ Core benches:
 cargo xtask bench core
 ```
 
+Network dynamics bench:
+
+```bash
+cargo xtask bench network
+```
+
+This runs a metrics-backed native synthetic soak plus a larger-fleet discovery
+simulation and writes deployment-shaped performance artifacts such as
+train/validation throughput, idle ratios, startup/sync/convergence timing, and
+peer-visibility continuity into `metrics/network-bench-summary.json`. The
+native soak now keeps trainers alive across multiple windows so the bench
+captures steady-state lease reuse and next-window prefetch behavior instead of
+mostly measuring cold restarts.
+
+Native accelerator bench:
+
+```bash
+cargo xtask bench accelerator
+```
+
+This runs a real native Burn autodiff probe against `cuda` or `wgpu` and writes
+`metrics/native-accelerator-summary.json`. The default backend request is
+`auto`, which tries `cuda` first and then `wgpu`. Override it with:
+
+```bash
+export BURN_P2P_NATIVE_ACCELERATOR_BACKEND=wgpu   # or cuda / auto
+export BURN_P2P_NATIVE_ACCELERATOR_MATRIX_SIZE=1024
+export BURN_P2P_NATIVE_ACCELERATOR_WARMUP=3
+export BURN_P2P_NATIVE_ACCELERATOR_ITERATIONS=10
+```
+
+On machines without a supported native accelerator, the lane records `skipped`
+instead of failing the whole bench run.
+
 Adversarial smoke and matrix:
 
 ```bash
@@ -118,6 +152,31 @@ Release readiness:
 ```bash
 cargo xtask check publish
 ```
+
+Live OIDC validation against a real IdP:
+
+```bash
+export BURN_P2P_REAL_OIDC_ISSUER=...
+export BURN_P2P_REAL_OIDC_CLIENT_ID=...
+export BURN_P2P_REAL_OIDC_ID_TOKEN=...
+export BURN_P2P_REAL_OIDC_EXPECTED_SUBJECT=...
+cargo xtask check auth-oidc-live --profile nightly
+```
+
+Optional env vars such as `BURN_P2P_REAL_OIDC_ACCESS_TOKEN`,
+`BURN_P2P_REAL_OIDC_USERINFO_URL`, `BURN_P2P_REAL_OIDC_JWKS_URL`,
+`BURN_P2P_REAL_OIDC_EXPECTED_EMAIL`, and
+`BURN_P2P_REAL_OIDC_EXPECTED_DISPLAY_NAME` let the same lane validate live
+userinfo hydration and stricter claim mapping against a corporate IdP.
+
+Redis-backed browser-edge auth HA and failure-mode validation:
+
+```bash
+cargo xtask check auth-redis-live --profile nightly
+```
+
+This lane requires `redis-server` on `PATH`. It exercises shared pending-login
+state across edges plus restart, lock-contention, and transient-loss behavior.
 
 `check publish` allows dirty local worktrees by default so package and dry-run
 checks remain usable while iterating. CI still runs the same path on a clean

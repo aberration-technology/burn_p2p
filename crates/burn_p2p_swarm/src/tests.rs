@@ -24,9 +24,10 @@ use super::{
     AggregateProposalAnnouncement, ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot,
     ExperimentControlEnvelope, ExperimentOverlaySet, HeadAnnouncement, LiveControlPlaneEvent,
     LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator,
-    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerObservation, PeerStore, ProtocolSet,
-    PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
-    RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
+    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerDirectoryAnnouncement,
+    PeerObservation, PeerStore, ProtocolSet, PubsubEnvelope, PubsubPayload,
+    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress,
+    SwarmError, TransportKind, ValidationQuorumAnnouncement,
 };
 use burn_p2p_experiment::ActivationTarget;
 
@@ -172,12 +173,20 @@ fn browser_transport_policy_prefers_browser_transports() {
     assert_eq!(
         policy.preferred_transports,
         vec![
-            TransportKind::WebTransport,
             TransportKind::WebRtc,
+            TransportKind::WebTransport,
             TransportKind::WebSocket,
         ]
     );
+    assert_eq!(policy.target_bootstrap_seed_connections, 0);
     assert!(!policy.enable_local_discovery);
+    assert!(!policy.enable_relay_client);
+    assert!(!policy.enable_relay_server);
+    assert!(!policy.enable_hole_punching);
+    assert!(!policy.enable_autonat);
+    assert!(!policy.enable_rendezvous_client);
+    assert!(!policy.enable_rendezvous_server);
+    assert!(!policy.enable_kademlia);
 }
 
 #[test]
@@ -191,7 +200,15 @@ fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
             TransportKind::WebSocket,
         ]
     );
+    assert_eq!(policy.target_bootstrap_seed_connections, 0);
     assert!(!policy.enable_local_discovery);
+    assert!(policy.enable_relay_client);
+    assert!(!policy.enable_relay_server);
+    assert!(policy.enable_hole_punching);
+    assert!(policy.enable_autonat);
+    assert!(policy.enable_rendezvous_client);
+    assert!(!policy.enable_rendezvous_server);
+    assert!(policy.enable_kademlia);
 }
 
 #[test]
@@ -202,10 +219,18 @@ fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
     ]));
 
     assert_eq!(policy.target_connected_peers, 8);
+    assert_eq!(policy.target_bootstrap_seed_connections, 0);
     assert_eq!(policy.max_established_incoming, Some(96));
     assert_eq!(policy.max_established_total, Some(128));
     assert_eq!(policy.max_established_per_peer, Some(1));
     assert!(!policy.enable_local_discovery);
+    assert!(policy.enable_relay_client);
+    assert!(policy.enable_relay_server);
+    assert!(policy.enable_hole_punching);
+    assert!(policy.enable_autonat);
+    assert!(policy.enable_rendezvous_client);
+    assert!(policy.enable_rendezvous_server);
+    assert!(policy.enable_kademlia);
 }
 
 fn semantic_test_overlay() -> OverlayTopic {
@@ -313,6 +338,24 @@ fn semantic_test_validation_quorum(
     }
 }
 
+fn semantic_test_peer_directory(
+    peer_id: &str,
+    addresses: &[&str],
+    roles: Option<PeerRoleSet>,
+    announced_at: chrono::DateTime<Utc>,
+) -> PeerDirectoryAnnouncement {
+    PeerDirectoryAnnouncement {
+        network_id: NetworkId::new("semantic-net"),
+        peer_id: PeerId::new(peer_id),
+        addresses: addresses
+            .iter()
+            .map(|address| SwarmAddress::new(*address).expect("peer directory address"))
+            .collect(),
+        advertised_roles: roles,
+        announced_at,
+    }
+}
+
 #[test]
 fn pubsub_message_id_ignores_timestamps_and_provider_order_for_semantic_duplicates() {
     let now = Utc::now();
@@ -387,6 +430,95 @@ fn aggregate_proposal_announcements_coalesce_semantic_duplicates_and_union_provi
             .map(|peer| peer.as_str())
             .collect::<Vec<_>>(),
         vec!["provider-a", "provider-b", "provider-c"]
+    );
+}
+
+#[test]
+fn peer_directory_message_id_ignores_timestamps_and_address_order() {
+    let now = Utc::now();
+    let first = PubsubEnvelope {
+        topic_path: OverlayTopic::control(NetworkId::new("semantic-net"))
+            .path
+            .clone(),
+        payload: PubsubPayload::PeerDirectory(semantic_test_peer_directory(
+            "peer-a",
+            &["/ip4/127.0.0.1/tcp/4011", "/ip4/127.0.0.1/tcp/4012"],
+            Some(PeerRoleSet::new([
+                burn_p2p_core::PeerRole::TrainerCpu,
+                burn_p2p_core::PeerRole::Validator,
+            ])),
+            now,
+        )),
+        published_at: now,
+    };
+    let second = PubsubEnvelope {
+        topic_path: OverlayTopic::control(NetworkId::new("semantic-net"))
+            .path
+            .clone(),
+        payload: PubsubPayload::PeerDirectory(semantic_test_peer_directory(
+            "peer-a",
+            &["/ip4/127.0.0.1/tcp/4012", "/ip4/127.0.0.1/tcp/4011"],
+            Some(PeerRoleSet::new([
+                burn_p2p_core::PeerRole::Validator,
+                burn_p2p_core::PeerRole::TrainerCpu,
+            ])),
+            now + chrono::Duration::seconds(30),
+        )),
+        published_at: now + chrono::Duration::seconds(45),
+    };
+
+    let first_id = super::pubsub_semantic_message_id(
+        &serde_json::to_vec(&first).expect("encode first envelope"),
+    );
+    let second_id = super::pubsub_semantic_message_id(
+        &serde_json::to_vec(&second).expect("encode second envelope"),
+    );
+
+    assert_eq!(first_id, second_id);
+}
+
+#[test]
+fn peer_directory_announcements_coalesce_by_peer_and_union_addresses() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::PeerDirectory(semantic_test_peer_directory(
+            "peer-a",
+            &["/ip4/127.0.0.1/tcp/4021"],
+            Some(PeerRoleSet::new([burn_p2p_core::PeerRole::TrainerCpu])),
+            now,
+        )),
+    );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::PeerDirectory(semantic_test_peer_directory(
+            "peer-a",
+            &["/ip4/127.0.0.1/tcp/4022", "/ip4/127.0.0.1/tcp/4021"],
+            Some(PeerRoleSet::new([burn_p2p_core::PeerRole::Validator])),
+            now + chrono::Duration::seconds(10),
+        )),
+    );
+
+    assert_eq!(snapshot.peer_directory_announcements.len(), 1);
+    assert_eq!(
+        snapshot.peer_directory_announcements[0]
+            .addresses
+            .iter()
+            .map(|address| address.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/ip4/127.0.0.1/tcp/4021", "/ip4/127.0.0.1/tcp/4022"]
+    );
+    assert_eq!(
+        snapshot.peer_directory_announcements[0]
+            .advertised_roles
+            .as_ref()
+            .expect("advertised roles")
+            .roles,
+        BTreeSet::from([
+            burn_p2p_core::PeerRole::TrainerCpu,
+            burn_p2p_core::PeerRole::Validator,
+        ])
     );
 }
 
@@ -1504,6 +1636,400 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_qui
 }
 
 #[test]
+fn native_control_plane_shell_reserves_and_dials_relay_paths() {
+    let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
+    let relay_roles = PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]);
+    let client_policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    let relay_policy = RuntimeTransportPolicy::native_for_roles(&relay_roles);
+
+    let mut relay_seed =
+        NativeControlPlaneShell::new(protocols.control.clone(), relay_policy).expect("relay seed");
+    let mut listener =
+        NativeControlPlaneShell::new(protocols.control.clone(), client_policy.clone())
+            .expect("listener");
+    let mut dialer =
+        NativeControlPlaneShell::new(protocols.control, client_policy).expect("dialer");
+
+    relay_seed
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("relay addr"))
+        .expect("relay listen");
+    let relay_seed_addr = loop {
+        match relay_seed.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("relay seed did not produce a listen address"),
+        }
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("listener addr"))
+        .expect("listener listen");
+    dialer
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("dialer addr"))
+        .expect("dialer listen");
+
+    let drain_until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < drain_until {
+        let _ = listener.wait_event(Duration::from_millis(10));
+        let _ = dialer.wait_event(Duration::from_millis(10));
+    }
+
+    listener
+        .dial(relay_seed_addr.clone())
+        .expect("dial relay seed");
+
+    let mut relay_addr = None;
+    let reservation_deadline = Instant::now() + Duration::from_secs(10);
+    while relay_addr.is_none() {
+        assert!(
+            Instant::now() < reservation_deadline,
+            "listener did not confirm a relayed reachable address"
+        );
+
+        let _ = relay_seed.wait_event(Duration::from_millis(50));
+        if let Some(event) = listener.wait_event(Duration::from_millis(50)) {
+            match event {
+                LiveControlPlaneEvent::ReachableAddressConfirmed { address }
+                | LiveControlPlaneEvent::NewListenAddr { address }
+                    if address.is_relay_circuit() =>
+                {
+                    relay_addr = Some(address);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let relay_addr = relay_addr.expect("relay address");
+    dialer.dial(relay_addr).expect("dial relayed listener");
+
+    let connect_deadline = Instant::now() + Duration::from_secs(10);
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < connect_deadline,
+            "relayed peers did not connect through relay reservation"
+        );
+
+        let _ = relay_seed.wait_event(Duration::from_millis(25));
+        if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+            listener_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+        if let Some(event) = dialer.wait_event(Duration::from_millis(25)) {
+            dialer_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+    }
+}
+
+#[test]
+fn native_control_plane_shell_discovers_peers_via_rendezvous_seed() {
+    let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
+    let seed_roles = PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]);
+    let client_policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    let seed_policy = RuntimeTransportPolicy::native_for_roles(&seed_roles);
+
+    let mut seed =
+        NativeControlPlaneShell::new(protocols.control.clone(), seed_policy).expect("seed");
+    let mut listener =
+        NativeControlPlaneShell::new(protocols.control.clone(), client_policy.clone())
+            .expect("listener");
+    let mut dialer =
+        NativeControlPlaneShell::new(protocols.control, client_policy).expect("dialer");
+
+    let listener_peer_id = listener.local_peer_id().to_string();
+    let dialer_peer_id = dialer.local_peer_id().to_string();
+
+    seed.listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("seed addr"))
+        .expect("seed listen");
+    let seed_addr = loop {
+        match seed.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("seed did not produce a listen address"),
+        }
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("listener addr"))
+        .expect("listener listen");
+    dialer
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("dialer addr"))
+        .expect("dialer listen");
+
+    let drain_until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < drain_until {
+        let _ = listener.wait_event(Duration::from_millis(10));
+        let _ = dialer.wait_event(Duration::from_millis(10));
+    }
+
+    listener
+        .dial(seed_addr.clone())
+        .expect("listener dial seed");
+
+    let mut listener_relay_addr = None;
+    let mut listener_registered = false;
+    let listener_ready_deadline = Instant::now() + Duration::from_secs(12);
+    while listener_relay_addr.is_none() || !listener_registered {
+        assert!(
+            Instant::now() < listener_ready_deadline,
+            "listener did not register a rendezvous-backed relay address"
+        );
+
+        let _ = seed.wait_event(Duration::from_millis(25));
+        if let Some(event) = listener.wait_event(Duration::from_millis(50)) {
+            match event {
+                LiveControlPlaneEvent::ReachableAddressConfirmed { address }
+                | LiveControlPlaneEvent::NewListenAddr { address }
+                    if address.is_relay_circuit() =>
+                {
+                    listener_relay_addr = Some(address);
+                }
+                LiveControlPlaneEvent::Other { kind }
+                    if kind.starts_with("rendezvous-registered:") =>
+                {
+                    listener_registered = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let listener_relay_addr = listener_relay_addr.expect("listener relay addr");
+    dialer.dial(seed_addr).expect("dialer dial seed");
+
+    let mut discovered_listener_addr = None;
+    let discovery_deadline = Instant::now() + Duration::from_secs(12);
+    while discovered_listener_addr.is_none() {
+        assert!(
+            Instant::now() < discovery_deadline,
+            "dialer did not discover listener via rendezvous seed"
+        );
+
+        let _ = seed.wait_event(Duration::from_millis(25));
+        let _ = listener.wait_event(Duration::from_millis(25));
+        if let Some(event) = dialer.wait_event(Duration::from_millis(50)) {
+            match event {
+                LiveControlPlaneEvent::PeersDiscovered { peers } => {
+                    for (peer_id, address) in peers {
+                        if peer_id == listener_peer_id && address.is_relay_circuit() {
+                            discovered_listener_addr = Some(address);
+                            break;
+                        }
+                    }
+                }
+                LiveControlPlaneEvent::Other { kind }
+                    if kind.starts_with("rendezvous-discover-failed:") =>
+                {
+                    panic!("rendezvous discovery failed: {kind}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let discovered_listener_addr = discovered_listener_addr.expect("discovered listener addr");
+    assert_eq!(discovered_listener_addr, listener_relay_addr);
+    dialer
+        .dial(discovered_listener_addr)
+        .expect("dial discovered listener");
+
+    let connect_deadline = Instant::now() + Duration::from_secs(12);
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < connect_deadline,
+            "rendezvous-discovered peers did not connect"
+        );
+
+        let _ = seed.wait_event(Duration::from_millis(25));
+        if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+            listener_connected |= matches!(
+                event,
+                LiveControlPlaneEvent::ConnectionEstablished { peer_id } if peer_id == dialer_peer_id
+            );
+        }
+        if let Some(event) = dialer.wait_event(Duration::from_millis(25)) {
+            dialer_connected |= matches!(
+                event,
+                LiveControlPlaneEvent::ConnectionEstablished { peer_id } if peer_id == listener_peer_id
+            );
+        }
+    }
+}
+
+#[test]
+fn native_control_plane_shell_discovers_peers_via_kademlia_seed() {
+    let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
+    let seed_roles = PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]);
+    let mut client_policy =
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    client_policy.enable_rendezvous_client = false;
+    let mut seed_policy = RuntimeTransportPolicy::native_for_roles(&seed_roles);
+    seed_policy.enable_rendezvous_client = false;
+    seed_policy.enable_rendezvous_server = false;
+
+    let mut seed =
+        NativeControlPlaneShell::new(protocols.control.clone(), seed_policy).expect("seed");
+    let mut listener =
+        NativeControlPlaneShell::new(protocols.control.clone(), client_policy.clone())
+            .expect("listener");
+    let mut dialer =
+        NativeControlPlaneShell::new(protocols.control, client_policy).expect("dialer");
+
+    let listener_peer_id = listener.local_peer_id().to_string();
+
+    seed.listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("seed addr"))
+        .expect("seed listen");
+    let seed_addr = loop {
+        match seed.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("seed did not produce a listen address"),
+        }
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("listener addr"))
+        .expect("listener listen");
+    dialer
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("dialer addr"))
+        .expect("dialer listen");
+
+    listener
+        .dial(seed_addr.clone())
+        .expect("listener dial seed");
+    dialer.dial(seed_addr).expect("dialer dial seed");
+
+    let discovery_deadline = Instant::now() + Duration::from_secs(15);
+    let mut discovered_listener = false;
+    while !discovered_listener {
+        assert!(
+            Instant::now() < discovery_deadline,
+            "dialer did not discover listener through kademlia seed"
+        );
+
+        let _ = seed.wait_event(Duration::from_millis(25));
+        let _ = listener.wait_event(Duration::from_millis(25));
+        if let Some(LiveControlPlaneEvent::PeersDiscovered { peers }) =
+            dialer.wait_event(Duration::from_millis(50))
+        {
+            discovered_listener = peers
+                .into_iter()
+                .any(|(peer_id, _)| peer_id == listener_peer_id);
+        }
+    }
+}
+
+#[test]
+fn native_control_plane_shell_recovers_peer_directory_records_via_kademlia_seed() {
+    let network_id = NetworkId::new("network");
+    let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
+    let seed_roles = PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]);
+    let mut client_policy =
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    client_policy.enable_rendezvous_client = false;
+    let mut seed_policy = RuntimeTransportPolicy::native_for_roles(&seed_roles);
+    seed_policy.enable_rendezvous_client = false;
+    seed_policy.enable_rendezvous_server = false;
+
+    let mut seed =
+        NativeControlPlaneShell::new(protocols.control.clone(), seed_policy).expect("seed");
+    let mut listener =
+        NativeControlPlaneShell::new(protocols.control.clone(), client_policy.clone())
+            .expect("listener");
+    let mut dialer =
+        NativeControlPlaneShell::new(protocols.control, client_policy).expect("dialer");
+
+    let listener_peer_id = listener.local_peer_id().to_string();
+    let listener_peer = PeerId::new(listener_peer_id.clone());
+
+    seed.listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("seed addr"))
+        .expect("seed listen");
+    let seed_addr = loop {
+        match seed.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("seed did not produce a listen address"),
+        }
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("listener addr"))
+        .expect("listener listen");
+    let listener_addr = loop {
+        match listener.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("listener did not produce a listen address"),
+        }
+    };
+    dialer
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("dialer addr"))
+        .expect("dialer listen");
+
+    listener
+        .dial(seed_addr.clone())
+        .expect("listener dial seed");
+    dialer.dial(seed_addr).expect("dialer dial seed");
+    listener.publish_peer_directory(PeerDirectoryAnnouncement {
+        network_id,
+        peer_id: listener_peer.clone(),
+        addresses: vec![listener_addr.clone()],
+        advertised_roles: Some(PeerRoleSet::new([burn_p2p_core::PeerRole::TrainerCpu])),
+        announced_at: Utc::now(),
+    });
+
+    let discovery_deadline = Instant::now() + Duration::from_secs(15);
+    let mut discovered_record = None;
+    while discovered_record.is_none() {
+        assert!(
+            Instant::now() < discovery_deadline,
+            "dialer did not recover the listener peer-directory record through kademlia"
+        );
+
+        let _ = seed.wait_event(Duration::from_millis(25));
+        let _ = listener.wait_event(Duration::from_millis(25));
+        if let Some(LiveControlPlaneEvent::PeerDirectoryRecordReceived { announcement }) =
+            dialer.wait_event(Duration::from_millis(50))
+            && announcement.peer_id.as_str() == listener_peer_id
+        {
+            discovered_record = Some(announcement);
+        }
+    }
+
+    let announcement = discovered_record.expect("peer-directory announcement");
+    assert_eq!(announcement.addresses, vec![listener_addr]);
+    let roles = announcement
+        .advertised_roles
+        .expect("advertised roles from kademlia record");
+    assert!(roles.contains(&burn_p2p_core::PeerRole::TrainerCpu));
+    assert!(
+        dialer
+            .snapshot()
+            .peer_directory_announcements
+            .iter()
+            .any(|entry| entry.peer_id == listener_peer),
+        "dialer snapshot did not retain the recovered peer-directory record"
+    );
+}
+
+#[test]
 fn native_control_plane_shell_propagates_control_announcements_over_pubsub() {
     let network_id = NetworkId::new("network");
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
@@ -1664,7 +2190,9 @@ fn native_control_plane_shell_transfers_artifact_manifests_and_chunks_over_tcp()
     .expect("native dialer");
 
     let descriptor = ArtifactDescriptor {
-        artifact_id: ArtifactId::new("artifact-1"),
+        artifact_id: ArtifactId::new(
+            "122064a6e0882435ad5c0e0c1853a12674b0be1e7b2adc99dfc3a299139b5da47048",
+        ),
         kind: ArtifactKind::ServeHead,
         head_id: Some(HeadId::new("head-1")),
         base_head_id: None,
@@ -1673,7 +2201,9 @@ fn native_control_plane_shell_transfers_artifact_manifests_and_chunks_over_tcp()
         record_format: "burn-record:bin".into(),
         bytes_len: 6,
         chunks: vec![ChunkDescriptor {
-            chunk_id: ChunkId::new("chunk-1"),
+            chunk_id: ChunkId::new(
+                "1220c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c",
+            ),
             offset_bytes: 0,
             length_bytes: 6,
             chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(

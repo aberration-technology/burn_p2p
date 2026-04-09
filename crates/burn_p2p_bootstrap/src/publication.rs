@@ -74,11 +74,9 @@ impl BootstrapAdminState {
         let Some(store) = self.publication_store()? else {
             return Ok(None);
         };
-        Ok(Some(store.head_view(
-            &self.head_descriptors,
-            &self.head_eval_reports,
-            head_id,
-        )?))
+        let mut view = store.head_view(&self.head_descriptors, &self.head_eval_reports, head_id)?;
+        view.provider_peer_ids = self.provider_peer_ids_for_head(head_id);
+        Ok(Some(view))
     }
 
     /// Queues or deduplicates one export job.

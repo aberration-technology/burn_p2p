@@ -1,4 +1,373 @@
 use super::*;
+use fs2::FileExt;
+use redis::Commands;
+use std::time::{Duration as StdDuration, Instant};
+
+const REDIS_SESSION_LOCK_TTL_MS: u64 = 120_000;
+const REDIS_SESSION_LOCK_WAIT_MS: u64 = 5_000;
+const REDIS_SESSION_LOCK_RETRY_MS: u64 = 25;
+
+fn default_session_state_path(authority_key_path: &std::path::Path) -> PathBuf {
+    let file_name = authority_key_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("bootstrap-auth");
+    authority_key_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("{file_name}.auth-state.cbor"))
+}
+
+pub(super) fn auth_session_state_store(
+    config: &BootstrapAuthConfig,
+    network_id: &NetworkId,
+) -> AuthSessionStateStore {
+    match config.session_state_backend.as_ref() {
+        Some(BootstrapAuthSessionBackendConfig::File { path }) => AuthSessionStateStore::File {
+            lock_path: path.with_extension("lock"),
+            state_path: path.clone(),
+        },
+        Some(BootstrapAuthSessionBackendConfig::Redis { url, key_prefix }) => {
+            let base = format!(
+                "{}:{}:{}",
+                key_prefix,
+                network_id.as_str(),
+                config.authority_name.replace(':', "_"),
+            );
+            AuthSessionStateStore::Redis {
+                url: url.clone(),
+                state_key: format!("{base}:state"),
+                lock_key: format!("{base}:lock"),
+            }
+        }
+        None => {
+            let state_path = config
+                .session_state_path
+                .clone()
+                .unwrap_or_else(|| default_session_state_path(&config.authority_key_path));
+            AuthSessionStateStore::File {
+                lock_path: state_path.with_extension("lock"),
+                state_path,
+            }
+        }
+    }
+}
+
+fn load_persisted_auth_state_from_bytes(
+    bytes: Option<Vec<u8>>,
+) -> Result<Option<PersistedAuthPortalState>, Box<dyn std::error::Error>> {
+    bytes
+        .map(|bytes| burn_p2p_core::from_cbor_slice::<PersistedAuthPortalState>(&bytes))
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn load_persisted_auth_state_from_file(
+    state_path: &std::path::Path,
+    lock_path: &std::path::Path,
+) -> Result<Option<PersistedAuthPortalState>, Box<dyn std::error::Error>> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock_file.lock_exclusive()?;
+    let state = if state_path.exists() {
+        load_persisted_auth_state_from_bytes(Some(std::fs::read(state_path)?))?
+    } else {
+        None
+    };
+    fs2::FileExt::unlock(&lock_file)?;
+    Ok(state)
+}
+
+fn redis_connection(url: &str) -> Result<redis::Connection, Box<dyn std::error::Error>> {
+    Ok(redis::Client::open(url)?.get_connection()?)
+}
+
+fn load_persisted_auth_state_from_redis(
+    url: &str,
+    state_key: &str,
+) -> Result<Option<PersistedAuthPortalState>, Box<dyn std::error::Error>> {
+    let mut connection = redis_connection(url)?;
+    let bytes = connection.get::<_, Option<Vec<u8>>>(state_key)?;
+    load_persisted_auth_state_from_bytes(bytes)
+}
+
+fn acquire_redis_session_lock(
+    url: &str,
+    lock_key: &str,
+) -> Result<(redis::Connection, String), Box<dyn std::error::Error>> {
+    let mut connection = redis_connection(url)?;
+    let lock_token = burn_p2p_security::random_login_state_token("auth session redis lock")
+        .map_err(Box::<dyn std::error::Error>::from)?;
+    let deadline = Instant::now() + StdDuration::from_millis(REDIS_SESSION_LOCK_WAIT_MS);
+    loop {
+        let acquired = redis::cmd("SET")
+            .arg(lock_key)
+            .arg(&lock_token)
+            .arg("NX")
+            .arg("PX")
+            .arg(REDIS_SESSION_LOCK_TTL_MS)
+            .query::<Option<String>>(&mut connection)?;
+        if acquired.is_some() {
+            return Ok((connection, lock_token));
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("timed out acquiring redis auth session lock `{lock_key}`"),
+            )
+            .into());
+        }
+        std::thread::sleep(StdDuration::from_millis(REDIS_SESSION_LOCK_RETRY_MS));
+    }
+}
+
+fn release_redis_session_lock(
+    connection: &mut redis::Connection,
+    lock_key: &str,
+    lock_token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let script = redis::Script::new(
+        r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+"#,
+    );
+    let _deleted: i32 = script.key(lock_key).arg(lock_token).invoke(connection)?;
+    Ok(())
+}
+
+fn load_persisted_auth_state(
+    store: &AuthSessionStateStore,
+) -> Result<Option<PersistedAuthPortalState>, Box<dyn std::error::Error>> {
+    match store {
+        AuthSessionStateStore::File {
+            state_path,
+            lock_path,
+        } => load_persisted_auth_state_from_file(state_path, lock_path),
+        AuthSessionStateStore::Redis { url, state_key, .. } => {
+            load_persisted_auth_state_from_redis(url, state_key)
+        }
+    }
+}
+
+impl AuthPortalState {
+    fn apply_persisted_snapshot(
+        &self,
+        snapshot: Option<PersistedAuthPortalState>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let (sessions, connector_state) = match snapshot {
+            Some(snapshot) => (
+                snapshot
+                    .sessions
+                    .into_iter()
+                    .filter(|(_, session)| session.expires_at >= now)
+                    .collect(),
+                snapshot.connector_state,
+            ),
+            None => (BTreeMap::new(), None),
+        };
+        self.connector
+            .import_persistent_state(connector_state.as_deref())?;
+        let mut current_sessions = self
+            .sessions
+            .lock()
+            .expect("auth session state should not be poisoned");
+        *current_sessions = sessions;
+        Ok(())
+    }
+
+    fn snapshot_state(&self) -> Result<PersistedAuthPortalState, Box<dyn std::error::Error>> {
+        Ok(PersistedAuthPortalState {
+            sessions: self
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .clone(),
+            connector_state: self.connector.export_persistent_state()?,
+        })
+    }
+
+    fn with_shared_state<T, F>(
+        &self,
+        persist_after: bool,
+        operation: F,
+    ) -> Result<T, Box<dyn std::error::Error>>
+    where
+        F: FnOnce(&AuthPortalState) -> Result<T, Box<dyn std::error::Error>>,
+    {
+        let Some(store) = self.session_state_store.as_ref() else {
+            return operation(self);
+        };
+        match store {
+            AuthSessionStateStore::File {
+                state_path,
+                lock_path,
+            } => {
+                if let Some(parent) = lock_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if let Some(parent) = state_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let lock_file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(lock_path)?;
+                lock_file.lock_exclusive()?;
+                let snapshot = if state_path.exists() {
+                    load_persisted_auth_state_from_bytes(Some(std::fs::read(state_path)?))?
+                } else {
+                    None
+                };
+                self.apply_persisted_snapshot(snapshot)?;
+
+                let op_result = operation(self);
+                let persist_result: Result<(), Box<dyn std::error::Error>> = if persist_after {
+                    let snapshot = self.snapshot_state()?;
+                    let bytes = burn_p2p_core::deterministic_cbor(&snapshot)?;
+                    let temp_path = state_path.with_extension("tmp");
+                    std::fs::write(&temp_path, &bytes)?;
+                    std::fs::rename(&temp_path, state_path)?;
+                    Ok(())
+                } else {
+                    Ok(())
+                };
+                let unlock_result = fs2::FileExt::unlock(&lock_file);
+                unlock_result?;
+                persist_result?;
+                op_result
+            }
+            AuthSessionStateStore::Redis {
+                url,
+                state_key,
+                lock_key,
+            } => {
+                let (mut connection, lock_token) = acquire_redis_session_lock(url, lock_key)?;
+                let snapshot =
+                    load_persisted_auth_state_from_bytes(connection.get(state_key.as_str())?)?;
+                self.apply_persisted_snapshot(snapshot)?;
+                let op_result = operation(self);
+                let persist_result: Result<(), Box<dyn std::error::Error>> = if persist_after {
+                    let snapshot = self.snapshot_state()?;
+                    let bytes = burn_p2p_core::deterministic_cbor(&snapshot)?;
+                    connection.set::<_, _, ()>(state_key.as_str(), bytes)?;
+                    Ok(())
+                } else {
+                    Ok(())
+                };
+                let unlock_result =
+                    release_redis_session_lock(&mut connection, lock_key, &lock_token);
+                unlock_result?;
+                persist_result?;
+                op_result
+            }
+        }
+    }
+
+    pub(super) fn get_session(
+        &self,
+        session_id: &ContentId,
+    ) -> Result<Option<PrincipalSession>, Box<dyn std::error::Error>> {
+        self.with_shared_state(false, |auth| {
+            Ok(auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .get(session_id)
+                .cloned())
+        })
+    }
+
+    pub(super) fn begin_login(
+        &self,
+        request: LoginRequest,
+    ) -> Result<burn_p2p::LoginStart, Box<dyn std::error::Error>> {
+        self.with_shared_state(true, |auth| Ok(auth.connector.begin_login(request)?))
+    }
+
+    pub(super) fn complete_login(
+        &self,
+        callback: burn_p2p::CallbackPayload,
+    ) -> Result<PrincipalSession, Box<dyn std::error::Error>> {
+        self.with_shared_state(true, |auth| {
+            let session = auth.connector.complete_login(callback)?;
+            auth.sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .insert(session.session_id.clone(), session.clone());
+            Ok(session)
+        })
+    }
+
+    pub(super) fn refresh_session(
+        &self,
+        session_id: &ContentId,
+    ) -> Result<PrincipalSession, Box<dyn std::error::Error>> {
+        self.with_shared_state(true, |auth| {
+            let session = auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| "unknown session id".to_owned())?;
+            let refreshed = auth.connector.refresh(&session)?;
+            let mut sessions = auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned");
+            sessions.remove(session_id);
+            sessions.insert(refreshed.session_id.clone(), refreshed.clone());
+            Ok(refreshed)
+        })
+    }
+
+    pub(super) fn revoke_session(
+        &self,
+        session_id: &ContentId,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.with_shared_state(true, |auth| {
+            let session = auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .get(session_id)
+                .cloned();
+            if let Some(session) = session.as_ref() {
+                auth.connector.revoke(session)?;
+            }
+            let removed = auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .remove(session_id)
+                .is_some();
+            Ok(removed)
+        })
+    }
+
+    pub(super) fn restore_persisted_state(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(store) = self.session_state_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(snapshot) = load_persisted_auth_state(store)? else {
+            return Ok(());
+        };
+        self.apply_persisted_snapshot(Some(snapshot))
+    }
+}
 
 pub(super) fn build_auth_portal(
     config: &BootstrapAuthConfig,
@@ -69,9 +438,11 @@ pub(super) fn build_auth_portal(
             token_url,
             client_id,
             client_secret,
+            redirect_uri,
             userinfo_url,
             refresh_url,
             revoke_url,
+            jwks_url,
         } => build_github_portal_connector(
             session_ttl,
             principals.clone(),
@@ -81,9 +452,12 @@ pub(super) fn build_auth_portal(
                 token_url: token_url.clone(),
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
+                redirect_uri: redirect_uri.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
+                jwks_url: jwks_url.clone(),
+                persist_remote_tokens: config.persist_provider_tokens,
             },
         )?,
         BootstrapAuthConnectorConfig::Oidc {
@@ -93,9 +467,11 @@ pub(super) fn build_auth_portal(
             token_url,
             client_id,
             client_secret,
+            redirect_uri,
             userinfo_url,
             refresh_url,
             revoke_url,
+            jwks_url,
         } => build_oidc_portal_connector(
             issuer.clone(),
             session_ttl,
@@ -106,9 +482,12 @@ pub(super) fn build_auth_portal(
                 token_url: token_url.clone(),
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
+                redirect_uri: redirect_uri.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
+                jwks_url: jwks_url.clone(),
+                persist_remote_tokens: config.persist_provider_tokens,
             },
         )?,
         BootstrapAuthConnectorConfig::OAuth {
@@ -118,9 +497,11 @@ pub(super) fn build_auth_portal(
             token_url,
             client_id,
             client_secret,
+            redirect_uri,
             userinfo_url,
             refresh_url,
             revoke_url,
+            jwks_url,
         } => build_oauth_portal_connector(
             provider.clone(),
             session_ttl,
@@ -131,9 +512,12 @@ pub(super) fn build_auth_portal(
                 token_url: token_url.clone(),
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
+                redirect_uri: redirect_uri.clone(),
                 userinfo_url: userinfo_url.clone(),
                 refresh_url: refresh_url.clone(),
                 revoke_url: revoke_url.clone(),
+                jwks_url: jwks_url.clone(),
+                persist_remote_tokens: config.persist_provider_tokens,
             },
         )?,
         BootstrapAuthConnectorConfig::External {
@@ -169,10 +553,11 @@ pub(super) fn build_auth_portal(
         .collect::<BTreeMap<_, _>>();
     trusted_issuers.insert(active_issuer.issuer_peer_id.clone(), active_issuer);
 
-    Ok(AuthPortalState {
+    let auth_state = AuthPortalState {
         connector,
         login_providers,
         authority_key_path: config.authority_key_path.clone(),
+        session_state_store: Some(auth_session_state_store(config, &network_id)),
         network_id: network_id.clone(),
         protocol_version,
         issuer_key_id: Mutex::new(config.issuer_key_id.clone()),
@@ -189,7 +574,9 @@ pub(super) fn build_auth_portal(
         project_family_id: config.project_family_id.clone(),
         required_release_train_hash: config.required_release_train_hash.clone(),
         allowed_target_artifact_hashes: config.allowed_target_artifact_hashes.clone(),
-    })
+    };
+    auth_state.restore_persisted_state()?;
+    Ok(auth_state)
 }
 
 pub(super) fn auth_directory_entries(
@@ -199,13 +586,9 @@ pub(super) fn auth_directory_entries(
     let scopes = request
         .headers
         .get("x-session-id")
-        .and_then(|session_id| {
-            auth.sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(&ContentId::new(session_id.clone()))
-                .cloned()
-        })
+        .map(|session_id| auth.get_session(&ContentId::new(session_id.clone())))
+        .transpose()?
+        .flatten()
         .map(|session| session.claims.granted_scopes)
         .unwrap_or_default();
 

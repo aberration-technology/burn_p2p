@@ -25,13 +25,9 @@ pub(crate) fn handle_browser_post_route(
     let session = request
         .headers
         .get("x-session-id")
-        .and_then(|session_id| {
-            auth.sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(&ContentId::new(session_id.clone()))
-                .cloned()
-        })
+        .map(|session_id| auth.get_session(&ContentId::new(session_id.clone())))
+        .transpose()?
+        .flatten()
         .ok_or("browser receipt submission requires x-session-id")?;
     let receipts: Vec<burn_p2p::ContributionReceipt> = serde_json::from_slice(&request.body)?;
     if receipts
@@ -67,7 +63,7 @@ pub(crate) fn handle_auth_post_route(
     match (request.method.as_str(), request.path.as_str()) {
         ("POST", path) if auth.connector.matches_login_path(path) => {
             let login_request: LoginRequest = serde_json::from_slice(&request.body)?;
-            let login = auth.connector.begin_login(login_request)?;
+            let login = auth.begin_login(login_request)?;
             write_json(stream, &login)?;
         }
         ("POST", path) if auth.connector.matches_callback_path(path) => {
@@ -75,48 +71,17 @@ pub(crate) fn handle_auth_post_route(
             if callback.principal_id.is_none() {
                 callback.principal_id = auth.connector.trusted_callback_principal(request);
             }
-            let session = auth.connector.complete_login(callback)?;
-            auth.sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .insert(session.session_id.clone(), session.clone());
+            let session = auth.complete_login(callback)?;
             write_json(stream, &session)?;
         }
         ("POST", "/refresh") => {
             let refresh: SessionRequest = serde_json::from_slice(&request.body)?;
-            let session = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(&refresh.session_id)
-                .cloned()
-                .ok_or("unknown session id")?;
-            let refreshed = auth.connector.refresh(&session)?;
-            let mut sessions = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned");
-            sessions.remove(&refresh.session_id);
-            sessions.insert(refreshed.session_id.clone(), refreshed.clone());
+            let refreshed = auth.refresh_session(&refresh.session_id)?;
             write_json(stream, &refreshed)?;
         }
         ("POST", "/logout") => {
             let logout: SessionRequest = serde_json::from_slice(&request.body)?;
-            let session = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(&logout.session_id)
-                .cloned();
-            if let Some(session) = session.as_ref() {
-                auth.connector.revoke(session)?;
-            }
-            let logged_out = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .remove(&logout.session_id)
-                .is_some();
+            let logged_out = auth.revoke_session(&logout.session_id)?;
             write_json(stream, &LogoutResponse { logged_out })?;
         }
         ("POST", "/enroll") => {
@@ -141,11 +106,7 @@ pub(crate) fn handle_auth_post_route(
                 .into());
             }
             let session = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(&enroll.session_id)
-                .cloned()
+                .get_session(&enroll.session_id)?
                 .ok_or("unknown session id")?;
             let certificate = auth
                 .authority
@@ -159,10 +120,7 @@ pub(crate) fn handle_auth_post_route(
                     peer_id: enroll.peer_id,
                     peer_public_key_hex: enroll.peer_public_key_hex,
                     granted_roles: auth
-                        .sessions
-                        .lock()
-                        .expect("auth session state should not be poisoned")
-                        .get(&enroll.session_id)
+                        .get_session(&enroll.session_id)?
                         .map(|session| session.claims.granted_roles.clone())
                         .ok_or("unknown session id")?,
                     requested_scopes: enroll.requested_scopes,
@@ -318,7 +276,7 @@ pub(crate) fn execute_admin_action(
                     auth_config.reenrollment = Some(BootstrapReenrollmentConfig {
                         reason: reenrollment.reason,
                         rotated_at: reenrollment.rotated_at,
-                        legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
+                        retired_issuer_peer_ids: reenrollment.retired_issuer_peer_ids,
                     });
                 }
             }

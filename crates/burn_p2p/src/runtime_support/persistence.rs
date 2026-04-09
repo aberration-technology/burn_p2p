@@ -9,21 +9,21 @@ pub(crate) struct PersistedControlPlaneState {
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
     #[serde(default)]
+    pub peer_directory_announcements: Vec<PeerDirectoryAnnouncement>,
+    #[serde(default)]
     pub metrics_announcements: Vec<MetricsAnnouncement>,
 }
 
 impl PersistedControlPlaneState {
     fn from_snapshot(snapshot: &ControlPlaneSnapshot) -> Self {
-        let mut bounded_snapshot = ControlPlaneSnapshot {
-            metrics_announcements: snapshot.metrics_announcements.clone(),
-            ..ControlPlaneSnapshot::default()
-        };
-        bounded_snapshot.clamp_metrics_announcements();
+        let mut bounded_snapshot = snapshot.clone();
+        bounded_snapshot.clamp_announcement_histories();
         Self {
-            control_announcements: snapshot.control_announcements.clone(),
-            lease_announcements: snapshot.lease_announcements.clone(),
-            auth_announcements: snapshot.auth_announcements.clone(),
-            directory_announcements: snapshot.directory_announcements.clone(),
+            control_announcements: bounded_snapshot.control_announcements,
+            lease_announcements: bounded_snapshot.lease_announcements,
+            auth_announcements: bounded_snapshot.auth_announcements,
+            directory_announcements: bounded_snapshot.directory_announcements,
+            peer_directory_announcements: bounded_snapshot.peer_directory_announcements,
             metrics_announcements: bounded_snapshot.metrics_announcements,
         }
     }
@@ -33,8 +33,9 @@ impl PersistedControlPlaneState {
         snapshot.lease_announcements = self.lease_announcements;
         snapshot.auth_announcements = self.auth_announcements;
         snapshot.directory_announcements = self.directory_announcements;
+        snapshot.peer_directory_announcements = self.peer_directory_announcements;
         snapshot.metrics_announcements = self.metrics_announcements;
-        snapshot.clamp_metrics_announcements();
+        snapshot.clamp_announcement_histories();
     }
 
     fn apply_to_shell(self, shell: &mut ControlPlaneShell) {
@@ -50,6 +51,9 @@ impl PersistedControlPlaneState {
         for announcement in self.directory_announcements {
             shell.publish_directory(announcement);
         }
+        for announcement in self.peer_directory_announcements {
+            shell.publish_peer_directory(announcement);
+        }
         for announcement in self.metrics_announcements {
             shell.publish_metrics(announcement);
         }
@@ -60,6 +64,7 @@ impl PersistedControlPlaneState {
             && self.lease_announcements.is_empty()
             && self.auth_announcements.is_empty()
             && self.directory_announcements.is_empty()
+            && self.peer_directory_announcements.is_empty()
             && self.metrics_announcements.is_empty()
     }
 }
@@ -785,4 +790,17 @@ pub(crate) fn next_window_id(
             .map(|window_id| WindowId(window_id.0 + 1))
             .unwrap_or(WindowId(1)),
     )
+}
+
+pub(crate) fn inferred_next_window_id(
+    storage: &StorageConfig,
+    experiment: &ExperimentHandle,
+    current_head: Option<&HeadDescriptor>,
+) -> anyhow::Result<WindowId> {
+    let persisted = next_window_id(storage, experiment)?;
+    let inferred_from_head = current_head
+        .and_then(|head| head.global_step.checked_add(1))
+        .map(WindowId)
+        .unwrap_or(WindowId(1));
+    Ok(std::cmp::max(persisted, inferred_from_head))
 }

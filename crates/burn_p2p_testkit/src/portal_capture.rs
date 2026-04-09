@@ -27,7 +27,7 @@ use burn_p2p_core::{
     PeerWindowStatus, RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata,
     SignedPayload, TrustBundleExport,
 };
-use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
+use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
 use burn_p2p_views::BrowserAppSurface;
 use chrono::{DateTime, Utc};
 use semver::Version;
@@ -348,61 +348,56 @@ fn scenario_metrics_catchup(
         .or_else(|| edge_snapshot.heads.first().map(|head| head.head_id.clone()))
         .unwrap_or_else(|| HeadId::new("head-capture"));
 
-    let peer_window_metrics = if snapshot.browser_mode == "Trainer" {
-        vec![PeerWindowMetrics {
-            network_id: edge_snapshot.network_id.clone(),
-            experiment_id: entry.experiment_id.clone(),
-            revision_id: entry.current_revision_id.clone(),
-            workload_id: entry.workload_id.clone(),
-            dataset_view_id: entry.dataset_view_id.clone(),
-            peer_id: PeerId::new("peer-browser-capture"),
-            principal_id: Some(PrincipalId::new("principal-browser")),
-            lease_id: LeaseId::new("lease-browser-capture"),
-            base_head_id: latest_head_id.clone(),
-            window_started_at: generated_at - chrono::Duration::seconds(24),
-            window_finished_at: generated_at,
-            attempted_tokens_or_samples: 2048,
-            accepted_tokens_or_samples: Some(1984),
-            local_train_loss_mean: Some(0.262),
-            local_train_loss_last: Some(0.241),
-            grad_or_delta_norm: Some(1.04),
-            optimizer_step_count: 48,
-            compute_time_ms: 28_500,
-            data_fetch_time_ms: 3_800,
-            publish_latency_ms: 340,
-            head_lag_at_start: 1,
-            head_lag_at_finish: 0,
-            backend_class: BackendClass::BrowserWgpu,
-            role: PeerRole::BrowserTrainerWgpu,
-            status: PeerWindowStatus::Completed,
-            status_reason: None,
-        }]
-    } else {
-        Vec::new()
-    };
+    let peer_window_metrics = vec![PeerWindowMetrics {
+        network_id: edge_snapshot.network_id.clone(),
+        experiment_id: entry.experiment_id.clone(),
+        revision_id: entry.current_revision_id.clone(),
+        workload_id: entry.workload_id.clone(),
+        dataset_view_id: entry.dataset_view_id.clone(),
+        peer_id: PeerId::new("peer-browser-capture"),
+        principal_id: Some(PrincipalId::new("principal-browser")),
+        lease_id: LeaseId::new("lease-browser-capture"),
+        base_head_id: latest_head_id.clone(),
+        window_started_at: generated_at - chrono::Duration::seconds(24),
+        window_finished_at: generated_at,
+        attempted_tokens_or_samples: 2048,
+        accepted_tokens_or_samples: Some(1984),
+        local_train_loss_mean: Some(0.262),
+        local_train_loss_last: Some(0.241),
+        grad_or_delta_norm: Some(1.04),
+        optimizer_step_count: 48,
+        compute_time_ms: 28_500,
+        data_fetch_time_ms: 3_800,
+        publish_latency_ms: 340,
+        head_lag_at_start: 1,
+        head_lag_at_finish: 0,
+        backend_class: BackendClass::BrowserWgpu,
+        role: PeerRole::BrowserTrainerWgpu,
+        status: PeerWindowStatus::Completed,
+        status_reason: None,
+    }];
 
-    let head_eval_reports = if snapshot.browser_mode == "Verifier" {
-        vec![HeadEvalReport {
-            network_id: edge_snapshot.network_id.clone(),
-            experiment_id: entry.experiment_id.clone(),
-            revision_id: entry.current_revision_id.clone(),
-            workload_id: entry.workload_id.clone(),
-            head_id: latest_head_id.clone(),
-            base_head_id: None,
-            eval_protocol_id: ContentId::new("eval-main"),
-            evaluator_set_id: ContentId::new("eval-set-browser"),
-            metric_values: BTreeMap::from([("validation_loss".into(), MetricValue::Float(0.2412))]),
-            sample_count: 128,
-            dataset_view_id: entry.dataset_view_id.clone(),
-            started_at: generated_at - chrono::Duration::seconds(18),
-            finished_at: generated_at,
-            trust_class: MetricTrustClass::Canonical,
-            status: HeadEvalStatus::Completed,
-            signature_bundle: Vec::new(),
-        }]
-    } else {
-        Vec::new()
-    };
+    let head_eval_reports = vec![HeadEvalReport {
+        network_id: edge_snapshot.network_id.clone(),
+        experiment_id: entry.experiment_id.clone(),
+        revision_id: entry.current_revision_id.clone(),
+        workload_id: entry.workload_id.clone(),
+        head_id: latest_head_id.clone(),
+        base_head_id: None,
+        eval_protocol_id: ContentId::new("eval-main"),
+        evaluator_set_id: ContentId::new("eval-set-browser"),
+        metric_values: BTreeMap::from([("validation_loss".into(), MetricValue::Float(0.2412))]),
+        sample_count: 128,
+        dataset_view_id: entry.dataset_view_id.clone(),
+        started_at: generated_at - chrono::Duration::seconds(18),
+        finished_at: generated_at,
+        trust_class: MetricTrustClass::Canonical,
+        status: HeadEvalStatus::Completed,
+        signature_bundle: Vec::new(),
+    }];
+
+    let performance_summary =
+        derive_network_performance_summary(&peer_window_metrics, &Vec::new(), &head_eval_reports);
 
     vec![MetricsCatchupBundle {
         network_id: edge_snapshot.network_id.clone(),
@@ -427,6 +422,7 @@ fn scenario_metrics_catchup(
             peer_window_metrics,
             reducer_cohort_metrics: Vec::new(),
             derived_metrics: Vec::new(),
+            performance_summary,
         },
         ledger_segments: Vec::new(),
         generated_at,

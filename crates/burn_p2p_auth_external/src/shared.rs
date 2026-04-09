@@ -5,13 +5,29 @@ use burn_p2p_security::{AuthError, StaticPrincipalRecord};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PendingLogin {
     pub(crate) login_id: ContentId,
     pub(crate) state: String,
     pub(crate) network_id: NetworkId,
     pub(crate) requested_scopes: BTreeSet<ExperimentScope>,
     pub(crate) expires_at: DateTime<Utc>,
+    pub(crate) oidc_nonce: Option<String>,
+    pub(crate) pkce_verifier: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProxyConnectorState {
+    #[serde(default)]
+    pub(crate) pending: BTreeMap<ContentId, PendingLogin>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProviderConnectorState {
+    #[serde(default)]
+    pub(crate) pending: BTreeMap<ContentId, PendingLogin>,
+    #[serde(default)]
+    pub(crate) provider_sessions: BTreeMap<ContentId, ProviderSessionMaterial>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +146,14 @@ impl ProviderSessionMaterial {
             || self.access_token.is_some()
             || self.refresh_token.is_some()
             || self.session_handle.is_some()
+    }
+
+    pub(crate) fn redact_remote_secrets(&self) -> Self {
+        let mut redacted = self.clone();
+        redacted.access_token = None;
+        redacted.refresh_token = None;
+        redacted.session_handle = None;
+        redacted
     }
 }
 

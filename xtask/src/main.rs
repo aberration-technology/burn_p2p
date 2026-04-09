@@ -14,18 +14,22 @@ use std::{
 use anyhow::{Context, ensure};
 use artifacts::{ArtifactLayout, copy_dir_all, copy_files_with_extension_tree};
 use burn_p2p::{PeerId, WindowId};
+use burn_p2p_bootstrap::BootstrapPreset;
 use burn_p2p_core::{AggregationStrategy, RobustnessPolicy};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_security::{FeatureLayer, aggregate_updates_with_policy, extract_feature_sketch};
 use burn_p2p_testkit::{
-    ChaosEvent, FaultType, SimulationRunner, SimulationSpec,
+    ChaosEvent, FaultType, MaliciousBehavior, SimulationRunner, SimulationSpec,
     adversarial::{
         AdversarialAttack, AdversarialScenarioReport, build_fixture, run_attack_matrix,
         run_scenario,
     },
     browser_app_assets::build_browser_app_web_assets,
-    multiprocess::SyntheticSoakConfig,
-    multiprocess::run_synthetic_process_soak,
+    multiprocess::{
+        SyntheticNativeBackend, SyntheticSoakConfig, SyntheticWorkloadKind,
+        derive_synthetic_network_dynamics_summary, derive_synthetic_soak_performance_summary,
+        run_synthetic_process_soak,
+    },
     portal_capture::{
         BrowserPortalCaptureSpec, PortalCaptureInteraction, PortalCaptureViewport,
         write_browser_portal_capture_bundle, write_portal_capture_bundle,
@@ -36,10 +40,11 @@ use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
     CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction, DeployCloudArgs,
-    DeployCommand, DeployComposeArgs, E2eCommand, MultiprocessArgs, SetupCommand, StressCommand,
+    DeployCommand, DeployComposeArgs, E2eCommand, MultiprocessArgs, RunArgs, SetupCommand,
+    StressCommand,
 };
 use profile::Profile;
-use runner::{StepRecord, Workspace, command_available};
+use runner::{SpawnedStep, StepRecord, Workspace, command_available};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -87,6 +92,19 @@ struct MnistBrowserScenario {
     viewport: Option<PortalCaptureViewport>,
 }
 
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct NativeAcceleratorProbeSummary {
+    status: String,
+    requested_backend: String,
+    resolved_backend: Option<String>,
+    matrix_size: usize,
+    warmup_iterations: u32,
+    measured_iterations: u32,
+    elapsed_ms: u128,
+    iterations_per_sec: Option<f64>,
+    failure_reason: Option<String>,
+}
+
 fn mnist_adversarial_correctness_summary() -> serde_json::Value {
     let policy = RobustnessPolicy::balanced();
     let attacks = [
@@ -126,6 +144,12 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Check(command) => match command.command {
             Some(CheckSubcommand::Publish(args)) => run_publish_checks(&workspace, args.common),
+            Some(CheckSubcommand::AuthOidcLive(args)) => {
+                run_auth_oidc_live_check(&workspace, args.common)
+            }
+            Some(CheckSubcommand::AuthRedisLive(args)) => {
+                run_auth_redis_live_check(&workspace, args.common)
+            }
             None => run_fast_checks(&workspace, command.common),
         },
         Command::E2e { command } => match command {
@@ -147,9 +171,12 @@ fn main() -> anyhow::Result<()> {
         Command::Stress { command } => match command {
             StressCommand::Multiprocess(args) => run_stress_multiprocess(&workspace, args),
             StressCommand::Chaos(args) => run_stress_chaos(&workspace, args),
+            StressCommand::Discovery(args) => run_stress_discovery(&workspace, args),
         },
         Command::Bench { command } => match command {
             BenchCommand::Core(args) => run_bench_core(&workspace, args),
+            BenchCommand::Network(args) => run_bench_network(&workspace, args),
+            BenchCommand::Accelerator(args) => run_bench_accelerator(&workspace, args),
             BenchCommand::Robust(args) => run_bench_robust(&workspace, args),
             BenchCommand::Nightly(args) => run_bench_nightly(&workspace, args),
         },
@@ -413,6 +440,13 @@ fn run_deploy_cloud(
     if let Some(image) = args.validator_image.as_ref() {
         envs.insert("TF_VAR_validator_image".into(), image.clone());
     }
+    if let Some(image) = args
+        .reducer_image
+        .as_ref()
+        .or(args.validator_image.as_ref())
+    {
+        envs.insert("TF_VAR_reducer_image".into(), image.clone());
+    }
     if let Some(image) = args.trainer_image.as_ref() {
         envs.insert("TF_VAR_trainer_image".into(), image.clone());
     }
@@ -420,6 +454,7 @@ fn run_deploy_cloud(
     let default_validator_config = workspace
         .root
         .join("deploy/config/reference-validator.json");
+    let default_reducer_config = workspace.root.join("deploy/config/reference-reducer.json");
     let bootstrap_config_path = args
         .bootstrap_config
         .as_ref()
@@ -430,6 +465,11 @@ fn run_deploy_cloud(
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or(default_validator_config);
+    let reducer_config_path = args
+        .reducer_config
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or(default_reducer_config);
     envs.insert(
         "TF_VAR_bootstrap_config_json".into(),
         fs::read_to_string(&bootstrap_config_path)
@@ -439,6 +479,11 @@ fn run_deploy_cloud(
         "TF_VAR_validator_config_json".into(),
         fs::read_to_string(&validator_config_path)
             .with_context(|| format!("failed to read {}", validator_config_path.display()))?,
+    );
+    envs.insert(
+        "TF_VAR_reducer_config_json".into(),
+        fs::read_to_string(&reducer_config_path)
+            .with_context(|| format!("failed to read {}", reducer_config_path.display()))?,
     );
 
     let mut steps = Vec::new();
@@ -499,9 +544,11 @@ fn run_deploy_cloud(
             "var_file": var_file,
             "bootstrap_image": args.bootstrap_image,
             "validator_image": args.validator_image,
+            "reducer_image": args.reducer_image.as_ref().or(args.validator_image.as_ref()),
             "trainer_image": args.trainer_image,
             "bootstrap_config": bootstrap_config_path,
             "validator_config": validator_config_path,
+            "reducer_config": reducer_config_path,
         }),
         args.common.keep_artifacts,
     )
@@ -761,6 +808,131 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
     )
 }
 
+const REAL_OIDC_REQUIRED_ENV_VARS: &[&str] = &[
+    "BURN_P2P_REAL_OIDC_ISSUER",
+    "BURN_P2P_REAL_OIDC_CLIENT_ID",
+    "BURN_P2P_REAL_OIDC_ID_TOKEN",
+    "BURN_P2P_REAL_OIDC_EXPECTED_SUBJECT",
+];
+
+fn missing_real_oidc_env_vars() -> Vec<&'static str> {
+    REAL_OIDC_REQUIRED_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|key| {
+            env::var(key)
+                .ok()
+                .is_none_or(|value| value.trim().is_empty())
+        })
+        .collect()
+}
+
+fn collect_real_oidc_env() -> BTreeMap<String, String> {
+    env::vars()
+        .filter(|(key, _)| key.starts_with("BURN_P2P_REAL_OIDC_"))
+        .collect()
+}
+
+fn run_auth_oidc_live_check(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
+    let artifacts = ArtifactLayout::create(&workspace.root, "check-auth-oidc-live", args.profile)?;
+    let missing_env = missing_real_oidc_env_vars();
+    if !missing_env.is_empty() {
+        return finalize_run(
+            &artifacts,
+            "check-auth-oidc-live",
+            args.profile,
+            &[],
+            json!({
+                "kind": "auth-oidc-live",
+                "skipped": true,
+                "reason": "missing_env",
+                "missing_env": missing_env,
+            }),
+            args.keep_artifacts,
+        );
+    }
+
+    let envs = collect_real_oidc_env();
+    let steps = vec![workspace.run_cargo(
+        &artifacts,
+        "live-oidc-provider",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_auth_external",
+            "live_oidc_connector_validates_real_provider_identity_from_env",
+            "--",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?];
+
+    finalize_run(
+        &artifacts,
+        "check-auth-oidc-live",
+        args.profile,
+        &steps,
+        json!({
+            "kind": "auth-oidc-live",
+            "skipped": false,
+            "env_prefix": "BURN_P2P_REAL_OIDC_",
+            "required_env": REAL_OIDC_REQUIRED_ENV_VARS,
+            "passed_env": envs.keys().cloned().collect::<Vec<_>>(),
+        }),
+        args.keep_artifacts,
+    )
+}
+
+fn run_auth_redis_live_check(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
+    let artifacts = ArtifactLayout::create(&workspace.root, "check-auth-redis-live", args.profile)?;
+    if !command_available("redis-server") {
+        return finalize_run(
+            &artifacts,
+            "check-auth-redis-live",
+            args.profile,
+            &[],
+            json!({
+                "kind": "auth-redis-live",
+                "skipped": true,
+                "reason": "missing_redis_server",
+            }),
+            args.keep_artifacts,
+        );
+    }
+
+    let steps = vec![workspace.run_cargo(
+        &artifacts,
+        "live-redis-auth",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_bootstrap",
+            "--features",
+            "browser-edge,auth-github,auth-oidc,auth-oauth,auth-external",
+            "auth_portal_redis_",
+            "--",
+            "--nocapture",
+        ],
+        &BTreeMap::new(),
+    )?];
+
+    finalize_run(
+        &artifacts,
+        "check-auth-redis-live",
+        args.profile,
+        &steps,
+        json!({
+            "kind": "auth-redis-live",
+            "skipped": false,
+            "required_binary": "redis-server",
+            "test_filter": "auth_portal_redis_",
+        }),
+        args.keep_artifacts,
+    )
+}
+
 fn run_e2e_smoke(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
     let artifacts = ArtifactLayout::create(&workspace.root, "e2e-smoke", args.profile)?;
     let envs = BTreeMap::new();
@@ -917,11 +1089,23 @@ fn run_e2e_mixed(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     )
 }
 
-fn wait_for_path(path: &std::path::Path, timeout: Duration) -> anyhow::Result<()> {
+fn wait_for_path_from_step(
+    path: &std::path::Path,
+    timeout: Duration,
+    step: &mut SpawnedStep,
+    artifacts: &ArtifactLayout,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if path.exists() {
             return Ok(());
+        }
+        if let Some(record) = step.try_wait(artifacts)? {
+            anyhow::bail!(
+                "step `{}` exited before producing {}",
+                record.label,
+                path.display(),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -932,9 +1116,94 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     let artifacts = ArtifactLayout::create(&workspace.root, "e2e-mnist", args.profile)?;
     let envs = BTreeMap::new();
     let demo_root = artifacts.root.join("mnist-demo");
+    let trainer_windows = args.profile.settings().trainer_windows.max(1);
+    let total_training_rounds = u64::from(trainer_windows)
+        .saturating_mul(2)
+        .saturating_add(1);
+    // The live-browser handoff is written after the baseline, restart, and low-lr rounds.
+    // Use a round-scaled timeout here so a slow but healthy demo does not get aborted
+    // before it reaches the post-training browser handoff stage.
+    let browser_manifest_timeout = Duration::from_secs(150 + total_training_rounds * 90);
     let mut steps = Vec::new();
     let browser_probe_root = artifacts.root.join("browser-wasm-probe");
     let browser_probe_assets = browser_probe_root.join("assets");
+    let browser_manifest_path = demo_root.join("browser-live.json");
+    let browser_edge_config_path = demo_root.join("browser-live-edge-config.json");
+    let browser_edge_stop_path = demo_root.join("browser-live-edge.stop");
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-topology-dedicated-reducer",
+        &[
+            "test",
+            "-p",
+            "burn_p2p",
+            "--features",
+            "burn",
+            "dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote",
+            "--",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-topology-seed-fanout",
+        &[
+            "test",
+            "-p",
+            "burn_p2p",
+            "--features",
+            "burn",
+            "peers_fan_out_beyond_bootstrap_seed_and_survive_seed_shutdown",
+            "--",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-topology-relay-reservation",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_swarm",
+            "native_control_plane_shell_reserves_and_dials_relay_paths",
+            "--",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-topology-rendezvous-discovery",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_swarm",
+            "native_control_plane_shell_discovers_peers_via_rendezvous_seed",
+            "--",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "mnist-topology-kademlia-discovery",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_swarm",
+            "native_control_plane_shell_discovers_peers_via_kademlia_seed",
+            "--",
+            "--exact",
+            "--nocapture",
+        ],
+        &envs,
+    )?);
     steps.push(workspace.run_cargo(
         &artifacts,
         "mnist-browser-probe-assets",
@@ -950,145 +1219,298 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         ],
         &envs,
     )?);
-    let mut demo_process = workspace.spawn_cargo(
+    steps.push(workspace.run_cargo(
         &artifacts,
-        "mnist-demo",
+        "mnist-demo-build",
         &[
-            "run",
+            "build",
             "--manifest-path",
             "examples/mnist_p2p_demo/Cargo.toml",
             "--bin",
             "mnist_p2p_demo",
-            "--",
-            "--output",
-            demo_root.display().to_string().as_str(),
-            "--await-live-browser-probe",
+            "--bin",
+            "mnist_browser_live_edge",
+            "--bin",
+            "mnist_browser_probe_finalize",
         ],
         &envs,
-    )?;
-    let browser_manifest_path = demo_root.join("browser-live.json");
+    )?);
+    let demo_binary = workspace
+        .root
+        .join("examples/mnist_p2p_demo/target/debug/mnist_p2p_demo");
+    let browser_edge_binary = workspace
+        .root
+        .join("examples/mnist_p2p_demo/target/debug/mnist_browser_live_edge");
+    let browser_probe_finalize_binary = workspace
+        .root
+        .join("examples/mnist_p2p_demo/target/debug/mnist_browser_probe_finalize");
+    let demo_args = vec![
+        "--output".to_owned(),
+        demo_root.display().to_string(),
+        "--baseline-rounds".to_owned(),
+        trainer_windows.to_string(),
+        "--low-lr-rounds".to_owned(),
+        trainer_windows.to_string(),
+        "--live-browser-probe".to_owned(),
+    ];
+    let mut demo_process = Some(
+        workspace.spawn(
+            &artifacts,
+            "mnist-demo",
+            demo_binary
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("mnist demo binary path was not valid utf-8"))?,
+            &demo_args,
+            &envs,
+        )?,
+    );
     let browser_probe_summary = (|| -> anyhow::Result<serde_json::Value> {
-        wait_for_path(&browser_manifest_path, Duration::from_secs(120))?;
-        let browser_manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(&browser_manifest_path)
-                .with_context(|| format!("failed to read {}", browser_manifest_path.display()))?,
-        )
-        .with_context(|| format!("failed to decode {}", browser_manifest_path.display()))?;
-        let browser_probe_config = json!({
-            "asset_root": browser_probe_assets.display().to_string(),
-            "dataset_root": demo_root.join("dataset").display().to_string(),
-            "artifact_root": browser_probe_root.display().to_string(),
-            "network_id": browser_manifest
-                .get("network_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing network_id")?,
-            "experiment_id": browser_manifest
-                .get("experiment_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing experiment_id")?,
-            "revision_id": browser_manifest
-                .get("revision_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing revision_id")?,
-            "selected_head_id": browser_manifest
-                .get("selected_head_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing selected_head_id")?,
-            "lease_id": browser_manifest
-                .get("lease_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing lease_id")?,
-            "leased_microshards": browser_manifest
-                .get("leased_microshards")
-                .cloned()
-                .context("browser live manifest missing leased_microshards")?,
-            "edge_base_url": browser_manifest
-                .get("edge_base_url")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing edge_base_url")?,
-            "release_train_hash": browser_manifest
-                .get("release_train_hash")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing release_train_hash")?,
-            "target_artifact_id": browser_manifest
-                .get("target_artifact_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing target_artifact_id")?,
-            "target_artifact_hash": browser_manifest
-                .get("target_artifact_hash")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing target_artifact_hash")?,
-            "workload_id": browser_manifest
-                .get("workload_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing workload_id")?,
-            "principal_id": browser_manifest
-                .get("principal_id")
-                .and_then(serde_json::Value::as_str)
-                .context("browser live manifest missing principal_id")?,
-            "batch_size": 32,
-            "learning_rate": 1.0e-3,
-            "max_train_batches": 3,
-            "profiles": [
-                {
-                    "slug": "fast",
-                    "latency_ms": 0,
-                    "bandwidth_bytes_per_sec": 0,
-                },
-                {
-                    "slug": "slow",
-                    "latency_ms": 150,
-                    "bandwidth_bytes_per_sec": 262144,
-                }
-            ],
-        });
-        artifacts.write_json("configs/mnist-browser-probe.json", &browser_probe_config)?;
-        let capture_envs = portal_capture_envs(args.profile, false);
-        steps.push(
-            workspace.run_node(
+        let mut browser_edge_process: Option<SpawnedStep> = None;
+        let result = (|| -> anyhow::Result<serde_json::Value> {
+            wait_for_path_from_step(
+                &browser_edge_config_path,
+                browser_manifest_timeout,
+                demo_process
+                    .as_mut()
+                    .expect("mnist demo process should remain active until awaited"),
                 &artifacts,
-                "mnist-browser-wasm-probe",
+            )?;
+            steps.push(
+                demo_process
+                    .take()
+                    .expect("mnist demo process should remain present before wait")
+                    .wait(&artifacts)?,
+            );
+            browser_edge_process = Some(workspace.spawn(
+                &artifacts,
+                "mnist-browser-live-edge",
+                browser_edge_binary.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("mnist browser live edge binary path was not valid utf-8")
+                })?,
                 &[
-                    "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
-                    artifacts
-                        .root
-                        .join("configs/mnist-browser-probe.json")
-                        .display()
-                        .to_string()
-                        .as_str(),
+                    "--config".to_owned(),
+                    browser_edge_config_path.display().to_string(),
+                    "--output-root".to_owned(),
+                    demo_root.display().to_string(),
+                    "--stop-file".to_owned(),
+                    browser_edge_stop_path.display().to_string(),
                 ],
-                &capture_envs,
-            )?,
-        );
-        let browser_probe_summary_path = browser_probe_root.join("browser-wasm/summary.json");
-        let browser_probe_summary: serde_json::Value =
-            serde_json::from_slice(&fs::read(&browser_probe_summary_path).with_context(|| {
-                format!("failed to read {}", browser_probe_summary_path.display())
-            })?)
-            .with_context(|| {
-                format!("failed to decode {}", browser_probe_summary_path.display())
-            })?;
-        fs::write(
-            demo_root.join("browser-probe-result.json"),
-            serde_json::to_vec_pretty(&browser_probe_summary)?,
-        )
-        .with_context(|| {
-            format!(
-                "failed to write {}",
-                demo_root.join("browser-probe-result.json").display()
+                &envs,
+            )?);
+            wait_for_path_from_step(
+                &browser_manifest_path,
+                browser_manifest_timeout,
+                browser_edge_process
+                    .as_mut()
+                    .expect("browser edge process should be present after spawn"),
+                &artifacts,
+            )?;
+            let browser_manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&browser_manifest_path).with_context(|| {
+                    format!("failed to read {}", browser_manifest_path.display())
+                })?)
+                .with_context(|| format!("failed to decode {}", browser_manifest_path.display()))?;
+            let default_dataset_root = demo_root.join("dataset").display().to_string();
+            let peer_dataset_root = browser_manifest
+                .get("peer_dataset_root")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let peer_head_artifact_root = browser_manifest
+                .get("peer_head_artifact_root")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let browser_probe_config = json!({
+                "asset_root": browser_probe_assets.display().to_string(),
+                "dataset_root": peer_dataset_root
+                    .as_str()
+                    .unwrap_or(&default_dataset_root),
+                "peer_dataset_root": peer_dataset_root,
+                "peer_head_artifact_root": peer_head_artifact_root,
+                "artifact_root": browser_probe_root.display().to_string(),
+                "dataset_base_url": browser_manifest
+                    .get("peer_dataset_root")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|_| serde_json::Value::Null)
+                    .unwrap_or_else(|| {
+                        browser_manifest
+                            .get("dataset_base_url")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null)
+                    }),
+                "browser_dataset_transport": if browser_manifest
+                    .get("peer_dataset_root")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                {
+                    serde_json::Value::String("p2p-signed-peer-bundle".into())
+                } else {
+                    browser_manifest
+                        .get("browser_dataset_transport")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::Value::String("http".into()))
+                },
+                "browser_head_artifact_transport": browser_manifest
+                    .get("browser_head_artifact_transport")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::String("unknown".into())),
+                "shards_distributed_over_p2p": browser_manifest
+                    .get("shards_distributed_over_p2p")
+                    .and_then(serde_json::Value::as_bool)
+                    .context("browser live manifest missing shards_distributed_over_p2p")?,
+                "network_id": browser_manifest
+                    .get("network_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing network_id")?,
+                "experiment_id": browser_manifest
+                    .get("experiment_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing experiment_id")?,
+                "revision_id": browser_manifest
+                    .get("revision_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing revision_id")?,
+                "selected_head_id": browser_manifest
+                    .get("selected_head_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing selected_head_id")?,
+                "lease_id": browser_manifest
+                    .get("lease_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing lease_id")?,
+                "leased_microshards": browser_manifest
+                    .get("leased_microshards")
+                    .cloned()
+                    .context("browser live manifest missing leased_microshards")?,
+                "edge_base_url": browser_manifest
+                    .get("edge_base_url")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing edge_base_url")?,
+                "release_train_hash": browser_manifest
+                    .get("release_train_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing release_train_hash")?,
+                "target_artifact_id": browser_manifest
+                    .get("target_artifact_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing target_artifact_id")?,
+                "target_artifact_hash": browser_manifest
+                    .get("target_artifact_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing target_artifact_hash")?,
+                "workload_id": browser_manifest
+                    .get("workload_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing workload_id")?,
+                "principal_id": browser_manifest
+                    .get("principal_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing principal_id")?,
+                "batch_size": 32,
+                "learning_rate": 1.0e-3,
+                "max_train_batches": 3,
+                "profiles": [
+                    {
+                        "slug": "fast",
+                        "latency_ms": 0,
+                        "bandwidth_bytes_per_sec": 0,
+                    },
+                    {
+                        "slug": "slow",
+                        "latency_ms": 150,
+                        "bandwidth_bytes_per_sec": 262144,
+                    }
+                ],
+            });
+            artifacts.write_json("configs/mnist-browser-probe.json", &browser_probe_config)?;
+            let capture_envs = portal_capture_envs(args.profile, false);
+            steps.push(
+                workspace.run_node(
+                    &artifacts,
+                    "mnist-browser-wasm-probe",
+                    &[
+                        "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
+                        artifacts
+                            .root
+                            .join("configs/mnist-browser-probe.json")
+                            .display()
+                            .to_string()
+                            .as_str(),
+                    ],
+                    &capture_envs,
+                )?,
+            );
+            let browser_probe_summary_path = browser_probe_root.join("browser-wasm/summary.json");
+            let browser_probe_summary: serde_json::Value =
+                serde_json::from_slice(&fs::read(&browser_probe_summary_path).with_context(
+                    || format!("failed to read {}", browser_probe_summary_path.display()),
+                )?)
+                .with_context(|| {
+                    format!("failed to decode {}", browser_probe_summary_path.display())
+                })?;
+            fs::write(
+                demo_root.join("browser-probe-result.json"),
+                serde_json::to_vec_pretty(&browser_probe_summary)?,
             )
-        })?;
-        Ok(browser_probe_summary)
+            .with_context(|| {
+                format!(
+                    "failed to write {}",
+                    demo_root.join("browser-probe-result.json").display()
+                )
+            })?;
+            fs::write(&browser_edge_stop_path, b"stop\n")
+                .with_context(|| format!("failed to write {}", browser_edge_stop_path.display()))?;
+            steps.push(
+                browser_edge_process
+                    .take()
+                    .expect("browser edge process should be present before wait")
+                    .wait(&artifacts)?,
+            );
+            steps.push(
+                workspace.run(
+                    &artifacts,
+                    "mnist-browser-probe-finalize",
+                    browser_probe_finalize_binary.to_str().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "mnist browser probe finalize binary path was not valid utf-8"
+                        )
+                    })?,
+                    &[
+                        "--export".to_owned(),
+                        demo_root.join("browser-export.json").display().to_string(),
+                        "--correctness".to_owned(),
+                        demo_root.join("correctness.json").display().to_string(),
+                        "--manifest".to_owned(),
+                        browser_manifest_path.display().to_string(),
+                        "--probe".to_owned(),
+                        demo_root
+                            .join("browser-probe-result.json")
+                            .display()
+                            .to_string(),
+                    ],
+                    &envs,
+                )?,
+            );
+            Ok(browser_probe_summary)
+        })();
+        if result.is_err()
+            && let Some(mut browser_edge_process) = browser_edge_process
+        {
+            let _ = fs::write(&browser_edge_stop_path, b"stop\n");
+            let _ = browser_edge_process.kill();
+            let _ = browser_edge_process.wait(&artifacts);
+        }
+        result
     })();
     let browser_probe_summary = match browser_probe_summary {
         Ok(summary) => summary,
         Err(error) => {
-            let _ = demo_process.kill();
-            let _ = demo_process.wait(&artifacts);
+            if let Some(mut demo_process) = demo_process.take() {
+                let _ = demo_process.kill();
+                let _ = demo_process.wait(&artifacts);
+            }
             return Err(error);
         }
     };
-    steps.push(demo_process.wait(&artifacts)?);
 
     let summary_path = demo_root.join("summary.json");
     let summary: serde_json::Value = serde_json::from_slice(
@@ -1131,6 +1553,62 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     );
     ensure!(
         correctness
+            .pointer("/topology/all_non_seed_nodes_bootstrap_via_seed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not route all non-seed nodes through the helper seed",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/mesh_fanout_beyond_seed_observed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not show steady-state fanout beyond the helper seed",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/dedicated_reducer_participated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not exercise a dedicated reducer node",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/aggregate_proposals_only_from_dedicated_reducer")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo aggregate proposals were not isolated to the dedicated reducer",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/reducer_load_only_from_dedicated_reducer")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo observed reducer-load telemetry from non-reducer peers",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/reduction_attestations_only_from_validators")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo observed reduction attestations from non-validator peers",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/merge_certificates_only_from_validators")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo observed merge certificates from non-validator peers",
+    );
+    ensure!(
+        correctness
+            .pointer("/topology/validators_observed_validation_quorum")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo validators did not converge on visible validation quorum records",
+    );
+    ensure!(
+        correctness
             .pointer("/browser_dataset_access/fetch_manifest_requested")
             .and_then(serde_json::Value::as_bool)
             == Some(true),
@@ -1147,8 +1625,8 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         correctness
             .pointer("/browser_dataset_access/shards_distributed_over_p2p")
             .and_then(serde_json::Value::as_bool)
-            == Some(false),
-        "mnist demo browser dataset probe reported shard transport over the p2p overlay",
+            == Some(true),
+        "mnist demo browser dataset probe did not report shard transport over the p2p overlay",
     );
     ensure!(
         correctness
@@ -1163,6 +1641,41 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             .and_then(serde_json::Value::as_bool)
             == Some(true),
         "mnist demo did not exercise browser runtime roles",
+    );
+    ensure!(
+        correctness
+            .pointer("/device_limits/native_limit_profiles_present")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not export native limit profiles for the active nodes",
+    );
+    ensure!(
+        correctness
+            .pointer("/device_limits/native_trainer_backend_visible")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not surface a native trainer backend preference",
+    );
+    ensure!(
+        correctness
+            .pointer("/device_limits/browser/webgpu_backend_confirmed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo browser probe did not confirm live burn/webgpu execution with gpu support",
+    );
+    ensure!(
+        correctness
+            .pointer("/device_limits/browser/budget_within_capability_limits")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo browser training budget exceeded the exported browser capability limits",
+    );
+    ensure!(
+        correctness
+            .pointer("/assessment/split_topology_roles_exercised")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "mnist demo did not prove the split seed/reducer/validator topology",
     );
     ensure!(
         correctness
@@ -1278,10 +1791,24 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     );
     ensure!(
         correctness
+            .pointer("/browser_execution/transport")
+            .and_then(serde_json::Value::as_str)
+            == Some("webrtc-direct"),
+        "mnist correctness summary did not keep the browser worker on the direct peer transport when it was advertised",
+    );
+    ensure!(
+        correctness
             .pointer("/assessment/live_browser_training")
             .and_then(serde_json::Value::as_bool)
             == Some(true),
         "mnist correctness summary did not report live browser training",
+    );
+    ensure!(
+        correctness
+            .pointer("/browser_dataset_access/upstream_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some("p2p-signed-peer-bundle"),
+        "mnist correctness summary did not switch browser dataset bytes onto the peer lease bundle path",
     );
     for attack in adversarial_correctness
         .get("reports")
@@ -1833,8 +2360,13 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         .max(((duration_secs / 30).max(1)) as u32);
     let config = SyntheticSoakConfig {
         root: artifacts.root.join("synthetic-soak"),
+        workload_kind: SyntheticWorkloadKind::Scalar,
+        trainer_backend: SyntheticNativeBackend::NdArray,
+        validator_backend: SyntheticNativeBackend::NdArray,
         trainer_count,
         trainer_window_count: window_count,
+        persistent_trainers: false,
+        continuous_training: false,
         startup_timeout_secs: 20,
         poll_interval_ms: 50,
         sync_timeout_secs: 20,
@@ -1850,6 +2382,12 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
     let summary = run_synthetic_process_soak(&config, &node_binary)
         .context("synthetic multiprocess soak failed")?;
     artifacts.write_json("topology/soak-summary.json", &summary)?;
+    if let Some(performance_summary) = summary.performance_summary.as_ref() {
+        artifacts.write_json("metrics/performance-summary.json", performance_summary)?;
+    }
+    if let Some(dynamics_summary) = summary.dynamics_summary.as_ref() {
+        artifacts.write_json("metrics/network-dynamics-summary.json", dynamics_summary)?;
+    }
 
     finalize_run(
         &artifacts,
@@ -1867,6 +2405,125 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
     )
 }
 
+fn summarize_discovery_dynamics(
+    spec: &SimulationSpec,
+    outcome: &burn_p2p_testkit::SimulationOutcome,
+    duration_ms: u128,
+) -> serde_json::Value {
+    let merge_count = outcome
+        .windows
+        .iter()
+        .filter(|window| window.merge_certificate.is_some())
+        .count();
+    let accepted_receipt_count = outcome
+        .windows
+        .iter()
+        .map(|window| window.accepted_receipts.len())
+        .sum::<usize>();
+    let rejected_update_count = outcome
+        .windows
+        .iter()
+        .map(|window| window.rejected_updates.len())
+        .sum::<usize>();
+    let browser_peer_ids = outcome
+        .peer_fixtures
+        .iter()
+        .filter(|fixture| fixture.mode == burn_p2p_testkit::PeerFixtureMode::HonestBrowser)
+        .map(|fixture| fixture.peer_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let browser_receipts_per_window = outcome
+        .windows
+        .iter()
+        .map(|window| {
+            window
+                .accepted_receipts
+                .iter()
+                .filter(|receipt| browser_peer_ids.contains(&receipt.peer_id))
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let accepted_browser_receipt_count = browser_receipts_per_window.iter().sum::<usize>();
+    let windows_with_browser_receipts = browser_receipts_per_window
+        .iter()
+        .filter(|count| **count > 0)
+        .count();
+    let windows_with_rejected_updates = outcome
+        .windows
+        .iter()
+        .filter(|window| !window.rejected_updates.is_empty())
+        .count();
+    let telemetry = outcome
+        .windows
+        .iter()
+        .flat_map(|window| window.telemetry.iter())
+        .collect::<Vec<_>>();
+    let connected_peers = telemetry
+        .iter()
+        .map(|summary| summary.network.connected_peers)
+        .collect::<Vec<_>>();
+    let observed_peers = telemetry
+        .iter()
+        .map(|summary| summary.network.observed_peers)
+        .collect::<Vec<_>>();
+    let estimated_network_size = telemetry
+        .iter()
+        .map(|summary| summary.network.estimated_network_size)
+        .collect::<Vec<_>>();
+    let mean_connected_peers = if connected_peers.is_empty() {
+        0.0
+    } else {
+        connected_peers
+            .iter()
+            .map(|value| u64::from(*value))
+            .sum::<u64>() as f64
+            / connected_peers.len() as f64
+    };
+    let mean_observed_peers = if observed_peers.is_empty() {
+        0.0
+    } else {
+        observed_peers.iter().sum::<u64>() as f64 / observed_peers.len() as f64
+    };
+    let mean_estimated_network_size = if estimated_network_size.is_empty() {
+        0.0
+    } else {
+        estimated_network_size.iter().sum::<f64>() / estimated_network_size.len() as f64
+    };
+
+    json!({
+        "peer_count": spec.peer_count,
+        "browser_peer_count": spec.browser_peer_count,
+        "malicious_peer_count": spec.malicious_peers.len(),
+        "window_count": spec.window_count,
+        "telemetry_sample_count": telemetry.len(),
+        "duration_ms": duration_ms,
+        "merge_count": merge_count,
+        "merge_rate_per_sec": if duration_ms == 0 { 0.0 } else { merge_count as f64 / (duration_ms as f64 / 1000.0) },
+        "accepted_receipt_count": accepted_receipt_count,
+        "accepted_browser_receipt_count": accepted_browser_receipt_count,
+        "receipt_rate_per_sec": if duration_ms == 0 { 0.0 } else { accepted_receipt_count as f64 / (duration_ms as f64 / 1000.0) },
+        "browser_receipt_window_coverage_ratio": if spec.window_count == 0 { 0.0 } else { windows_with_browser_receipts as f64 / spec.window_count as f64 },
+        "rejected_update_count": rejected_update_count,
+        "malicious_rejection_window_coverage_ratio": if spec.window_count == 0 { 0.0 } else { windows_with_rejected_updates as f64 / spec.window_count as f64 },
+        "connected_peers": {
+            "min": connected_peers.iter().copied().min().unwrap_or(0),
+            "mean": mean_connected_peers,
+            "max": connected_peers.iter().copied().max().unwrap_or(0),
+        },
+        "observed_peers": {
+            "min": observed_peers.iter().copied().min().unwrap_or(0),
+            "mean": mean_observed_peers,
+            "max": observed_peers.iter().copied().max().unwrap_or(0),
+        },
+        "estimated_network_size": {
+            "min": estimated_network_size.iter().copied().fold(f64::INFINITY, f64::min).is_finite().then_some(
+                estimated_network_size.iter().copied().fold(f64::INFINITY, f64::min)
+            ).unwrap_or(0.0),
+            "mean": mean_estimated_network_size,
+            "max": estimated_network_size.iter().copied().fold(0.0_f64, f64::max),
+        },
+    })
+}
+
 fn run_stress_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Result<()> {
     let artifacts = ArtifactLayout::create(&workspace.root, "stress-chaos", args.common.profile)?;
     let seed = args.seed.unwrap_or_else(seed_now);
@@ -1882,6 +2539,7 @@ fn run_stress_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Result<()
         chaos_events: events.clone(),
         ..SimulationSpec::default()
     };
+    spec.bootstrap_preset = BootstrapPreset::BootstrapOnly;
     if spec.browser_peer_count >= spec.peer_count {
         spec.browser_peer_count = spec.peer_count.saturating_sub(1);
     }
@@ -1896,6 +2554,28 @@ fn run_stress_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Result<()
         .last()
         .and_then(|window| window.merge_certificate.as_ref())
         .map(|certificate| certificate.merged_head_id.as_str().to_owned());
+    let merge_count = outcome
+        .windows
+        .iter()
+        .filter(|window| window.merge_certificate.is_some())
+        .count();
+    let accepted_receipt_count = outcome
+        .windows
+        .iter()
+        .map(|window| window.accepted_receipts.len())
+        .sum::<usize>();
+    let browser_peer_ids = outcome
+        .peer_fixtures
+        .iter()
+        .filter(|fixture| fixture.mode == burn_p2p_testkit::PeerFixtureMode::HonestBrowser)
+        .map(|fixture| fixture.peer_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let accepted_browser_receipt_count = outcome
+        .windows
+        .iter()
+        .flat_map(|window| window.accepted_receipts.iter())
+        .filter(|receipt| browser_peer_ids.contains(&receipt.peer_id))
+        .count();
 
     let rejected_by_peer = outcome
         .windows
@@ -1909,6 +2589,21 @@ fn run_stress_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Result<()
     artifacts.write_json("topology/chaos-events.json", &events)?;
     artifacts.write_json("topology/outcome.json", &outcome)?;
     artifacts.write_text("seed.txt", format!("{seed}\n"))?;
+
+    ensure!(
+        merge_count > 0,
+        "chaos simulation did not promote any merged heads"
+    );
+    ensure!(
+        !outcome.heatmap.cells.is_empty(),
+        "chaos simulation did not produce any shard-assignment heatmap cells",
+    );
+    if spec.browser_peer_count > 0 {
+        ensure!(
+            accepted_browser_receipt_count > 0,
+            "chaos simulation did not preserve any browser contribution receipts",
+        );
+    }
 
     let steps = Vec::<StepRecord>::new();
     finalize_run(
@@ -1924,11 +2619,347 @@ fn run_stress_chaos(workspace: &Workspace, args: ChaosArgs) -> anyhow::Result<()
             "event_count": event_count,
             "duration_ms": duration_ms,
             "final_head_id": final_head,
-            "merge_count": outcome.windows.iter().filter(|window| window.merge_certificate.is_some()).count(),
+            "bootstrap_preset": format!("{:?}", spec.bootstrap_preset),
+            "merge_count": merge_count,
+            "accepted_receipt_count": accepted_receipt_count,
+            "accepted_browser_receipt_count": accepted_browser_receipt_count,
             "rejected_updates_by_peer": rejected_by_peer,
         }),
         args.common.keep_artifacts,
     )
+}
+
+fn run_stress_discovery(workspace: &Workspace, args: RunArgs) -> anyhow::Result<()> {
+    let artifacts =
+        ArtifactLayout::create(&workspace.root, "stress-discovery", args.common.profile)?;
+    let envs = BTreeMap::new();
+    let steps = vec![
+        workspace.run_cargo(
+            &artifacts,
+            "discovery-relay",
+            &[
+                "test",
+                "-p",
+                "burn_p2p_swarm",
+                "native_control_plane_shell_reserves_and_dials_relay_paths",
+                "--",
+                "--exact",
+                "--nocapture",
+            ],
+            &envs,
+        )?,
+        workspace.run_cargo(
+            &artifacts,
+            "discovery-rendezvous",
+            &[
+                "test",
+                "-p",
+                "burn_p2p_swarm",
+                "native_control_plane_shell_discovers_peers_via_rendezvous_seed",
+                "--",
+                "--exact",
+                "--nocapture",
+            ],
+            &envs,
+        )?,
+        workspace.run_cargo(
+            &artifacts,
+            "discovery-kademlia",
+            &[
+                "test",
+                "-p",
+                "burn_p2p_swarm",
+                "native_control_plane_shell_discovers_peers_via_kademlia_seed",
+                "--",
+                "--exact",
+                "--nocapture",
+            ],
+            &envs,
+        )?,
+    ];
+
+    let profile_settings = args.common.profile.settings();
+    let (peer_count, browser_peer_count, window_count, chaos_event_count) =
+        if args.common.profile == Profile::Nightly {
+            let peer_count = (profile_settings.multiprocess_peers.max(16) * 5).max(64);
+            let browser_peer_count = (peer_count / 4).clamp(4, 12);
+            let window_count = profile_settings.trainer_windows.max(6) * 6;
+            let chaos_event_count = profile_settings.chaos_events.max(16) * 3;
+            (
+                peer_count,
+                browser_peer_count,
+                window_count,
+                chaos_event_count,
+            )
+        } else {
+            let peer_count = (profile_settings.multiprocess_peers.max(6) * 2).max(12);
+            let browser_peer_count = (peer_count / 4).clamp(1, 4);
+            let window_count = profile_settings.trainer_windows.max(3) * 2;
+            let chaos_event_count = profile_settings.chaos_events.max(4);
+            (
+                peer_count,
+                browser_peer_count,
+                window_count,
+                chaos_event_count,
+            )
+        };
+    let mut spec = SimulationSpec {
+        peer_count,
+        browser_peer_count,
+        window_count,
+        chaos_events: generate_chaos_events(seed_now(), chaos_event_count, peer_count),
+        ..SimulationSpec::default()
+    };
+    spec.bootstrap_preset = BootstrapPreset::BootstrapOnly;
+    spec.malicious_peers = discovery_malicious_peers(peer_count, browser_peer_count);
+
+    let started = Instant::now();
+    let outcome = SimulationRunner::default()
+        .run(spec.clone())
+        .context("discovery simulation failed")?;
+    let duration_ms = started.elapsed().as_millis();
+    let merge_count = outcome
+        .windows
+        .iter()
+        .filter(|window| window.merge_certificate.is_some())
+        .count();
+    let rejected_update_count = outcome
+        .windows
+        .iter()
+        .map(|window| window.rejected_updates.len())
+        .sum::<usize>();
+    let browser_peer_ids = outcome
+        .peer_fixtures
+        .iter()
+        .filter(|fixture| fixture.mode == burn_p2p_testkit::PeerFixtureMode::HonestBrowser)
+        .map(|fixture| fixture.peer_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let accepted_browser_receipt_count = outcome
+        .windows
+        .iter()
+        .flat_map(|window| window.accepted_receipts.iter())
+        .filter(|receipt| browser_peer_ids.contains(&receipt.peer_id))
+        .count();
+    let browser_receipts_per_window = outcome
+        .windows
+        .iter()
+        .map(|window| {
+            window
+                .accepted_receipts
+                .iter()
+                .filter(|receipt| browser_peer_ids.contains(&receipt.peer_id))
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let min_browser_receipts_per_window = browser_receipts_per_window
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0);
+    let max_browser_receipts_per_window = browser_receipts_per_window
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let windows_with_browser_receipts = browser_receipts_per_window
+        .iter()
+        .filter(|count| **count > 0)
+        .count();
+    let windows_with_rejected_updates = outcome
+        .windows
+        .iter()
+        .filter(|window| !window.rejected_updates.is_empty())
+        .count();
+    let quarantined_peer_count = outcome
+        .diagnostics
+        .robustness_rollup
+        .as_ref()
+        .map(|rollup| rollup.quarantined_peer_count)
+        .or_else(|| {
+            outcome
+                .diagnostics
+                .robustness_panel
+                .as_ref()
+                .map(|panel| panel.quarantined_peers.len() as u32)
+        })
+        .unwrap_or(0);
+    let ban_recommended_peer_count = outcome
+        .diagnostics
+        .robustness_rollup
+        .as_ref()
+        .map(|rollup| rollup.ban_recommended_peer_count)
+        .or_else(|| {
+            outcome.diagnostics.robustness_panel.as_ref().map(|panel| {
+                panel
+                    .quarantined_peers
+                    .iter()
+                    .filter(|peer| peer.ban_recommended)
+                    .count() as u32
+            })
+        })
+        .unwrap_or(0);
+    let telemetry = outcome
+        .windows
+        .iter()
+        .flat_map(|window| window.telemetry.iter())
+        .collect::<Vec<_>>();
+    ensure!(
+        !telemetry.is_empty(),
+        "discovery soak did not capture any telemetry samples"
+    );
+    let min_connected_peers = telemetry
+        .iter()
+        .map(|summary| summary.network.connected_peers)
+        .min()
+        .unwrap_or(0);
+    let min_observed_peer_count = telemetry
+        .iter()
+        .map(|summary| summary.network.observed_peers)
+        .min()
+        .unwrap_or(0);
+    let min_estimated_network_size = telemetry
+        .iter()
+        .map(|summary| summary.network.estimated_network_size)
+        .fold(f64::INFINITY, f64::min);
+    let max_connected_peers = telemetry
+        .iter()
+        .map(|summary| summary.network.connected_peers)
+        .max()
+        .unwrap_or(0);
+    let max_observed_peer_count = telemetry
+        .iter()
+        .map(|summary| summary.network.observed_peers)
+        .max()
+        .unwrap_or(0);
+    let max_estimated_network_size = telemetry
+        .iter()
+        .map(|summary| summary.network.estimated_network_size)
+        .fold(0.0_f64, f64::max);
+
+    artifacts.write_json("topology/discovery-outcome.json", &outcome)?;
+    artifacts.write_json(
+        "metrics/network-dynamics-summary.json",
+        &summarize_discovery_dynamics(&spec, &outcome, duration_ms),
+    )?;
+    artifacts.write_json(
+        "topology/discovery-window-rollup.json",
+        &json!({
+            "windows": outcome
+                .windows
+                .iter()
+                .zip(browser_receipts_per_window.iter())
+                .map(|(window, browser_receipts)| json!({
+                    "window_id": window.window_id.0,
+                    "telemetry_samples": window.telemetry.len(),
+                    "accepted_receipts": window.accepted_receipts.len(),
+                    "browser_receipts": browser_receipts,
+                    "rejected_updates": window.rejected_updates.len(),
+                    "merged": window.merge_certificate.is_some(),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    )?;
+
+    ensure!(
+        outcome.diagnostics.swarm.connected_peers >= spec.peer_count,
+        "discovery soak did not preserve a fully connected synthetic fleet"
+    );
+    ensure!(
+        min_connected_peers >= spec.peer_count,
+        "discovery soak dropped below a full mesh in telemetry samples"
+    );
+    ensure!(
+        min_observed_peer_count >= spec.peer_count as u64,
+        "discovery soak dropped below full peer visibility in telemetry samples"
+    );
+    ensure!(
+        min_estimated_network_size >= spec.peer_count as f64,
+        "discovery soak network estimate regressed below the synthetic fleet size"
+    );
+    ensure!(
+        merge_count >= spec.window_count as usize,
+        "discovery soak did not preserve merged heads across every simulated window"
+    );
+    if !spec.malicious_peers.is_empty() {
+        ensure!(
+            rejected_update_count > 0,
+            "discovery soak did not reject any malicious updates"
+        );
+        ensure!(
+            windows_with_rejected_updates == spec.window_count as usize,
+            "discovery soak did not sustain malicious-update rejection across every simulated window"
+        );
+    }
+    ensure!(
+        accepted_browser_receipt_count > 0,
+        "discovery soak did not preserve browser contributions"
+    );
+    if spec.browser_peer_count > 0 {
+        ensure!(
+            windows_with_browser_receipts == spec.window_count as usize,
+            "discovery soak did not preserve browser contributions across every simulated window"
+        );
+    }
+
+    finalize_run(
+        &artifacts,
+        "stress-discovery",
+        args.common.profile,
+        &steps,
+        json!({
+            "kind": "stress-discovery",
+            "peer_count": spec.peer_count,
+            "browser_peer_count": spec.browser_peer_count,
+            "window_count": spec.window_count,
+            "malicious_peer_count": spec.malicious_peers.len(),
+            "bootstrap_preset": format!("{:?}", spec.bootstrap_preset),
+            "duration_ms": duration_ms,
+            "merge_count": merge_count,
+            "accepted_browser_receipt_count": accepted_browser_receipt_count,
+            "min_browser_receipts_per_window": min_browser_receipts_per_window,
+            "max_browser_receipts_per_window": max_browser_receipts_per_window,
+            "windows_with_browser_receipts": windows_with_browser_receipts,
+            "windows_with_rejected_updates": windows_with_rejected_updates,
+            "rejected_update_count": rejected_update_count,
+            "quarantined_peer_count": quarantined_peer_count,
+            "ban_recommended_peer_count": ban_recommended_peer_count,
+            "connected_peers": outcome.diagnostics.swarm.connected_peers,
+            "observed_peer_count": outcome.diagnostics.swarm.observed_peers.len(),
+            "estimated_network_size": outcome.diagnostics.swarm.network_estimate.estimated_network_size,
+            "min_connected_peers": min_connected_peers,
+            "min_observed_peer_count": min_observed_peer_count,
+            "min_estimated_network_size": min_estimated_network_size,
+            "max_connected_peers": max_connected_peers,
+            "max_observed_peer_count": max_observed_peer_count,
+            "max_estimated_network_size": max_estimated_network_size,
+            "heatmap_cells": outcome.heatmap.cells.len(),
+        }),
+        args.common.keep_artifacts,
+    )
+}
+
+fn discovery_malicious_peers(
+    peer_count: u32,
+    browser_peer_count: u32,
+) -> BTreeMap<PeerId, MaliciousBehavior> {
+    let behaviors = [
+        MaliciousBehavior::OutOfLeaseWork,
+        MaliciousBehavior::WrongBaseHead,
+        MaliciousBehavior::NonFiniteMetric,
+        MaliciousBehavior::StaleBaseHead,
+    ];
+    let desired = match peer_count {
+        0..=11 => 0,
+        12..=23 => 2,
+        24..=47 => 3,
+        _ => 4,
+    };
+    (browser_peer_count..peer_count)
+        .rev()
+        .take(desired.min(behaviors.len()))
+        .zip(behaviors)
+        .map(|(index, behavior)| (PeerId::new(format!("peer-{index}")), behavior))
+        .collect()
 }
 
 fn run_bench_core(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<()> {
@@ -1960,6 +2991,349 @@ fn run_bench_core(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<()> 
         args.common.profile,
         &steps,
         json!({ "kind": "bench-core" }),
+        args.common.keep_artifacts,
+    )
+}
+
+fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<()> {
+    let artifacts = ArtifactLayout::create(&workspace.root, "bench-network", args.common.profile)?;
+    let envs = BTreeMap::new();
+    let mut steps = vec![workspace.run_cargo(
+        &artifacts,
+        "build-testkit-node",
+        &[
+            "build",
+            "-p",
+            "burn_p2p_testkit",
+            "--features",
+            "native-gpu-probe",
+            "--bin",
+            "burn-p2p-testkit-node",
+            "--bin",
+            "burn-p2p-testkit-native-accelerator-probe",
+        ],
+        &envs,
+    )?];
+
+    let requested_backend = native_accelerator_backend_request();
+    let accelerator_summary = if requested_backend == "ndarray" {
+        NativeAcceleratorProbeSummary {
+            status: "skipped".into(),
+            requested_backend: requested_backend.clone(),
+            resolved_backend: Some("ndarray".into()),
+            matrix_size: native_accelerator_matrix_size(args.common.profile),
+            warmup_iterations: native_accelerator_warmup_iterations(args.common.profile),
+            measured_iterations: native_accelerator_measured_iterations(args.common.profile),
+            elapsed_ms: 0,
+            iterations_per_sec: None,
+            failure_reason: Some("forced ndarray backend for network bench".into()),
+        }
+    } else {
+        let probe_binary = workspace.root.join("target").join("debug").join(format!(
+            "burn-p2p-testkit-native-accelerator-probe{}",
+            env::consts::EXE_SUFFIX
+        ));
+        let output_path = artifacts
+            .metrics
+            .join("network-native-accelerator-summary.json");
+        steps.push(
+            workspace.run(
+                &artifacts,
+                "probe-network-native-accelerator",
+                probe_binary
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("non-utf8 accelerator probe path"))?,
+                &[
+                    "--output".into(),
+                    output_path.display().to_string(),
+                    "--backend".into(),
+                    requested_backend.clone(),
+                    "--matrix-size".into(),
+                    native_accelerator_matrix_size(args.common.profile).to_string(),
+                    "--warmup".into(),
+                    native_accelerator_warmup_iterations(args.common.profile).to_string(),
+                    "--iterations".into(),
+                    native_accelerator_measured_iterations(args.common.profile).to_string(),
+                ],
+                &envs,
+            )?,
+        );
+        serde_json::from_slice(
+            &fs::read(&output_path)
+                .with_context(|| format!("failed to read {}", output_path.display()))?,
+        )
+        .with_context(|| format!("failed to decode {}", output_path.display()))?
+    };
+    artifacts.write_json(
+        "metrics/network-native-accelerator-summary.json",
+        &accelerator_summary,
+    )?;
+    let trainer_backend = match accelerator_summary.resolved_backend.as_deref() {
+        Some("cuda") => SyntheticNativeBackend::Cuda,
+        Some("wgpu") => SyntheticNativeBackend::Wgpu,
+        Some("ndarray") => SyntheticNativeBackend::NdArray,
+        Some(other) => {
+            return Err(anyhow::anyhow!(
+                "unsupported accelerator backend `{other}` returned by probe"
+            ));
+        }
+        None if requested_backend == "auto" => SyntheticNativeBackend::NdArray,
+        None => {
+            return Err(anyhow::anyhow!(
+                "requested backend `{requested_backend}` was unavailable: {}",
+                accelerator_summary
+                    .failure_reason
+                    .clone()
+                    .unwrap_or_else(|| accelerator_summary.status.clone())
+            ));
+        }
+    };
+
+    let peer_count = args.common.profile.settings().multiprocess_peers.max(4);
+    let trainer_count = peer_count.saturating_sub(1).max(1);
+    let trainer_window_count = args.common.profile.settings().trainer_windows.max(4);
+    let soak_config = SyntheticSoakConfig {
+        root: artifacts.root.join("synthetic-soak"),
+        workload_kind: SyntheticWorkloadKind::BurnLinear,
+        trainer_backend: trainer_backend.clone(),
+        validator_backend: trainer_backend.clone(),
+        trainer_count,
+        trainer_window_count,
+        persistent_trainers: true,
+        continuous_training: true,
+        startup_timeout_secs: 30,
+        poll_interval_ms: 50,
+        sync_timeout_secs: 30,
+        merge_wait_timeout_secs: 30,
+    };
+    artifacts.write_json("configs/network-soak-config.json", &soak_config)?;
+
+    let node_binary = workspace
+        .root
+        .join("target")
+        .join("debug")
+        .join(format!("burn-p2p-testkit-node{}", env::consts::EXE_SUFFIX));
+    let mut soak_summary = run_synthetic_process_soak(&soak_config, &node_binary)
+        .context("network bench synthetic soak failed")?;
+    if soak_summary.performance_summary.is_none() {
+        soak_summary.performance_summary =
+            derive_synthetic_soak_performance_summary(&soak_summary)?;
+    }
+    if soak_summary.dynamics_summary.is_none() {
+        soak_summary.dynamics_summary = derive_synthetic_network_dynamics_summary(&soak_summary);
+    }
+    artifacts.write_json("metrics/network-soak-summary.json", &soak_summary)?;
+    if let Some(performance_summary) = soak_summary.performance_summary.as_ref() {
+        artifacts.write_json(
+            "metrics/network-soak-performance-summary.json",
+            performance_summary,
+        )?;
+    }
+    if let Some(dynamics_summary) = soak_summary.dynamics_summary.as_ref() {
+        artifacts.write_json(
+            "metrics/network-soak-dynamics-summary.json",
+            dynamics_summary,
+        )?;
+    }
+
+    let browser_peer_count = peer_count.min(3).min(peer_count.saturating_sub(1));
+    let mut discovery_spec = SimulationSpec {
+        peer_count,
+        browser_peer_count,
+        window_count: trainer_window_count.max(3),
+        chaos_events: generate_chaos_events(
+            seed_now(),
+            args.common.profile.settings().chaos_events.max(4),
+            peer_count,
+        ),
+        ..SimulationSpec::default()
+    };
+    discovery_spec.bootstrap_preset = BootstrapPreset::BootstrapOnly;
+    discovery_spec.malicious_peers = discovery_malicious_peers(peer_count, browser_peer_count);
+    artifacts.write_json("configs/network-discovery-spec.json", &discovery_spec)?;
+
+    let discovery_started = Instant::now();
+    let discovery_outcome = SimulationRunner::default()
+        .run(discovery_spec.clone())
+        .context("network bench discovery simulation failed")?;
+    let discovery_duration_ms = discovery_started.elapsed().as_millis();
+    let discovery_summary =
+        summarize_discovery_dynamics(&discovery_spec, &discovery_outcome, discovery_duration_ms);
+    let discovery_merge_rate_per_sec = discovery_summary.get("merge_rate_per_sec").cloned();
+    let discovery_receipt_rate_per_sec = discovery_summary.get("receipt_rate_per_sec").cloned();
+    artifacts.write_json(
+        "topology/network-discovery-outcome.json",
+        &discovery_outcome,
+    )?;
+    artifacts.write_json("metrics/network-discovery-summary.json", &discovery_summary)?;
+
+    let bench_summary = json!({
+        "native_soak": {
+            "workload_kind": soak_summary.workload_kind,
+            "trainer_backend": soak_summary.trainer_backend,
+            "validator_backend": soak_summary.validator_backend,
+            "trainer_count": soak_summary.trainer_count,
+            "trainer_window_count": soak_summary.trainer_window_count,
+            "continuous_training": soak_summary.continuous_training,
+            "elapsed_millis": soak_summary.elapsed_millis,
+            "performance_summary": soak_summary.performance_summary,
+            "dynamics_summary": soak_summary.dynamics_summary,
+        },
+        "native_accelerator": accelerator_summary,
+        "discovery": discovery_summary,
+    });
+    artifacts.write_json("metrics/network-bench-summary.json", &bench_summary)?;
+
+    finalize_run(
+        &artifacts,
+        "bench-network",
+        args.common.profile,
+        &steps,
+        json!({
+            "kind": "bench-network",
+            "peer_count": peer_count,
+            "trainer_count": trainer_count,
+            "trainer_window_count": trainer_window_count,
+            "persistent_trainers": true,
+            "continuous_training": true,
+            "workload_kind": "burn-linear",
+            "trainer_backend": trainer_backend,
+            "validator_backend": soak_summary.validator_backend,
+            "soak_elapsed_millis": soak_summary.elapsed_millis,
+            "soak_training_throughput_work_units_per_sec": soak_summary
+                .performance_summary
+                .as_ref()
+                .map(|summary| summary.training.throughput_work_units_per_sec),
+            "soak_validation_throughput_work_units_per_sec": soak_summary
+                .performance_summary
+                .as_ref()
+                .map(|summary| summary.validation.throughput_work_units_per_sec),
+            "soak_head_eval_throughput_samples_per_sec": soak_summary
+                .performance_summary
+                .as_ref()
+                .map(|summary| summary.head_evaluation.throughput_samples_per_sec),
+            "discovery_duration_ms": discovery_duration_ms,
+            "discovery_merge_rate_per_sec": discovery_merge_rate_per_sec,
+            "discovery_receipt_rate_per_sec": discovery_receipt_rate_per_sec,
+        }),
+        args.common.keep_artifacts,
+    )
+}
+
+fn native_accelerator_backend_request() -> String {
+    env::var("BURN_P2P_NATIVE_ACCELERATOR_BACKEND").unwrap_or_else(|_| "auto".into())
+}
+
+fn native_accelerator_matrix_size(profile: Profile) -> usize {
+    env::var("BURN_P2P_NATIVE_ACCELERATOR_MATRIX_SIZE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(match profile {
+            Profile::Dev => 384,
+            Profile::Smoke | Profile::CiPr => 512,
+            Profile::CiIntegration | Profile::RealBrowser => 768,
+            Profile::Nightly => 1024,
+        })
+}
+
+fn native_accelerator_warmup_iterations(profile: Profile) -> u32 {
+    env::var("BURN_P2P_NATIVE_ACCELERATOR_WARMUP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(match profile {
+            Profile::Dev => 1,
+            Profile::Smoke | Profile::CiPr => 2,
+            Profile::CiIntegration | Profile::RealBrowser => 2,
+            Profile::Nightly => 3,
+        })
+}
+
+fn native_accelerator_measured_iterations(profile: Profile) -> u32 {
+    env::var("BURN_P2P_NATIVE_ACCELERATOR_ITERATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(match profile {
+            Profile::Dev => 3,
+            Profile::Smoke | Profile::CiPr => 4,
+            Profile::CiIntegration | Profile::RealBrowser => 6,
+            Profile::Nightly => 10,
+        })
+}
+
+fn run_bench_accelerator(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<()> {
+    let artifacts =
+        ArtifactLayout::create(&workspace.root, "bench-accelerator", args.common.profile)?;
+    let envs = BTreeMap::new();
+    let mut steps = vec![workspace.run_cargo(
+        &artifacts,
+        "build-native-accelerator-probe",
+        &[
+            "build",
+            "-p",
+            "burn_p2p_testkit",
+            "--features",
+            "native-gpu-probe",
+            "--bin",
+            "burn-p2p-testkit-native-accelerator-probe",
+        ],
+        &envs,
+    )?];
+
+    let output_path = artifacts.metrics.join("native-accelerator-summary.json");
+    let probe_binary = workspace.root.join("target").join("debug").join(format!(
+        "burn-p2p-testkit-native-accelerator-probe{}",
+        env::consts::EXE_SUFFIX
+    ));
+    let backend = native_accelerator_backend_request();
+    let matrix_size = native_accelerator_matrix_size(args.common.profile);
+    let warmup_iterations = native_accelerator_warmup_iterations(args.common.profile);
+    let measured_iterations = native_accelerator_measured_iterations(args.common.profile);
+    steps.push(
+        workspace.run(
+            &artifacts,
+            "run-native-accelerator-probe",
+            probe_binary
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-utf8 accelerator probe path"))?,
+            &[
+                "--output".into(),
+                output_path.display().to_string(),
+                "--backend".into(),
+                backend.clone(),
+                "--matrix-size".into(),
+                matrix_size.to_string(),
+                "--warmup".into(),
+                warmup_iterations.to_string(),
+                "--iterations".into(),
+                measured_iterations.to_string(),
+            ],
+            &envs,
+        )?,
+    );
+
+    let summary: NativeAcceleratorProbeSummary = serde_json::from_slice(
+        &fs::read(&output_path)
+            .with_context(|| format!("failed to read {}", output_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", output_path.display()))?;
+
+    finalize_run(
+        &artifacts,
+        "bench-accelerator",
+        args.common.profile,
+        &steps,
+        json!({
+            "kind": "bench-accelerator",
+            "status": summary.status,
+            "requested_backend": summary.requested_backend,
+            "resolved_backend": summary.resolved_backend,
+            "matrix_size": summary.matrix_size,
+            "warmup_iterations": summary.warmup_iterations,
+            "measured_iterations": summary.measured_iterations,
+            "elapsed_ms": summary.elapsed_ms,
+            "iterations_per_sec": summary.iterations_per_sec,
+            "failure_reason": summary.failure_reason,
+        }),
         args.common.keep_artifacts,
     )
 }
@@ -2280,6 +3654,46 @@ fn run_ci_nightly(workspace: &Workspace, args: CiArgs) -> anyhow::Result<()> {
                 vec![
                     "browser",
                     "smoke",
+                    "--profile",
+                    "nightly",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "auth-redis-live",
+                vec![
+                    "check",
+                    "auth-redis-live",
+                    "--profile",
+                    "nightly",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "auth-oidc-live",
+                vec![
+                    "check",
+                    "auth-oidc-live",
+                    "--profile",
+                    "nightly",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "bench-nightly",
+                vec![
+                    "bench",
+                    "network",
+                    "--profile",
+                    "nightly",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "bench-accelerator",
+                vec![
+                    "bench",
+                    "accelerator",
                     "--profile",
                     "nightly",
                     "--keep-artifacts",

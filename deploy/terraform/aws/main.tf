@@ -40,6 +40,14 @@ locals {
     gpu_enabled  = false
   })
 
+  reducer_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
+    service_name = "${var.name_prefix}-reducer"
+    image        = var.reducer_image
+    command      = var.reducer_container_command
+    config_json  = var.reducer_config_json
+    gpu_enabled  = false
+  })
+
   trainer_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
     service_name = "${var.name_prefix}-trainer"
     image        = var.trainer_image
@@ -121,6 +129,22 @@ resource "aws_instance" "validator" {
   tags = merge(local.common_tags, {
     Name = format("%s-validator-%02d", var.name_prefix, count.index + 1)
     Role = "validator"
+  })
+}
+
+resource "aws_instance" "reducer" {
+  count                       = var.reducer_count
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.reducer_instance_type
+  subnet_id                   = var.subnet_id
+  vpc_security_group_ids      = [aws_security_group.burn_p2p.id]
+  key_name                    = var.key_name != "" ? var.key_name : null
+  associate_public_ip_address = true
+  user_data                   = local.reducer_user_data
+
+  tags = merge(local.common_tags, {
+    Name = format("%s-reducer-%02d", var.name_prefix, count.index + 1)
+    Role = "reducer"
   })
 }
 

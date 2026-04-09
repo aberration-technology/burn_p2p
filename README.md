@@ -7,15 +7,17 @@
 
 core shape:
 
-- trainers download the current head and assigned data shard, run one train window, then publish a candidate head
-- validators evaluate candidates and promote accepted updates
-- the same network can include native peers, browser peers, viewers, and validators
+- trainers lease shard slices, sync the current head, run one train window, then publish update artifacts
+- reducers combine eligible updates into aggregate proposals
+- validators attest accepted proposals and promote merged heads
+- cheap bootstrap/coherence seeds handle ingress, discovery, relay fallback, and browser-edge http state
+- the same network can include native peers, browser peers, viewers, reducers, validators, and trainer pools on different hardware classes
 
 ## install
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.6", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
 ```
 
 ## happy path
@@ -43,37 +45,59 @@ let experiment = trainer.experiment(
     RevisionId::new("rev-1"),
 );
 
-let outcome = trainer.train_window_once(&experiment)?;
+let mut session = trainer.continuous_trainer(&experiment)?;
+let outcome = session.train_next_window()?;
 println!("published {}", outcome.head.head_id.as_str());
 ```
 
 keep your existing burn model, optimizer, scheduler, and loaders.
 
+Use `train_window_once(...)` instead when you want a single strictly
+orchestrated training window with no retained session state.
+
 `burn_p2p` handles:
 
 - head sync
+- lease-scoped shard assignment
 - window-by-window training publication
 - checkpoint/artifact movement
-- validator promotion flow
-- assigned shard fetch for distributed runs
+- reducer proposal flow
+- validator attestation and promotion
+- peer discovery, relay fallback, and control-plane sync
 
-one validator/authority node must exist somewhere on the network to initialize
-and promote heads.
+most deployments should separate:
+
+- cheap bootstrap/coherence seeds
+- reducer nodes
+- validator / authority nodes
+- trainer pools
+
+for trainer nodes, `from_loaders(...)` is still the main public entrypoint. use
+`from_learner(...)` for reducer, validator, viewer, and helper-style runtime
+roles.
 
 ## data
 
-trainers fetch only their assigned shard:
-`with_sharded_dataset(...)`.
+trainers fetch only their assigned shard with `with_sharded_dataset(...)`.
 
-> browser peers fetch assigned shards from an http dataset origin, not over the
-p2p overlay.
+native peers exchange control-plane state, heads, checkpoints, and artifacts
+over the peer network.
+
+browser peers fetch only the active lease-scoped shard data through the browser
+edge. in the current codebase that browser path is peer-backed
+(`p2p-artifact-via-edge`): native peers sync the prepared shard bundle over the
+overlay, and the browser edge serves only the leased slice to the browser. that
+means browser data is no longer tied to a separate static dataset sidecar, but
+browser peers are still edge-mediated rather than direct libp2p peers.
 
 ## what the repo includes
 
-- `burn_p2p`: core runtime
-- `burn_p2p_browser`: browser runtime
-- `burn_p2p_bootstrap`: bootstrap coherence-seed + browser-edge http surface
-- `burn_p2p_app`: reference dioxus ui
+- `burn_p2p`: core runtime, burn-facing facade, training, validation, and promotion flow
+- `burn_p2p_swarm`: native transport, discovery, relay/rendezvous integration, and control-plane event model
+- `burn_p2p_bootstrap`: coherence-seed, reducer/validator deployment surface, and browser-edge http/admin surface
+- `burn_p2p_browser`: browser runtime bridge and wasm-facing transport glue
+- `burn_p2p_app`: reference dioxus app and browser-edge product surface
+- `examples/mnist_p2p_demo`: real downstream-style mixed-fleet demo used by `cargo xtask e2e mnist`
 
 same experiment layout works across native and browser peers. browser-facing
 runtime and ui live in the companion crates above.

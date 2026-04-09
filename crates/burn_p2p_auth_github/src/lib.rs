@@ -52,6 +52,12 @@ impl GitHubIdentityConnector {
         self
     }
 
+    /// Returns a copy configured with an explicit redirect URI.
+    pub fn with_redirect_uri(mut self, redirect_uri: Option<String>) -> Self {
+        self.0 = self.0.with_redirect_uri(redirect_uri);
+        self
+    }
+
     /// Returns a copy configured with the userinfo URL.
     pub fn with_userinfo_url(mut self, userinfo_url: Option<String>) -> Self {
         self.0 = self.0.with_userinfo_url(userinfo_url);
@@ -67,6 +73,20 @@ impl GitHubIdentityConnector {
     /// Returns a copy configured with the revoke URL.
     pub fn with_revoke_url(mut self, revoke_url: Option<String>) -> Self {
         self.0 = self.0.with_revoke_url(revoke_url);
+        self
+    }
+
+    /// Returns a copy configured with a JWKS endpoint for oidc-style token
+    /// validation when a GitHub-compatible provider exposes one.
+    pub fn with_jwks_url(mut self, jwks_url: Option<String>) -> Self {
+        self.0 = self.0.with_jwks_url(jwks_url);
+        self
+    }
+
+    /// Returns a copy configured to persist upstream provider bearer/session
+    /// material in durable connector state.
+    pub fn with_persist_remote_tokens(mut self, persist_remote_tokens: bool) -> Self {
+        self.0 = self.0.with_persist_remote_tokens(persist_remote_tokens);
         self
     }
 }

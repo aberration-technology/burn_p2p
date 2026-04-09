@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use burn_p2p_core::{
     ArtifactAlias, ArtifactAliasId, ArtifactProfile, ExperimentId, ExportJob, HeadDescriptor,
-    HeadEvalReport, HeadId, PrincipalId, PublicationTargetId, PublishedArtifactRecord, RunId,
+    HeadEvalReport, HeadId, PeerId, PrincipalId, PublicationTargetId, PublishedArtifactRecord,
+    RunId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +124,9 @@ pub struct HeadArtifactView {
     pub available_profiles: BTreeSet<ArtifactProfile>,
     /// Alias transition history for this head's experiment and run context.
     pub alias_history: Vec<ArtifactAlias>,
+    #[serde(default)]
+    /// Provider peers currently known to advertise the head artifact on the live control plane.
+    pub provider_peer_ids: Vec<PeerId>,
 }
 
 /// Filter applied to artifact backfill, prune, and run/history queries.

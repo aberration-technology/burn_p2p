@@ -7,10 +7,12 @@ name_prefix = "burn-p2p-demo"
 
 bootstrap_count = 2
 validator_count = 1
+reducer_count = 1
 trainer_count = 1
 
 bootstrap_machine_type = "e2-small"
 validator_machine_type = "e2-standard-2"
+reducer_machine_type = "e2-standard-2"
 trainer_machine_type = "n1-standard-4"
 trainer_accelerator_type = "nvidia-tesla-t4"
 trainer_accelerator_count = 1

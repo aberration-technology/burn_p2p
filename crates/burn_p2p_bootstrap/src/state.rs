@@ -183,6 +183,26 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    #[allow(dead_code)]
+    pub(crate) fn provider_peer_ids_for_head(&self, head_id: &HeadId) -> Vec<PeerId> {
+        let mut peer_ids = self
+            .runtime_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .filter(|announcement| &announcement.head.head_id == head_id)
+                    .filter_map(|announcement| announcement.provider_peer_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        peer_ids.sort();
+        peer_ids.dedup();
+        peer_ids
+    }
+
     fn effective_quarantined_peers(&self) -> BTreeSet<PeerId> {
         let mut quarantined = self.quarantined_peers.clone();
         if let Some(snapshot) = self.runtime_snapshot.as_ref() {

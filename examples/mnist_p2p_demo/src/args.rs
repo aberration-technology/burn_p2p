@@ -30,10 +30,7 @@ pub struct Args {
     /// Lower-learning-rate experiment rounds.
     #[arg(long, default_value_t = 3)]
     pub low_lr_rounds: usize,
-    /// Keeps the native mnist run alive for a live browser probe before shutdown.
+    /// Prepares live browser probe handoff artifacts for a post-run browser probe.
     #[arg(long, hide = true, default_value_t = false)]
-    pub await_live_browser_probe: bool,
-    /// Maximum time to wait for the live browser probe result file.
-    #[arg(long, hide = true, default_value_t = 120)]
-    pub live_browser_probe_timeout_secs: u64,
+    pub live_browser_probe: bool,
 }

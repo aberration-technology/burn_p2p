@@ -13,8 +13,8 @@ use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ChunkingScheme,
     ClientReleaseManifest, ContentId, EvalSplit, FsArtifactStore, HeadId, MergeModelCandidate,
     MergePolicy, MetricReport, MetricValue, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport,
-    Precision, RuntimePatch, SingleWorkloadProjectFamily, SupportedWorkload, TrainError, WindowCtx,
-    WindowReport,
+    Precision, RuntimePatch, SingleWorkloadProjectFamily, SupportedWorkload, TrainError,
+    TrainerCanonicalReconcileStrategy, WindowCtx, WindowReport,
 };
 
 pub use burn::module::Module as BurnModule;
@@ -348,6 +348,8 @@ impl BurnWorkloadConfig {
 pub enum BurnTarget {
     /// Trainer-oriented native node.
     Trainer,
+    /// Reducer-oriented native node.
+    Reducer,
     /// Authority / validator / archive native node.
     Validator,
     /// Custom native role set.
@@ -359,6 +361,7 @@ impl BurnTarget {
     pub fn roles(&self) -> crate::PeerRoleSet {
         match self {
             Self::Trainer => crate::RoleSet::default_trainer(),
+            Self::Reducer => crate::PeerRoleSet::new([crate::PeerRole::Reducer]),
             Self::Validator => crate::PeerRoleSet::new([
                 crate::PeerRole::Authority,
                 crate::PeerRole::Validator,
@@ -998,6 +1001,24 @@ where
                 apply_root_ema_modules::<W::Backend, _>(base_model, &merged_model, decay)?
             }
             BurnMergeConfig::Disabled | BurnMergeConfig::WeightedMean => merged_model,
+        })
+    }
+
+    fn reconcile_canonical_model(
+        &self,
+        local_model: &Self::Model,
+        canonical_model: Self::Model,
+        strategy: TrainerCanonicalReconcileStrategy,
+    ) -> anyhow::Result<Self::Model> {
+        Ok(match strategy {
+            TrainerCanonicalReconcileStrategy::Replace => canonical_model,
+            TrainerCanonicalReconcileStrategy::RootEma { canonical_weight } => {
+                apply_root_ema_modules::<W::Backend, _>(
+                    local_model,
+                    &canonical_model,
+                    canonical_weight,
+                )?
+            }
         })
     }
 

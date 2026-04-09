@@ -86,6 +86,12 @@ pub(super) struct BootstrapAuthConfig {
     #[serde(default)]
     pub connector: BootstrapAuthConnectorConfig,
     pub authority_key_path: PathBuf,
+    #[serde(default)]
+    pub session_state_path: Option<PathBuf>,
+    #[serde(default)]
+    pub session_state_backend: Option<BootstrapAuthSessionBackendConfig>,
+    #[serde(default)]
+    pub persist_provider_tokens: bool,
     #[serde(default = "default_issuer_key_id")]
     pub issuer_key_id: String,
     pub project_family_id: burn_p2p::ProjectFamilyId,
@@ -100,6 +106,19 @@ pub(super) struct BootstrapAuthConfig {
     pub trusted_issuers: Vec<TrustedIssuer>,
     #[serde(default)]
     pub reenrollment: Option<BootstrapReenrollmentConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum BootstrapAuthSessionBackendConfig {
+    File {
+        path: PathBuf,
+    },
+    Redis {
+        url: String,
+        #[serde(default = "default_auth_session_state_key_prefix")]
+        key_prefix: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -120,11 +139,15 @@ pub(super) enum BootstrapAuthConnectorConfig {
         #[serde(default)]
         client_secret: Option<String>,
         #[serde(default)]
+        redirect_uri: Option<String>,
+        #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
         refresh_url: Option<String>,
         #[serde(default)]
         revoke_url: Option<String>,
+        #[serde(default)]
+        jwks_url: Option<String>,
     },
     Oidc {
         issuer: String,
@@ -139,11 +162,15 @@ pub(super) enum BootstrapAuthConnectorConfig {
         #[serde(default)]
         client_secret: Option<String>,
         #[serde(default)]
+        redirect_uri: Option<String>,
+        #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
         refresh_url: Option<String>,
         #[serde(default)]
         revoke_url: Option<String>,
+        #[serde(default)]
+        jwks_url: Option<String>,
     },
     #[serde(rename = "oauth")]
     OAuth {
@@ -159,11 +186,15 @@ pub(super) enum BootstrapAuthConnectorConfig {
         #[serde(default)]
         client_secret: Option<String>,
         #[serde(default)]
+        redirect_uri: Option<String>,
+        #[serde(default)]
         userinfo_url: Option<String>,
         #[serde(default)]
         refresh_url: Option<String>,
         #[serde(default)]
         revoke_url: Option<String>,
+        #[serde(default)]
+        jwks_url: Option<String>,
     },
     External {
         authority: String,
@@ -189,7 +220,7 @@ pub(super) struct BootstrapReenrollmentConfig {
     pub reason: String,
     pub rotated_at: Option<DateTime<Utc>>,
     #[serde(default)]
-    pub legacy_issuer_peer_ids: BTreeSet<PeerId>,
+    pub retired_issuer_peer_ids: BTreeSet<PeerId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -332,6 +363,14 @@ impl IdentityConnector for EdgeIdentityConnector {
     fn revoke(&self, session: &burn_p2p::PrincipalSession) -> Result<(), burn_p2p::AuthError> {
         self.inner.revoke(session)
     }
+
+    fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, burn_p2p::AuthError> {
+        self.inner.export_persistent_state()
+    }
+
+    fn import_persistent_state(&self, state: Option<&[u8]>) -> Result<(), burn_p2p::AuthError> {
+        self.inner.import_persistent_state(state)
+    }
 }
 
 #[derive(Debug)]
@@ -339,6 +378,7 @@ pub(super) struct AuthPortalState {
     pub(super) connector: EdgeIdentityConnector,
     pub(super) login_providers: Vec<BrowserLoginProvider>,
     pub(super) authority_key_path: PathBuf,
+    pub(super) session_state_store: Option<AuthSessionStateStore>,
     pub(super) network_id: NetworkId,
     pub(super) protocol_version: semver::Version,
     pub(super) issuer_key_id: Mutex<String>,
@@ -351,6 +391,27 @@ pub(super) struct AuthPortalState {
     pub(super) project_family_id: burn_p2p::ProjectFamilyId,
     pub(super) required_release_train_hash: ContentId,
     pub(super) allowed_target_artifact_hashes: BTreeSet<ContentId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct PersistedAuthPortalState {
+    #[serde(default)]
+    pub(super) sessions: BTreeMap<ContentId, PrincipalSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) connector_state: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum AuthSessionStateStore {
+    File {
+        state_path: PathBuf,
+        lock_path: PathBuf,
+    },
+    Redis {
+        url: String,
+        state_key: String,
+        lock_key: String,
+    },
 }
 
 pub(super) fn default_issuer_key_id() -> String {
@@ -375,6 +436,10 @@ pub(super) fn default_profile_mode() -> ProfileMode {
 
 pub(super) fn default_external_principal_header() -> String {
     "x-auth-principal".into()
+}
+
+pub(super) fn default_auth_session_state_key_prefix() -> String {
+    "burn-p2p:auth-state".into()
 }
 
 #[derive(Clone, Debug)]

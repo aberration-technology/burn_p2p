@@ -75,6 +75,10 @@ pub struct CheckCommand {
 pub enum CheckSubcommand {
     /// Run local publish-readiness checks and dry runs.
     Publish(PublishArgs),
+    /// Run the env-gated live OIDC integration check.
+    AuthOidcLive(RunArgs),
+    /// Run the Redis-backed browser-edge auth HA and failure-mode checks.
+    AuthRedisLive(RunArgs),
 }
 
 #[derive(Debug, Args)]
@@ -121,12 +125,18 @@ pub enum StressCommand {
     Multiprocess(MultiprocessArgs),
     /// Run a seeded chaos simulation locally.
     Chaos(ChaosArgs),
+    /// Run the larger-fleet discovery and routing soak lane.
+    Discovery(RunArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum BenchCommand {
     /// Run the faster core benches.
     Core(BenchArgs),
+    /// Run deployment-shaped network dynamics benches.
+    Network(BenchArgs),
+    /// Run the native cuda/wgpu accelerator probe lane.
+    Accelerator(BenchArgs),
     /// Run robustness-oriented synthetic benches.
     Robust(BenchArgs),
     /// Run the heavier nightly bench profile.
@@ -281,6 +291,9 @@ pub struct DeployCloudArgs {
     /// Validator image URI.
     #[arg(long)]
     pub validator_image: Option<String>,
+    /// Reducer image URI.
+    #[arg(long)]
+    pub reducer_image: Option<String>,
     /// Trainer image URI.
     #[arg(long)]
     pub trainer_image: Option<String>,
@@ -290,6 +303,9 @@ pub struct DeployCloudArgs {
     /// Optional validator config path passed as TF_VAR_validator_config_json.
     #[arg(long)]
     pub validator_config: Option<String>,
+    /// Optional reducer config path passed as TF_VAR_reducer_config_json.
+    #[arg(long)]
+    pub reducer_config: Option<String>,
 }
 
 #[derive(Debug, Args, Clone)]

@@ -150,6 +150,7 @@ impl NodeAppUiState {
                 metrics_live_ready: false,
                 last_directory_sync_at: None,
                 last_error: None,
+                performance: None,
             },
             selected_experiment: None,
         })
@@ -237,6 +238,14 @@ mod tests {
                 metrics_live_ready: true,
                 last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
                 last_error: None,
+                performance: Some(burn_p2p_views::BrowserAppPerformanceView {
+                    scope_summary: "4 peer(s) · 8 train window(s) · 3 eval report(s)".into(),
+                    captured_at: "2026-04-04T18:00:00Z".into(),
+                    training_throughput: "84.2 work/s".into(),
+                    validation_throughput: "512 sample/s".into(),
+                    wait_time: "820 ms".into(),
+                    idle_time: "6.2s".into(),
+                }),
             },
             selected_experiment: None,
         });

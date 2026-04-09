@@ -86,7 +86,7 @@ notes:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.6", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
 ```
 
 ## `burn_p2p_browser`
@@ -149,12 +149,25 @@ notes:
 - defaults are intentionally empty
 - operators opt into only the admin, browser-edge, publication, and auth
   surfaces they actually need
+- recommended auth fit by deployment shape:
+  - native-only private cluster: `auth-static` or `auth-external`
+  - mixed native + browser corporate deployment: `auth-oidc` or `auth-external`
+  - public/community browser deployment: provider-backed browser auth plus edge-issued certificates
+- `auth-oidc` now supports standard authorization-code oidc with redirect-uri,
+  pkce, nonce, and jwks-backed `id_token` validation
+- provider-mapped auth records can still pin explicit identities with
+  `provider_subject`, `provider_login`, or `provider_email`, and can now also
+  match on `provider_groups`, `provider_orgs`, and `provider_claim:<name>`
+  entries in `custom_claims`
+- open native membership is possible when no admission policy is configured, but
+  that is a lab/trusted-community shape rather than the recommended production
+  default
 
 example:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.6", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.7", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",
@@ -212,22 +225,22 @@ smallest burn training app:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.6", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
 ```
 
 browser runtime app:
 
 ```toml
 [dependencies]
-burn_p2p_browser = "=0.21.0-pre.6"
-burn_p2p_views = "=0.21.0-pre.6"
+burn_p2p_browser = "=0.21.0-pre.7"
+burn_p2p_views = "=0.21.0-pre.7"
 ```
 
 browser or desktop reference ui:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.6", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.7", default-features = false, features = [
   "interactive",
   "browser-join",
   "web-client",
@@ -238,7 +251,7 @@ native desktop portal host:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.6", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.7", default-features = false, features = [
   "interactive",
   "desktop-client",
 ] }
@@ -248,7 +261,7 @@ reference bootstrap/browser-edge deployment:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.6", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.7", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",

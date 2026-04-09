@@ -17,11 +17,12 @@ serde_json = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow = "1"
-burn = { version = "0.21.0-pre.2", default-features = false, features = ["std", "train", "vision", "ndarray", "webgpu"] }
+burn = { version = "0.21.0-pre.3", default-features = false, features = ["std", "train", "vision", "ndarray", "webgpu"] }
 burn_p2p = { path = "../../crates/burn_p2p", features = ["burn"] }
 burn_p2p_browser = { path = "../../crates/burn_p2p_browser" }
 burn_p2p_core = { path = "../../crates/burn_p2p_core" }
 burn_p2p_metrics = { path = "../../crates/burn_p2p_metrics" }
+burn_p2p_publish = { path = "../../crates/burn_p2p_publish" }
 burn_p2p_views = { path = "../../crates/burn_p2p_views" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -30,7 +31,7 @@ libp2p-identity = { version = "0.2.13", features = ["ed25519", "peerid", "rand"]
 wasm-bindgen-cli-support = "0.2.117"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-burn = { version = "0.21.0-pre.2", default-features = false, features = ["webgpu", "autodiff"] }
+burn = { version = "0.21.0-pre.3", default-features = false, features = ["webgpu", "autodiff"] }
 burn_p2p = { path = "../../crates/burn_p2p" }
 burn_p2p_browser = { path = "../../crates/burn_p2p_browser" }
 console_error_panic_hook = "0.1"

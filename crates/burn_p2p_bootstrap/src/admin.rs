@@ -289,9 +289,9 @@ impl BootstrapPlan {
                 });
                 if let Some(reenrollment) = trust_bundle.reenrollment.as_mut() {
                     reenrollment
-                        .legacy_issuer_peer_ids
+                        .retired_issuer_peer_ids
                         .retain(|issuer_peer_id| !issuer_peer_ids.contains(issuer_peer_id));
-                    if reenrollment.legacy_issuer_peer_ids.is_empty() {
+                    if reenrollment.retired_issuer_peer_ids.is_empty() {
                         trust_bundle.reenrollment = None;
                     }
                 }

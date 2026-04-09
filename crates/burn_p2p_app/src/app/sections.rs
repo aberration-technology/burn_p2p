@@ -1,4 +1,6 @@
-use burn_p2p_views::{NodeAppClientView, NodeAppExperimentSummary, NodeAppLeaderboardPreview};
+use burn_p2p_views::{
+    NodeAppClientView, NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppPerformanceView,
+};
 use dioxus::prelude::*;
 
 #[component]
@@ -279,6 +281,7 @@ pub(crate) fn TrainSections(
     view: NodeAppClientView,
     on_enable_train: Option<EventHandler<MouseEvent>>,
 ) -> Element {
+    let performance = view.network.performance.clone();
     let throughput = view
         .training
         .throughput_summary
@@ -363,6 +366,10 @@ pub(crate) fn TrainSections(
                             value: view.training.last_loss.clone().unwrap_or_else(|| "—".into()),
                             detail: Some("latest".into()),
                         }
+                    }
+                    if let Some(performance) = performance.clone() {
+                        PerformanceMetricBand { performance: performance.clone() }
+                        p { class: "muted", "{performance.scope_summary}" }
                     }
                     div { class: "browser-inline-list",
                         KeyValueRow {
@@ -449,6 +456,7 @@ pub(crate) fn TrainSections(
 
 #[component]
 pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
+    let performance = view.network.performance.clone();
     rsx! {
         div { class: "surface-layout browser-surface-layout",
             section { class: "panel primary-panel browser-focus-panel",
@@ -471,6 +479,9 @@ pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
                         StatTile { label: "visible", value: view.network.observed_peers.to_string(), detail: Some("edge scope".into()) }
                         StatTile { label: "network", value: view.network.estimated_network_size.to_string(), detail: Some("estimated".into()) }
                         StatTile { label: "merges", value: view.network.certified_merges.to_string(), detail: Some("signed".into()) }
+                    }
+                    if let Some(performance) = performance.clone() {
+                        PerformanceMetricBand { performance }
                     }
                 }
             }
@@ -500,6 +511,21 @@ pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
                         KeyValueRow {
                             label: "error",
                             value: view.network.last_error.clone().unwrap_or_else(|| "none".into()),
+                        }
+                    }
+                }
+                if let Some(performance) = performance {
+                    section { class: "panel compact-panel",
+                        SectionHeader {
+                            eyebrow: "performance",
+                            title: "aggregate pace",
+                            detail: "selected revision train, validation, and stall timing.",
+                        }
+                        KeyValueList {
+                            KeyValueRow { label: "scope", value: performance.scope_summary }
+                            KeyValueRow { label: "captured", value: performance.captured_at }
+                            KeyValueRow { label: "wait", value: performance.wait_time }
+                            KeyValueRow { label: "idle", value: performance.idle_time }
                         }
                     }
                 }
@@ -551,6 +577,34 @@ fn StatTile(label: &'static str, value: String, detail: Option<String>) -> Eleme
             strong { "{value}" }
             if let Some(detail) = detail {
                 p { class: "muted stat-detail", "{detail}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn PerformanceMetricBand(performance: NodeAppPerformanceView) -> Element {
+    rsx! {
+        div { class: "browser-metric-band",
+            StatTile {
+                label: "global train",
+                value: performance.training_throughput,
+                detail: Some("aggregate".into()),
+            }
+            StatTile {
+                label: "global val",
+                value: performance.validation_throughput,
+                detail: Some("aggregate".into()),
+            }
+            StatTile {
+                label: "wait",
+                value: performance.wait_time,
+                detail: Some("residual".into()),
+            }
+            StatTile {
+                label: "idle",
+                value: performance.idle_time,
+                detail: Some("between windows".into()),
             }
         }
     }

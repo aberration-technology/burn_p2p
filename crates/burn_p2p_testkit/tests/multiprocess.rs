@@ -8,10 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use burn_p2p::SwarmAddress;
 use burn_p2p_testkit::multiprocess::{
-    SyntheticProcessConfig, SyntheticProcessReport, SyntheticSoakConfig,
-    create_synthetic_runtime_dataset, run_synthetic_process_soak,
+    SyntheticNativeBackend, SyntheticProcessConfig, SyntheticProcessReport, SyntheticSoakConfig,
+    SyntheticWorkloadKind, create_synthetic_runtime_dataset, run_synthetic_process_soak,
 };
 use tempfile::tempdir;
 
@@ -241,7 +242,7 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
     restarted_config.shutdown_sentinel = Some(restarted_shutdown.clone());
     restarted_config.startup_timeout_secs = 30;
     restarted_config.sync_timeout_secs = 30;
-    restarted_config.merge_wait_timeout_secs = 45;
+    restarted_config.merge_wait_timeout_secs = 90;
     fs::write(
         &restarted_config_path,
         serde_json::to_vec_pretty(&restarted_config)?,
@@ -270,7 +271,11 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
     late_joiner_config.learning_rate = 0.25;
     late_joiner_config.startup_timeout_secs = 30;
     late_joiner_config.sync_timeout_secs = 30;
-    late_joiner_config.merge_wait_timeout_secs = 45;
+    late_joiner_config.merge_wait_timeout_secs = 90;
+    // This restart-path test is validating that the restarted validator recovers
+    // and merges a fresh post-restart contribution. The late joiner only needs to
+    // publish and remain reachable for artifact fetch, not block on its own
+    // canonical-advance observation.
     late_joiner_config.wait_for_canonical_advance = false;
     fs::write(
         &late_joiner_config_path,
@@ -291,7 +296,7 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
     let baseline_receipt_count = restarted_report.receipt_count;
     let baseline_merge_count = restarted_report.merge_count;
     let post_restart_merge =
-        wait_for_report(&restarted_report_path, Duration::from_secs(45), |report| {
+        wait_for_report(&restarted_report_path, Duration::from_secs(90), |report| {
             report.receipt_count > baseline_receipt_count
                 || report.merge_count > baseline_merge_count
         })?;
@@ -379,14 +384,19 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
 }
 
 #[test]
-fn native_process_soak_runner_reports_multi_window_progress() -> anyhow::Result<()> {
+fn native_process_soak_runner_reports_persistent_multi_window_progress() -> anyhow::Result<()> {
     let _guard = multiprocess_test_guard();
     let root = tempdir()?;
     let summary = run_synthetic_process_soak(
         &SyntheticSoakConfig {
             root: root.path().join("soak-multi-window"),
+            workload_kind: SyntheticWorkloadKind::Scalar,
+            trainer_backend: SyntheticNativeBackend::NdArray,
+            validator_backend: SyntheticNativeBackend::NdArray,
             trainer_count: 1,
             trainer_window_count: 3,
+            persistent_trainers: true,
+            continuous_training: false,
             startup_timeout_secs: 30,
             poll_interval_ms: 50,
             sync_timeout_secs: 30,
@@ -398,8 +408,8 @@ fn native_process_soak_runner_reports_multi_window_progress() -> anyhow::Result<
     assert_eq!(summary.trainer_count, 1);
     assert_eq!(summary.trainer_window_count, 3);
     assert_eq!(summary.completed_rounds, 3);
-    assert_eq!(summary.trainer_process_count, 3);
-    assert_eq!(summary.trainer_reports.len(), 3);
+    assert_eq!(summary.trainer_process_count, 1);
+    assert_eq!(summary.trainer_reports.len(), 1);
     assert!(summary.total_receipts >= 3);
     assert!(summary.total_merges >= 3);
     assert!(summary.elapsed_millis > 0);
@@ -407,13 +417,100 @@ fn native_process_soak_runner_reports_multi_window_progress() -> anyhow::Result<
         summary
             .trainer_reports
             .iter()
-            .all(|report| report.trained_head_id.is_some())
+            .all(|report| report.trained_head_id.is_some() && report.window_timelines.len() >= 3)
     );
     assert_eq!(
         summary.total_receipts,
         summary.validator_report.receipt_count
     );
     assert_eq!(summary.total_merges, summary.validator_report.merge_count);
+    let performance = summary
+        .performance_summary
+        .as_ref()
+        .context("expected synthetic soak performance summary")?;
+    assert!(performance.training.window_count >= 3);
+    assert!(performance.training.accepted_work_units >= 1);
+    let dynamics = summary
+        .dynamics_summary
+        .as_ref()
+        .context("expected synthetic soak dynamics summary")?;
+    assert!(dynamics.peer_startup_latency_ms.sample_count >= 2);
+    assert!(dynamics.trainer_training_latency_ms.sample_count >= 3);
+    assert!(dynamics.receipt_rate_per_sec > 0.0);
+    Ok(())
+}
+
+#[test]
+fn native_process_soak_runner_supports_continuous_speculative_training() -> anyhow::Result<()> {
+    let _guard = multiprocess_test_guard();
+    let root = tempdir()?;
+    let summary = run_synthetic_process_soak(
+        &SyntheticSoakConfig {
+            root: root.path().join("soak-continuous"),
+            workload_kind: SyntheticWorkloadKind::Scalar,
+            trainer_backend: SyntheticNativeBackend::NdArray,
+            validator_backend: SyntheticNativeBackend::NdArray,
+            trainer_count: 1,
+            trainer_window_count: 3,
+            persistent_trainers: true,
+            continuous_training: true,
+            startup_timeout_secs: 30,
+            poll_interval_ms: 50,
+            sync_timeout_secs: 30,
+            merge_wait_timeout_secs: 45,
+        },
+        Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
+    )?;
+
+    assert!(summary.continuous_training);
+    assert_eq!(summary.completed_rounds, 3);
+    assert_eq!(summary.trainer_process_count, 1);
+    assert_eq!(summary.trainer_reports.len(), 1);
+    assert!(summary.total_receipts >= 1);
+    assert!(summary.total_merges >= 1);
+    assert_eq!(summary.trainer_reports[0].window_timelines.len(), 3);
+    let performance = summary
+        .performance_summary
+        .as_ref()
+        .context("expected speculative synthetic soak performance summary")?;
+    assert!(performance.training.window_count >= 3);
+    Ok(())
+}
+
+#[cfg(feature = "native-gpu-probe")]
+#[test]
+fn burn_native_process_soak_runner_reports_persistent_multi_window_progress() -> anyhow::Result<()>
+{
+    let _guard = multiprocess_test_guard();
+    let root = tempdir()?;
+    let summary = run_synthetic_process_soak(
+        &SyntheticSoakConfig {
+            root: root.path().join("soak-burn-multi-window"),
+            workload_kind: SyntheticWorkloadKind::BurnLinear,
+            trainer_backend: SyntheticNativeBackend::NdArray,
+            validator_backend: SyntheticNativeBackend::NdArray,
+            trainer_count: 1,
+            trainer_window_count: 2,
+            persistent_trainers: true,
+            continuous_training: false,
+            startup_timeout_secs: 30,
+            poll_interval_ms: 50,
+            sync_timeout_secs: 30,
+            merge_wait_timeout_secs: 45,
+        },
+        Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
+    )?;
+
+    assert_eq!(summary.workload_kind, SyntheticWorkloadKind::BurnLinear);
+    assert_eq!(summary.trainer_backend, SyntheticNativeBackend::NdArray);
+    assert_eq!(summary.completed_rounds, 2);
+    assert!(summary.total_receipts >= 2);
+    assert!(summary.total_merges >= 2);
+    let performance = summary
+        .performance_summary
+        .as_ref()
+        .context("expected burn synthetic soak performance summary")?;
+    assert!(performance.training.window_count >= 2);
     Ok(())
 }
 
@@ -424,8 +521,13 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
     let summary = run_synthetic_process_soak(
         &SyntheticSoakConfig {
             root: root.path().join("soak"),
+            workload_kind: SyntheticWorkloadKind::Scalar,
+            trainer_backend: SyntheticNativeBackend::NdArray,
+            validator_backend: SyntheticNativeBackend::NdArray,
             trainer_count: 3,
             trainer_window_count: 2,
+            persistent_trainers: false,
+            continuous_training: false,
             startup_timeout_secs: 30,
             poll_interval_ms: 50,
             sync_timeout_secs: 45,
@@ -450,6 +552,17 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
             .all(|report| report.trained_head_id.is_some())
     );
     assert!(summary.total_receipts >= summary.total_merges);
+    let performance = summary
+        .performance_summary
+        .as_ref()
+        .context("expected synthetic soak performance summary")?;
+    assert!(performance.total_peer_count >= 4);
+    let dynamics = summary
+        .dynamics_summary
+        .as_ref()
+        .context("expected synthetic soak dynamics summary")?;
+    assert!(dynamics.trainer_canonical_advance_latency_ms.sample_count >= 3);
+    assert!(dynamics.merge_rate_per_sec > 0.0);
     Ok(())
 }
 

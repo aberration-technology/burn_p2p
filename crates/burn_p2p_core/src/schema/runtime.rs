@@ -602,6 +602,8 @@ pub enum ArtifactKind {
     ServeHead,
     /// Uses the delta pack kind.
     DeltaPack,
+    /// Uses the browser data bundle kind.
+    BrowserDataBundle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

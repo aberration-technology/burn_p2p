@@ -4,8 +4,8 @@ use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ClientReleaseManifest,
     ContentId, EvalSplit, FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy,
     MetricReport, MetricValue, NetworkManifest, NodeBuilder, PatchOutcome, PatchSupport,
-    ProjectFamilyId, RevisionManifest, RuntimePatch, SupportedWorkload, WindowCtx, WindowReport,
-    WorkloadId,
+    ProjectFamilyId, RevisionManifest, RuntimePatch, SupportedWorkload,
+    TrainerCanonicalReconcileStrategy, WindowCtx, WindowReport, WorkloadId,
 };
 
 /// Defines one executable workload inside a project family.
@@ -94,6 +94,20 @@ pub trait P2pWorkload {
     /// Returns the contribution weight used for receipt scoring.
     fn contribution_weight(&self, _report: &WindowReport<Self::WindowStats>) -> f64 {
         1.0
+    }
+
+    /// Reconciles a speculative local trainer model with a newly visible
+    /// canonical model.
+    ///
+    /// The default implementation adopts the canonical model directly. Burn
+    /// workloads override this to support EMA-style blending.
+    fn reconcile_canonical_model(
+        &self,
+        _local_model: &Self::Model,
+        canonical_model: Self::Model,
+        _strategy: TrainerCanonicalReconcileStrategy,
+    ) -> anyhow::Result<Self::Model> {
+        Ok(canonical_model)
     }
 
     /// Optionally merges candidate models into one merged model.
@@ -418,6 +432,16 @@ where
         self.workload.contribution_weight(report)
     }
 
+    fn reconcile_canonical_model(
+        &self,
+        local_model: &Self::Model,
+        canonical_model: Self::Model,
+        strategy: TrainerCanonicalReconcileStrategy,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload
+            .reconcile_canonical_model(local_model, canonical_model, strategy)
+    }
+
     fn merge_candidate_models(
         &self,
         base_model: &Self::Model,
@@ -538,6 +562,16 @@ where
 
     fn contribution_weight(&self, report: &WindowReport<Self::WindowStats>) -> f64 {
         self.workload.contribution_weight(report)
+    }
+
+    fn reconcile_canonical_model(
+        &self,
+        local_model: &Self::Model,
+        canonical_model: Self::Model,
+        strategy: TrainerCanonicalReconcileStrategy,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload
+            .reconcile_canonical_model(local_model, canonical_model, strategy)
     }
 
     fn merge_candidate_models(
@@ -864,7 +898,7 @@ mod tests {
             app_semver: semver::Version::new(0, 2, 0),
             git_commit: "deadbeef".into(),
             cargo_lock_hash: ContentId::new("cargo-lock"),
-            burn_version_string: "0.21.0-pre.2".into(),
+            burn_version_string: "0.21.0-pre.3".into(),
             enabled_features_hash: ContentId::new("features"),
             protocol_major: 1,
             supported_workloads: vec![workload],
@@ -882,7 +916,7 @@ mod tests {
             app_semver: semver::Version::new(0, 2, 0),
             git_commit: "deadbeef".into(),
             cargo_lock_hash: ContentId::new("cargo-lock"),
-            burn_version_string: "0.21.0-pre.2".into(),
+            burn_version_string: "0.21.0-pre.3".into(),
             enabled_features_hash: ContentId::new("features"),
             protocol_major: 1,
             supported_workloads: workloads,

@@ -92,10 +92,13 @@ pub struct BrowserLiveParticipantResult {
     pub certificate_peer_id: Option<String>,
     pub runtime_state: Option<String>,
     pub transport: Option<String>,
+    pub head_artifact_transport: Option<String>,
     pub active_assignment: bool,
     pub emitted_receipt_id: Option<String>,
     pub accepted_receipt_ids: Vec<String>,
     pub receipt_submission_accepted: bool,
+    pub capability: BrowserCapabilityReport,
+    pub training_budget: BrowserTrainingBudget,
 }
 
 #[wasm_bindgen]
@@ -206,6 +209,7 @@ struct LiveBrowserParticipantHandle {
     session: BrowserSessionState,
     runtime: BrowserWorkerRuntime,
     config: BrowserLiveParticipantConfig,
+    capability: BrowserCapabilityReport,
 }
 
 async fn start_live_browser_participant(
@@ -267,15 +271,16 @@ async fn start_live_browser_participant(
     runtime_config.selected_experiment = Some(ExperimentId::new(config.experiment_id.clone()));
     runtime_config.selected_revision = Some(RevisionId::new(config.revision_id.clone()));
 
+    let capability = BrowserCapabilityReport {
+        navigator_gpu_exposed: true,
+        worker_gpu_exposed: true,
+        gpu_support: BrowserGpuSupport::Available,
+        recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
+        ..BrowserCapabilityReport::default()
+    };
     let mut runtime = BrowserWorkerRuntime::start(
         runtime_config,
-        BrowserCapabilityReport {
-            navigator_gpu_exposed: true,
-            worker_gpu_exposed: true,
-            gpu_support: BrowserGpuSupport::Available,
-            recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
-            ..BrowserCapabilityReport::default()
-        },
+        capability.clone(),
         BrowserTransportStatus {
             active: None,
             webrtc_direct_enabled: snapshot.transports.webrtc_direct,
@@ -295,23 +300,25 @@ async fn start_live_browser_participant(
         session,
         runtime,
         config,
+        capability,
     })
 }
 
 async fn finish_live_browser_participant(
     handle: &mut LiveBrowserParticipantHandle,
 ) -> Result<BrowserLiveParticipantResult, JsValue> {
+    let training_budget = BrowserTrainingBudget {
+        max_window_secs: 12,
+        requires_webgpu: true,
+        ..BrowserTrainingBudget::default()
+    };
     let train_events = handle.runtime.apply_command(
         BrowserWorkerCommand::Train(BrowserTrainingPlan {
             study_id: StudyId::new("mnist-study"),
             experiment_id: ExperimentId::new(handle.config.experiment_id.clone()),
             revision_id: RevisionId::new(handle.config.revision_id.clone()),
             workload_id: WorkloadId::new(handle.config.workload_id.clone()),
-            budget: BrowserTrainingBudget {
-                max_window_secs: 12,
-                requires_webgpu: true,
-                ..BrowserTrainingBudget::default()
-            },
+            budget: training_budget.clone(),
         }),
         None,
         None,
@@ -358,10 +365,13 @@ async fn finish_live_browser_participant(
             .active
             .as_ref()
             .map(browser_transport_label),
+        head_artifact_transport: handle.runtime.storage.last_head_artifact_transport.clone(),
         active_assignment: handle.runtime.storage.active_assignment.is_some(),
         emitted_receipt_id,
         receipt_submission_accepted: !accepted_receipt_ids.is_empty(),
         accepted_receipt_ids,
+        capability: handle.capability.clone(),
+        training_budget,
     })
 }
 

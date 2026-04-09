@@ -139,6 +139,7 @@ pub fn build_node_app_view(
             metrics_live_ready: !snapshot.control_plane.metrics_announcements.is_empty(),
             last_directory_sync_at: Some(snapshot.updated_at.to_rfc3339()),
             last_error: snapshot.last_error.clone(),
+            performance: None,
         },
     }
 }
@@ -183,13 +184,13 @@ fn resolve_selected_experiment(
     }
 
     let assigned = primary_slot_assignment(snapshot);
-    if let Some(assigned) = assigned {
-        if let Some(entry) = directory.iter().find(|entry| {
+    if let Some(assigned) = assigned
+        && let Some(entry) = directory.iter().find(|entry| {
             entry.experiment_id == assigned.experiment_id
                 && entry.current_revision_id == assigned.revision_id
-        }) {
-            return Some(entry.clone());
-        }
+        })
+    {
+        return Some(entry.clone());
     }
 
     directory.first().cloned()

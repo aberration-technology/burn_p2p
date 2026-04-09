@@ -19,12 +19,12 @@ pub use auth::{
 pub use browser_app::{
     BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppFocusPanel,
     BrowserAppLeaderboardPreview, BrowserAppLiveView, BrowserAppMetricPreview,
-    BrowserAppNetworkView, BrowserAppRouteLink, BrowserAppShellView, BrowserAppStaticBootstrap,
-    BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab, BrowserAppTrainingView,
-    BrowserAppValidationView, BrowserAppViewerView, NodeAppClientView, NodeAppExperimentSummary,
-    NodeAppLeaderboardPreview, NodeAppMetricPreview, NodeAppNetworkView, NodeAppShellView,
-    NodeAppStaticBootstrap, NodeAppSurface, NodeAppTrainingView, NodeAppValidationView,
-    NodeAppViewerView,
+    BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink, BrowserAppShellView,
+    BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab,
+    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView, NodeAppClientView,
+    NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppMetricPreview, NodeAppNetworkView,
+    NodeAppPerformanceView, NodeAppShellView, NodeAppStaticBootstrap, NodeAppSurface,
+    NodeAppTrainingView, NodeAppValidationView, NodeAppViewerView,
 };
 pub use dashboard::{
     AggregateDagEdge, AggregateDagNode, AggregateDagView, AuthorityActionRecord, CheckpointDagEdge,

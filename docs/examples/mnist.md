@@ -36,7 +36,7 @@ Purpose:
 The demo runs one net with:
 
 - one validator / authority node
-- one helper node acting as the net's cheap coherence seed plus archive helper
+- one helper node acting as the net's cheap coherence seed and relay helper
 - one viewer node with portal-viewer and browser-observer roles
 - three initial native trainers
 - one late-joining native trainer
@@ -72,6 +72,7 @@ split:
 
 - cheap coherence/bootstrap seed
 - separate validator / authority
+- separate reducer
 - separate trainers
 
 ## Files

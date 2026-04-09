@@ -8,6 +8,11 @@ output "validator_public_ips" {
   description = "Public IPs for the validator nodes."
 }
 
+output "reducer_public_ips" {
+  value       = aws_instance.reducer[*].public_ip
+  description = "Public IPs for the reducer nodes."
+}
+
 output "trainer_public_ips" {
   value       = aws_instance.trainer[*].public_ip
   description = "Public IPs for the trainer nodes."

@@ -2,14 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{
     ContentId, DatasetViewId, ExperimentId, HeadEvalReport, HeadEvalStatus, HeadId, MetricScope,
-    MetricTrustClass, MetricsLedgerSegment, MetricsSnapshotManifest, NetworkId, PeerWindowMetrics,
-    PeerWindowStatus, ReducerCohortMetrics, RevisionId, SignatureMetadata, WorkloadId,
+    MetricTrustClass, MetricsLedgerSegment, MetricsSnapshotManifest, NetworkId, PeerRole,
+    PeerWindowMetrics, PeerWindowStatus, ReducerCohortMetrics, RevisionId, SignatureMetadata,
+    WorkloadId,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::{
-    DerivedMetricKind, DerivedMetricPoint, MetricEnvelope, MetricsIndexerConfig, MetricsSnapshot,
-    PeerWindowDistributionSummary, derive_peer_window_distribution_summaries,
+    DerivedMetricKind, DerivedMetricPoint, HeadEvaluationPerformanceSummary, MetricEnvelope,
+    MetricsIndexerConfig, MetricsSnapshot, NetworkPerformanceSummary, PeerPerformanceSummary,
+    PeerWindowDistributionSummary, ReducerPerformanceSummary, WorkClassPerformanceSummary,
+    derive_peer_window_distribution_summaries,
 };
 
 /// In-memory metrics read model for one or more experiment revisions.
@@ -390,6 +393,11 @@ impl MetricsIndexer {
         let reducer_cohort_metrics = self.reducer_cohort_metrics(experiment_id, revision_id);
         let head_eval_reports = self.head_eval_reports(experiment_id, revision_id);
         let derived_metrics = self.derive_metrics(experiment_id, revision_id);
+        let performance_summary = derive_network_performance_summary(
+            &peer_window_metrics,
+            &reducer_cohort_metrics,
+            &head_eval_reports,
+        );
 
         let network_id = peer_window_metrics
             .first()
@@ -409,7 +417,8 @@ impl MetricsIndexer {
         let canonical_head_metrics_ref = ContentId::derive(&head_eval_reports)?;
         let window_rollups_ref =
             ContentId::derive(&(peer_window_metrics.clone(), reducer_cohort_metrics.clone()))?;
-        let network_rollups_ref = ContentId::derive(&derived_metrics)?;
+        let network_rollups_ref =
+            ContentId::derive(&(derived_metrics.clone(), performance_summary.clone()))?;
         let covers_until_head_id = head_eval_reports
             .iter()
             .max_by_key(|report| report.finished_at)
@@ -439,6 +448,7 @@ impl MetricsIndexer {
             peer_window_metrics,
             reducer_cohort_metrics,
             derived_metrics,
+            performance_summary,
         })
     }
 
@@ -685,4 +695,557 @@ fn percentile_nearest_rank(sorted_values: &[f64], percentile: f64) -> f64 {
     let rank = (percentile.clamp(0.0, 1.0) * sorted_values.len() as f64).ceil() as usize;
     let index = rank.saturating_sub(1).min(sorted_values.len() - 1);
     sorted_values[index]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkClass {
+    Training,
+    Validation,
+}
+
+/// Derives a reusable network performance rollup from raw runtime metrics.
+pub fn derive_network_performance_summary(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<NetworkPerformanceSummary> {
+    let network_id = common_network_id(peer_windows, reducer_cohorts, head_reports)?;
+    let captured_at = latest_captured_at(peer_windows, reducer_cohorts, head_reports)?;
+    let experiment_id = common_experiment_id(peer_windows, reducer_cohorts, head_reports);
+    let revision_id = common_revision_id(peer_windows, reducer_cohorts, head_reports);
+    let workload_id = common_workload_id(peer_windows, reducer_cohorts, head_reports);
+    let dataset_view_id = common_dataset_view_id(peer_windows, reducer_cohorts, head_reports);
+    let peers = derive_peer_performance_summaries(peer_windows);
+    let training_windows = peer_windows
+        .iter()
+        .filter(|metrics| classify_work_class(&metrics.role) == Some(WorkClass::Training))
+        .cloned()
+        .collect::<Vec<_>>();
+    let validation_windows = peer_windows
+        .iter()
+        .filter(|metrics| classify_work_class(&metrics.role) == Some(WorkClass::Validation))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Some(NetworkPerformanceSummary {
+        network_id,
+        experiment_id,
+        revision_id,
+        workload_id,
+        dataset_view_id,
+        captured_at,
+        total_peer_count: peers.len() as u64,
+        training: summarize_work_class(&training_windows),
+        validation: summarize_work_class(&validation_windows),
+        head_evaluation: summarize_head_evaluations(head_reports),
+        reducer: summarize_reducer_cohorts(reducer_cohorts),
+        peers,
+    })
+}
+
+fn derive_peer_performance_summaries(
+    peer_windows: &[PeerWindowMetrics],
+) -> Vec<PeerPerformanceSummary> {
+    let mut per_peer = BTreeMap::<String, Vec<PeerWindowMetrics>>::new();
+    for metrics in peer_windows {
+        per_peer
+            .entry(metrics.peer_id.as_str().to_string())
+            .or_default()
+            .push(metrics.clone());
+    }
+
+    per_peer
+        .into_values()
+        .filter_map(|mut windows| {
+            windows.sort_by_key(|metrics| metrics.window_started_at);
+            let latest = windows
+                .iter()
+                .max_by_key(|metrics| metrics.window_finished_at)?;
+            let attempted_work_units = windows
+                .iter()
+                .map(|metrics| metrics.attempted_tokens_or_samples)
+                .sum::<u64>();
+            let accepted_work_units = windows
+                .iter()
+                .filter_map(|metrics| metrics.accepted_tokens_or_samples)
+                .sum::<u64>();
+            let active_window_time_ms = windows.iter().map(peer_window_active_time_ms).sum::<u64>();
+            let end_to_end_window_time_ms = windows
+                .iter()
+                .map(peer_window_end_to_end_time_ms)
+                .sum::<u64>();
+            let compute_time_ms = windows
+                .iter()
+                .map(|metrics| metrics.compute_time_ms)
+                .sum::<u64>();
+            let data_fetch_time_ms = windows
+                .iter()
+                .map(|metrics| metrics.data_fetch_time_ms)
+                .sum::<u64>();
+            let publish_latency_ms = windows
+                .iter()
+                .map(|metrics| metrics.publish_latency_ms)
+                .sum::<u64>();
+            let wait_time_ms = windows.iter().map(peer_window_wait_time_ms).sum::<u64>();
+            let idle_time_ms = peer_idle_time_ms(&windows);
+            let elapsed_time_ms = elapsed_time_ms_from_peer_windows(&windows).unwrap_or_default();
+            let throughput_work_units_per_sec =
+                throughput_per_second(accepted_work_units, elapsed_time_ms);
+
+            Some(PeerPerformanceSummary {
+                peer_id: latest.peer_id.clone(),
+                principal_id: latest.principal_id.clone(),
+                role: latest.role.clone(),
+                backend_class: latest.backend_class.clone(),
+                window_count: windows.len() as u64,
+                attempted_work_units,
+                accepted_work_units,
+                elapsed_time_ms,
+                active_window_time_ms,
+                end_to_end_window_time_ms,
+                compute_time_ms,
+                data_fetch_time_ms,
+                publish_latency_ms,
+                wait_time_ms,
+                idle_time_ms,
+                throughput_work_units_per_sec,
+            })
+        })
+        .collect()
+}
+
+fn summarize_work_class(peer_windows: &[PeerWindowMetrics]) -> WorkClassPerformanceSummary {
+    if peer_windows.is_empty() {
+        return WorkClassPerformanceSummary {
+            peer_count: 0,
+            window_count: 0,
+            attempted_work_units: 0,
+            accepted_work_units: 0,
+            elapsed_time_ms: 0,
+            active_window_time_ms: 0,
+            end_to_end_window_time_ms: 0,
+            mean_end_to_end_window_time_ms: 0,
+            max_end_to_end_window_time_ms: 0,
+            compute_time_ms: 0,
+            data_fetch_time_ms: 0,
+            publish_latency_ms: 0,
+            wait_time_ms: 0,
+            idle_time_ms: 0,
+            throughput_work_units_per_sec: 0.0,
+        };
+    }
+
+    let peer_summaries = derive_peer_performance_summaries(peer_windows);
+    let window_count = peer_windows.len() as u64;
+    let attempted_work_units = peer_windows
+        .iter()
+        .map(|metrics| metrics.attempted_tokens_or_samples)
+        .sum::<u64>();
+    let accepted_work_units = peer_windows
+        .iter()
+        .filter_map(|metrics| metrics.accepted_tokens_or_samples)
+        .sum::<u64>();
+    let elapsed_time_ms = elapsed_time_ms_from_peer_windows(peer_windows).unwrap_or_default();
+    let active_window_time_ms = peer_windows
+        .iter()
+        .map(peer_window_active_time_ms)
+        .sum::<u64>();
+    let end_to_end_window_time_ms = peer_windows
+        .iter()
+        .map(peer_window_end_to_end_time_ms)
+        .sum::<u64>();
+    let max_end_to_end_window_time_ms = peer_windows
+        .iter()
+        .map(peer_window_end_to_end_time_ms)
+        .max()
+        .unwrap_or_default();
+    let compute_time_ms = peer_windows
+        .iter()
+        .map(|metrics| metrics.compute_time_ms)
+        .sum::<u64>();
+    let data_fetch_time_ms = peer_windows
+        .iter()
+        .map(|metrics| metrics.data_fetch_time_ms)
+        .sum::<u64>();
+    let publish_latency_ms = peer_windows
+        .iter()
+        .map(|metrics| metrics.publish_latency_ms)
+        .sum::<u64>();
+    let wait_time_ms = peer_windows
+        .iter()
+        .map(peer_window_wait_time_ms)
+        .sum::<u64>();
+    let idle_time_ms = peer_summaries
+        .iter()
+        .map(|summary| summary.idle_time_ms)
+        .sum::<u64>();
+
+    WorkClassPerformanceSummary {
+        peer_count: peer_summaries.len() as u64,
+        window_count,
+        attempted_work_units,
+        accepted_work_units,
+        elapsed_time_ms,
+        active_window_time_ms,
+        end_to_end_window_time_ms,
+        mean_end_to_end_window_time_ms: end_to_end_window_time_ms / window_count.max(1),
+        max_end_to_end_window_time_ms,
+        compute_time_ms,
+        data_fetch_time_ms,
+        publish_latency_ms,
+        wait_time_ms,
+        idle_time_ms,
+        throughput_work_units_per_sec: throughput_per_second(accepted_work_units, elapsed_time_ms),
+    }
+}
+
+fn summarize_head_evaluations(reports: &[HeadEvalReport]) -> HeadEvaluationPerformanceSummary {
+    if reports.is_empty() {
+        return HeadEvaluationPerformanceSummary {
+            report_count: 0,
+            sample_count: 0,
+            elapsed_time_ms: 0,
+            total_eval_time_ms: 0,
+            mean_eval_time_ms: 0,
+            max_eval_time_ms: 0,
+            throughput_samples_per_sec: 0.0,
+        };
+    }
+
+    let report_count = reports.len() as u64;
+    let sample_count = reports
+        .iter()
+        .map(|report| report.sample_count)
+        .sum::<u64>();
+    let eval_durations = reports
+        .iter()
+        .map(head_eval_duration_ms)
+        .collect::<Vec<_>>();
+    let total_eval_time_ms = eval_durations.iter().sum::<u64>();
+    let max_eval_time_ms = eval_durations.iter().copied().max().unwrap_or_default();
+    let elapsed_time_ms = elapsed_time_ms_from_head_reports_ms(reports).unwrap_or_default();
+
+    HeadEvaluationPerformanceSummary {
+        report_count,
+        sample_count,
+        elapsed_time_ms,
+        total_eval_time_ms,
+        mean_eval_time_ms: total_eval_time_ms / report_count.max(1),
+        max_eval_time_ms,
+        throughput_samples_per_sec: throughput_per_second(sample_count, elapsed_time_ms),
+    }
+}
+
+fn summarize_reducer_cohorts(
+    reducer_cohorts: &[ReducerCohortMetrics],
+) -> ReducerPerformanceSummary {
+    if reducer_cohorts.is_empty() {
+        return ReducerPerformanceSummary {
+            cohort_count: 0,
+            unique_cohort_count: 0,
+            accepted_updates: 0,
+            rejected_updates: 0,
+            accepted_work_units: 0,
+            mean_cohort_duration_ms: 0,
+            max_cohort_duration_ms: 0,
+            mean_window_close_delay_ms: 0,
+            max_window_close_delay_ms: 0,
+            ingress_bytes: 0,
+            egress_bytes: 0,
+        };
+    }
+
+    let mut unique =
+        BTreeMap::<(ContentId, ContentId, Option<HeadId>, HeadId), ReducerCohortMetrics>::new();
+    for metrics in reducer_cohorts {
+        let key = (
+            metrics.merge_window_id.clone(),
+            metrics.reducer_group_id.clone(),
+            metrics.candidate_head_id.clone(),
+            metrics.base_head_id.clone(),
+        );
+        match unique.get(&key) {
+            Some(existing) if existing.captured_at >= metrics.captured_at => {}
+            _ => {
+                unique.insert(key, metrics.clone());
+            }
+        }
+    }
+    let unique = unique.into_values().collect::<Vec<_>>();
+    let unique_cohort_count = unique.len() as u64;
+    let accepted_updates = unique
+        .iter()
+        .map(|metrics| metrics.accepted_updates)
+        .sum::<u64>();
+    let rejected_updates = unique
+        .iter()
+        .map(|metrics| metrics.rejected_updates)
+        .sum::<u64>();
+    let accepted_work_units = unique
+        .iter()
+        .map(|metrics| metrics.accepted_tokens_or_samples)
+        .sum::<u64>();
+    let total_cohort_duration_ms = unique
+        .iter()
+        .map(|metrics| metrics.cohort_duration_ms)
+        .sum::<u64>();
+    let max_cohort_duration_ms = unique
+        .iter()
+        .map(|metrics| metrics.cohort_duration_ms)
+        .max()
+        .unwrap_or_default();
+    let total_window_close_delay_ms = unique
+        .iter()
+        .map(|metrics| metrics.window_close_delay_ms)
+        .sum::<u64>();
+    let max_window_close_delay_ms = unique
+        .iter()
+        .map(|metrics| metrics.window_close_delay_ms)
+        .max()
+        .unwrap_or_default();
+    let ingress_bytes = unique
+        .iter()
+        .map(|metrics| metrics.ingress_bytes)
+        .sum::<u128>();
+    let egress_bytes = unique
+        .iter()
+        .map(|metrics| metrics.egress_bytes)
+        .sum::<u128>();
+
+    ReducerPerformanceSummary {
+        cohort_count: reducer_cohorts.len() as u64,
+        unique_cohort_count,
+        accepted_updates,
+        rejected_updates,
+        accepted_work_units,
+        mean_cohort_duration_ms: total_cohort_duration_ms / unique_cohort_count.max(1),
+        max_cohort_duration_ms,
+        mean_window_close_delay_ms: total_window_close_delay_ms / unique_cohort_count.max(1),
+        max_window_close_delay_ms,
+        ingress_bytes,
+        egress_bytes,
+    }
+}
+
+fn classify_work_class(role: &PeerRole) -> Option<WorkClass> {
+    match role {
+        PeerRole::TrainerGpu
+        | PeerRole::TrainerCpu
+        | PeerRole::BrowserTrainerWgpu
+        | PeerRole::BrowserFallback
+        | PeerRole::BrowserTrainer => Some(WorkClass::Training),
+        PeerRole::Validator | PeerRole::Evaluator | PeerRole::BrowserVerifier => {
+            Some(WorkClass::Validation)
+        }
+        PeerRole::Bootstrap
+        | PeerRole::Authority
+        | PeerRole::Archive
+        | PeerRole::Reducer
+        | PeerRole::Viewer
+        | PeerRole::BrowserObserver
+        | PeerRole::RelayHelper => None,
+    }
+}
+
+fn common_network_id(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<NetworkId> {
+    let first = peer_windows
+        .first()
+        .map(|metrics| metrics.network_id.clone())
+        .or_else(|| {
+            reducer_cohorts
+                .first()
+                .map(|metrics| metrics.network_id.clone())
+        })
+        .or_else(|| head_reports.first().map(|report| report.network_id.clone()))?;
+    let all_match = peer_windows
+        .iter()
+        .all(|metrics| metrics.network_id == first)
+        && reducer_cohorts
+            .iter()
+            .all(|metrics| metrics.network_id == first)
+        && head_reports.iter().all(|report| report.network_id == first);
+    all_match.then_some(first)
+}
+
+fn common_experiment_id(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<ExperimentId> {
+    common_optional_id(
+        peer_windows
+            .iter()
+            .map(|metrics| metrics.experiment_id.clone()),
+        reducer_cohorts
+            .iter()
+            .map(|metrics| metrics.experiment_id.clone()),
+        head_reports
+            .iter()
+            .map(|report| report.experiment_id.clone()),
+    )
+}
+
+fn common_revision_id(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<RevisionId> {
+    common_optional_id(
+        peer_windows
+            .iter()
+            .map(|metrics| metrics.revision_id.clone()),
+        reducer_cohorts
+            .iter()
+            .map(|metrics| metrics.revision_id.clone()),
+        head_reports.iter().map(|report| report.revision_id.clone()),
+    )
+}
+
+fn common_workload_id(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<WorkloadId> {
+    common_optional_id(
+        peer_windows
+            .iter()
+            .map(|metrics| metrics.workload_id.clone()),
+        reducer_cohorts
+            .iter()
+            .map(|metrics| metrics.workload_id.clone()),
+        head_reports.iter().map(|report| report.workload_id.clone()),
+    )
+}
+
+fn common_dataset_view_id(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<DatasetViewId> {
+    common_optional_id(
+        peer_windows
+            .iter()
+            .map(|metrics| metrics.dataset_view_id.clone()),
+        reducer_cohorts
+            .iter()
+            .map(|metrics| metrics.dataset_view_id.clone()),
+        head_reports
+            .iter()
+            .map(|report| report.dataset_view_id.clone()),
+    )
+}
+
+fn common_optional_id<T, I, J, K>(first: I, second: J, third: K) -> Option<T>
+where
+    T: Clone + Ord,
+    I: IntoIterator<Item = T>,
+    J: IntoIterator<Item = T>,
+    K: IntoIterator<Item = T>,
+{
+    let mut values = first
+        .into_iter()
+        .chain(second)
+        .chain(third)
+        .collect::<BTreeSet<_>>();
+    if values.len() == 1 {
+        values.pop_first()
+    } else {
+        None
+    }
+}
+
+fn latest_captured_at(
+    peer_windows: &[PeerWindowMetrics],
+    reducer_cohorts: &[ReducerCohortMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Option<DateTime<Utc>> {
+    let latest_peer = peer_windows
+        .iter()
+        .map(peer_window_end_to_end_finished_at)
+        .max();
+    let latest_reducer = reducer_cohorts
+        .iter()
+        .map(|metrics| metrics.captured_at)
+        .max();
+    let latest_eval = head_reports.iter().map(|report| report.finished_at).max();
+    latest_peer
+        .into_iter()
+        .chain(latest_reducer)
+        .chain(latest_eval)
+        .max()
+}
+
+fn peer_window_active_time_ms(metrics: &PeerWindowMetrics) -> u64 {
+    (metrics.window_finished_at - metrics.window_started_at)
+        .num_milliseconds()
+        .max(0) as u64
+}
+
+fn peer_window_end_to_end_time_ms(metrics: &PeerWindowMetrics) -> u64 {
+    peer_window_active_time_ms(metrics).saturating_add(metrics.publish_latency_ms)
+}
+
+fn peer_window_wait_time_ms(metrics: &PeerWindowMetrics) -> u64 {
+    peer_window_active_time_ms(metrics).saturating_sub(
+        metrics
+            .compute_time_ms
+            .saturating_add(metrics.data_fetch_time_ms),
+    )
+}
+
+fn peer_window_end_to_end_finished_at(metrics: &PeerWindowMetrics) -> DateTime<Utc> {
+    metrics.window_finished_at + Duration::milliseconds(metrics.publish_latency_ms as i64)
+}
+
+fn peer_idle_time_ms(peer_windows: &[PeerWindowMetrics]) -> u64 {
+    let mut sorted = peer_windows.to_vec();
+    sorted.sort_by_key(|metrics| metrics.window_started_at);
+    sorted
+        .windows(2)
+        .map(|window| {
+            let previous_end = peer_window_end_to_end_finished_at(&window[0]);
+            let next_start = window[1].window_started_at;
+            if next_start > previous_end {
+                (next_start - previous_end).num_milliseconds().max(0) as u64
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+fn elapsed_time_ms_from_peer_windows(metrics: &[PeerWindowMetrics]) -> Option<u64> {
+    let earliest = metrics
+        .iter()
+        .map(|metrics| metrics.window_started_at)
+        .min()?;
+    let latest = metrics
+        .iter()
+        .map(peer_window_end_to_end_finished_at)
+        .max()?;
+    Some((latest - earliest).num_milliseconds().max(1) as u64)
+}
+
+fn elapsed_time_ms_from_head_reports_ms(reports: &[HeadEvalReport]) -> Option<u64> {
+    let earliest = reports.iter().map(|report| report.started_at).min()?;
+    let latest = reports.iter().map(|report| report.finished_at).max()?;
+    Some((latest - earliest).num_milliseconds().max(1) as u64)
+}
+
+fn head_eval_duration_ms(report: &HeadEvalReport) -> u64 {
+    (report.finished_at - report.started_at)
+        .num_milliseconds()
+        .max(0) as u64
+}
+
+fn throughput_per_second(units: u64, elapsed_time_ms: u64) -> f64 {
+    if units == 0 || elapsed_time_ms == 0 {
+        0.0
+    } else {
+        units as f64 / (elapsed_time_ms as f64 / 1000.0)
+    }
 }

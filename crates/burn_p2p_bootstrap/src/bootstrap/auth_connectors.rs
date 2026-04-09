@@ -7,9 +7,12 @@ pub(super) struct EdgeConnectorEndpoints {
     pub(super) token_url: Option<String>,
     pub(super) client_id: Option<String>,
     pub(super) client_secret: Option<String>,
+    pub(super) redirect_uri: Option<String>,
     pub(super) userinfo_url: Option<String>,
     pub(super) refresh_url: Option<String>,
     pub(super) revoke_url: Option<String>,
+    pub(super) jwks_url: Option<String>,
+    pub(super) persist_remote_tokens: bool,
 }
 
 #[cfg(feature = "auth-github")]
@@ -31,9 +34,12 @@ pub(super) fn build_github_portal_connector(
                 .with_exchange_url(endpoints.exchange_url)
                 .with_token_url(endpoints.token_url)
                 .with_client_credentials(endpoints.client_id, endpoints.client_secret)
+                .with_redirect_uri(endpoints.redirect_uri)
                 .with_userinfo_url(endpoints.userinfo_url)
                 .with_refresh_url(endpoints.refresh_url)
-                .with_revoke_url(endpoints.revoke_url),
+                .with_revoke_url(endpoints.revoke_url)
+                .with_jwks_url(endpoints.jwks_url)
+                .with_persist_remote_tokens(endpoints.persist_remote_tokens),
         ),
     ))
 }
@@ -50,9 +56,12 @@ pub(super) fn build_github_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     } = endpoints;
     let _ = (
         authorize_base_url,
@@ -60,9 +69,12 @@ pub(super) fn build_github_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     );
     Err(std::io::Error::other("auth-github feature not compiled").into())
 }
@@ -92,9 +104,12 @@ pub(super) fn build_oidc_portal_connector(
             .with_exchange_url(endpoints.exchange_url)
             .with_token_url(endpoints.token_url)
             .with_client_credentials(endpoints.client_id, endpoints.client_secret)
+            .with_redirect_uri(endpoints.redirect_uri)
             .with_userinfo_url(endpoints.userinfo_url)
             .with_refresh_url(endpoints.refresh_url)
-            .with_revoke_url(endpoints.revoke_url),
+            .with_revoke_url(endpoints.revoke_url)
+            .with_jwks_url(endpoints.jwks_url)
+            .with_persist_remote_tokens(endpoints.persist_remote_tokens),
         ),
     ))
 }
@@ -112,9 +127,12 @@ pub(super) fn build_oidc_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     } = endpoints;
     let _ = (
         authorize_base_url,
@@ -122,9 +140,12 @@ pub(super) fn build_oidc_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     );
     Err(std::io::Error::other("auth-oidc feature not compiled").into())
 }
@@ -154,9 +175,12 @@ pub(super) fn build_oauth_portal_connector(
             .with_exchange_url(endpoints.exchange_url)
             .with_token_url(endpoints.token_url)
             .with_client_credentials(endpoints.client_id, endpoints.client_secret)
+            .with_redirect_uri(endpoints.redirect_uri)
             .with_userinfo_url(endpoints.userinfo_url)
             .with_refresh_url(endpoints.refresh_url)
-            .with_revoke_url(endpoints.revoke_url),
+            .with_revoke_url(endpoints.revoke_url)
+            .with_jwks_url(endpoints.jwks_url)
+            .with_persist_remote_tokens(endpoints.persist_remote_tokens),
         ),
     ))
 }
@@ -174,9 +198,12 @@ pub(super) fn build_oauth_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     } = endpoints;
     let _ = (
         authorize_base_url,
@@ -184,9 +211,12 @@ pub(super) fn build_oauth_portal_connector(
         token_url,
         client_id,
         client_secret,
+        redirect_uri,
         userinfo_url,
         refresh_url,
         revoke_url,
+        jwks_url,
+        persist_remote_tokens,
     );
     Err(std::io::Error::other("auth-oauth feature not compiled").into())
 }

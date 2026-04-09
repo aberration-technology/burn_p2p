@@ -5,6 +5,15 @@ fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
     values.dedup();
 }
 
+fn canonicalize_f64(value: f64) -> f64 {
+    if value.is_finite() {
+        (value * 1_000_000_000_000.0).round() / 1_000_000_000_000.0
+    } else {
+        value
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct ValidationExecution {
     pub source_peer_id: PeerId,
     pub merged_head: HeadDescriptor,
@@ -13,12 +22,18 @@ pub(super) struct ValidationExecution {
     pub contribution: ContributionReceipt,
     pub evaluation: MetricReport,
     pub aggregate: AggregateEnvelope,
-    pub aggregate_artifact: AggregateArtifactBytes,
+    pub local_aggregate_materialization: Option<LocalAggregateMaterialization>,
     pub reduction_certificate: ReductionCertificate,
-    pub reducer_load_report: ReducerLoadReport,
     pub robustness: ValidationRobustnessExecution,
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub(super) struct LocalAggregateMaterialization {
+    pub aggregate: AggregateEnvelope,
+    pub aggregate_artifact: AggregateArtifactBytes,
+    pub reducer_load_report: ReducerLoadReport,
 }
 
 pub(super) fn aggregate_stats_from_updates(updates: &[UpdateAnnounce]) -> AggregateStats {
@@ -27,20 +42,31 @@ pub(super) fn aggregate_stats_from_updates(updates: &[UpdateAnnounce]) -> Aggreg
         duplicate_updates: 0,
         dropped_updates: 0,
         late_updates: 0,
-        sum_sample_weight: updates.iter().map(|update| update.sample_weight).sum(),
-        sum_quality_weight: updates.iter().map(|update| update.quality_weight).sum(),
-        sum_weighted_delta_norm: updates
-            .iter()
-            .map(|update| update.sample_weight * update.quality_weight * update.norm_stats.l2_norm)
-            .sum(),
-        max_update_norm: updates
-            .iter()
-            .map(|update| update.norm_stats.max_abs)
-            .fold(0.0_f64, f64::max),
+        sum_sample_weight: canonicalize_f64(
+            updates.iter().map(|update| update.sample_weight).sum(),
+        ),
+        sum_quality_weight: canonicalize_f64(
+            updates.iter().map(|update| update.quality_weight).sum(),
+        ),
+        sum_weighted_delta_norm: canonicalize_f64(
+            updates
+                .iter()
+                .map(|update| {
+                    update.sample_weight * update.quality_weight * update.norm_stats.l2_norm
+                })
+                .sum(),
+        ),
+        max_update_norm: canonicalize_f64(
+            updates
+                .iter()
+                .map(|update| update.norm_stats.max_abs)
+                .fold(0.0_f64, f64::max),
+        ),
         accepted_sample_coverage: if updates.is_empty() { 0.0 } else { 1.0 },
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_aggregate_record(
     experiment: &ExperimentHandle,
     base_head_id: &HeadId,
@@ -49,6 +75,7 @@ pub(super) fn build_aggregate_record(
     evaluation: &MetricReport,
     updates: &[UpdateAnnounce],
     aggregate_stats: &AggregateStats,
+    created_at: DateTime<Utc>,
 ) -> AggregateArtifactRecord {
     let mut contribution_receipt_ids = updates
         .iter()
@@ -66,8 +93,8 @@ pub(super) fn build_aggregate_record(
             AggregateArtifactInput {
                 peer_id: update.peer_id.clone(),
                 artifact_id: update.delta_artifact_id.clone(),
-                sample_weight: update.sample_weight,
-                quality_weight: update.quality_weight,
+                sample_weight: canonicalize_f64(update.sample_weight),
+                quality_weight: canonicalize_f64(update.quality_weight),
                 receipt_ids,
             }
         })
@@ -95,22 +122,26 @@ pub(super) fn build_aggregate_record(
             policy: MergePolicy::QualityWeightedEma,
             contribution_receipt_ids,
             artifact_ids,
-            total_weight: updates
-                .iter()
-                .map(|update| update.sample_weight * update.quality_weight)
-                .sum(),
+            total_weight: canonicalize_f64(
+                updates
+                    .iter()
+                    .map(|update| update.sample_weight * update.quality_weight)
+                    .sum(),
+            ),
             aggregated_numeric_metrics: evaluation
                 .metrics
                 .iter()
                 .filter_map(|(name, value)| match value {
-                    MetricValue::Integer(value) => Some((name.clone(), *value as f64)),
-                    MetricValue::Float(value) => Some((name.clone(), *value)),
+                    MetricValue::Integer(value) => {
+                        Some((name.clone(), canonicalize_f64(*value as f64)))
+                    }
+                    MetricValue::Float(value) => Some((name.clone(), canonicalize_f64(*value))),
                     MetricValue::Bool(_) | MetricValue::Text(_) => None,
                 })
                 .collect(),
         },
         inputs,
-        created_at: Utc::now(),
+        created_at,
     }
 }
 

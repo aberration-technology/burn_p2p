@@ -172,25 +172,6 @@ impl Workspace {
         )
     }
 
-    pub fn spawn_cargo<S: AsRef<str>>(
-        &self,
-        artifacts: &ArtifactLayout,
-        label: &str,
-        args: &[S],
-        envs: &BTreeMap<String, String>,
-    ) -> anyhow::Result<SpawnedStep> {
-        self.spawn(
-            artifacts,
-            label,
-            self.cargo(),
-            &args
-                .iter()
-                .map(|value| value.as_ref().to_owned())
-                .collect::<Vec<_>>(),
-            envs,
-        )
-    }
-
     pub fn run_node<S: AsRef<str>>(
         &self,
         artifacts: &ArtifactLayout,
@@ -216,6 +197,42 @@ impl SpawnedStep {
         self.child
             .kill()
             .with_context(|| format!("failed to kill `{}`", self.label))
+    }
+
+    pub fn try_wait(&mut self, artifacts: &ArtifactLayout) -> anyhow::Result<Option<StepRecord>> {
+        let Some(status) = self
+            .child
+            .try_wait()
+            .with_context(|| format!("failed to poll `{}`", self.label))?
+        else {
+            return Ok(None);
+        };
+        let duration_ms = self.started.elapsed().as_millis();
+        let record = StepRecord {
+            label: self.label.clone(),
+            command: self.command.clone(),
+            exit_code: status.code().unwrap_or(-1),
+            duration_ms,
+            stdout_path: rel_path(&artifacts.root, &self.stdout_path),
+            stderr_path: rel_path(&artifacts.root, &self.stderr_path),
+        };
+
+        if status.success() {
+            return Ok(Some(record));
+        }
+
+        let stdout_preview = failure_log_preview(&fs::read(&self.stdout_path)?);
+        let stderr_preview = failure_log_preview(&fs::read(&self.stderr_path)?);
+        anyhow::bail!(
+            "step `{}` failed with status {}.\ncommand: {}\nstdout: {}\nstderr: {}\n\n--- stdout (captured) ---\n{}\n\n--- stderr (captured) ---\n{}",
+            record.label,
+            record.exit_code,
+            record.command,
+            self.stdout_path.display(),
+            self.stderr_path.display(),
+            stdout_preview,
+            stderr_preview,
+        );
     }
 
     pub fn wait(mut self, artifacts: &ArtifactLayout) -> anyhow::Result<StepRecord> {

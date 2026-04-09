@@ -27,7 +27,8 @@ pub mod worker;
 pub use app::{BrowserAppConnectConfig, BrowserAppController, BrowserAppModel, BrowserAppTarget};
 pub use auth::{
     BrowserAuthClientError, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserEnrollmentResult,
-    BrowserLogoutResponse, BrowserPeerEnrollmentRequest, BrowserSessionState,
+    BrowserLogoutResponse, BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher,
+    BrowserPeerArtifactRequest, BrowserPeerEnrollmentRequest, BrowserSessionState,
     BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};

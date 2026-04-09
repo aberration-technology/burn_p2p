@@ -18,9 +18,9 @@ use chrono::{Duration, Utc};
 use crate::{
     AggregateDagView, AuthAppView, AuthorityActionRecord, BrowserAppClientView,
     BrowserAppExperimentSummary, BrowserAppLeaderboardPreview, BrowserAppLiveView,
-    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppRouteLink, BrowserAppShellView,
-    BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab,
-    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink,
+    BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
+    BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
     BrowserExperimentPickerCard, BrowserExperimentPickerState, BrowserExperimentPickerView,
     CheckpointDagEdgeKind, CheckpointDagView, CheckpointDownload, ContributionIdentityPanel,
     CostPerformancePoint, EmaFlowView, ExperimentMigrationView, ExperimentPickerView,
@@ -534,6 +534,14 @@ fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
             metrics_live_ready: true,
             last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
             last_error: None,
+            performance: Some(BrowserAppPerformanceView {
+                scope_summary: "5 peer(s) · 9 train window(s) · 4 eval report(s)".into(),
+                captured_at: "2026-04-04T18:00:00Z".into(),
+                training_throughput: "84.2 work/s".into(),
+                validation_throughput: "512 sample/s".into(),
+                wait_time: "820 ms".into(),
+                idle_time: "6.2s".into(),
+            }),
         },
     };
 
@@ -547,6 +555,8 @@ fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
     assert!(view_json.contains("\"runtime_label\":\"train\""));
     assert!(view_json.contains("\"metrics_live_ready\":true"));
     assert!(view_json.contains("\"estimated_network_size\":256"));
+    assert!(view_json.contains("\"training_throughput\":\"84.2 work/s\""));
+    assert!(view_json.contains("\"idle_time\":\"6.2s\""));
 }
 
 #[test]

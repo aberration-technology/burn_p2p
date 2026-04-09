@@ -53,8 +53,13 @@ Nightly absorbs heavier work:
 
 - adversarial matrix by policy and attack family
 - seeded adversarial chaos replay
+- network dynamics bench with metrics-backed native soak and discovery summaries
+- native accelerator bench for real cuda/wgpu Burn backend probes
 - robustness benchmarks
 - seeded chaos
 - larger multiprocess runs
 - browser smoke with nightly profile
+- redis-backed browser-edge auth HA and failure-mode validation through
+  `cargo xtask check auth-redis-live`
+- env-gated live oidc validation through `cargo xtask check auth-oidc-live`
 - benches

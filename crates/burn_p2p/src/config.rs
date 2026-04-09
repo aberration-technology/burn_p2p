@@ -889,7 +889,7 @@ pub struct ClientReenrollmentStatus {
     /// The rotated at.
     pub rotated_at: Option<DateTime<Utc>>,
     /// The previous issuer peer IDs retained for reenrollment.
-    pub legacy_issuer_peer_ids: BTreeSet<PeerId>,
+    pub retired_issuer_peer_ids: BTreeSet<PeerId>,
     /// The login path.
     pub login_path: String,
     /// The enroll path.
@@ -1138,15 +1138,25 @@ pub(crate) fn peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId
         | LiveControlPlaneEvent::InboundFailure { peer_id, .. }
         | LiveControlPlaneEvent::ResponseSendFailure { peer_id, .. }
         | LiveControlPlaneEvent::PubsubMessage { peer_id, .. }
-        | LiveControlPlaneEvent::PeerIdentified { peer_id, .. } => {
+        | LiveControlPlaneEvent::PeerIdentified { peer_id, .. }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { peer_id }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeFailed { peer_id, .. } => {
             Some(PeerId::new(peer_id.clone()))
+        }
+        LiveControlPlaneEvent::RelayReservationAccepted { relay_peer_id } => {
+            Some(PeerId::new(relay_peer_id.clone()))
         }
         LiveControlPlaneEvent::ConnectionClosed { .. } => None,
         LiveControlPlaneEvent::PeersDiscovered { peers }
         | LiveControlPlaneEvent::PeersExpired { peers } => peers
             .first()
             .map(|(peer_id, _)| PeerId::new(peer_id.clone())),
+        LiveControlPlaneEvent::PeerDirectoryRecordReceived { announcement } => {
+            Some(announcement.peer_id.clone())
+        }
         LiveControlPlaneEvent::NewListenAddr { .. }
+        | LiveControlPlaneEvent::ReachableAddressConfirmed { .. }
+        | LiveControlPlaneEvent::ReachableAddressExpired { .. }
         | LiveControlPlaneEvent::TopicSubscribed { .. }
         | LiveControlPlaneEvent::OutgoingConnectionError { .. }
         | LiveControlPlaneEvent::IncomingConnectionError { .. }
@@ -1196,6 +1206,7 @@ pub(crate) enum RuntimeCommand {
     PublishArtifact {
         descriptor: ArtifactDescriptor,
         chunks: Vec<ArtifactChunkPayload>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     FetchSnapshot {
         peer_id: String,
@@ -1228,6 +1239,8 @@ pub(crate) enum RuntimeCommand {
 /// Represents a control handle.
 pub struct ControlHandle {
     pub(crate) tx: mpsc::Sender<RuntimeCommand>,
+    pub(crate) telemetry: TelemetryHandle,
+    pub(crate) runtime_boundary: RuntimeBoundary,
 }
 
 impl fmt::Debug for ControlHandle {
@@ -1237,6 +1250,50 @@ impl fmt::Debug for ControlHandle {
 }
 
 impl ControlHandle {
+    fn retry_runtime_request<T>(
+        &self,
+        timeout: Duration,
+        mut request: impl FnMut(Duration) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        const RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_millis(250);
+        const RUNTIME_FETCH_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let attempt_timeout = deadline
+                .saturating_duration_since(now)
+                .min(RUNTIME_FETCH_RETRY_SLICE);
+            match request(attempt_timeout) {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    last_error = Some(error);
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(RUNTIME_FETCH_RETRY_DELAY);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("runtime request timed out")))
+    }
+
+    fn recv_runtime_reply<T>(
+        &self,
+        reply_rx: mpsc::Receiver<Result<T, String>>,
+        context: &str,
+    ) -> anyhow::Result<T> {
+        reply_rx
+            .recv()
+            .map_err(|error| anyhow::anyhow!("{context} reply channel closed: {error}"))?
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
     /// Performs the subscribe topic operation.
     pub fn subscribe_topic(&self, topic: OverlayTopic) -> anyhow::Result<()> {
         self.tx
@@ -1393,19 +1450,31 @@ impl ControlHandle {
         peer_id: impl Into<String>,
         timeout: Duration,
     ) -> anyhow::Result<ControlPlaneSnapshot> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.tx
-            .send(RuntimeCommand::FetchSnapshot {
-                peer_id: peer_id.into(),
-                timeout,
-                reply: reply_tx,
-            })
-            .map_err(|error| anyhow::anyhow!("failed to request snapshot: {error}"))?;
+        let peer_id = peer_id.into();
+        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.tx
+                .send(RuntimeCommand::FetchSnapshot {
+                    peer_id: peer_id.clone(),
+                    timeout: attempt_timeout,
+                    reply: reply_tx,
+                })
+                .map_err(|error| anyhow::anyhow!("failed to request snapshot: {error}"))?;
+            self.recv_runtime_reply(reply_rx, "snapshot")
+        });
 
-        reply_rx
-            .recv()
-            .map_err(|error| anyhow::anyhow!("snapshot reply channel closed: {error}"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
+        match runtime_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => self
+                .fetch_snapshot_via_sidecar(&peer_id, fallback_timeout)
+                .map_err(|fallback_error| {
+                    anyhow::anyhow!(
+                        "runtime snapshot fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                    )
+                }),
+            Err(error) => Err(error),
+        }
     }
 
     /// Performs the publish artifact operation.
@@ -1414,9 +1483,19 @@ impl ControlHandle {
         descriptor: ArtifactDescriptor,
         chunks: Vec<ArtifactChunkPayload>,
     ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
-            .send(RuntimeCommand::PublishArtifact { descriptor, chunks })
-            .map_err(|error| anyhow::anyhow!("failed to publish artifact: {error}"))
+            .send(RuntimeCommand::PublishArtifact {
+                descriptor,
+                chunks,
+                reply: reply_tx,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to publish artifact: {error}"))?;
+
+        reply_rx
+            .recv()
+            .map_err(|error| anyhow::anyhow!("artifact publish reply channel closed: {error}"))?
+            .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
     /// Fetches the artifact manifest.
@@ -1426,20 +1505,32 @@ impl ControlHandle {
         artifact_id: ArtifactId,
         timeout: Duration,
     ) -> anyhow::Result<Option<ArtifactDescriptor>> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.tx
-            .send(RuntimeCommand::FetchArtifactManifest {
-                peer_id: peer_id.into(),
-                artifact_id,
-                timeout,
-                reply: reply_tx,
-            })
-            .map_err(|error| anyhow::anyhow!("failed to request artifact manifest: {error}"))?;
+        let peer_id = peer_id.into();
+        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.tx
+                .send(RuntimeCommand::FetchArtifactManifest {
+                    peer_id: peer_id.clone(),
+                    artifact_id: artifact_id.clone(),
+                    timeout: attempt_timeout,
+                    reply: reply_tx,
+                })
+                .map_err(|error| anyhow::anyhow!("failed to request artifact manifest: {error}"))?;
+            self.recv_runtime_reply(reply_rx, "artifact manifest")
+        });
 
-        reply_rx
-            .recv()
-            .map_err(|error| anyhow::anyhow!("artifact manifest reply channel closed: {error}"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
+        match runtime_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => self
+                .fetch_artifact_manifest_via_sidecar(&peer_id, artifact_id, fallback_timeout)
+                .map_err(|fallback_error| {
+                    anyhow::anyhow!(
+                        "runtime artifact manifest fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                    )
+                }),
+            Err(error) => Err(error),
+        }
     }
 
     /// Fetches the artifact chunk.
@@ -1450,21 +1541,38 @@ impl ControlHandle {
         chunk_id: ChunkId,
         timeout: Duration,
     ) -> anyhow::Result<Option<ArtifactChunkPayload>> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.tx
-            .send(RuntimeCommand::FetchArtifactChunk {
-                peer_id: peer_id.into(),
-                artifact_id,
-                chunk_id,
-                timeout,
-                reply: reply_tx,
-            })
-            .map_err(|error| anyhow::anyhow!("failed to request artifact chunk: {error}"))?;
+        let peer_id = peer_id.into();
+        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.tx
+                .send(RuntimeCommand::FetchArtifactChunk {
+                    peer_id: peer_id.clone(),
+                    artifact_id: artifact_id.clone(),
+                    chunk_id: chunk_id.clone(),
+                    timeout: attempt_timeout,
+                    reply: reply_tx,
+                })
+                .map_err(|error| anyhow::anyhow!("failed to request artifact chunk: {error}"))?;
+            self.recv_runtime_reply(reply_rx, "artifact chunk")
+        });
 
-        reply_rx
-            .recv()
-            .map_err(|error| anyhow::anyhow!("artifact chunk reply channel closed: {error}"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
+        match runtime_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => self
+                .fetch_artifact_chunk_via_sidecar(
+                    &peer_id,
+                    artifact_id,
+                    chunk_id,
+                    fallback_timeout,
+                )
+                .map_err(|fallback_error| {
+                    anyhow::anyhow!(
+                        "runtime artifact chunk fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                    )
+                }),
+            Err(error) => Err(error),
+        }
     }
 
     /// Performs the shutdown operation.
@@ -1474,4 +1582,117 @@ impl ControlHandle {
             Err(_) => Ok(()),
         }
     }
+
+    fn fetch_artifact_manifest_via_sidecar(
+        &self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>> {
+        let mut shell = self.connect_fetch_sidecar(peer_id, timeout)?;
+        shell
+            .fetch_artifact_manifest(peer_id, artifact_id, timeout)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    fn fetch_snapshot_via_sidecar(
+        &self,
+        peer_id: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<ControlPlaneSnapshot> {
+        let mut shell = self.connect_fetch_sidecar(peer_id, timeout)?;
+        shell
+            .fetch_snapshot(peer_id, timeout)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    fn fetch_artifact_chunk_via_sidecar(
+        &self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<ArtifactChunkPayload>> {
+        let mut shell = self.connect_fetch_sidecar(peer_id, timeout)?;
+        shell
+            .fetch_artifact_chunk(peer_id, artifact_id, chunk_id, timeout)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    fn connect_fetch_sidecar(
+        &self,
+        peer_id: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<ControlPlaneShell> {
+        let peer_id = PeerId::new(peer_id.to_owned());
+        let addresses = sidecar_peer_addresses(&self.telemetry.snapshot(), &peer_id);
+        if addresses.is_empty() {
+            anyhow::bail!("no known address for peer {}", peer_id.as_str());
+        }
+
+        let mut shell = ControlPlaneShell::new(
+            self.runtime_boundary.protocols.control.clone(),
+            Keypair::generate_ed25519(),
+            addresses.clone(),
+            self.runtime_boundary.transport_policy.clone(),
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        for address in &addresses {
+            let _ = shell.dial(address.clone());
+        }
+
+        let deadline = Instant::now() + timeout.min(Duration::from_secs(2));
+        while Instant::now() < deadline {
+            if let Some(LiveControlPlaneEvent::ConnectionEstablished { peer_id: connected }) =
+                shell.wait_event(Duration::from_millis(50))
+                && connected == peer_id.as_str()
+            {
+                return Ok(shell);
+            }
+        }
+
+        anyhow::bail!(
+            "timed out connecting fetch sidecar to peer {} via {:?}",
+            peer_id.as_str(),
+            addresses
+                .iter()
+                .map(|address| address.as_str().to_owned())
+                .collect::<Vec<_>>()
+        )
+    }
+}
+
+fn split_fetch_timeout(timeout: Duration) -> (Duration, Duration) {
+    if timeout <= Duration::from_millis(750) {
+        return (timeout, Duration::ZERO);
+    }
+    let runtime_timeout = timeout.min(Duration::from_millis(750));
+    (runtime_timeout, timeout.saturating_sub(runtime_timeout))
+}
+
+fn sidecar_peer_addresses(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> Vec<SwarmAddress> {
+    let mut addresses = snapshot
+        .control_plane
+        .peer_directory_announcements
+        .iter()
+        .filter(|announcement| announcement.peer_id == *peer_id)
+        .flat_map(|announcement| announcement.addresses.iter().cloned())
+        .collect::<Vec<_>>();
+
+    addresses.extend(
+        snapshot
+            .known_peer_addresses
+            .iter()
+            .filter(|address| address.as_str().contains(peer_id.as_str()))
+            .cloned(),
+    );
+
+    addresses.sort_by(|left, right| {
+        left.is_relay_circuit()
+            .cmp(&right.is_relay_circuit())
+            .then_with(|| left.as_str().cmp(right.as_str()))
+    });
+    addresses.dedup();
+    addresses
 }

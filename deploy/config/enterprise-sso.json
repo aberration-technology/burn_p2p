@@ -60,10 +60,19 @@
       "kind": "oidc",
       "issuer": "https://issuer.example",
       "authorize_base_url": "https://issuer.example/authorize",
-      "exchange_url": "https://issuer.example/exchange",
+      "token_url": "https://issuer.example/oauth/token",
+      "client_id": "burn-p2p-browser-edge",
+      "redirect_uri": "https://edge.example/callback/oidc",
+      "jwks_url": "https://issuer.example/.well-known/jwks.json",
       "userinfo_url": "https://issuer.example/userinfo"
     },
     "authority_key_path": "/var/lib/burn-p2p/auth/enterprise-authority.key",
+    "session_state_backend": {
+      "kind": "redis",
+      "url": "redis://burn-p2p-redis:6379/0",
+      "key_prefix": "burn-p2p:enterprise-auth"
+    },
+    "persist_provider_tokens": false,
     "project_family_id": "demo-family",
     "required_release_train_hash": "demo-train",
     "allowed_target_artifact_hashes": [
@@ -100,7 +109,10 @@
           "enterprise-sso-demo"
         ],
         "custom_claims": {
-          "deployment_profile": "enterprise-sso"
+          "deployment_profile": "enterprise-sso",
+          "provider_email": "alice@example.com",
+          "provider_groups": "operators,burn-enterprise",
+          "provider_claim:department": "ml-platform"
         }
       }
     ],

@@ -238,6 +238,36 @@ impl ControlPlaneShell {
         }
     }
 
+    pub fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.request_snapshot_id(peer_id),
+            Self::Native(shell) => shell.request_snapshot_id(peer_id),
+        }
+    }
+
+    pub fn request_artifact_manifest_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+    ) -> Result<String, SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.request_artifact_manifest_id(peer_id, artifact_id),
+            Self::Native(shell) => shell.request_artifact_manifest_id(peer_id, artifact_id),
+        }
+    }
+
+    pub fn request_artifact_chunk_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+    ) -> Result<String, SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.request_artifact_chunk_id(peer_id, artifact_id, chunk_id),
+            Self::Native(shell) => shell.request_artifact_chunk_id(peer_id, artifact_id, chunk_id),
+        }
+    }
+
     /// Fetches the snapshot.
     pub fn fetch_snapshot(
         &mut self,

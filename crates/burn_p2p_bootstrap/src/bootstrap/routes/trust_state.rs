@@ -56,7 +56,7 @@ pub(crate) fn current_trust_bundle(
         .map(|reenrollment| ReenrollmentStatus {
             reason: reenrollment.reason,
             rotated_at: reenrollment.rotated_at,
-            legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
+            retired_issuer_peer_ids: reenrollment.retired_issuer_peer_ids,
             login_path: "/login/static".into(),
             enroll_path: "/enroll".into(),
             trust_bundle_path: "/trust".into(),

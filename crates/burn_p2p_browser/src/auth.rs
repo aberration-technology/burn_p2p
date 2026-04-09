@@ -1,14 +1,15 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
 use burn_p2p::{
-    CallbackPayload, ContentId, ContributionReceipt, ExperimentId, ExperimentScope, HeadId,
-    LoginRequest, LoginStart, NetworkId, NodeCertificate, PeerId, PrincipalId, PrincipalSession,
-    ProjectFamilyId, RevisionId,
+    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ExperimentId,
+    ExperimentScope, HeadId, LoginRequest, LoginStart, NetworkId, NodeCertificate, PeerId,
+    PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
 };
 use burn_p2p_core::{
-    ArtifactLiveEvent, BrowserDirectorySnapshot, BrowserEdgeSnapshot, BrowserLeaderboardSnapshot,
-    BrowserReceiptSubmissionResponse, MetricsLiveEvent, SchemaEnvelope, SignedPayload,
-    TrustBundleExport,
+    ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
+    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, MetricsLiveEvent,
+    PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId, SchemaEnvelope,
+    SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
     MetricsCatchupBundle, MetricsSnapshot, PeerWindowDistributionDetail,
@@ -267,6 +268,69 @@ pub struct BrowserLogoutResponse {
     pub logged_out: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes one browser-native peer artifact fetch request.
+pub struct BrowserPeerArtifactRequest {
+    /// The experiment covered by the artifact.
+    pub experiment_id: ExperimentId,
+    /// The revision covered by the artifact.
+    pub revision_id: RevisionId,
+    /// The run covered by the artifact.
+    pub run_id: RunId,
+    /// The head whose artifact should be fetched.
+    pub head_id: HeadId,
+    /// The artifact identifier to fetch.
+    pub artifact_id: ArtifactId,
+    /// The requested published artifact profile.
+    pub artifact_profile: ArtifactProfile,
+    /// The publication target backing the artifact, when known.
+    pub publication_target_id: PublicationTargetId,
+    /// Peer providers currently known to advertise the head artifact.
+    pub provider_peer_ids: Vec<PeerId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// Describes one browser-native peer artifact chunk fetch request.
+struct BrowserPeerArtifactChunkRequest {
+    /// Request metadata shared with the head artifact transport.
+    pub artifact: BrowserPeerArtifactRequest,
+    /// The chunk identifier to fetch from the swarm provider set.
+    pub chunk_id: ChunkId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+enum BrowserPeerArtifactTransportKind {
+    CustomFetcher,
+    PeerSwarm,
+}
+
+impl BrowserPeerArtifactTransportKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::CustomFetcher => "peer-native",
+            Self::PeerSwarm => "peer-native-swarm",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BrowserPeerArtifactTransportResult {
+    bytes: Vec<u8>,
+    kind: BrowserPeerArtifactTransportKind,
+}
+
+/// Future returned by browser-native peer artifact fetchers.
+pub type BrowserPeerArtifactFetchFuture =
+    Pin<Box<dyn Future<Output = Result<Vec<u8>, BrowserAuthClientError>> + 'static>>;
+
+/// Pluggable browser-native artifact fetcher used ahead of edge download routes.
+pub trait BrowserPeerArtifactFetcher {
+    /// Fetches bytes for one active head artifact request.
+    fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture;
+}
+
 #[derive(Debug, thiserror::Error)]
 /// Enumerates the supported browser auth client error values.
 pub enum BrowserAuthClientError {
@@ -297,27 +361,96 @@ pub enum BrowserAuthClientError {
     #[error("swarm edge sync failed: {0}")]
     /// Uses the swarm variant.
     Swarm(String),
+    #[error("browser artifact transport failed: {0}")]
+    /// Uses the artifact transport variant.
+    ArtifactTransport(String),
     #[error("metrics live stream closed before producing an event")]
     /// Uses the metrics stream closed variant.
     MetricsStreamClosed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 /// Represents the browser-side auth client for one browser-edge deployment.
 pub struct BrowserEdgeClient {
     http: reqwest::Client,
     bindings: BrowserUiBindings,
     enrollment: BrowserEnrollmentConfig,
+    peer_artifact_fetcher: Option<Arc<dyn BrowserPeerArtifactFetcher>>,
+}
+
+impl std::fmt::Debug for BrowserEdgeClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserEdgeClient")
+            .field("bindings", &self.bindings)
+            .field("enrollment", &self.enrollment)
+            .field(
+                "peer_artifact_fetcher",
+                &self.peer_artifact_fetcher.as_ref().map(|_| "configured"),
+            )
+            .finish()
+    }
 }
 
 impl BrowserEdgeClient {
+    fn preferred_head_artifact_publication(
+        view: &HeadArtifactView,
+    ) -> Option<(ArtifactProfile, &PublishedArtifactRecord)> {
+        const PROFILE_PREFERENCE: [ArtifactProfile; 4] = [
+            ArtifactProfile::BrowserSnapshot,
+            ArtifactProfile::ManifestOnly,
+            ArtifactProfile::ServeCheckpoint,
+            ArtifactProfile::FullTrainingCheckpoint,
+        ];
+
+        PROFILE_PREFERENCE.into_iter().find_map(|profile| {
+            view.published_artifacts
+                .iter()
+                .filter(|record| {
+                    record.artifact_profile == profile
+                        && record.status == PublishedArtifactStatus::Ready
+                })
+                .max_by_key(|record| record.created_at)
+                .map(|record| (profile, record))
+        })
+    }
+
     /// Creates a new value.
     pub fn new(bindings: BrowserUiBindings, enrollment: BrowserEnrollmentConfig) -> Self {
         Self {
             http: reqwest::Client::new(),
             bindings,
             enrollment,
+            peer_artifact_fetcher: None,
         }
+    }
+
+    /// Returns a copy configured with an explicit browser-native peer artifact fetcher.
+    pub fn with_peer_artifact_fetcher<F>(mut self, fetcher: F) -> Self
+    where
+        F: BrowserPeerArtifactFetcher + 'static,
+    {
+        self.peer_artifact_fetcher = Some(Arc::new(fetcher));
+        self
+    }
+
+    fn peer_artifact_request(
+        view: &HeadArtifactView,
+        artifact_profile: ArtifactProfile,
+        publication: &PublishedArtifactRecord,
+    ) -> Option<BrowserPeerArtifactRequest> {
+        if view.provider_peer_ids.is_empty() {
+            return None;
+        }
+        Some(BrowserPeerArtifactRequest {
+            experiment_id: view.head.experiment_id.clone(),
+            revision_id: view.head.revision_id.clone(),
+            run_id: view.run_id.clone(),
+            head_id: view.head.head_id.clone(),
+            artifact_id: view.head.artifact_id.clone(),
+            artifact_profile,
+            publication_target_id: publication.publication_target_id.clone(),
+            provider_peer_ids: view.provider_peer_ids.clone(),
+        })
     }
 
     /// Performs the bindings operation.
@@ -921,6 +1054,159 @@ impl BrowserEdgeClient {
         ))
     }
 
+    /// Downloads artifact bytes for a previously issued ticket.
+    pub async fn download_artifact_bytes(
+        &self,
+        ticket_id: &burn_p2p_core::DownloadTicketId,
+    ) -> Result<Vec<u8>, BrowserAuthClientError> {
+        self.get_bytes_absolute(&self.artifact_download_url(ticket_id))
+            .await
+    }
+
+    /// Requests a short-lived artifact ticket and immediately downloads the
+    /// corresponding artifact bytes.
+    pub async fn request_and_download_artifact(
+        &self,
+        request: &DownloadTicketRequest,
+        session_id: Option<&ContentId>,
+    ) -> Result<Vec<u8>, BrowserAuthClientError> {
+        let ticket = self
+            .request_artifact_download_ticket(request, session_id)
+            .await?;
+        self.download_artifact_bytes(&ticket.ticket.download_ticket_id)
+            .await
+    }
+
+    async fn try_download_artifact_via_peer_transport(
+        &self,
+        request: &BrowserPeerArtifactRequest,
+    ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
+        if let Some(fetcher) = self.peer_artifact_fetcher.as_ref() {
+            return fetcher.fetch(request.clone()).await.map(|bytes| {
+                Some(BrowserPeerArtifactTransportResult {
+                    bytes,
+                    kind: BrowserPeerArtifactTransportKind::CustomFetcher,
+                })
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return try_download_artifact_via_browser_peer_transport(request).await;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = request;
+            Ok(None)
+        }
+    }
+
+    /// Synchronizes the active head artifact into the browser worker cache.
+    pub async fn sync_active_head_artifact_into_worker(
+        &self,
+        runtime: &mut BrowserWorkerRuntime,
+        session: Option<&BrowserSessionState>,
+    ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+        let Some(session) = session else {
+            return Ok(Vec::new());
+        };
+        let (Some(session_id), Some(principal_id)) = (session.session_id(), session.principal_id())
+        else {
+            return Ok(Vec::new());
+        };
+        let Some(active_assignment) = runtime.storage.active_assignment.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(active_head_id) = runtime.storage.last_head_id.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if runtime
+            .storage
+            .cached_head_artifact_heads
+            .contains(active_head_id)
+        {
+            return Ok(Vec::new());
+        }
+
+        let view = self.fetch_head_artifact_view(active_head_id).await?;
+        if view.head.study_id != active_assignment.study_id
+            || view.head.experiment_id != active_assignment.experiment_id
+            || view.head.revision_id != active_assignment.revision_id
+        {
+            return Ok(Vec::new());
+        }
+
+        let Some((artifact_profile, publication)) =
+            Self::preferred_head_artifact_publication(&view)
+        else {
+            return Ok(Vec::new());
+        };
+        let mut transport = None;
+        let mut peer_transport_error = None;
+        if let Some(peer_request) =
+            Self::peer_artifact_request(&view, artifact_profile.clone(), publication)
+        {
+            match self
+                .try_download_artifact_via_peer_transport(&peer_request)
+                .await
+            {
+                Ok(Some(result)) => {
+                    if result.bytes.is_empty() {
+                        peer_transport_error = Some(BrowserAuthClientError::ArtifactTransport(
+                            "peer transport returned an empty artifact payload".into(),
+                        ));
+                    } else {
+                        transport = Some(result.kind.label().to_owned());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    peer_transport_error = Some(error);
+                }
+            }
+        }
+        if transport.is_none() {
+            match self
+                .request_and_download_artifact(
+                    &DownloadTicketRequest {
+                        principal_id: principal_id.clone(),
+                        experiment_id: view.head.experiment_id.clone(),
+                        run_id: Some(view.run_id.clone()),
+                        head_id: view.head.head_id.clone(),
+                        artifact_profile,
+                        publication_target_id: publication.publication_target_id.clone(),
+                        artifact_alias_id: publication.artifact_alias_id.clone(),
+                    },
+                    Some(session_id),
+                )
+                .await
+            {
+                Ok(_) => transport = Some("edge-download-ticket".to_owned()),
+                Err(edge_error) => {
+                    if let Some(peer_error) = peer_transport_error {
+                        return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                            "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"
+                        )));
+                    }
+                    return Err(edge_error);
+                }
+            }
+        }
+
+        let previous_storage = runtime.storage.clone();
+        runtime.storage.remember_synced_head_artifact(
+            view.head.head_id.clone(),
+            view.head.artifact_id.clone(),
+            transport.unwrap_or_else(|| "unknown".into()),
+        );
+        if runtime.storage == previous_storage {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![BrowserWorkerEvent::StorageUpdated(Box::new(
+            runtime.storage.clone(),
+        ))])
+    }
+
     /// Submits the receipts.
     pub async fn submit_receipts(
         &self,
@@ -1003,7 +1289,7 @@ impl BrowserEdgeClient {
             wss_fallback_enabled: app_snapshot.transports.wss_fallback,
             last_error: runtime.transport.last_error.clone(),
         };
-        Ok(runtime.apply_edge_sync(
+        let mut events = runtime.apply_edge_sync(
             signed_directory,
             &heads,
             signed_leaderboard,
@@ -1013,7 +1299,17 @@ impl BrowserEdgeClient {
             },
             transport,
             session,
-        ))
+        );
+        match self
+            .sync_active_head_artifact_into_worker(runtime, session)
+            .await
+        {
+            Ok(artifact_events) => events.extend(artifact_events),
+            Err(error) => events.push(BrowserWorkerEvent::Error {
+                message: format!("browser artifact sync failed: {error}"),
+            }),
+        }
+        Ok(events)
     }
 
     /// Performs the flush worker receipts operation.
@@ -1209,6 +1505,18 @@ impl BrowserEdgeClient {
         Ok(Some(response.error_for_status()?.json().await?))
     }
 
+    async fn get_bytes_absolute(&self, url: &str) -> Result<Vec<u8>, BrowserAuthClientError> {
+        Ok(self
+            .http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?
+            .to_vec())
+    }
+
     async fn post_json<Req, Res>(
         &self,
         path: &str,
@@ -1275,6 +1583,174 @@ impl BrowserEdgeClient {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn try_download_artifact_via_browser_peer_transport(
+    request: &BrowserPeerArtifactRequest,
+) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
+    if let Some(bytes) = try_download_artifact_via_browser_peer_swarm(request).await? {
+        return Ok(Some(BrowserPeerArtifactTransportResult {
+            bytes,
+            kind: BrowserPeerArtifactTransportKind::PeerSwarm,
+        }));
+    }
+    Ok(None)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn try_download_artifact_via_browser_peer_swarm(
+    request: &BrowserPeerArtifactRequest,
+) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
+    use js_sys::{Function, Promise, Reflect, Uint8Array};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let Some(window) = web_sys::window() else {
+        return Ok(None);
+    };
+    let swarm_value = Reflect::get(
+        &JsValue::from(window.clone()),
+        &JsValue::from_str("__burnP2PArtifactSwarm"),
+    )
+    .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+    if swarm_value.is_undefined() || swarm_value.is_null() {
+        return Ok(None);
+    }
+
+    let fetch_manifest = Reflect::get(&swarm_value, &JsValue::from_str("fetchArtifactManifest"))
+        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+    let fetch_manifest = fetch_manifest.dyn_into::<Function>().map_err(|_| {
+        BrowserAuthClientError::ArtifactTransport(
+            "browser peer artifact swarm is missing fetchArtifactManifest".into(),
+        )
+    })?;
+    let request_value = serde_wasm_bindgen::to_value(request)
+        .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+    let manifest_promise = fetch_manifest
+        .call1(&swarm_value, &request_value)
+        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+    let manifest_value = JsFuture::from(Promise::from(manifest_promise))
+        .await
+        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+    if manifest_value.is_undefined() || manifest_value.is_null() {
+        return Ok(None);
+    }
+    let descriptor: burn_p2p::ArtifactDescriptor =
+        serde_wasm_bindgen::from_value(manifest_value)
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+    if descriptor.artifact_id != request.artifact_id {
+        return Err(BrowserAuthClientError::ArtifactTransport(format!(
+            "browser peer swarm returned descriptor for unexpected artifact {}",
+            descriptor.artifact_id.as_str()
+        )));
+    }
+
+    let fetch_chunk = Reflect::get(&swarm_value, &JsValue::from_str("fetchArtifactChunk"))
+        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+    let fetch_chunk = fetch_chunk.dyn_into::<Function>().map_err(|_| {
+        BrowserAuthClientError::ArtifactTransport(
+            "browser peer artifact swarm is missing fetchArtifactChunk".into(),
+        )
+    })?;
+
+    let mut chunks = descriptor.chunks.clone();
+    chunks.sort_by(|left, right| {
+        left.offset_bytes
+            .cmp(&right.offset_bytes)
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+
+    let mut bytes = Vec::with_capacity(descriptor.bytes_len as usize);
+    for chunk in &chunks {
+        let chunk_request = BrowserPeerArtifactChunkRequest {
+            artifact: request.clone(),
+            chunk_id: chunk.chunk_id.clone(),
+        };
+        let chunk_request_value = serde_wasm_bindgen::to_value(&chunk_request)
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+        let chunk_promise = fetch_chunk
+            .call1(&swarm_value, &chunk_request_value)
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let chunk_value = JsFuture::from(Promise::from(chunk_promise))
+            .await
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        if chunk_value.is_undefined() || chunk_value.is_null() {
+            return Ok(None);
+        }
+        let chunk_bytes = if chunk_value.is_instance_of::<js_sys::ArrayBuffer>()
+            || chunk_value.is_instance_of::<Uint8Array>()
+        {
+            Uint8Array::new(&chunk_value).to_vec()
+        } else if let Ok(bytes_value) = Reflect::get(&chunk_value, &JsValue::from_str("bytes")) {
+            if bytes_value.is_undefined() || bytes_value.is_null() {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "browser peer swarm returned an empty chunk payload for {}",
+                    chunk.chunk_id.as_str()
+                )));
+            }
+            Uint8Array::new(&bytes_value).to_vec()
+        } else {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "browser peer swarm returned an unsupported chunk payload for {}",
+                chunk.chunk_id.as_str()
+            )));
+        };
+        if chunk_bytes.len() as u64 != chunk.length_bytes {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "browser peer swarm returned chunk {} with unexpected length {} (expected {})",
+                chunk.chunk_id.as_str(),
+                chunk_bytes.len(),
+                chunk.length_bytes
+            )));
+        }
+        let chunk_hash =
+            ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+        if chunk_hash != chunk.chunk_hash {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "browser peer swarm returned chunk {} with unexpected hash {}",
+                chunk.chunk_id.as_str(),
+                chunk_hash.as_str()
+            )));
+        }
+        bytes.extend_from_slice(&chunk_bytes);
+    }
+
+    if bytes.len() as u64 != descriptor.bytes_len {
+        return Err(BrowserAuthClientError::ArtifactTransport(format!(
+            "browser peer swarm reconstructed {} bytes for {} but descriptor expected {}",
+            bytes.len(),
+            descriptor.artifact_id.as_str(),
+            descriptor.bytes_len
+        )));
+    }
+    let root_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
+    if root_hash != descriptor.root_hash {
+        return Err(BrowserAuthClientError::ArtifactTransport(format!(
+            "browser peer swarm reconstructed {} with unexpected root hash {}",
+            descriptor.artifact_id.as_str(),
+            root_hash.as_str()
+        )));
+    }
+
+    Ok(Some(bytes))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+async fn try_download_artifact_via_browser_peer_transport(
+    _request: &BrowserPeerArtifactRequest,
+) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
+    Ok(None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+async fn try_download_artifact_via_browser_peer_swarm(
+    _request: &BrowserPeerArtifactRequest,
+) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
+    Ok(None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn next_sse_frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     buffer
         .windows(4)
@@ -1288,6 +1764,7 @@ fn next_sse_frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
         })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_sse_json_payload(frame: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(frame).replace("\r\n", "\n");
     let payload = text

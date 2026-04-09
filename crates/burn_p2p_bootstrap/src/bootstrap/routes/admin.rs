@@ -81,7 +81,7 @@ pub(crate) fn rotate_authority_material(
                     "authority material rotated; clients should re-enroll".into()
                 }),
                 rotated_at: Some(Utc::now()),
-                legacy_issuer_peer_ids: BTreeSet::from([previous_issuer.issuer_peer_id.clone()]),
+                retired_issuer_peer_ids: BTreeSet::from([previous_issuer.issuer_peer_id.clone()]),
             });
     } else if !retain_previous_issuer {
         *auth
@@ -193,7 +193,7 @@ pub(crate) fn rollout_auth_policy(
             Some(BootstrapReenrollmentConfig {
                 reason: reenrollment.reason,
                 rotated_at: reenrollment.rotated_at,
-                legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
+                retired_issuer_peer_ids: reenrollment.retired_issuer_peer_ids,
             });
     }
 
@@ -241,9 +241,9 @@ pub(crate) fn retire_trusted_issuers(
         .expect("auth reenrollment state should not be poisoned");
     if let Some(reenrollment) = reenrollment_state.as_mut() {
         reenrollment
-            .legacy_issuer_peer_ids
+            .retired_issuer_peer_ids
             .retain(|issuer_peer_id| !issuer_peer_ids.contains(issuer_peer_id));
-        if reenrollment.legacy_issuer_peer_ids.is_empty() {
+        if reenrollment.retired_issuer_peer_ids.is_empty() {
             *reenrollment_state = None;
         }
     }
@@ -405,10 +405,8 @@ pub(crate) fn request_admin_capabilities(
     let auth = auth_state?;
     let session_id = request.headers.get("x-session-id")?;
     let session = auth
-        .sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .get(&ContentId::new(session_id.clone()))
-        .cloned()?;
+        .get_session(&ContentId::new(session_id.clone()))
+        .ok()
+        .flatten()?;
     Some(session_admin_capabilities(&session))
 }

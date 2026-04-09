@@ -122,6 +122,45 @@ pub struct TrainingWindowTiming {
     pub publish_latency_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Selects how a long-running trainer reconciles a newly visible canonical head.
+pub enum TrainerCanonicalReconcileStrategy {
+    /// Replaces the local speculative model with the canonical model.
+    Replace,
+    /// Applies root EMA where `canonical_weight` is the weight of the incoming
+    /// canonical model and `1 - canonical_weight` is the retained local weight.
+    RootEma {
+        /// The weight assigned to the incoming canonical model.
+        canonical_weight: f64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Configures the continuous trainer happy path.
+pub struct ContinuousTrainerPolicy {
+    /// How newly visible canonical heads are blended into the local warm model.
+    pub canonical_reconcile: TrainerCanonicalReconcileStrategy,
+    /// Preferred maximum speculative lead, in locally published windows ahead
+    /// of the last visible canonical head, before the trainer briefly waits
+    /// for canonical visibility to catch up.
+    pub max_speculative_windows: u32,
+    /// Bounded grace period spent waiting for canonical visibility once the
+    /// speculative lead reaches the configured maximum.
+    pub canonical_visibility_wait_ms: u64,
+}
+
+impl Default for ContinuousTrainerPolicy {
+    fn default() -> Self {
+        Self {
+            canonical_reconcile: TrainerCanonicalReconcileStrategy::RootEma {
+                canonical_weight: 0.25,
+            },
+            max_speculative_windows: 2,
+            canonical_visibility_wait_ms: 750,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 /// Result of one completed training window.
 pub struct TrainingWindowOutcome<T> {
@@ -151,5 +190,60 @@ pub struct ValidationOutcome {
     /// Accepted contribution receipt.
     pub contribution: ContributionReceipt,
     /// Evaluation of the merged result.
+    pub evaluation: MetricReport,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+/// Observed validator coordination state for one aggregate/merged-head pair.
+pub struct ValidationCoordinationState {
+    /// Validators that have published reduction certificates for the aggregate.
+    pub attesters: Vec<PeerId>,
+    /// Reduction certificate ids associated with the visible attesters.
+    pub reduction_ids: Vec<ContentId>,
+    /// Whether the aggregate proposal is visible in the control plane.
+    pub aggregate_proposal_announced: bool,
+    /// Whether a quorum certificate for the merged head is visible.
+    pub quorum_announced: bool,
+    /// Whether a merge certificate for the merged head is visible.
+    pub merge_announced: bool,
+    /// First visible merge certificate, when one exists.
+    pub merge_certificate: Option<MergeCertificate>,
+}
+
+impl ValidationCoordinationState {
+    /// Returns whether validator quorum is visible either explicitly or by attester count.
+    pub fn quorum_reached(&self, quorum: usize) -> bool {
+        self.quorum_announced || self.attesters.len() >= quorum
+    }
+
+    /// Returns whether the aggregate has reached a settled post-validation state.
+    pub fn settled(&self, quorum: usize) -> bool {
+        self.merge_announced || self.quorum_reached(quorum)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Result of driving validator execution until the aggregate settles or times out.
+pub struct ValidationDriveOutcome {
+    /// Number of local validation attempts executed.
+    pub attempts: usize,
+    /// Locally promoted validation outcome, when this node won promotion.
+    pub promoted: Option<ValidationOutcome>,
+    /// Latest observed coordination state at the end of the drive loop.
+    pub coordination: ValidationCoordinationState,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Result of one completed reducer aggregate-proposal pass.
+pub struct ReducerOutcome {
+    /// Source peer selected as the winning contribution origin.
+    pub source_peer_id: PeerId,
+    /// Candidate merged head selected by the reducer.
+    pub merged_head: HeadDescriptor,
+    /// Published aggregate proposal.
+    pub aggregate: AggregateEnvelope,
+    /// Reducer-side load report for the published proposal.
+    pub reducer_load_report: ReducerLoadReport,
+    /// Evaluation of the selected aggregate result.
     pub evaluation: MetricReport,
 }

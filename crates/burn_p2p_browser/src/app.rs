@@ -4,8 +4,8 @@ use burn_p2p::{
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppLeaderboardPreview,
-    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppSurface, BrowserAppTrainingView,
-    BrowserAppValidationView, BrowserAppViewerView,
+    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppSurface,
+    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -256,6 +256,7 @@ impl BrowserAppModel {
         let validation_metric_preview = latest_eval
             .map(|report| metric_preview(&report.metric_values))
             .unwrap_or_default();
+        let performance_summary = metrics_bundle.and_then(network_performance_view);
         let validate_available = selected_experiment
             .as_ref()
             .is_some_and(|experiment| experiment.validate_available);
@@ -390,6 +391,7 @@ impl BrowserAppModel {
                     .last_error
                     .clone()
                     .or_else(|| self.runtime.transport.last_error.clone()),
+                performance: performance_summary,
             },
         }
     }
@@ -820,6 +822,34 @@ fn latest_head_eval_report(
         .max_by_key(|report| report.finished_at)
 }
 
+fn network_performance_view(bundle: &MetricsCatchupBundle) -> Option<BrowserAppPerformanceView> {
+    let summary = bundle.snapshot.performance_summary.as_ref()?;
+    let wait_time_ms = summary
+        .training
+        .wait_time_ms
+        .saturating_add(summary.validation.wait_time_ms);
+    let idle_time_ms = summary
+        .training
+        .idle_time_ms
+        .saturating_add(summary.validation.idle_time_ms);
+    Some(BrowserAppPerformanceView {
+        scope_summary: format!(
+            "{} peer(s) · {} train window(s) · {} eval report(s)",
+            summary.total_peer_count,
+            summary.training.window_count,
+            summary.head_evaluation.report_count
+        ),
+        captured_at: summary.captured_at.to_rfc3339(),
+        training_throughput: format_rate(summary.training.throughput_work_units_per_sec, "work/s"),
+        validation_throughput: format_rate(
+            summary.head_evaluation.throughput_samples_per_sec,
+            "sample/s",
+        ),
+        wait_time: format_duration_ms(wait_time_ms),
+        idle_time: format_duration_ms(idle_time_ms),
+    })
+}
+
 fn eval_summary(report: &burn_p2p_core::HeadEvalReport) -> String {
     let primary_metric = report
         .metric_values
@@ -895,6 +925,26 @@ fn training_throughput_summary(metrics: &burn_p2p_core::PeerWindowMetrics) -> Op
             ))
         }
     })
+}
+
+fn format_rate(value: f64, unit: &str) -> String {
+    if value >= 100.0 {
+        format!("{value:.0} {unit}")
+    } else if value >= 10.0 {
+        format!("{value:.1} {unit}")
+    } else {
+        format!("{value:.2} {unit}")
+    }
+}
+
+fn format_duration_ms(value: u64) -> String {
+    if value < 1_000 {
+        format!("{value} ms")
+    } else if value < 60_000 {
+        format!("{:.1}s", value as f64 / 1_000.0)
+    } else {
+        format!("{:.1}m", value as f64 / 60_000.0)
+    }
 }
 
 fn default_surface(state: &BrowserRuntimeState) -> BrowserAppSurface {
@@ -1067,16 +1117,16 @@ fn training_slice_status(
     let microshards_ready = storage.cached_microshards.len();
     match state {
         BrowserRuntimeState::Trainer => {
-            if let Some(metrics) = latest_peer_window {
-                if let Some(accepted) = metrics.accepted_tokens_or_samples {
-                    let remaining = metrics.attempted_tokens_or_samples.saturating_sub(accepted);
-                    return format!(
-                        "{} microshard{} cached · {} left in slice",
-                        microshards_ready,
-                        plural_suffix(microshards_ready),
-                        remaining
-                    );
-                }
+            if let Some(metrics) = latest_peer_window
+                && let Some(accepted) = metrics.accepted_tokens_or_samples
+            {
+                let remaining = metrics.attempted_tokens_or_samples.saturating_sub(accepted);
+                return format!(
+                    "{} microshard{} cached · {} left in slice",
+                    microshards_ready,
+                    plural_suffix(microshards_ready),
+                    remaining
+                );
             }
             format!(
                 "{} microshard{} cached · training ready",

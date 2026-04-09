@@ -11,7 +11,7 @@ pub(super) struct RemoteTrustedIssuerStatus {
 pub(super) struct RemoteReenrollmentStatus {
     reason: String,
     rotated_at: Option<DateTime<Utc>>,
-    legacy_issuer_peer_ids: BTreeSet<PeerId>,
+    retired_issuer_peer_ids: BTreeSet<PeerId>,
     login_path: String,
     enroll_path: String,
     trust_bundle_path: String,
@@ -40,9 +40,117 @@ fn trust_score_for_peer<'a>(
         .find(|score| &score.peer_id == peer_id)
 }
 
+fn latest_granted_roles_from_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    peer_id: &PeerId,
+) -> Option<PeerRoleSet> {
+    let auth_roles = snapshot
+        .auth_announcements
+        .iter()
+        .filter(|announcement| &announcement.peer_id == peer_id)
+        .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
+        .map(|announcement| {
+            announcement
+                .envelope
+                .certificate
+                .claims()
+                .granted_roles
+                .clone()
+        });
+    if auth_roles.is_some() {
+        return auth_roles;
+    }
+    snapshot
+        .peer_directory_announcements
+        .iter()
+        .filter(|announcement| &announcement.peer_id == peer_id)
+        .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
+        .and_then(|announcement| announcement.advertised_roles.clone())
+}
+
+fn peer_has_runtime_presence(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> bool {
+    if snapshot.local_peer_id.as_ref() == Some(peer_id) {
+        return true;
+    }
+    let control_plane = &snapshot.control_plane;
+    control_plane
+        .auth_announcements
+        .iter()
+        .any(|announcement| &announcement.peer_id == peer_id)
+        || control_plane
+            .peer_directory_announcements
+            .iter()
+            .any(|announcement| &announcement.peer_id == peer_id)
+        || control_plane
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.provider_peer_id.as_ref() == Some(peer_id))
+        || control_plane
+            .lease_announcements
+            .iter()
+            .any(|announcement| &announcement.lease.peer_id == peer_id)
+        || control_plane
+            .update_announcements
+            .iter()
+            .any(|announcement| &announcement.update.peer_id == peer_id)
+        || control_plane
+            .aggregate_proposal_announcements
+            .iter()
+            .any(|announcement| &announcement.proposal.reducer_peer_id == peer_id)
+        || control_plane
+            .reduction_certificate_announcements
+            .iter()
+            .any(|announcement| &announcement.certificate.validator == peer_id)
+        || control_plane
+            .validation_quorum_announcements
+            .iter()
+            .any(|announcement| &announcement.certificate.coordinator == peer_id)
+        || control_plane
+            .merge_announcements
+            .iter()
+            .any(|announcement| &announcement.certificate.validator == peer_id)
+        || control_plane
+            .reducer_assignment_announcements
+            .iter()
+            .any(|announcement| &announcement.assignment.source_peer_id == peer_id)
+        || control_plane
+            .reducer_load_announcements
+            .iter()
+            .any(|announcement| &announcement.report.peer_id == peer_id)
+}
+
 pub(super) fn peer_is_reducer_eligible(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> bool {
-    trust_score_for_peer(snapshot, peer_id)
+    let trust_eligible = trust_score_for_peer(snapshot, peer_id)
         .map(|score| !score.quarantined && score.reducer_eligible)
+        .unwrap_or(true);
+    if !trust_eligible {
+        return false;
+    }
+    if !peer_has_runtime_presence(snapshot, peer_id) {
+        return false;
+    }
+    latest_granted_roles_from_snapshot(&snapshot.control_plane, peer_id)
+        .map(|roles| roles.contains(&PeerRole::Reducer))
+        .unwrap_or(true)
+}
+
+pub(super) fn peer_is_trainer_eligible(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> bool {
+    let trust_eligible = trust_score_for_peer(snapshot, peer_id)
+        .map(|score| !score.quarantined)
+        .unwrap_or(true);
+    if !trust_eligible {
+        return false;
+    }
+    if !peer_has_runtime_presence(snapshot, peer_id) {
+        return false;
+    }
+    latest_granted_roles_from_snapshot(&snapshot.control_plane, peer_id)
+        .map(|roles| {
+            roles.contains(&PeerRole::TrainerGpu)
+                || roles.contains(&PeerRole::TrainerCpu)
+                || roles.contains(&PeerRole::BrowserTrainerWgpu)
+                || roles.contains(&PeerRole::BrowserTrainer)
+        })
         .unwrap_or(true)
 }
 
@@ -50,8 +158,17 @@ pub(super) fn peer_is_validator_eligible(
     snapshot: &NodeTelemetrySnapshot,
     peer_id: &PeerId,
 ) -> bool {
-    trust_score_for_peer(snapshot, peer_id)
+    let trust_eligible = trust_score_for_peer(snapshot, peer_id)
         .map(|score| !score.quarantined && score.validator_eligible)
+        .unwrap_or(true);
+    if !trust_eligible {
+        return false;
+    }
+    if !peer_has_runtime_presence(snapshot, peer_id) {
+        return false;
+    }
+    latest_granted_roles_from_snapshot(&snapshot.control_plane, peer_id)
+        .map(|roles| roles.contains(&PeerRole::Validator) || roles.contains(&PeerRole::Authority))
         .unwrap_or(true)
 }
 
@@ -385,7 +502,7 @@ fn remote_trust_bundle_to_state(
             .map(|reenrollment| ClientReenrollmentStatus {
                 reason: reenrollment.reason,
                 rotated_at: reenrollment.rotated_at,
-                legacy_issuer_peer_ids: reenrollment.legacy_issuer_peer_ids,
+                retired_issuer_peer_ids: reenrollment.retired_issuer_peer_ids,
                 login_path: reenrollment.login_path,
                 enroll_path: reenrollment.enroll_path,
                 trust_bundle_path: reenrollment.trust_bundle_path,

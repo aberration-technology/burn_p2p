@@ -46,6 +46,26 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     restart: unless-stopped
 
+  reducer:
+    build:
+      context: ../..
+      dockerfile: deploy/containers/bootstrap.Dockerfile
+      args:
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_REDUCER_FEATURES:-admin-http,metrics,auth-static}
+    command: ["/config/reference-reducer.json"]
+    depends_on:
+      - bootstrap
+    ports:
+      - "8789:8789"
+      - "4003:4003/tcp"
+      - "4003:4003/udp"
+    volumes:
+      - ../config/reference-reducer.json:/config/reference-reducer.json:ro
+      - burn-p2p-reducer-data:/var/lib/burn-p2p
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
   trainer-cpu:
     profiles: ["trainers"]
     build:
@@ -54,6 +74,7 @@ services:
     depends_on:
       - bootstrap
       - validator
+      - reducer
     command: ${BURN_P2P_TRAINER_CPU_COMMAND:-/config/trainer.json}
     volumes:
       - ${BURN_P2P_TRAINER_CPU_CONFIG_PATH:-./trainer.json}:/config/trainer.json:ro
@@ -70,6 +91,7 @@ services:
     depends_on:
       - bootstrap
       - validator
+      - reducer
     command: ${BURN_P2P_TRAINER_GPU_COMMAND:-/config/trainer-gpu.json}
     volumes:
       - ${BURN_P2P_TRAINER_GPU_CONFIG_PATH:-./trainer-gpu.json}:/config/trainer-gpu.json:ro
@@ -84,5 +106,6 @@ services:
 volumes:
   burn-p2p-bootstrap-data: {}
   burn-p2p-validator-data: {}
+  burn-p2p-reducer-data: {}
   burn-p2p-trainer-cpu-data: {}
   burn-p2p-trainer-gpu-data: {}

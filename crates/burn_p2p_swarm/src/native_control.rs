@@ -4,14 +4,34 @@ use super::*;
 pub struct NativeControlPlaneShell {
     runtime: TokioRuntime,
     local_peer_id: Libp2pPeerId,
+    transport_policy: RuntimeTransportPolicy,
     swarm: Swarm<NativeControlPlaneBehaviour>,
     snapshot: ControlPlaneSnapshot,
     hot_index: ControlPlaneHotIndex,
     artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
     chunks: BTreeMap<(ArtifactId, ChunkId), ArtifactChunkPayload>,
+    relay_reservation_requests: BTreeSet<SwarmAddress>,
+    next_kademlia_refresh_at: Instant,
+    kademlia_walk_round: u64,
+    peer_directory_record_lookups: BTreeMap<Libp2pPeerId, Instant>,
+    rendezvous_namespace: Option<rendezvous::Namespace>,
+    rendezvous_known_servers: BTreeSet<Libp2pPeerId>,
+    rendezvous_discovery_cookies: BTreeMap<Libp2pPeerId, rendezvous::Cookie>,
+    next_rendezvous_refresh_at: Instant,
     subscribed_topics: BTreeSet<String>,
     pending_events: VecDeque<LiveControlPlaneEvent>,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+const RENDEZVOUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const KADEMLIA_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const KADEMLIA_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
+#[cfg(not(target_arch = "wasm32"))]
+const PEER_DIRECTORY_RECORD_LOOKUP_DEBOUNCE: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const PEER_DIRECTORY_RECORD_TTL: Duration = Duration::from_secs(90);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeControlPlaneShell {
@@ -41,6 +61,20 @@ impl NativeControlPlaneShell {
         let behaviour_keypair = keypair.clone();
         let local_peer_id = keypair.public().to_peer_id();
         let protocol = stream_protocol(&control_protocol)?;
+        let kademlia_protocol = if transport_policy.enable_kademlia {
+            Some(kademlia_protocol_for_control_protocol(&control_protocol)?)
+        } else {
+            None
+        };
+        let rendezvous_namespace = if transport_policy.enable_rendezvous_client
+            || transport_policy.enable_rendezvous_server
+        {
+            Some(rendezvous_namespace_for_control_protocol(
+                &control_protocol,
+            )?)
+        } else {
+            None
+        };
         let gossip_config = gossipsub::ConfigBuilder::default()
             // Control-plane pubsub always signs messages, so require the full
             // libp2p gossipsub envelope instead of accepting unsigned or partial
@@ -60,6 +94,61 @@ impl NativeControlPlaneShell {
             gossip_config.clone(),
         )
         .map_err(|error| SwarmError::Runtime(error.to_string()))?;
+        let kademlia_behaviour = if let Some(protocol_name) = kademlia_protocol {
+            let mut config = kad::Config::new(protocol_name);
+            config.set_periodic_bootstrap_interval(Some(Duration::from_secs(60)));
+            let mut behaviour = kad::Behaviour::with_config(
+                local_peer_id,
+                kad::store::MemoryStore::new(local_peer_id),
+                config,
+            );
+            if transport_policy.enable_relay_server {
+                behaviour.set_mode(Some(kad::Mode::Server));
+            }
+            Some(behaviour)
+        } else {
+            None
+        };
+        let rendezvous_client_behaviour = if transport_policy.enable_rendezvous_client {
+            Some(rendezvous::client::Behaviour::new(keypair.clone()))
+        } else {
+            None
+        };
+        let rendezvous_server_behaviour = if transport_policy.enable_rendezvous_server {
+            Some(rendezvous::server::Behaviour::new(
+                rendezvous::server::Config::default(),
+            ))
+        } else {
+            None
+        };
+        let relay_server_behaviour = if transport_policy.enable_relay_server {
+            let mut config = relay::Config::default();
+            if let Some(max_incoming) = transport_policy.max_established_incoming {
+                config.max_reservations = max_incoming as usize;
+            }
+            if let Some(max_total) = transport_policy.max_established_total {
+                config.max_circuits = (max_total as usize).max(1) / 4;
+            }
+            Some(relay::Behaviour::new(local_peer_id, config))
+        } else {
+            None
+        };
+        let dcutr_behaviour = if transport_policy.enable_hole_punching {
+            Some(dcutr::Behaviour::new(local_peer_id))
+        } else {
+            None
+        };
+        let autonat_behaviour = if transport_policy.enable_autonat {
+            let config = autonat::Config {
+                boot_delay: Duration::from_secs(2),
+                retry_interval: Duration::from_secs(10),
+                refresh_interval: Duration::from_secs(60),
+                ..autonat::Config::default()
+            };
+            Some(autonat::Behaviour::new(local_peer_id, config))
+        } else {
+            None
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let mdns_behaviour = if transport_policy.enable_local_discovery {
             let _guard = runtime.enter();
@@ -81,13 +170,23 @@ impl NativeControlPlaneShell {
                 )
                 .map_err(|error| SwarmError::Runtime(error.to_string()))?
                 .with_quic()
-                .with_behaviour(move |_| NativeControlPlaneBehaviour {
-                    request_response: request_response::json::Behaviour::new(
+                .with_relay_client(tls_config, yamux::Config::default)
+                .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                .with_behaviour(move |_, relay_client| NativeControlPlaneBehaviour {
+                    request_response: request_response::cbor::Behaviour::new(
                         [(protocol, ProtocolSupport::Full)],
                         request_response::Config::default(),
                     ),
                     gossipsub: gossipsub_behaviour,
                     identify: identify::Behaviour::new(identify_config.clone()),
+                    kademlia: kademlia_behaviour.into(),
+                    rendezvous_client: rendezvous_client_behaviour.into(),
+                    rendezvous_server: rendezvous_server_behaviour.into(),
+                    relay_client,
+                    relay_server: relay_server_behaviour.into(),
+                    dcutr: dcutr_behaviour.into(),
+                    autonat: autonat_behaviour.into(),
+                    ping: ping::Behaviour::default(),
                     connection_limits: connection_limits::Behaviour::new(
                         connection_limits::ConnectionLimits::default()
                             .with_max_established_incoming(
@@ -108,11 +207,20 @@ impl NativeControlPlaneShell {
         Ok(Self {
             runtime,
             local_peer_id,
+            transport_policy,
             swarm,
             snapshot: ControlPlaneSnapshot::default(),
             hot_index: ControlPlaneHotIndex::default(),
             artifacts: BTreeMap::new(),
             chunks: BTreeMap::new(),
+            relay_reservation_requests: BTreeSet::new(),
+            next_kademlia_refresh_at: Instant::now(),
+            kademlia_walk_round: 0,
+            peer_directory_record_lookups: BTreeMap::new(),
+            rendezvous_namespace,
+            rendezvous_known_servers: BTreeSet::new(),
+            rendezvous_discovery_cookies: BTreeMap::new(),
+            next_rendezvous_refresh_at: Instant::now(),
             subscribed_topics: BTreeSet::new(),
             pending_events: VecDeque::new(),
         })
@@ -121,6 +229,176 @@ impl NativeControlPlaneShell {
     /// Performs the local peer ID operation.
     pub fn local_peer_id(&self) -> &Libp2pPeerId {
         &self.local_peer_id
+    }
+
+    fn maybe_request_relay_reservation(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        transport_policy: &RuntimeTransportPolicy,
+        relay_reservation_requests: &mut BTreeSet<SwarmAddress>,
+        pending_events: &mut VecDeque<LiveControlPlaneEvent>,
+        relay_peer_id: &Libp2pPeerId,
+        listen_addresses: &[Multiaddr],
+    ) {
+        if !transport_policy.enable_relay_client
+            || transport_policy.enable_relay_server
+            || !relay_reservation_requests.is_empty()
+        {
+            return;
+        }
+
+        let Some(relay_listen_addr) =
+            relay_reservation_listen_addr(relay_peer_id, listen_addresses)
+        else {
+            return;
+        };
+        let relay_listen_addr = SwarmAddress(relay_listen_addr.to_string());
+        if !relay_reservation_requests.insert(relay_listen_addr.clone()) {
+            return;
+        }
+
+        let relay_multiaddr: Multiaddr = relay_listen_addr
+            .as_str()
+            .parse()
+            .expect("relay reservation address should remain valid");
+        let result = swarm.listen_on(relay_multiaddr);
+        if let Err(error) = result {
+            relay_reservation_requests.remove(&relay_listen_addr);
+            pending_events.push_back(LiveControlPlaneEvent::Other {
+                kind: format!("relay-reservation-listen-error:{error}"),
+            });
+        }
+    }
+
+    fn refresh_rendezvous_server(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        transport_policy: &RuntimeTransportPolicy,
+        namespace: Option<&rendezvous::Namespace>,
+        rendezvous_discovery_cookies: &mut BTreeMap<Libp2pPeerId, rendezvous::Cookie>,
+        pending_events: &mut VecDeque<LiveControlPlaneEvent>,
+        rendezvous_peer_id: Libp2pPeerId,
+    ) {
+        if !transport_policy.enable_rendezvous_client {
+            return;
+        }
+        let Some(namespace) = namespace.cloned() else {
+            return;
+        };
+        let Some(rendezvous_client) = swarm.behaviour_mut().rendezvous_client.as_mut() else {
+            return;
+        };
+
+        if let Err(error) = rendezvous_client.register(namespace.clone(), rendezvous_peer_id, None)
+        {
+            match error {
+                rendezvous::client::RegisterError::NoExternalAddresses => {}
+                other => pending_events.push_back(LiveControlPlaneEvent::Other {
+                    kind: format!("rendezvous-register-error:{other}"),
+                }),
+            }
+        }
+
+        let cookie = rendezvous_discovery_cookies
+            .get(&rendezvous_peer_id)
+            .cloned();
+        rendezvous_client.discover(Some(namespace), cookie, Some(128), rendezvous_peer_id);
+    }
+
+    fn note_kademlia_addresses(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        peer_id: &Libp2pPeerId,
+        addresses: impl IntoIterator<Item = Multiaddr>,
+    ) {
+        let Some(kademlia) = swarm.behaviour_mut().kademlia.as_mut() else {
+            return;
+        };
+        for address in addresses {
+            kademlia.add_address(peer_id, address);
+        }
+    }
+
+    fn publish_peer_directory_record(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        announcement: &PeerDirectoryAnnouncement,
+        pending_events: &mut VecDeque<LiveControlPlaneEvent>,
+    ) {
+        let local_peer_id = *swarm.local_peer_id();
+        let Some(kademlia) = swarm.behaviour_mut().kademlia.as_mut() else {
+            return;
+        };
+        let value = match serde_json::to_vec(announcement) {
+            Ok(value) => value,
+            Err(error) => {
+                pending_events.push_back(LiveControlPlaneEvent::Other {
+                    kind: format!("kademlia-peer-directory-encode-error:{error}"),
+                });
+                return;
+            }
+        };
+        let mut record = kad::Record::new(
+            peer_directory_record_key_for_peer(announcement.peer_id.as_str()),
+            value,
+        );
+        record.publisher = Some(local_peer_id);
+        record.expires = Some(Instant::now() + PEER_DIRECTORY_RECORD_TTL);
+        if let Err(error) = kademlia.put_record(record, kad::Quorum::One) {
+            pending_events.push_back(LiveControlPlaneEvent::Other {
+                kind: format!("kademlia-peer-directory-put-error:{error}"),
+            });
+        }
+    }
+
+    fn maybe_request_peer_directory_record(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        local_peer_id: &Libp2pPeerId,
+        peer_directory_record_lookups: &mut BTreeMap<Libp2pPeerId, Instant>,
+        peer_id: &Libp2pPeerId,
+    ) {
+        if peer_id == local_peer_id {
+            return;
+        }
+        let now = Instant::now();
+        if peer_directory_record_lookups
+            .get(peer_id)
+            .is_some_and(|last| *last + PEER_DIRECTORY_RECORD_LOOKUP_DEBOUNCE > now)
+        {
+            return;
+        }
+        let Some(kademlia) = swarm.behaviour_mut().kademlia.as_mut() else {
+            return;
+        };
+        kademlia.get_record(peer_directory_record_key_for_peer(&peer_id.to_string()));
+        peer_directory_record_lookups.insert(*peer_id, now);
+    }
+
+    fn refresh_kademlia_discovery(
+        swarm: &mut Swarm<NativeControlPlaneBehaviour>,
+        transport_policy: &RuntimeTransportPolicy,
+        local_peer_id: Libp2pPeerId,
+        kademlia_walk_round: &mut u64,
+        pending_events: &mut VecDeque<LiveControlPlaneEvent>,
+    ) {
+        if !transport_policy.enable_kademlia {
+            return;
+        }
+        let Some(kademlia) = swarm.behaviour_mut().kademlia.as_mut() else {
+            return;
+        };
+        if let Err(error) = kademlia.bootstrap()
+            && !matches!(error, kad::NoKnownPeers())
+        {
+            pending_events.push_back(LiveControlPlaneEvent::Other {
+                kind: format!("kademlia-bootstrap-error:{error}"),
+            });
+        }
+        kademlia.get_closest_peers(local_peer_id);
+        kademlia.get_closest_peers(
+            format!(
+                "burn-p2p-discovery-walk:{local_peer_id}:{round}",
+                round = *kademlia_walk_round
+            )
+            .into_bytes(),
+        );
+        *kademlia_walk_round = kademlia_walk_round.wrapping_add(1);
     }
 
     /// Performs the listen on operation.
@@ -270,7 +548,12 @@ impl NativeControlPlaneShell {
     /// Performs the publish peer directory operation.
     pub fn publish_peer_directory(&mut self, announcement: PeerDirectoryAnnouncement) {
         self.snapshot
-            .insert_peer_directory_announcement(announcement);
+            .insert_peer_directory_announcement(announcement.clone());
+        Self::publish_peer_directory_record(
+            &mut self.swarm,
+            &announcement,
+            &mut self.pending_events,
+        );
     }
 
     /// Performs the publish metrics operation.
@@ -339,7 +622,8 @@ impl NativeControlPlaneShell {
         self.request_snapshot_id(peer_id).map(|_| ())
     }
 
-    fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
+    pub(crate) fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
+        self.settle_request_response();
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
@@ -361,11 +645,12 @@ impl NativeControlPlaneShell {
             .map(|_| ())
     }
 
-    fn request_artifact_manifest_id(
+    pub(crate) fn request_artifact_manifest_id(
         &mut self,
         peer_id: &str,
         artifact_id: ArtifactId,
     ) -> Result<String, SwarmError> {
+        self.settle_request_response();
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
@@ -391,12 +676,13 @@ impl NativeControlPlaneShell {
             .map(|_| ())
     }
 
-    fn request_artifact_chunk_id(
+    pub(crate) fn request_artifact_chunk_id(
         &mut self,
         peer_id: &str,
         artifact_id: ArtifactId,
         chunk_id: ChunkId,
     ) -> Result<String, SwarmError> {
+        self.settle_request_response();
         let peer_id = peer_id
             .parse::<Libp2pPeerId>()
             .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
@@ -420,18 +706,20 @@ impl NativeControlPlaneShell {
         peer_id: &str,
         timeout: Duration,
     ) -> Result<ControlPlaneSnapshot, SwarmError> {
+        self.settle_request_response();
         let request_id = self.request_snapshot_id(peer_id)?;
-        let mut deferred_events = VecDeque::new();
+        let mut deferred_events = std::mem::take(&mut self.pending_events);
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
                 match event {
                     LiveControlPlaneEvent::SnapshotReceived {
                         request_id: response_id,
                         snapshot,
                         ..
                     } if response_id == request_id => {
+                        self.settle_request_response();
                         self.pending_events.extend(deferred_events);
                         return Ok(snapshot);
                     }
@@ -459,18 +747,20 @@ impl NativeControlPlaneShell {
         artifact_id: ArtifactId,
         timeout: Duration,
     ) -> Result<Option<ArtifactDescriptor>, SwarmError> {
+        self.settle_request_response();
         let request_id = self.request_artifact_manifest_id(peer_id, artifact_id)?;
-        let mut deferred_events = VecDeque::new();
+        let mut deferred_events = std::mem::take(&mut self.pending_events);
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
                 match event {
                     LiveControlPlaneEvent::ArtifactManifestReceived {
                         request_id: response_id,
                         descriptor,
                         ..
                     } if response_id == request_id => {
+                        self.settle_request_response();
                         self.pending_events.extend(deferred_events);
                         return Ok(descriptor);
                     }
@@ -499,18 +789,20 @@ impl NativeControlPlaneShell {
         chunk_id: ChunkId,
         timeout: Duration,
     ) -> Result<Option<ArtifactChunkPayload>, SwarmError> {
+        self.settle_request_response();
         let request_id = self.request_artifact_chunk_id(peer_id, artifact_id, chunk_id)?;
-        let mut deferred_events = VecDeque::new();
+        let mut deferred_events = std::mem::take(&mut self.pending_events);
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_event(Duration::from_millis(50)) {
+            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
                 match event {
                     LiveControlPlaneEvent::ArtifactChunkReceived {
                         request_id: response_id,
                         payload,
                         ..
                     } if response_id == request_id => {
+                        self.settle_request_response();
                         self.pending_events.extend(deferred_events);
                         return Ok(payload);
                     }
@@ -531,12 +823,43 @@ impl NativeControlPlaneShell {
         Err(SwarmError::TimedOut("artifact-chunk"))
     }
 
-    /// Performs the wait event operation.
-    pub fn wait_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
-        if let Some(event) = self.pending_events.pop_front() {
-            return Some(event);
+    fn maybe_refresh_background_discovery(&mut self) {
+        if self.transport_policy.enable_kademlia && Instant::now() >= self.next_kademlia_refresh_at
+        {
+            Self::refresh_kademlia_discovery(
+                &mut self.swarm,
+                &self.transport_policy,
+                self.local_peer_id,
+                &mut self.kademlia_walk_round,
+                &mut self.pending_events,
+            );
+            self.next_kademlia_refresh_at = Instant::now() + KADEMLIA_REFRESH_INTERVAL;
         }
 
+        if self.transport_policy.enable_rendezvous_client
+            && Instant::now() >= self.next_rendezvous_refresh_at
+        {
+            let known_servers = self
+                .rendezvous_known_servers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            for rendezvous_peer_id in known_servers {
+                Self::refresh_rendezvous_server(
+                    &mut self.swarm,
+                    &self.transport_policy,
+                    self.rendezvous_namespace.as_ref(),
+                    &mut self.rendezvous_discovery_cookies,
+                    &mut self.pending_events,
+                    rendezvous_peer_id,
+                );
+            }
+            self.next_rendezvous_refresh_at = Instant::now() + RENDEZVOUS_REFRESH_INTERVAL;
+        }
+    }
+
+    fn wait_live_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
+        self.maybe_refresh_background_discovery();
         self.runtime.block_on(async {
             timeout(duration, self.swarm.select_next_some())
                 .await
@@ -718,22 +1041,71 @@ impl NativeControlPlaneShell {
                         },
                         NativeControlPlaneBehaviourEvent::Identify(event) => match *event {
                             identify::Event::Received { peer_id, info, .. } => {
+                                let listen_addrs = info.listen_addrs;
+                                let observed_addr = info.observed_addr;
+                                let protocols = info
+                                    .protocols
+                                    .into_iter()
+                                    .map(|protocol| protocol.to_string())
+                                    .collect::<Vec<_>>();
+                                let relay_hop_supported = protocol_supports_relay_hop(&protocols);
+                                let rendezvous_supported =
+                                    protocol_supports_rendezvous(&protocols);
                                 self.swarm
                                     .behaviour_mut()
                                     .gossipsub
                                     .add_explicit_peer(&peer_id);
+                                self.swarm.add_external_address(observed_addr);
+                                Self::note_kademlia_addresses(
+                                    &mut self.swarm,
+                                    &peer_id,
+                                    listen_addrs.iter().cloned(),
+                                );
+                                if self.transport_policy.enable_kademlia {
+                                    let scheduled =
+                                        Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                                    if self.next_kademlia_refresh_at > scheduled {
+                                        self.next_kademlia_refresh_at = scheduled;
+                                    }
+                                }
+                                if rendezvous_supported {
+                                    self.rendezvous_known_servers.insert(peer_id);
+                                    Self::refresh_rendezvous_server(
+                                        &mut self.swarm,
+                                        &self.transport_policy,
+                                        self.rendezvous_namespace.as_ref(),
+                                        &mut self.rendezvous_discovery_cookies,
+                                        &mut self.pending_events,
+                                        peer_id,
+                                    );
+                                } else {
+                                    self.rendezvous_known_servers.remove(&peer_id);
+                                    self.rendezvous_discovery_cookies.remove(&peer_id);
+                                }
+                                if relay_hop_supported {
+                                    if self.transport_policy.enable_autonat
+                                        && let Some(address) = listen_addrs.first().cloned()
+                                        && let Some(autonat) =
+                                            self.swarm.behaviour_mut().autonat.as_mut()
+                                    {
+                                        autonat.add_server(peer_id, Some(address));
+                                    }
+                                    Self::maybe_request_relay_reservation(
+                                        &mut self.swarm,
+                                        &self.transport_policy,
+                                        &mut self.relay_reservation_requests,
+                                        &mut self.pending_events,
+                                        &peer_id,
+                                        &listen_addrs,
+                                    );
+                                }
                                 LiveControlPlaneEvent::PeerIdentified {
                                     peer_id: peer_id.to_string(),
-                                    listen_addresses: info
-                                        .listen_addrs
+                                    listen_addresses: listen_addrs
                                         .into_iter()
                                         .map(|address| SwarmAddress(address.to_string()))
                                         .collect(),
-                                    protocols: info
-                                        .protocols
-                                        .into_iter()
-                                        .map(|protocol| protocol.to_string())
-                                        .collect(),
+                                    protocols,
                                 }
                             }
                             identify::Event::Pushed { peer_id, .. } => {
@@ -750,6 +1122,279 @@ impl NativeControlPlaneShell {
                                 }
                             }
                         },
+                        NativeControlPlaneBehaviourEvent::Kademlia(event) => match *event {
+                            kad::Event::RoutingUpdated {
+                                peer, addresses, ..
+                            } => {
+                                Self::maybe_request_peer_directory_record(
+                                    &mut self.swarm,
+                                    &self.local_peer_id,
+                                    &mut self.peer_directory_record_lookups,
+                                    &peer,
+                                );
+                                LiveControlPlaneEvent::PeersDiscovered {
+                                    peers: addresses
+                                        .into_vec()
+                                        .into_iter()
+                                        .map(|address| {
+                                            (peer.to_string(), SwarmAddress(address.to_string()))
+                                        })
+                                        .collect(),
+                                }
+                            }
+                            kad::Event::OutboundQueryProgressed { result, .. } => match result {
+                                kad::QueryResult::GetClosestPeers(Ok(ok)) => {
+                                    let mut discovered = BTreeSet::new();
+                                    for peer in ok.peers {
+                                        Self::maybe_request_peer_directory_record(
+                                            &mut self.swarm,
+                                            &self.local_peer_id,
+                                            &mut self.peer_directory_record_lookups,
+                                            &peer.peer_id,
+                                        );
+                                        for address in peer.addrs {
+                                            discovered.insert((
+                                                peer.peer_id.to_string(),
+                                                SwarmAddress(address.to_string()),
+                                            ));
+                                        }
+                                    }
+                                    LiveControlPlaneEvent::PeersDiscovered {
+                                        peers: discovered.into_iter().collect(),
+                                    }
+                                }
+                                kad::QueryResult::GetClosestPeers(Err(error)) => {
+                                    let mut discovered = BTreeSet::new();
+                                    match error {
+                                        kad::GetClosestPeersError::Timeout { peers, .. } => {
+                                            for peer in peers {
+                                                Self::maybe_request_peer_directory_record(
+                                                    &mut self.swarm,
+                                                    &self.local_peer_id,
+                                                    &mut self.peer_directory_record_lookups,
+                                                    &peer.peer_id,
+                                                );
+                                                for address in peer.addrs {
+                                                    discovered.insert((
+                                                        peer.peer_id.to_string(),
+                                                        SwarmAddress(address.to_string()),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if discovered.is_empty() {
+                                        LiveControlPlaneEvent::Other {
+                                            kind: "kademlia-get-closest-timeout".into(),
+                                        }
+                                    } else {
+                                        LiveControlPlaneEvent::PeersDiscovered {
+                                            peers: discovered.into_iter().collect(),
+                                        }
+                                    }
+                                }
+                                kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                                    peer_record,
+                                ))) => {
+                                    let record_key = peer_record.record.key.clone();
+                                    match serde_json::from_slice::<PeerDirectoryAnnouncement>(
+                                        &peer_record.record.value,
+                                    ) {
+                                        Ok(announcement)
+                                            if peer_directory_record_key_for_peer(
+                                                announcement.peer_id.as_str(),
+                                            ) == record_key =>
+                                        {
+                                            if let Ok(peer_id) = announcement
+                                                .peer_id
+                                                .as_str()
+                                                .parse::<Libp2pPeerId>()
+                                            {
+                                                let addresses = announcement
+                                                    .addresses
+                                                    .iter()
+                                                    .filter_map(|address| {
+                                                        address.as_str().parse::<Multiaddr>().ok()
+                                                    })
+                                                    .collect::<Vec<_>>();
+                                                Self::note_kademlia_addresses(
+                                                    &mut self.swarm,
+                                                    &peer_id,
+                                                    addresses,
+                                                );
+                                            }
+                                            self.snapshot.insert_peer_directory_announcement(
+                                                announcement.clone(),
+                                            );
+                                            LiveControlPlaneEvent::PeerDirectoryRecordReceived {
+                                                announcement,
+                                            }
+                                        }
+                                        Ok(announcement) => LiveControlPlaneEvent::Other {
+                                            kind: format!(
+                                                "kademlia-peer-directory-key-mismatch:{}",
+                                                announcement.peer_id.as_str()
+                                            ),
+                                        },
+                                        Err(error) => LiveControlPlaneEvent::Other {
+                                            kind: format!(
+                                                "kademlia-peer-directory-decode-error:{error}"
+                                            ),
+                                        },
+                                    }
+                                }
+                                kad::QueryResult::GetRecord(Ok(
+                                    kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
+                                )) => LiveControlPlaneEvent::Other {
+                                    kind: "kademlia-peer-directory-record-finished".into(),
+                                },
+                                kad::QueryResult::GetRecord(Err(error)) => {
+                                    LiveControlPlaneEvent::Other {
+                                        kind: format!("kademlia-peer-directory-record:{error:?}"),
+                                    }
+                                }
+                                other => LiveControlPlaneEvent::Other {
+                                    kind: format!("kademlia:{other:?}"),
+                                },
+                            },
+                            other => LiveControlPlaneEvent::Other {
+                                kind: format!("kademlia:{other:?}"),
+                            },
+                        },
+                        NativeControlPlaneBehaviourEvent::RendezvousClient(event) => match *event {
+                            rendezvous::client::Event::Discovered {
+                                rendezvous_node,
+                                registrations,
+                                cookie,
+                            } => {
+                                let mut discovered = BTreeSet::new();
+                                self.rendezvous_discovery_cookies
+                                    .insert(rendezvous_node, cookie);
+                                for registration in registrations {
+                                    let peer_id = registration.record.peer_id();
+                                    if peer_id == self.local_peer_id {
+                                        continue;
+                                    }
+                                    Self::maybe_request_peer_directory_record(
+                                        &mut self.swarm,
+                                        &self.local_peer_id,
+                                        &mut self.peer_directory_record_lookups,
+                                        &peer_id,
+                                    );
+                                    Self::note_kademlia_addresses(
+                                        &mut self.swarm,
+                                        &peer_id,
+                                        registration.record.addresses().iter().cloned(),
+                                    );
+                                    let peer_id = peer_id.to_string();
+                                    for address in registration.record.addresses() {
+                                        discovered.insert((
+                                            peer_id.clone(),
+                                            SwarmAddress(address.to_string()),
+                                        ));
+                                    }
+                                }
+                                LiveControlPlaneEvent::PeersDiscovered {
+                                    peers: discovered.into_iter().collect(),
+                                }
+                            }
+                            rendezvous::client::Event::Registered {
+                                rendezvous_node,
+                                namespace,
+                                ttl,
+                            } => LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "rendezvous-registered:{rendezvous_node}:{namespace}:{ttl}"
+                                ),
+                            },
+                            rendezvous::client::Event::DiscoverFailed {
+                                rendezvous_node,
+                                namespace,
+                                error,
+                            } => LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "rendezvous-discover-failed:{rendezvous_node}:{}:{error:?}",
+                                    namespace
+                                        .map(|namespace| namespace.to_string())
+                                        .unwrap_or_else(|| "all".into())
+                                ),
+                            },
+                            rendezvous::client::Event::RegisterFailed {
+                                rendezvous_node,
+                                namespace,
+                                error,
+                            } => LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "rendezvous-register-failed:{rendezvous_node}:{namespace}:{error:?}"
+                                ),
+                            },
+                            rendezvous::client::Event::Expired { peer } => {
+                                LiveControlPlaneEvent::Other {
+                                    kind: format!("rendezvous-expired:{peer}"),
+                                }
+                            }
+                        },
+                        NativeControlPlaneBehaviourEvent::RendezvousServer(event) => {
+                            LiveControlPlaneEvent::Other {
+                                kind: format!("rendezvous-server:{event:?}"),
+                            }
+                        }
+                        NativeControlPlaneBehaviourEvent::RelayClient(event) => match *event {
+                            relay::client::Event::ReservationReqAccepted {
+                                relay_peer_id, ..
+                            } => LiveControlPlaneEvent::RelayReservationAccepted {
+                                relay_peer_id: relay_peer_id.to_string(),
+                            },
+                            other => LiveControlPlaneEvent::Other {
+                                kind: format!("relay-client:{other:?}"),
+                            },
+                        },
+                        NativeControlPlaneBehaviourEvent::RelayServer(event) => {
+                            LiveControlPlaneEvent::Other {
+                                kind: format!("relay-server:{event:?}"),
+                            }
+                        }
+                        NativeControlPlaneBehaviourEvent::Dcutr(event) => match event.result {
+                            Ok(_) => LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded {
+                                peer_id: event.remote_peer_id.to_string(),
+                            },
+                            Err(error) => LiveControlPlaneEvent::DirectConnectionUpgradeFailed {
+                                peer_id: event.remote_peer_id.to_string(),
+                                message: error.to_string(),
+                            },
+                        },
+                        NativeControlPlaneBehaviourEvent::Autonat(event) => match *event {
+                            autonat::Event::StatusChanged { old, new } => {
+                                if let autonat::NatStatus::Public(previous) = old {
+                                    self.pending_events.push_back(
+                                        LiveControlPlaneEvent::ReachableAddressExpired {
+                                            address: SwarmAddress(previous.to_string()),
+                                        },
+                                    );
+                                }
+                                match new {
+                                    autonat::NatStatus::Public(address) => {
+                                        self.swarm.add_external_address(address.clone());
+                                        LiveControlPlaneEvent::ReachableAddressConfirmed {
+                                            address: SwarmAddress(address.to_string()),
+                                        }
+                                    }
+                                    autonat::NatStatus::Private | autonat::NatStatus::Unknown => {
+                                        LiveControlPlaneEvent::Other {
+                                            kind: format!("autonat:{new:?}"),
+                                        }
+                                    }
+                                }
+                            }
+                            other => LiveControlPlaneEvent::Other {
+                                kind: format!("autonat:{other:?}"),
+                            },
+                        },
+                        NativeControlPlaneBehaviourEvent::Ping(event) => {
+                            LiveControlPlaneEvent::Other {
+                                kind: format!("ping:{event:?}"),
+                            }
+                        }
                         #[cfg(not(target_arch = "wasm32"))]
                         NativeControlPlaneBehaviourEvent::Mdns(event) => match event {
                             mdns::Event::Discovered(peers) => {
@@ -759,11 +1404,23 @@ impl NativeControlPlaneShell {
                                         .behaviour_mut()
                                         .gossipsub
                                         .add_explicit_peer(&peer_id);
+                                    Self::note_kademlia_addresses(
+                                        &mut self.swarm,
+                                        &peer_id,
+                                        std::iter::once(address.clone()),
+                                    );
                                     let _ = self.swarm.dial(address.clone());
                                     discovered.push((
                                         peer_id.to_string(),
                                         SwarmAddress(address.to_string()),
                                     ));
+                                }
+                                if self.transport_policy.enable_kademlia {
+                                    let scheduled =
+                                        Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                                    if self.next_kademlia_refresh_at > scheduled {
+                                        self.next_kademlia_refresh_at = scheduled;
+                                    }
                                 }
                                 LiveControlPlaneEvent::PeersDiscovered { peers: discovered }
                             }
@@ -784,9 +1441,58 @@ impl NativeControlPlaneShell {
                         },
                     },
                     SwarmEvent::NewListenAddr { address, .. } => {
+                        if address
+                            .iter()
+                            .any(|protocol| matches!(protocol, libp2p::multiaddr::Protocol::P2pCircuit))
+                        {
+                            self.swarm.add_external_address(address.clone());
+                        }
                         LiveControlPlaneEvent::NewListenAddr {
                             address: SwarmAddress(address.to_string()),
                         }
+                    }
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        let address = SwarmAddress(address.to_string());
+                        if address.is_relay_circuit() {
+                            self.relay_reservation_requests.insert(address.clone());
+                        }
+                        if self.transport_policy.enable_kademlia {
+                            let scheduled = Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                            if self.next_kademlia_refresh_at > scheduled {
+                                self.next_kademlia_refresh_at = scheduled;
+                            }
+                        }
+                        let known_servers =
+                            self.rendezvous_known_servers.iter().cloned().collect::<Vec<_>>();
+                        for rendezvous_peer_id in known_servers {
+                            Self::refresh_rendezvous_server(
+                                &mut self.swarm,
+                                &self.transport_policy,
+                                self.rendezvous_namespace.as_ref(),
+                                &mut self.rendezvous_discovery_cookies,
+                                &mut self.pending_events,
+                                rendezvous_peer_id,
+                            );
+                        }
+                        LiveControlPlaneEvent::ReachableAddressConfirmed { address }
+                    }
+                    SwarmEvent::ExternalAddrExpired { address } => {
+                        let address = SwarmAddress(address.to_string());
+                        if address.is_relay_circuit() {
+                            self.relay_reservation_requests.remove(&address);
+                        }
+                        if self.transport_policy.enable_kademlia {
+                            let scheduled = Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                            if self.next_kademlia_refresh_at > scheduled {
+                                self.next_kademlia_refresh_at = scheduled;
+                            }
+                        }
+                        if self.transport_policy.enable_rendezvous_client
+                            && self.next_rendezvous_refresh_at > Instant::now()
+                        {
+                            self.next_rendezvous_refresh_at = Instant::now();
+                        }
+                        LiveControlPlaneEvent::ReachableAddressExpired { address }
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         LiveControlPlaneEvent::ConnectionEstablished {
@@ -794,11 +1500,33 @@ impl NativeControlPlaneShell {
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        if self.transport_policy.enable_kademlia {
+                            let scheduled = Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                            if self.next_kademlia_refresh_at > scheduled {
+                                self.next_kademlia_refresh_at = scheduled;
+                            }
+                        }
+                        if self.transport_policy.enable_rendezvous_client
+                            && self.next_rendezvous_refresh_at > Instant::now()
+                        {
+                            self.next_rendezvous_refresh_at = Instant::now();
+                        }
                         LiveControlPlaneEvent::ConnectionClosed {
                             peer_id: peer_id.to_string(),
                         }
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        if self.transport_policy.enable_kademlia {
+                            let scheduled = Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                            if self.next_kademlia_refresh_at > scheduled {
+                                self.next_kademlia_refresh_at = scheduled;
+                            }
+                        }
+                        if self.transport_policy.enable_rendezvous_client
+                            && self.next_rendezvous_refresh_at > Instant::now()
+                        {
+                            self.next_rendezvous_refresh_at = Instant::now();
+                        }
                         LiveControlPlaneEvent::OutgoingConnectionError {
                             peer_id: peer_id.map(|peer_id| peer_id.to_string()),
                             message: error.to_string(),
@@ -814,6 +1542,22 @@ impl NativeControlPlaneShell {
                     },
                 })
         })
+    }
+
+    fn settle_request_response(&mut self) {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            match self.wait_live_event(Duration::from_millis(5)) {
+                Some(event) => self.pending_events.push_back(event),
+                None => break,
+            }
+        }
+    }
+
+    /// Performs the wait event operation.
+    pub fn wait_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
+        self.wait_live_event(duration)
+            .or_else(|| self.pending_events.pop_front())
     }
 }
 
@@ -962,6 +1706,11 @@ impl NativeControlPlaneShell {
         self.inner.request_snapshot(peer_id)
     }
 
+    pub(crate) fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
+        self.inner.request_snapshot(peer_id)?;
+        Ok("native-wasm-snapshot-request".into())
+    }
+
     pub fn fetch_snapshot(
         &mut self,
         peer_id: &str,
@@ -988,6 +1737,15 @@ impl NativeControlPlaneShell {
         self.inner.request_artifact_manifest(peer_id, artifact_id)
     }
 
+    pub(crate) fn request_artifact_manifest_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+    ) -> Result<String, SwarmError> {
+        self.inner.request_artifact_manifest(peer_id, artifact_id)?;
+        Ok("native-wasm-artifact-manifest-request".into())
+    }
+
     pub fn fetch_artifact_chunk(
         &mut self,
         peer_id: &str,
@@ -1007,6 +1765,17 @@ impl NativeControlPlaneShell {
     ) -> Result<(), SwarmError> {
         self.inner
             .request_artifact_chunk(peer_id, artifact_id, chunk_id)
+    }
+
+    pub(crate) fn request_artifact_chunk_id(
+        &mut self,
+        peer_id: &str,
+        artifact_id: ArtifactId,
+        chunk_id: ChunkId,
+    ) -> Result<String, SwarmError> {
+        self.inner
+            .request_artifact_chunk(peer_id, artifact_id, chunk_id)?;
+        Ok("native-wasm-artifact-chunk-request".into())
     }
 
     pub fn wait_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {

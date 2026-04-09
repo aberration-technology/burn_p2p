@@ -1,9 +1,10 @@
 #[cfg(feature = "artifact-s3")]
 use super::BootstrapArtifactPublicationConfig;
 use super::{
-    BootstrapAuthConfig, BootstrapAuthConnectorConfig, BootstrapAuthPrincipal,
-    BootstrapDaemonConfig, BootstrapEmbeddedDaemonConfig, BootstrapOptionalServicesConfig,
-    BootstrapPeerDaemonConfig, HttpRequest, HttpServerContext, auth_directory_entries,
+    AuthSessionStateStore, BootstrapAuthConfig, BootstrapAuthConnectorConfig,
+    BootstrapAuthPrincipal, BootstrapAuthSessionBackendConfig, BootstrapDaemonConfig,
+    BootstrapEmbeddedDaemonConfig, BootstrapOptionalServicesConfig, BootstrapPeerDaemonConfig,
+    HttpRequest, HttpServerContext, auth_directory_entries, auth_session_state_store,
     build_auth_portal, current_revocation_epoch, current_trust_bundle, default_issuer_key_id,
     handle_connection, load_or_create_keypair, persist_daemon_config, retire_trusted_issuers,
     rollout_auth_policy, rotate_authority_material, validate_compiled_feature_support_with,
@@ -15,6 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -27,8 +29,8 @@ use burn_p2p::{
     BrowserMode, CallbackPayload, CompiledFeatureSet, ContributionReceipt, EdgeFeature,
     ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadDescriptor,
-    IdentityConnector, LoginRequest, MetricValue, NodeEnrollmentRequest, PeerId, PeerRole,
-    PeerRoleSet, PrincipalId, ProfileMode, SocialMode, TrustedIssuer,
+    LoginRequest, MetricValue, NodeEnrollmentRequest, PeerId, PeerRole, PeerRoleSet, PrincipalId,
+    ProfileMode, SocialMode, TrustedIssuer,
 };
 #[cfg(any(feature = "metrics-indexer", feature = "artifact-s3"))]
 use burn_p2p::{DatasetViewId, WorkloadId};
@@ -88,6 +90,13 @@ struct HttpTestServer {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+struct RedisTestServer {
+    url: String,
+    port: u16,
+    child: Option<Child>,
+    state: tempfile::TempDir,
+}
+
 #[cfg(feature = "artifact-s3")]
 type ArtifactS3ObjectMap = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
 
@@ -132,6 +141,83 @@ impl Drop for HttpTestServer {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+impl RedisTestServer {
+    fn spawn() -> Self {
+        let state = tempdir().expect("redis temp dir");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redis test port");
+        let port = listener.local_addr().expect("redis local addr").port();
+        drop(listener);
+
+        let mut server = Self {
+            url: format!("redis://127.0.0.1:{port}/0"),
+            port,
+            child: None,
+            state,
+        };
+        server.start();
+        server
+    }
+
+    fn start(&mut self) {
+        assert!(self.child.is_none(), "redis test server already started");
+        let child = Command::new("redis-server")
+            .arg("--save")
+            .arg("")
+            .arg("--appendonly")
+            .arg("no")
+            .arg("--bind")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(self.port.to_string())
+            .arg("--dir")
+            .arg(self.state.path())
+            .arg("--dbfilename")
+            .arg("dump.rdb")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn redis-server");
+
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        loop {
+            if let Ok(client) = redis::Client::open(self.url.as_str())
+                && let Ok(mut connection) = client.get_connection()
+                && redis::cmd("PING")
+                    .query::<String>(&mut connection)
+                    .map(|pong| pong == "PONG")
+                    .unwrap_or(false)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "redis test server did not become ready at {}",
+                self.url
+            );
+            thread::sleep(StdDuration::from_millis(25));
+        }
+        self.child = Some(child);
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn restart(&mut self) {
+        self.stop();
+        self.start();
+    }
+}
+
+impl Drop for RedisTestServer {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -285,6 +371,9 @@ fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig {
         authority_name: "local-auth".into(),
         connector: BootstrapAuthConnectorConfig::Static,
         authority_key_path: root.join("authority.key"),
+        session_state_path: None,
+        session_state_backend: None,
+        persist_provider_tokens: false,
         issuer_key_id: default_issuer_key_id(),
         project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
         required_release_train_hash: ContentId::new("demo-train"),
@@ -374,6 +463,33 @@ fn sample_auth_config_with_connector(
     let mut config = sample_auth_config(root);
     config.connector = connector;
     config
+}
+
+#[test]
+fn auth_session_state_store_prefers_explicit_redis_backend_config() {
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_path = Some(temp.path().join("file-auth-state.cbor"));
+    config.session_state_backend = Some(BootstrapAuthSessionBackendConfig::Redis {
+        url: "redis://127.0.0.1:6379/0".into(),
+        key_prefix: "burn-p2p:test-auth".into(),
+    });
+
+    let store = auth_session_state_store(&config, &NetworkId::new("secure-demo"));
+    match store {
+        AuthSessionStateStore::Redis {
+            url,
+            state_key,
+            lock_key,
+        } => {
+            assert_eq!(url, "redis://127.0.0.1:6379/0");
+            assert_eq!(state_key, "burn-p2p:test-auth:secure-demo:local-auth:state");
+            assert_eq!(lock_key, "burn-p2p:test-auth:secure-demo:local-auth:lock");
+        }
+        AuthSessionStateStore::File { .. } => {
+            panic!("redis backend config should override file backend path")
+        }
+    }
 }
 
 fn sample_spec() -> BootstrapSpec {
@@ -876,9 +992,11 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
                     token_url: None,
                     client_id: None,
                     client_secret: None,
+                    redirect_uri: None,
                     userinfo_url: Some(userinfo_url),
                     refresh_url: None,
                     revoke_url: None,
+                    jwks_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),
@@ -1012,9 +1130,11 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             token_url: Some(token_url),
             client_id: Some("github-client".into()),
             client_secret: Some("github-secret".into()),
+            redirect_uri: None,
             userinfo_url: Some(userinfo_url),
             refresh_url: None,
             revoke_url: None,
+            jwks_url: None,
         },
     );
     auth_config.principals[0]
@@ -1177,9 +1297,11 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
                     token_url: None,
                     client_id: None,
                     client_secret: None,
+                    redirect_uri: None,
                     userinfo_url: None,
                     refresh_url: Some(refresh_url),
                     revoke_url: Some(revoke_url),
+                    jwks_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),
@@ -1616,7 +1738,6 @@ fn auth_portal_issues_certificates_and_filters_directory_by_session_scope() {
     .expect("build auth portal");
 
     let login = auth
-        .connector
         .begin_login(LoginRequest {
             network_id: NetworkId::new("secure-demo"),
             principal_hint: Some("alice".into()),
@@ -1629,7 +1750,6 @@ fn auth_portal_issues_certificates_and_filters_directory_by_session_scope() {
         })
         .expect("begin login");
     let session = auth
-        .connector
         .complete_login(CallbackPayload {
             login_id: login.login_id,
             state: login.state,
@@ -1637,10 +1757,6 @@ fn auth_portal_issues_certificates_and_filters_directory_by_session_scope() {
             provider_code: None,
         })
         .expect("complete login");
-    auth.sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .insert(session.session_id.clone(), session.clone());
 
     let node_keypair = Keypair::generate_ed25519();
     let peer_id = burn_p2p::PeerId::new(node_keypair.public().to_peer_id().to_string());
@@ -2133,9 +2249,11 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
                     token_url: None,
                     client_id: None,
                     client_secret: None,
+                    redirect_uri: None,
                     userinfo_url: None,
                     refresh_url: None,
                     revoke_url: None,
+                    jwks_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),
@@ -2231,9 +2349,11 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
                     token_url: None,
                     client_id: None,
                     client_secret: None,
+                    redirect_uri: None,
                     userinfo_url: None,
                     refresh_url: None,
                     revoke_url: None,
+                    jwks_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),
@@ -2539,6 +2659,427 @@ fn auth_portal_refreshes_and_logs_out_sessions() {
 }
 
 #[test]
+fn auth_portal_persists_pending_logins_and_sessions_across_restart() {
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_path = Some(temp.path().join("auth-state.cbor"));
+
+    let auth = Arc::new(
+        build_auth_portal(
+            &config,
+            NetworkId::new("secure-demo"),
+            Version::new(0, 1, 0),
+        )
+        .expect("build auth portal"),
+    );
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("persist-auth-state.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: Some(auth),
+        control_handle: None,
+    };
+
+    let login = response_json(&issue_request(
+        context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/login/static",
+            body: Some(serde_json::json!({
+                "network_id": "secure-demo",
+                "principal_hint": "alice",
+                "requested_scopes": ["Connect"],
+            })),
+            headers: &[],
+        },
+    ));
+    assert!(
+        temp.path().join("auth-state.cbor").exists(),
+        "auth state file should be created after begin_login"
+    );
+
+    let restored_auth = Arc::new(
+        build_auth_portal(
+            &config,
+            NetworkId::new("secure-demo"),
+            Version::new(0, 1, 0),
+        )
+        .expect("restore auth portal"),
+    );
+    let restored_context = HttpServerContext {
+        auth_state: Some(restored_auth.clone()),
+        ..context.clone()
+    };
+    let session = response_json(&issue_request(
+        restored_context,
+        IssueRequestSpec {
+            method: "POST",
+            path: "/callback/static",
+            body: Some(serde_json::json!({
+                "login_id": login["login_id"],
+                "state": login["state"],
+                "principal_id": "alice",
+            })),
+            headers: &[],
+        },
+    ));
+    let session_id = ContentId::new(
+        session["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_owned(),
+    );
+
+    let restarted_auth = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("restart auth portal");
+    assert!(
+        restarted_auth
+            .get_session(&session_id)
+            .expect("load persisted session")
+            .is_some()
+    );
+}
+
+#[test]
+fn auth_portal_shares_pending_logins_and_sessions_across_edges() {
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_path = Some(temp.path().join("shared-auth-state.cbor"));
+
+    let edge_a = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build first auth portal");
+    let edge_b = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build second auth portal");
+
+    let login = edge_a
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin shared login");
+    let session = edge_b
+        .complete_login(CallbackPayload {
+            login_id: login.login_id,
+            state: login.state,
+            principal_id: Some(PrincipalId::new("alice")),
+            provider_code: None,
+        })
+        .expect("complete shared login");
+    assert!(
+        edge_a
+            .get_session(&session.session_id)
+            .expect("load session on first edge")
+            .is_some()
+    );
+
+    let refreshed = edge_a
+        .refresh_session(&session.session_id)
+        .expect("refresh shared session");
+    if refreshed.session_id != session.session_id {
+        assert!(
+            edge_b
+                .get_session(&session.session_id)
+                .expect("old session removed on second edge")
+                .is_none()
+        );
+    }
+    assert!(
+        edge_b
+            .get_session(&refreshed.session_id)
+            .expect("refreshed session visible on second edge")
+            .is_some()
+    );
+
+    assert!(
+        edge_b
+            .revoke_session(&refreshed.session_id)
+            .expect("revoke shared session")
+    );
+    assert!(
+        edge_a
+            .get_session(&refreshed.session_id)
+            .expect("revoked session removed on first edge")
+            .is_none()
+    );
+}
+
+#[test]
+fn auth_portal_redis_shares_pending_logins_and_sessions_across_edges() {
+    let redis = RedisTestServer::spawn();
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_backend = Some(BootstrapAuthSessionBackendConfig::Redis {
+        url: redis.url.clone(),
+        key_prefix: "burn-p2p:test-auth".into(),
+    });
+
+    let edge_a = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build first redis-backed auth portal");
+    let edge_b = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build second redis-backed auth portal");
+
+    let login = edge_a
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin redis-backed shared login");
+    let session = edge_b
+        .complete_login(CallbackPayload {
+            login_id: login.login_id,
+            state: login.state,
+            principal_id: Some(PrincipalId::new("alice")),
+            provider_code: None,
+        })
+        .expect("complete redis-backed shared login");
+    assert!(
+        edge_a
+            .get_session(&session.session_id)
+            .expect("load session on first redis-backed edge")
+            .is_some()
+    );
+
+    let edge_c = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build restarted redis-backed auth portal");
+    let refreshed = edge_c
+        .refresh_session(&session.session_id)
+        .expect("refresh redis-backed shared session");
+    if refreshed.session_id != session.session_id {
+        assert!(
+            edge_b
+                .get_session(&session.session_id)
+                .expect("old redis-backed session removed on second edge")
+                .is_none()
+        );
+    }
+    assert!(
+        edge_b
+            .get_session(&refreshed.session_id)
+            .expect("refreshed redis-backed session visible on second edge")
+            .is_some()
+    );
+
+    assert!(
+        edge_a
+            .revoke_session(&refreshed.session_id)
+            .expect("revoke redis-backed shared session")
+    );
+    let edge_d = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build final redis-backed auth portal");
+    assert!(
+        edge_d
+            .get_session(&refreshed.session_id)
+            .expect("revoked redis-backed session removed after restart")
+            .is_none()
+    );
+}
+
+#[test]
+fn auth_portal_redis_preserves_pending_login_across_edge_restart() {
+    let redis = RedisTestServer::spawn();
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_backend = Some(BootstrapAuthSessionBackendConfig::Redis {
+        url: redis.url.clone(),
+        key_prefix: "burn-p2p:test-auth".into(),
+    });
+
+    let login = {
+        let edge = build_auth_portal(
+            &config,
+            NetworkId::new("secure-demo"),
+            Version::new(0, 1, 0),
+        )
+        .expect("build redis-backed auth portal");
+        edge.begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin redis-backed login before restart")
+    };
+
+    let restarted_edge = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build restarted redis-backed auth portal");
+    let session = restarted_edge
+        .complete_login(CallbackPayload {
+            login_id: login.login_id,
+            state: login.state,
+            principal_id: Some(PrincipalId::new("alice")),
+            provider_code: None,
+        })
+        .expect("complete redis-backed login after edge restart");
+    assert!(
+        restarted_edge
+            .get_session(&session.session_id)
+            .expect("load session after edge restart")
+            .is_some()
+    );
+}
+
+#[test]
+fn auth_portal_redis_times_out_when_lock_is_held() {
+    let redis = RedisTestServer::spawn();
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_backend = Some(BootstrapAuthSessionBackendConfig::Redis {
+        url: redis.url.clone(),
+        key_prefix: "burn-p2p:test-auth".into(),
+    });
+
+    let lock_key = match auth_session_state_store(&config, &NetworkId::new("secure-demo")) {
+        AuthSessionStateStore::Redis { lock_key, .. } => lock_key,
+        AuthSessionStateStore::File { .. } => panic!("expected redis session state store"),
+    };
+    let client = redis::Client::open(redis.url.as_str()).expect("redis client");
+    let mut connection = client.get_connection().expect("redis connection");
+    let acquired = redis::cmd("SET")
+        .arg(&lock_key)
+        .arg("held-by-test")
+        .arg("NX")
+        .arg("PX")
+        .arg(10_000)
+        .query::<Option<String>>(&mut connection)
+        .expect("acquire redis test lock");
+    assert!(acquired.is_some(), "expected to acquire redis test lock");
+
+    let edge = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build redis-backed auth portal");
+    let error = edge
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect_err("login should time out while redis lock is held");
+    assert!(
+        error
+            .to_string()
+            .contains("timed out acquiring redis auth session lock"),
+        "unexpected error: {error}",
+    );
+}
+
+#[test]
+fn auth_portal_redis_recovers_after_transient_connection_loss() {
+    let mut redis = RedisTestServer::spawn();
+    let temp = tempdir().expect("temp dir");
+    let mut config = sample_auth_config(temp.path());
+    config.session_state_backend = Some(BootstrapAuthSessionBackendConfig::Redis {
+        url: redis.url.clone(),
+        key_prefix: "burn-p2p:test-auth".into(),
+    });
+
+    let edge = build_auth_portal(
+        &config,
+        NetworkId::new("secure-demo"),
+        Version::new(0, 1, 0),
+    )
+    .expect("build redis-backed auth portal");
+    edge.begin_login(LoginRequest {
+        network_id: NetworkId::new("secure-demo"),
+        principal_hint: Some("alice".into()),
+        requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+    })
+    .expect("begin redis-backed login before redis outage");
+
+    redis.stop();
+    let error = edge
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect_err("login should fail while redis is unavailable");
+    let message = error.to_string();
+    assert!(
+        message.contains("Connection refused")
+            || message.contains("connection refused")
+            || message.contains("Broken pipe")
+            || message.contains("connection reset")
+            || message.contains("No such file or directory"),
+        "unexpected redis outage error: {message}",
+    );
+
+    redis.restart();
+    let login = edge
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("secure-demo"),
+            principal_hint: Some("alice".into()),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin redis-backed login after redis restart");
+    let session = edge
+        .complete_login(CallbackPayload {
+            login_id: login.login_id,
+            state: login.state,
+            principal_id: Some(PrincipalId::new("alice")),
+            provider_code: None,
+        })
+        .expect("complete redis-backed login after redis restart");
+    assert!(
+        edge.get_session(&session.session_id)
+            .expect("load redis-backed session after redis restart")
+            .is_some()
+    );
+}
+
+#[test]
 fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
     let temp = tempdir().expect("temp dir");
     let auth = Arc::new(
@@ -2574,7 +3115,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
         control_handle: None,
     };
     let login = auth
-        .connector
         .begin_login(LoginRequest {
             network_id: NetworkId::new("secure-demo"),
             principal_hint: Some("alice".into()),
@@ -2582,7 +3122,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
         })
         .expect("begin login");
     let session = auth
-        .connector
         .complete_login(CallbackPayload {
             login_id: login.login_id,
             state: login.state,
@@ -2590,10 +3129,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
             provider_code: None,
         })
         .expect("complete login");
-    auth.sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .insert(session.session_id.clone(), session.clone());
 
     let session_header = session.session_id.as_str().to_owned();
     let allowed = issue_request(
@@ -2645,7 +3180,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
         control_handle: None,
     };
     let login = auth
-        .connector
         .begin_login(LoginRequest {
             network_id: NetworkId::new("secure-demo"),
             principal_hint: Some("alice".into()),
@@ -2653,7 +3187,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
         })
         .expect("begin login");
     let session = auth
-        .connector
         .complete_login(CallbackPayload {
             login_id: login.login_id,
             state: login.state,
@@ -2661,10 +3194,6 @@ fn admin_route_accepts_operator_session_and_rejects_unprivileged_session() {
             provider_code: None,
         })
         .expect("complete login");
-    auth.sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .insert(session.session_id.clone(), session.clone());
 
     let denied = issue_request(
         context,
@@ -2793,7 +3322,6 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
     let state = Arc::new(Mutex::new(BootstrapAdminState::default()));
 
     let login = auth
-        .connector
         .begin_login(LoginRequest {
             network_id: NetworkId::new("secure-demo"),
             principal_hint: Some("alice".into()),
@@ -2806,7 +3334,6 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
         })
         .expect("begin login");
     let session = auth
-        .connector
         .complete_login(CallbackPayload {
             login_id: login.login_id,
             state: login.state,
@@ -2814,10 +3341,6 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
             provider_code: None,
         })
         .expect("complete login");
-    auth.sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .insert(session.session_id.clone(), session.clone());
 
     let node_keypair = Keypair::generate_ed25519();
     let peer_id = burn_p2p::PeerId::new(node_keypair.public().to_peer_id().to_string());
@@ -2971,7 +3494,7 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
         trust_bundle
             .reenrollment
             .as_ref()
-            .is_some_and(|status| !status.legacy_issuer_peer_ids.is_empty())
+            .is_some_and(|status| !status.retired_issuer_peer_ids.is_empty())
     );
 
     let second_cert = auth
@@ -4397,20 +4920,12 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
                 .await
                 .expect("request download ticket");
 
-            let response = reqwest::Client::new()
-                .get(client.artifact_download_url(&ticket.ticket.download_ticket_id))
-                .send()
+            let body = client
+                .download_artifact_bytes(&ticket.ticket.download_ticket_id)
                 .await
-                .expect("artifact download request")
-                .error_for_status()
-                .expect("artifact download status");
-            assert_eq!(
-                response.content_length(),
-                Some(artifact_payload.len() as u64)
-            );
-            let body = response.bytes().await.expect("artifact proxy bytes");
+                .expect("artifact proxy bytes");
             assert_eq!(body.len(), artifact_payload.len());
-            assert_eq!(body.as_ref(), artifact_payload.as_slice());
+            assert_eq!(body.as_slice(), artifact_payload.as_slice());
         });
 
     handle.join().expect("join s3 test server");

@@ -479,7 +479,7 @@ pub(crate) fn build_head_eval_report(
             eval_protocol_id,
             evaluator_set_id,
             metric_values: evaluation.metrics.clone(),
-            sample_count: evaluation.metrics.len().max(1) as u64,
+            sample_count: evaluation_sample_count(evaluation),
             dataset_view_id: context.dataset_view_id,
             started_at,
             finished_at,
@@ -523,6 +523,17 @@ fn numeric_metric(metrics: &BTreeMap<String, MetricValue>, key: &str) -> Option<
         Some(MetricValue::Float(value)) => Some(*value),
         Some(MetricValue::Bool(_)) | Some(MetricValue::Text(_)) | None => None,
     }
+}
+
+fn evaluation_sample_count(evaluation: &MetricReport) -> u64 {
+    for key in ["evaluation_items", "sample_count", "samples"] {
+        match evaluation.metrics.get(key) {
+            Some(MetricValue::Integer(value)) if *value > 0 => return *value as u64,
+            Some(MetricValue::Float(value)) if *value > 0.0 => return value.round() as u64,
+            _ => {}
+        }
+    }
+    evaluation.metrics.len().max(1) as u64
 }
 
 fn sample_count_from_updates(updates: &[UpdateAnnounce]) -> u64 {

@@ -369,6 +369,9 @@ pub struct PeerDirectoryAnnouncement {
     pub peer_id: PeerId,
     /// The listen addresses currently advertised for that peer.
     pub addresses: Vec<SwarmAddress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The roles currently advertised for that peer.
+    pub advertised_roles: Option<PeerRoleSet>,
     /// The announced at.
     pub announced_at: DateTime<Utc>,
 }
@@ -423,6 +426,17 @@ impl ControlPlaneSnapshot {
         cap_metrics_announcements(&mut self.metrics_announcements);
     }
 
+    /// Trims bounded control-plane announcement histories kept in memory.
+    pub fn clamp_announcement_histories(&mut self) {
+        cap_directory_announcements(&mut self.directory_announcements);
+        cap_peer_directory_announcements(&mut self.peer_directory_announcements);
+        cap_aggregate_proposal_announcements(&mut self.aggregate_proposal_announcements);
+        cap_reduction_certificate_announcements(&mut self.reduction_certificate_announcements);
+        cap_validation_quorum_announcements(&mut self.validation_quorum_announcements);
+        cap_merge_announcements(&mut self.merge_announcements);
+        self.clamp_metrics_announcements();
+    }
+
     pub(crate) fn insert_control_announcement(&mut self, announcement: ControlAnnouncement) {
         push_unique(&mut self.control_announcements, announcement);
     }
@@ -469,13 +483,28 @@ impl ControlPlaneSnapshot {
         announcement: ExperimentDirectoryAnnouncement,
     ) {
         push_unique(&mut self.directory_announcements, announcement);
+        cap_directory_announcements(&mut self.directory_announcements);
     }
 
     pub(crate) fn insert_peer_directory_announcement(
         &mut self,
-        announcement: PeerDirectoryAnnouncement,
+        mut announcement: PeerDirectoryAnnouncement,
     ) {
-        push_unique(&mut self.peer_directory_announcements, announcement);
+        canonicalize_peer_directory_announcement(&mut announcement);
+        match self
+            .peer_directory_announcements
+            .iter()
+            .position(|existing| {
+                existing.network_id == announcement.network_id
+                    && existing.peer_id == announcement.peer_id
+            }) {
+            Some(position) => coalesce_peer_directory_announcements(
+                &mut self.peer_directory_announcements[position],
+                announcement,
+            ),
+            None => self.peer_directory_announcements.push(announcement),
+        }
+        cap_peer_directory_announcements(&mut self.peer_directory_announcements);
     }
 
     pub(crate) fn insert_metrics_announcement(&mut self, announcement: MetricsAnnouncement) {
@@ -542,7 +571,7 @@ impl ControlPlaneSnapshot {
         for announcement in &remote.metrics_announcements {
             self.insert_metrics_announcement(announcement.clone());
         }
-        self.clamp_metrics_announcements();
+        self.clamp_announcement_histories();
     }
 }
 
@@ -640,9 +669,20 @@ pub struct PubsubEnvelope {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeControlPlaneBehaviour {
     pub(crate) request_response:
-        request_response::json::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
+        request_response::cbor::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
     pub(crate) gossipsub: gossipsub::Behaviour,
     pub(crate) identify: identify::Behaviour,
+    pub(crate) kademlia:
+        libp2p::swarm::behaviour::toggle::Toggle<kad::Behaviour<kad::store::MemoryStore>>,
+    pub(crate) rendezvous_client:
+        libp2p::swarm::behaviour::toggle::Toggle<rendezvous::client::Behaviour>,
+    pub(crate) rendezvous_server:
+        libp2p::swarm::behaviour::toggle::Toggle<rendezvous::server::Behaviour>,
+    pub(crate) relay_client: relay::client::Behaviour,
+    pub(crate) relay_server: libp2p::swarm::behaviour::toggle::Toggle<relay::Behaviour>,
+    pub(crate) dcutr: libp2p::swarm::behaviour::toggle::Toggle<dcutr::Behaviour>,
+    pub(crate) autonat: libp2p::swarm::behaviour::toggle::Toggle<autonat::Behaviour>,
+    pub(crate) ping: ping::Behaviour,
     pub(crate) connection_limits: connection_limits::Behaviour,
     pub(crate) mdns: libp2p::swarm::behaviour::toggle::Toggle<mdns::tokio::Behaviour>,
 }
@@ -652,6 +692,14 @@ pub(crate) enum NativeControlPlaneBehaviourEvent {
     RequestResponse(Box<request_response::Event<ControlPlaneRequest, ControlPlaneResponse>>),
     Gossipsub(Box<gossipsub::Event>),
     Identify(Box<identify::Event>),
+    Kademlia(Box<kad::Event>),
+    RendezvousClient(Box<rendezvous::client::Event>),
+    RendezvousServer(Box<rendezvous::server::Event>),
+    RelayClient(Box<relay::client::Event>),
+    RelayServer(Box<relay::Event>),
+    Dcutr(Box<dcutr::Event>),
+    Autonat(Box<autonat::Event>),
+    Ping(Box<ping::Event>),
     Mdns(mdns::Event),
 }
 
@@ -683,6 +731,62 @@ impl From<identify::Event> for NativeControlPlaneBehaviourEvent {
     /// Performs the from operation.
     fn from(value: identify::Event) -> Self {
         Self::Identify(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<kad::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: kad::Event) -> Self {
+        Self::Kademlia(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<rendezvous::client::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: rendezvous::client::Event) -> Self {
+        Self::RendezvousClient(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<rendezvous::server::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: rendezvous::server::Event) -> Self {
+        Self::RendezvousServer(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<relay::client::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: relay::client::Event) -> Self {
+        Self::RelayClient(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<relay::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: relay::Event) -> Self {
+        Self::RelayServer(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<dcutr::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: dcutr::Event) -> Self {
+        Self::Dcutr(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<autonat::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: autonat::Event) -> Self {
+        Self::Autonat(Box::new(value))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<ping::Event> for NativeControlPlaneBehaviourEvent {
+    fn from(value: ping::Event) -> Self {
+        Self::Ping(Box::new(value))
     }
 }
 
@@ -742,6 +846,8 @@ pub(crate) fn cap_tail<T>(values: &mut Vec<T>, max_len: usize) {
 }
 
 const MAX_METRICS_ANNOUNCEMENTS: usize = 64;
+const MAX_DIRECTORY_ANNOUNCEMENTS: usize = 16;
+const MAX_PEER_DIRECTORY_ANNOUNCEMENTS: usize = 256;
 const MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS: usize = 256;
 const MAX_REDUCTION_CERTIFICATE_ANNOUNCEMENTS: usize = 256;
 const MAX_VALIDATION_QUORUM_ANNOUNCEMENTS: usize = 128;
@@ -755,6 +861,23 @@ pub(crate) fn cap_metrics_announcements(values: &mut Vec<MetricsAnnouncement>) {
 fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
     values.sort();
     values.dedup();
+}
+
+fn merge_peer_role_sets(existing: &mut Option<PeerRoleSet>, incoming: Option<PeerRoleSet>) {
+    match (existing.as_mut(), incoming) {
+        (Some(existing), Some(incoming)) => existing.roles.extend(incoming.roles),
+        (None, Some(incoming)) => *existing = Some(incoming),
+        _ => {}
+    }
+}
+
+fn canonicalize_peer_directory_announcement(announcement: &mut PeerDirectoryAnnouncement) {
+    announcement.addresses.sort_by(|left, right| {
+        left.is_relay_circuit()
+            .cmp(&right.is_relay_circuit())
+            .then_with(|| left.cmp(right))
+    });
+    announcement.addresses.dedup();
 }
 
 fn canonicalize_aggregate_proposal_announcement(announcement: &mut AggregateProposalAnnouncement) {
@@ -776,6 +899,17 @@ fn canonicalize_validation_quorum_announcement(announcement: &mut ValidationQuor
 
 fn canonicalize_merge_announcement(announcement: &mut MergeAnnouncement) {
     sort_and_dedup(&mut announcement.certificate.contribution_receipts);
+}
+
+fn coalesce_peer_directory_announcements(
+    existing: &mut PeerDirectoryAnnouncement,
+    mut incoming: PeerDirectoryAnnouncement,
+) {
+    canonicalize_peer_directory_announcement(&mut incoming);
+    existing.announced_at = existing.announced_at.max(incoming.announced_at);
+    existing.addresses.extend(incoming.addresses);
+    merge_peer_role_sets(&mut existing.advertised_roles, incoming.advertised_roles);
+    canonicalize_peer_directory_announcement(existing);
 }
 
 fn aggregate_proposal_announcement_key(
@@ -931,6 +1065,34 @@ fn merge_announcement_semantic_fingerprint(announcement: &MergeAnnouncement) -> 
     )
 }
 
+fn peer_directory_semantic_fingerprint(announcement: &PeerDirectoryAnnouncement) -> String {
+    let mut addresses = announcement.addresses.clone();
+    sort_and_dedup(&mut addresses);
+    let roles = announcement
+        .advertised_roles
+        .as_ref()
+        .map(|roles| {
+            roles
+                .roles
+                .iter()
+                .map(|role| format!("{role:?}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    format!(
+        "{}|{}|{}|{}",
+        announcement.network_id,
+        announcement.peer_id,
+        addresses
+            .iter()
+            .map(|address| address.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        roles,
+    )
+}
+
 fn hash_message_id(bytes: &[u8]) -> String {
     ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(bytes)).to_string()
 }
@@ -949,6 +1111,9 @@ pub(crate) fn pubsub_semantic_message_id(bytes: &[u8]) -> String {
             }
             PubsubPayload::Merge(announcement) => {
                 merge_announcement_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::PeerDirectory(announcement) => {
+                peer_directory_semantic_fingerprint(announcement).into_bytes()
             }
             _ => burn_p2p_core::deterministic_cbor(&envelope.payload)
                 .unwrap_or_else(|_| serde_json::to_vec(&envelope.payload).unwrap_or_default()),
@@ -1046,6 +1211,23 @@ fn cap_aggregate_proposal_announcements(values: &mut Vec<AggregateProposalAnnoun
             .then(left.announced_at.cmp(&right.announced_at))
     });
     cap_tail(values, MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS);
+}
+
+fn cap_directory_announcements(values: &mut Vec<ExperimentDirectoryAnnouncement>) {
+    values.sort_by_key(|announcement| announcement.announced_at);
+    cap_tail(values, MAX_DIRECTORY_ANNOUNCEMENTS);
+}
+
+fn cap_peer_directory_announcements(values: &mut Vec<PeerDirectoryAnnouncement>) {
+    for announcement in values.iter_mut() {
+        canonicalize_peer_directory_announcement(announcement);
+    }
+    values.sort_by(|left, right| {
+        left.announced_at
+            .cmp(&right.announced_at)
+            .then(left.peer_id.cmp(&right.peer_id))
+    });
+    cap_tail(values, MAX_PEER_DIRECTORY_ANNOUNCEMENTS);
 }
 
 fn cap_reduction_certificate_announcements(values: &mut Vec<ReductionCertificateAnnouncement>) {
@@ -1352,6 +1534,16 @@ pub enum LiveControlPlaneEvent {
         /// The address.
         address: SwarmAddress,
     },
+    /// Uses the reachable address confirmed variant.
+    ReachableAddressConfirmed {
+        /// The address.
+        address: SwarmAddress,
+    },
+    /// Uses the reachable address expired variant.
+    ReachableAddressExpired {
+        /// The address.
+        address: SwarmAddress,
+    },
     /// Uses the connection established variant.
     ConnectionEstablished {
         /// The peer ID.
@@ -1439,6 +1631,11 @@ pub enum LiveControlPlaneEvent {
         /// The peers.
         peers: Vec<(String, SwarmAddress)>,
     },
+    /// Uses the peer-directory record received variant.
+    PeerDirectoryRecordReceived {
+        /// The announcement recovered from the DHT.
+        announcement: PeerDirectoryAnnouncement,
+    },
     /// Uses the peer identified variant.
     PeerIdentified {
         /// The peer ID.
@@ -1447,6 +1644,23 @@ pub enum LiveControlPlaneEvent {
         listen_addresses: Vec<SwarmAddress>,
         /// The protocols.
         protocols: Vec<String>,
+    },
+    /// Uses the relay reservation accepted variant.
+    RelayReservationAccepted {
+        /// The relay peer ID.
+        relay_peer_id: String,
+    },
+    /// Uses the direct connection upgrade succeeded variant.
+    DirectConnectionUpgradeSucceeded {
+        /// The peer ID.
+        peer_id: String,
+    },
+    /// Uses the direct connection upgrade failed variant.
+    DirectConnectionUpgradeFailed {
+        /// The peer ID.
+        peer_id: String,
+        /// The message.
+        message: String,
     },
     /// Uses the request failure variant.
     RequestFailure {

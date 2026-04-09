@@ -20,6 +20,9 @@ pub use static_connector::{StaticIdentityConnector, StaticPrincipalRecord};
 #[derive(Debug, thiserror::Error)]
 /// Enumerates the supported auth error values.
 pub enum AuthError {
+    #[error("entropy unavailable: {0}")]
+    /// Uses the entropy variant.
+    Entropy(String),
     #[error("schema error: {0}")]
     /// Uses the schema variant.
     Schema(#[from] burn_p2p_core::SchemaError),
@@ -187,6 +190,23 @@ pub trait IdentityConnector {
     fn revoke(&self, _session: &PrincipalSession) -> Result<(), AuthError> {
         Ok(())
     }
+    /// Exports durable connector-owned auth state such as pending logins or
+    /// provider refresh material.
+    fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, AuthError> {
+        Ok(None)
+    }
+    /// Restores previously exported durable connector-owned auth state.
+    fn import_persistent_state(&self, _state: Option<&[u8]>) -> Result<(), AuthError> {
+        Ok(())
+    }
+}
+
+/// Creates a cryptographically random login-state token suitable for CSRF
+/// binding and transient auth-flow correlation.
+pub fn random_login_state_token(label: &str) -> Result<String, AuthError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| AuthError::Entropy(format!("{label}: {error}")))?;
+    Ok(hex::encode(bytes))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -712,6 +732,29 @@ mod tests {
             .expect("session");
 
         assert_eq!(session.claims.display_name, "Alice");
+    }
+
+    #[test]
+    fn static_identity_connector_uses_random_login_state_tokens() {
+        let connector = static_connector();
+        let first = connector
+            .begin_login(LoginRequest {
+                network_id: NetworkId::new("network-a"),
+                principal_hint: Some("alice".into()),
+                requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+            })
+            .expect("first login");
+        let second = connector
+            .begin_login(LoginRequest {
+                network_id: NetworkId::new("network-a"),
+                principal_hint: Some("alice".into()),
+                requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+            })
+            .expect("second login");
+
+        assert_ne!(first.state, second.state);
+        assert_eq!(first.state.len(), 64);
+        assert!(first.state.chars().all(|ch| ch.is_ascii_hexdigit()));
     }
 
     #[test]

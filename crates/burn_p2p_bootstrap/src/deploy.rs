@@ -14,6 +14,8 @@ pub enum BootstrapPreset {
     BootstrapOnly,
     /// Uses the bootstrap archive variant.
     BootstrapArchive,
+    /// Uses the reducer only variant.
+    ReducerOnly,
     /// Uses the authority validator variant.
     AuthorityValidator,
     /// Uses the all in one variant.
@@ -32,6 +34,11 @@ impl BootstrapPreset {
             Self::BootstrapArchive => BTreeSet::from([
                 BootstrapService::CoherenceSeed,
                 BootstrapService::Archive,
+                BootstrapService::AdminApi,
+                BootstrapService::TelemetryExport,
+            ]),
+            Self::ReducerOnly => BTreeSet::from([
+                BootstrapService::Reducer,
                 BootstrapService::AdminApi,
                 BootstrapService::TelemetryExport,
             ]),
@@ -63,6 +70,7 @@ impl BootstrapPreset {
                 PeerRole::Archive,
                 PeerRole::RelayHelper,
             ]),
+            Self::ReducerOnly => PeerRoleSet::new([PeerRole::Reducer]),
             Self::AuthorityValidator => {
                 PeerRoleSet::new([PeerRole::Authority, PeerRole::Validator])
             }
@@ -83,10 +91,13 @@ pub enum BootstrapService {
     /// Uses the coherence seed variant.
     ///
     /// This is a cheap swarm/control-plane seed that helps peers discover one another
-    /// and recover mesh connectivity. It is not a libp2p relay/rendezvous/kademlia node.
+    /// and recover mesh connectivity. It serves relay reservations, rendezvous registrations,
+    /// and network-scoped Kademlia discovery for native peers.
     CoherenceSeed,
     /// Uses the authority variant.
     Authority,
+    /// Uses the reducer variant.
+    Reducer,
     /// Uses the validator variant.
     Validator,
     /// Uses the archive variant.

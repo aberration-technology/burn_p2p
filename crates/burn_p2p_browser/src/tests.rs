@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::{
     io::{Read, Write},
     net::TcpListener,
+    sync::{Arc, Mutex},
     thread,
     time::Duration as StdDuration,
 };
@@ -16,14 +17,16 @@ use burn_p2p::{
     StudyId, WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
-    BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
-    BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
-    BrowserLoginProvider, BrowserTransportSurface, LeaseId, MetricsLiveEvent, MetricsLiveEventKind,
-    MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics, ReenrollmentStatus,
-    RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
-    TrustBundleExport,
+    ArtifactProfile, BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BrowserEdgeSnapshot, BrowserLeaderboardEntry, BrowserLeaderboardIdentity,
+    BrowserLeaderboardSnapshot, BrowserLoginProvider, BrowserTransportSurface,
+    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, LeaseId, MetricsLiveEvent,
+    MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics,
+    PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus,
+    ReenrollmentStatus, RevocationEpoch, RunId, SchemaEnvelope, SignatureAlgorithm,
+    SignatureMetadata, SignedPayload, TrustBundleExport,
 };
-use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot};
+use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
 use chrono::Utc;
 use semver::Version;
 
@@ -55,8 +58,8 @@ fn browser_runtime_defaults_to_observer_safe_policy() {
     assert_eq!(
         config.transport.preferred,
         vec![
-            BrowserTransportKind::WebTransport,
             BrowserTransportKind::WebRtcDirect,
+            BrowserTransportKind::WebTransport,
             BrowserTransportKind::WssFallback,
         ]
     );
@@ -141,8 +144,8 @@ fn browser_transport_policy_tracks_swarm_browser_transport_order() {
     assert_eq!(
         policy.preferred,
         vec![
-            BrowserTransportKind::WebTransport,
             BrowserTransportKind::WebRtcDirect,
+            BrowserTransportKind::WebTransport,
             BrowserTransportKind::WssFallback,
         ]
     );
@@ -178,6 +181,7 @@ fn browser_storage_bounds_and_dedupes_metrics_catchup_bundles() {
                 peer_window_metrics: Vec::new(),
                 reducer_cohort_metrics: Vec::new(),
                 derived_metrics: Vec::new(),
+                performance_summary: None,
             },
             ledger_segments: Vec::new(),
             generated_at: now + chrono::Duration::seconds(index as i64),
@@ -205,6 +209,7 @@ fn browser_storage_bounds_and_dedupes_metrics_catchup_bundles() {
                 peer_window_metrics: Vec::new(),
                 reducer_cohort_metrics: Vec::new(),
                 derived_metrics: Vec::new(),
+                performance_summary: None,
             },
             ledger_segments: Vec::new(),
             generated_at: now + chrono::Duration::seconds(99),
@@ -716,7 +721,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     );
     let transport = BrowserTransportStatus {
         active: None,
-        webrtc_direct_enabled: false,
+        webrtc_direct_enabled: true,
         webtransport_enabled: true,
         wss_fallback_enabled: true,
         last_error: None,
@@ -754,7 +759,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     );
     assert_eq!(
         runtime.transport.active,
-        Some(BrowserTransportKind::WebTransport)
+        Some(BrowserTransportKind::WebRtcDirect)
     );
     assert_eq!(
         runtime.storage.active_assignment,
@@ -800,7 +805,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     );
     assert_eq!(
         runtime.transport.active,
-        Some(BrowserTransportKind::WebTransport)
+        Some(BrowserTransportKind::WebRtcDirect)
     );
     assert_eq!(
         runtime
@@ -1732,7 +1737,7 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
     runtime.refresh_transport_selection();
     assert_eq!(
         runtime.transport.active,
-        Some(BrowserTransportKind::WebTransport)
+        Some(BrowserTransportKind::WebRtcDirect)
     );
 
     runtime.suspend();
@@ -1753,7 +1758,7 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
     );
     assert_eq!(
         runtime.transport.active,
-        Some(BrowserTransportKind::WebTransport)
+        Some(BrowserTransportKind::WebRtcDirect)
     );
 }
 
@@ -2024,7 +2029,7 @@ fn session_and_storage_snapshots_capture_enrollment_and_signed_state() {
             reenrollment: Some(ReenrollmentStatus {
                 reason: "rotate".into(),
                 rotated_at: None,
-                legacy_issuer_peer_ids: BTreeSet::new(),
+                retired_issuer_peer_ids: BTreeSet::new(),
                 login_path: "/login/static".into(),
                 enroll_path: "/enroll".into(),
                 trust_bundle_path: "/trust".into(),
@@ -2131,6 +2136,7 @@ fn session_and_storage_snapshots_capture_enrollment_and_signed_state() {
             peer_window_metrics: Vec::new(),
             reducer_cohort_metrics: Vec::new(),
             derived_metrics: Vec::new(),
+            performance_summary: None,
         },
         ledger_segments: Vec::new(),
         generated_at: Utc::now(),
@@ -2353,6 +2359,131 @@ fn spawn_metrics_latest_poll_server(
             stream.write_all(&body).expect("write latest body");
             stream.flush().expect("flush latest response");
         }
+    });
+
+    (base_url, handle)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_ok_json_response<T: serde::Serialize>(value: &T) -> Vec<u8> {
+    let body = serde_json::to_vec(value).expect("serialize test json response");
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend(body);
+    response
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_ok_bytes_response(body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_artifact_sync_server(
+    head_view: burn_p2p_publish::HeadArtifactView,
+    download_ticket: burn_p2p_publish::DownloadTicketResponse,
+    artifact_bytes: Vec<u8>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind artifact listener");
+    let base_url = format!(
+        "http://{}",
+        listener.local_addr().expect("artifact listener addr")
+    );
+    let handle = thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().expect("accept artifact request");
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(1)))
+                .expect("set artifact read timeout");
+            stream
+                .set_write_timeout(Some(StdDuration::from_secs(1)))
+                .expect("set artifact write timeout");
+
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = stream.read(&mut chunk).expect("read artifact request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request = String::from_utf8_lossy(&request);
+            let first_line = request.lines().next().unwrap_or_default().to_owned();
+            let response = if first_line.starts_with("GET /artifacts/heads/head-browser ") {
+                http_ok_json_response(&head_view)
+            } else if first_line.starts_with("POST /artifacts/download-ticket ") {
+                http_ok_json_response(&download_ticket)
+            } else if first_line.starts_with("GET /artifacts/download/ticket-browser ") {
+                http_ok_bytes_response(&artifact_bytes)
+            } else {
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+            };
+            stream
+                .write_all(&response)
+                .expect("write artifact response");
+            stream.flush().expect("flush artifact response");
+        }
+    });
+
+    (base_url, handle)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_head_artifact_view_server(
+    head_view: burn_p2p_publish::HeadArtifactView,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind head artifact listener");
+    let base_url = format!(
+        "http://{}",
+        listener.local_addr().expect("head artifact listener addr")
+    );
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept head artifact request");
+        stream
+            .set_read_timeout(Some(StdDuration::from_secs(1)))
+            .expect("set head artifact read timeout");
+        stream
+            .set_write_timeout(Some(StdDuration::from_secs(1)))
+            .expect("set head artifact write timeout");
+
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let read = stream.read(&mut chunk).expect("read head artifact request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request = String::from_utf8_lossy(&request);
+        let first_line = request.lines().next().unwrap_or_default().to_owned();
+        let response = if first_line.starts_with("GET /artifacts/heads/head-browser ") {
+            http_ok_json_response(&head_view)
+        } else {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+        };
+        stream
+            .write_all(&response)
+            .expect("write head artifact response");
+        stream.flush().expect("flush head artifact response");
     });
 
     (base_url, handle)
@@ -2737,6 +2868,36 @@ fn browser_app_model_projects_trainer_focused_client_view() {
             cursors: Vec::new(),
             generated_at: Utc::now(),
         });
+    let peer_window_metrics = vec![PeerWindowMetrics {
+        network_id: NetworkId::new("net-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        workload_id: WorkloadId::new("wgpu-demo"),
+        dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+        peer_id: PeerId::new("peer-browser"),
+        principal_id: Some(PrincipalId::new("principal-browser")),
+        lease_id: LeaseId::new("lease-browser"),
+        base_head_id: HeadId::new("head-browser"),
+        window_started_at: Utc::now() - chrono::Duration::seconds(10),
+        window_finished_at: Utc::now(),
+        attempted_tokens_or_samples: 200,
+        accepted_tokens_or_samples: Some(180),
+        local_train_loss_mean: Some(0.30),
+        local_train_loss_last: Some(0.30),
+        grad_or_delta_norm: Some(1.2),
+        optimizer_step_count: 10,
+        compute_time_ms: 10_000,
+        data_fetch_time_ms: 600,
+        publish_latency_ms: 250,
+        head_lag_at_start: 1,
+        head_lag_at_finish: 0,
+        backend_class: BackendClass::BrowserWgpu,
+        role: PeerRole::BrowserTrainerWgpu,
+        status: burn_p2p::PeerWindowStatus::Completed,
+        status_reason: None,
+    }];
+    let performance_summary =
+        derive_network_performance_summary(&peer_window_metrics, &Vec::new(), &Vec::new());
     runtime
         .storage
         .remember_metrics_catchup(vec![MetricsCatchupBundle {
@@ -2759,36 +2920,10 @@ fn browser_app_model_projects_trainer_focused_client_view() {
                     signatures: Vec::new(),
                 },
                 head_eval_reports: Vec::new(),
-                peer_window_metrics: vec![PeerWindowMetrics {
-                    network_id: NetworkId::new("net-browser"),
-                    experiment_id: ExperimentId::new("exp-browser"),
-                    revision_id: RevisionId::new("rev-browser"),
-                    workload_id: WorkloadId::new("wgpu-demo"),
-                    dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
-                    peer_id: PeerId::new("peer-browser"),
-                    principal_id: Some(PrincipalId::new("principal-browser")),
-                    lease_id: LeaseId::new("lease-browser"),
-                    base_head_id: HeadId::new("head-browser"),
-                    window_started_at: Utc::now() - chrono::Duration::seconds(10),
-                    window_finished_at: Utc::now(),
-                    attempted_tokens_or_samples: 200,
-                    accepted_tokens_or_samples: Some(180),
-                    local_train_loss_mean: Some(0.30),
-                    local_train_loss_last: Some(0.30),
-                    grad_or_delta_norm: Some(1.2),
-                    optimizer_step_count: 10,
-                    compute_time_ms: 10_000,
-                    data_fetch_time_ms: 600,
-                    publish_latency_ms: 250,
-                    head_lag_at_start: 1,
-                    head_lag_at_finish: 0,
-                    backend_class: BackendClass::BrowserWgpu,
-                    role: PeerRole::BrowserTrainerWgpu,
-                    status: burn_p2p::PeerWindowStatus::Completed,
-                    status_reason: None,
-                }],
+                peer_window_metrics,
                 reducer_cohort_metrics: Vec::new(),
                 derived_metrics: Vec::new(),
+                performance_summary,
             },
             ledger_segments: Vec::new(),
             generated_at: Utc::now(),
@@ -2844,6 +2979,20 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     );
     assert_eq!(view.network.transport, "webtransport");
     assert!(view.network.metrics_live_ready);
+    assert_eq!(
+        view.network
+            .performance
+            .as_ref()
+            .map(|performance| performance.training_throughput.as_str()),
+        Some("17.6 work/s")
+    );
+    assert_eq!(
+        view.network
+            .performance
+            .as_ref()
+            .map(|performance| performance.idle_time.as_str()),
+        Some("0 ms")
+    );
     assert!(!view.viewer.experiments_preview.is_empty());
     assert!(!view.viewer.leaderboard_preview.is_empty());
 }
@@ -3077,6 +3226,258 @@ fn browser_portal_client_pumps_metrics_events_into_worker_without_duplicate_repl
             .expect("latest head")
             .as_str(),
         "head-browser-5"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_syncs_active_head_artifact_into_worker_cache_once() {
+    let published = PublishedArtifactRecord {
+        published_artifact_id: PublishedArtifactId::new("published-browser"),
+        artifact_alias_id: None,
+        experiment_id: ExperimentId::new("exp-browser"),
+        run_id: Some(RunId::new("run-browser")),
+        head_id: HeadId::new("head-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        object_key: "browser/head-browser.snapshot".into(),
+        content_hash: ContentId::new("content-browser"),
+        content_length: 4,
+        created_at: Utc::now(),
+        expires_at: None,
+        status: PublishedArtifactStatus::Ready,
+    };
+    let head_view = burn_p2p_publish::HeadArtifactView {
+        head: burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        },
+        run_id: RunId::new("run-browser"),
+        eval_reports: Vec::new(),
+        aliases: Vec::new(),
+        published_artifacts: vec![published.clone()],
+        available_profiles: BTreeSet::from([
+            ArtifactProfile::BrowserSnapshot,
+            ArtifactProfile::ManifestOnly,
+        ]),
+        alias_history: Vec::new(),
+        provider_peer_ids: Vec::new(),
+    };
+    let download_ticket = burn_p2p_publish::DownloadTicketResponse {
+        ticket: DownloadTicket {
+            download_ticket_id: DownloadTicketId::new("ticket-browser"),
+            published_artifact_id: published.published_artifact_id.clone(),
+            principal_id: PrincipalId::new("principal-browser"),
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            delivery_mode: DownloadDeliveryMode::EdgeStream,
+        },
+        published_artifact: published,
+        download_path: "/artifacts/download/ticket-browser".into(),
+    };
+    let (base_url, handle) =
+        spawn_artifact_sync_server(head_view, download_ticket, b"demo".to_vec());
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(base_url),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    let session = sample_browser_session_state("principal-browser");
+
+    let (first_events, second_events) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            let first = client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("first active head artifact sync");
+            let second = client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("second active head artifact sync");
+            (first, second)
+        });
+
+    handle.join().expect("join artifact thread");
+    assert!(first_events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::StorageUpdated(storage)
+            if storage
+                .cached_chunk_artifacts
+                .contains(&ArtifactId::new("artifact-browser"))
+                && storage.last_head_artifact_transport.as_deref()
+                    == Some("edge-download-ticket")
+    )));
+    assert!(second_events.is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider_peers_exist() {
+    #[derive(Clone)]
+    struct StaticPeerArtifactFetcher {
+        requests: Arc<Mutex<Vec<BrowserPeerArtifactRequest>>>,
+    }
+
+    impl BrowserPeerArtifactFetcher for StaticPeerArtifactFetcher {
+        fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+            self.requests
+                .lock()
+                .expect("peer artifact requests should not be poisoned")
+                .push(request);
+            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+        }
+    }
+
+    let published = PublishedArtifactRecord {
+        published_artifact_id: PublishedArtifactId::new("published-browser"),
+        artifact_alias_id: None,
+        experiment_id: ExperimentId::new("exp-browser"),
+        run_id: Some(RunId::new("run-browser")),
+        head_id: HeadId::new("head-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        object_key: "browser/head-browser.snapshot".into(),
+        content_hash: ContentId::new("content-browser"),
+        content_length: 4,
+        created_at: Utc::now(),
+        expires_at: None,
+        status: PublishedArtifactStatus::Ready,
+    };
+    let head_view = burn_p2p_publish::HeadArtifactView {
+        head: burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        },
+        run_id: RunId::new("run-browser"),
+        eval_reports: Vec::new(),
+        aliases: Vec::new(),
+        published_artifacts: vec![published],
+        available_profiles: BTreeSet::from([ArtifactProfile::BrowserSnapshot]),
+        alias_history: Vec::new(),
+        provider_peer_ids: vec![PeerId::new("peer-browser-provider")],
+    };
+    let (base_url, handle) = spawn_head_artifact_view_server(head_view);
+    let requests = Arc::new(Mutex::new(Vec::<BrowserPeerArtifactRequest>::new()));
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(base_url),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_peer_artifact_fetcher(StaticPeerArtifactFetcher {
+        requests: Arc::clone(&requests),
+    });
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    let session = sample_browser_session_state("principal-browser");
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("peer-native active head artifact sync")
+        });
+
+    handle.join().expect("join head artifact thread");
+    let requests = requests
+        .lock()
+        .expect("peer artifact requests should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].artifact_id.as_str(), "artifact-browser");
+    assert_eq!(
+        requests[0].provider_peer_ids[0].as_str(),
+        "peer-browser-provider"
+    );
+    let storage = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert_eq!(
+        storage.last_head_artifact_transport.as_deref(),
+        Some("peer-native")
     );
 }
 

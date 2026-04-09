@@ -259,6 +259,23 @@ pub struct BrowserAppValidationView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Aggregate network-performance summary surfaced in the browser app.
+pub struct BrowserAppPerformanceView {
+    /// Short scope note for the aggregate metrics.
+    pub scope_summary: String,
+    /// Timestamp of the aggregate performance snapshot.
+    pub captured_at: String,
+    /// Human-readable global training throughput.
+    pub training_throughput: String,
+    /// Human-readable global validation throughput.
+    pub validation_throughput: String,
+    /// Human-readable aggregate wait time.
+    pub wait_time: String,
+    /// Human-readable aggregate idle time.
+    pub idle_time: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Training-focused summary derived entirely on the browser client.
 pub struct BrowserAppTrainingView {
     /// Whether training is available for the selected experiment.
@@ -345,6 +362,9 @@ pub struct BrowserAppNetworkView {
     /// Latest surfaced local error, when available.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Aggregate training/validation performance summary, when available.
+    #[serde(default)]
+    pub performance: Option<BrowserAppPerformanceView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +412,9 @@ pub type NodeAppExperimentSummary = BrowserAppExperimentSummary;
 
 /// Platform-agnostic alias for one compact metric preview row.
 pub type NodeAppMetricPreview = BrowserAppMetricPreview;
+
+/// Platform-agnostic alias for one aggregate performance summary.
+pub type NodeAppPerformanceView = BrowserAppPerformanceView;
 
 /// Platform-agnostic alias for one leaderboard preview row.
 pub type NodeAppLeaderboardPreview = BrowserAppLeaderboardPreview;

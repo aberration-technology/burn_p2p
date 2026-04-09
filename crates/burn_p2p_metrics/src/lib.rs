@@ -12,15 +12,15 @@ mod retention;
 mod store;
 
 use burn_p2p_core::{
-    CanaryEvalReport, CohortRobustnessReport, ContentId, DatasetViewId, ExperimentId,
+    BackendClass, CanaryEvalReport, CohortRobustnessReport, ContentId, DatasetViewId, ExperimentId,
     HeadEvalReport, HeadId, LeaseId, MetricScope, MetricTrustClass, MetricsLedgerSegment,
-    MetricsSnapshotManifest, NetworkId, PeerId, PeerWindowMetrics, ReducerCohortMetrics,
-    RevisionId, TrustScore, WindowId, WorkloadId,
+    MetricsSnapshotManifest, NetworkId, PeerId, PeerRole, PeerWindowMetrics, PrincipalId,
+    ReducerCohortMetrics, RevisionId, TrustScore, WindowId, WorkloadId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub use derive::MetricsIndexer;
+pub use derive::{MetricsIndexer, derive_network_performance_summary};
 pub use query::{
     PeerWindowDistributionDetail, PeerWindowDistributionSummary,
     derive_peer_window_distribution_detail, derive_peer_window_distribution_detail_with_limit,
@@ -196,6 +196,156 @@ pub struct MetricsSnapshot {
     pub reducer_cohort_metrics: Vec<ReducerCohortMetrics>,
     /// Derived metric rollups included by the snapshot.
     pub derived_metrics: Vec<DerivedMetricPoint>,
+    /// Optional network-wide performance rollup derived from the included metrics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance_summary: Option<NetworkPerformanceSummary>,
+}
+
+/// Per-peer execution and utilization summary derived from peer-window metrics.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PeerPerformanceSummary {
+    /// Peer identifier for the summary.
+    pub peer_id: PeerId,
+    /// Principal identifier attached to the peer, when known.
+    pub principal_id: Option<PrincipalId>,
+    /// Most recent role surfaced by the peer windows.
+    pub role: PeerRole,
+    /// Most recent backend class surfaced by the peer windows.
+    pub backend_class: BackendClass,
+    /// Number of completed or attempted windows recorded for the peer.
+    pub window_count: u64,
+    /// Attempted work units across the peer's windows.
+    pub attempted_work_units: u64,
+    /// Accepted work units across the peer's windows.
+    pub accepted_work_units: u64,
+    /// Wall-clock elapsed time across the peer's recorded windows.
+    pub elapsed_time_ms: u64,
+    /// Sum of active in-window time excluding post-window publish latency.
+    pub active_window_time_ms: u64,
+    /// Sum of active plus publish time across the peer's windows.
+    pub end_to_end_window_time_ms: u64,
+    /// Sum of compute time recorded by the peer.
+    pub compute_time_ms: u64,
+    /// Sum of data-fetch time recorded by the peer.
+    pub data_fetch_time_ms: u64,
+    /// Sum of publish latency recorded by the peer.
+    pub publish_latency_ms: u64,
+    /// Sum of residual active wait time not attributed to fetch or compute.
+    pub wait_time_ms: u64,
+    /// Sum of idle gaps between successive windows for the peer.
+    pub idle_time_ms: u64,
+    /// Accepted work units per second over the peer's elapsed time.
+    pub throughput_work_units_per_sec: f64,
+}
+
+/// Aggregated execution summary for one work class such as training or validation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkClassPerformanceSummary {
+    /// Number of peers that contributed windows to the summary.
+    pub peer_count: u64,
+    /// Number of windows included in the summary.
+    pub window_count: u64,
+    /// Attempted work units across all included windows.
+    pub attempted_work_units: u64,
+    /// Accepted work units across all included windows.
+    pub accepted_work_units: u64,
+    /// Wall-clock elapsed time across the included windows.
+    pub elapsed_time_ms: u64,
+    /// Sum of active in-window time excluding post-window publish latency.
+    pub active_window_time_ms: u64,
+    /// Sum of active plus publish time across the included windows.
+    pub end_to_end_window_time_ms: u64,
+    /// Mean end-to-end time per included window.
+    pub mean_end_to_end_window_time_ms: u64,
+    /// Maximum end-to-end time across the included windows.
+    pub max_end_to_end_window_time_ms: u64,
+    /// Sum of compute time recorded by the included windows.
+    pub compute_time_ms: u64,
+    /// Sum of data-fetch time recorded by the included windows.
+    pub data_fetch_time_ms: u64,
+    /// Sum of publish latency recorded by the included windows.
+    pub publish_latency_ms: u64,
+    /// Sum of residual active wait time not attributed to fetch or compute.
+    pub wait_time_ms: u64,
+    /// Sum of idle gaps between successive peer windows.
+    pub idle_time_ms: u64,
+    /// Accepted work units per second over the summary elapsed time.
+    pub throughput_work_units_per_sec: f64,
+}
+
+/// Aggregated evaluation throughput and latency summary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HeadEvaluationPerformanceSummary {
+    /// Number of head-evaluation reports in the summary.
+    pub report_count: u64,
+    /// Number of evaluated samples recorded by the reports.
+    pub sample_count: u64,
+    /// Wall-clock elapsed time across the included reports.
+    pub elapsed_time_ms: u64,
+    /// Sum of evaluation runtime across the included reports.
+    pub total_eval_time_ms: u64,
+    /// Mean evaluation runtime per report.
+    pub mean_eval_time_ms: u64,
+    /// Maximum evaluation runtime across the reports.
+    pub max_eval_time_ms: u64,
+    /// Evaluated samples per second over the report elapsed time.
+    pub throughput_samples_per_sec: f64,
+}
+
+/// Aggregated reducer-side cohort throughput and transfer summary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReducerPerformanceSummary {
+    /// Number of reducer cohort records observed.
+    pub cohort_count: u64,
+    /// Number of unique cohorts after deduplicating repeated observations.
+    pub unique_cohort_count: u64,
+    /// Number of accepted updates across the unique cohorts.
+    pub accepted_updates: u64,
+    /// Number of rejected updates across the unique cohorts.
+    pub rejected_updates: u64,
+    /// Accepted work units across the unique cohorts.
+    pub accepted_work_units: u64,
+    /// Mean unique-cohort duration.
+    pub mean_cohort_duration_ms: u64,
+    /// Maximum unique-cohort duration.
+    pub max_cohort_duration_ms: u64,
+    /// Mean close-delay skew across the unique cohorts.
+    pub mean_window_close_delay_ms: u64,
+    /// Maximum close-delay skew across the unique cohorts.
+    pub max_window_close_delay_ms: u64,
+    /// Total ingress bytes across the unique cohorts.
+    pub ingress_bytes: u128,
+    /// Total egress bytes across the unique cohorts.
+    pub egress_bytes: u128,
+}
+
+/// Network-wide performance rollup derived from peer, reducer, and evaluator metrics.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NetworkPerformanceSummary {
+    /// Network identifier covered by the rollup.
+    pub network_id: NetworkId,
+    /// Experiment identifier when all included metrics share one experiment.
+    pub experiment_id: Option<ExperimentId>,
+    /// Revision identifier when all included metrics share one revision.
+    pub revision_id: Option<RevisionId>,
+    /// Workload identifier when all included metrics share one workload.
+    pub workload_id: Option<WorkloadId>,
+    /// Dataset view identifier when all included metrics share one dataset view.
+    pub dataset_view_id: Option<DatasetViewId>,
+    /// Timestamp when the latest included metric completed.
+    pub captured_at: DateTime<Utc>,
+    /// Number of distinct peers that contributed peer-window metrics.
+    pub total_peer_count: u64,
+    /// Training-window summary across trainer-class peers.
+    pub training: WorkClassPerformanceSummary,
+    /// Validation-window summary across validator/evaluator peers.
+    pub validation: WorkClassPerformanceSummary,
+    /// Head-evaluation throughput summary.
+    pub head_evaluation: HeadEvaluationPerformanceSummary,
+    /// Reducer cohort summary.
+    pub reducer: ReducerPerformanceSummary,
+    /// Per-peer execution breakdowns.
+    pub peers: Vec<PeerPerformanceSummary>,
 }
 
 /// Catchup bundle that seeds a peer or dashboard from one point-in-time metrics snapshot.
@@ -310,7 +460,8 @@ mod tests {
 
     use super::{
         DerivedMetricKind, MetricEnvelope, MetricsIndexer, MetricsIndexerConfig, MetricsStore,
-        derive_peer_window_distribution_detail, derive_peer_window_distribution_detail_with_limit,
+        derive_network_performance_summary, derive_peer_window_distribution_detail,
+        derive_peer_window_distribution_detail_with_limit,
         derive_peer_window_distribution_summaries, derive_robustness_rollup,
     };
 
@@ -470,6 +621,14 @@ mod tests {
             Some(HeadId::new("head-b"))
         );
         assert_eq!(snapshot.peer_window_metrics.len(), 2);
+        let performance = snapshot
+            .performance_summary
+            .as_ref()
+            .expect("performance summary");
+        assert_eq!(performance.training.window_count, 2);
+        assert_eq!(performance.training.peer_count, 2);
+        assert_eq!(performance.head_evaluation.report_count, 1);
+        assert_eq!(performance.reducer.unique_cohort_count, 1);
 
         let segments = indexer
             .export_ledger_segments(&ExperimentId::new("exp-a"), &RevisionId::new("rev-a"))
@@ -791,6 +950,160 @@ mod tests {
         );
         assert_eq!(live_event.cursors.len(), 1);
         assert_eq!(live_event.kind, MetricsLiveEventKind::CatchupRefresh);
+        assert!(snapshots[0].performance_summary.is_some());
+    }
+
+    #[test]
+    fn network_performance_rollup_tracks_wait_idle_and_validation_throughput() {
+        let started_at = Utc::now();
+        let peer_windows = vec![
+            PeerWindowMetrics {
+                network_id: NetworkId::new("network-a"),
+                experiment_id: ExperimentId::new("exp-a"),
+                revision_id: RevisionId::new("rev-a"),
+                workload_id: WorkloadId::new("workload-a"),
+                dataset_view_id: DatasetViewId::new("view-a"),
+                peer_id: burn_p2p_core::PeerId::new("trainer-a"),
+                principal_id: None,
+                lease_id: LeaseId::new("lease-a"),
+                base_head_id: HeadId::new("head-a"),
+                window_started_at: started_at,
+                window_finished_at: started_at + Duration::seconds(4),
+                attempted_tokens_or_samples: 80,
+                accepted_tokens_or_samples: Some(80),
+                local_train_loss_mean: Some(0.4),
+                local_train_loss_last: Some(0.35),
+                grad_or_delta_norm: Some(1.0),
+                optimizer_step_count: 8,
+                compute_time_ms: 2_500,
+                data_fetch_time_ms: 500,
+                publish_latency_ms: 200,
+                head_lag_at_start: 0,
+                head_lag_at_finish: 0,
+                backend_class: BackendClass::Cpu,
+                role: PeerRole::TrainerCpu,
+                status: PeerWindowStatus::Completed,
+                status_reason: None,
+            },
+            PeerWindowMetrics {
+                network_id: NetworkId::new("network-a"),
+                experiment_id: ExperimentId::new("exp-a"),
+                revision_id: RevisionId::new("rev-a"),
+                workload_id: WorkloadId::new("workload-a"),
+                dataset_view_id: DatasetViewId::new("view-a"),
+                peer_id: burn_p2p_core::PeerId::new("trainer-a"),
+                principal_id: None,
+                lease_id: LeaseId::new("lease-b"),
+                base_head_id: HeadId::new("head-b"),
+                window_started_at: started_at + Duration::seconds(6),
+                window_finished_at: started_at + Duration::seconds(9),
+                attempted_tokens_or_samples: 60,
+                accepted_tokens_or_samples: Some(60),
+                local_train_loss_mean: Some(0.3),
+                local_train_loss_last: Some(0.25),
+                grad_or_delta_norm: Some(0.9),
+                optimizer_step_count: 6,
+                compute_time_ms: 2_000,
+                data_fetch_time_ms: 500,
+                publish_latency_ms: 100,
+                head_lag_at_start: 0,
+                head_lag_at_finish: 0,
+                backend_class: BackendClass::Cpu,
+                role: PeerRole::TrainerCpu,
+                status: PeerWindowStatus::Completed,
+                status_reason: None,
+            },
+            PeerWindowMetrics {
+                network_id: NetworkId::new("network-a"),
+                experiment_id: ExperimentId::new("exp-a"),
+                revision_id: RevisionId::new("rev-a"),
+                workload_id: WorkloadId::new("workload-a"),
+                dataset_view_id: DatasetViewId::new("view-a"),
+                peer_id: burn_p2p_core::PeerId::new("validator-a"),
+                principal_id: None,
+                lease_id: LeaseId::new("validation-window"),
+                base_head_id: HeadId::new("head-b"),
+                window_started_at: started_at + Duration::seconds(10),
+                window_finished_at: started_at + Duration::seconds(12),
+                attempted_tokens_or_samples: 140,
+                accepted_tokens_or_samples: Some(140),
+                local_train_loss_mean: Some(0.2),
+                local_train_loss_last: Some(0.2),
+                grad_or_delta_norm: Some(0.8),
+                optimizer_step_count: 1,
+                compute_time_ms: 1_200,
+                data_fetch_time_ms: 0,
+                publish_latency_ms: 300,
+                head_lag_at_start: 0,
+                head_lag_at_finish: 0,
+                backend_class: BackendClass::Viewer,
+                role: PeerRole::Validator,
+                status: PeerWindowStatus::Completed,
+                status_reason: None,
+            },
+        ];
+        let reducer_cohorts = vec![ReducerCohortMetrics {
+            network_id: NetworkId::new("network-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: WorkloadId::new("workload-a"),
+            dataset_view_id: DatasetViewId::new("view-a"),
+            merge_window_id: ContentId::new("merge-a"),
+            reducer_group_id: ContentId::new("reducers-a"),
+            captured_at: started_at + Duration::seconds(12),
+            base_head_id: HeadId::new("head-b"),
+            candidate_head_id: Some(HeadId::new("head-c")),
+            received_updates: 2,
+            accepted_updates: 2,
+            rejected_updates: 0,
+            sum_weight: 2.0,
+            accepted_tokens_or_samples: 140,
+            staleness_mean: 0.0,
+            staleness_max: 0.0,
+            window_close_delay_ms: 50,
+            cohort_duration_ms: 1_500,
+            aggregate_norm: 1.0,
+            reducer_load: 0.2,
+            ingress_bytes: 2_048,
+            egress_bytes: 512,
+            replica_agreement: Some(1.0),
+            late_arrival_count: Some(0),
+            missing_peer_count: Some(0),
+            rejection_reasons: BTreeMap::new(),
+            status: ReducerCohortStatus::Closed,
+        }];
+        let head_reports = vec![HeadEvalReport {
+            network_id: NetworkId::new("network-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: WorkloadId::new("workload-a"),
+            head_id: HeadId::new("head-c"),
+            base_head_id: Some(HeadId::new("head-b")),
+            eval_protocol_id: ContentId::new("eval-a"),
+            evaluator_set_id: ContentId::new("eval-set-a"),
+            metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.2))]),
+            sample_count: 1_000,
+            dataset_view_id: DatasetViewId::new("view-a"),
+            started_at: started_at + Duration::seconds(10),
+            finished_at: started_at + Duration::seconds(12),
+            trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+            status: burn_p2p_core::HeadEvalStatus::Completed,
+            signature_bundle: Vec::new(),
+        }];
+
+        let summary =
+            derive_network_performance_summary(&peer_windows, &reducer_cohorts, &head_reports)
+                .expect("network performance summary");
+
+        assert_eq!(summary.total_peer_count, 2);
+        assert_eq!(summary.training.window_count, 2);
+        assert_eq!(summary.validation.window_count, 1);
+        assert_eq!(summary.training.wait_time_ms, 1_500);
+        assert_eq!(summary.training.idle_time_ms, 1_800);
+        assert!(summary.training.throughput_work_units_per_sec > 13.0);
+        assert_eq!(summary.head_evaluation.sample_count, 1_000);
+        assert!(summary.head_evaluation.throughput_samples_per_sec > 400.0);
+        assert_eq!(summary.reducer.unique_cohort_count, 1);
     }
 
     #[test]

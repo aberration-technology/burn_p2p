@@ -607,11 +607,7 @@ pub(crate) fn resolve_artifact_request_principal(
         .get("x-session-id")
         .ok_or("artifact export requires x-session-id")?;
     let session = auth
-        .sessions
-        .lock()
-        .expect("auth session state should not be poisoned")
-        .get(&ContentId::new(session_id.clone()))
-        .cloned()
+        .get_session(&ContentId::new(session_id.clone()))?
         .ok_or("unknown session id")?;
     if !session_allows_artifact_access(&session, experiment_id) {
         return Err(format!(

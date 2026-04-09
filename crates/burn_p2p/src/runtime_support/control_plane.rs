@@ -9,6 +9,7 @@ pub(crate) fn run_control_plane(
     state: Arc<Mutex<NodeTelemetrySnapshot>>,
 ) {
     const CONNECTIVITY_REPAIR_INTERVAL: Duration = Duration::from_secs(1);
+    const PEER_DIRECTORY_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
     const TRUST_BUNDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
     let mut auth = auth;
     let mut shell = match ControlPlaneShell::new(
@@ -154,10 +155,12 @@ pub(crate) fn run_control_plane(
     let mut last_connectivity_repair_at = Instant::now()
         .checked_sub(CONNECTIVITY_REPAIR_INTERVAL)
         .unwrap_or_else(Instant::now);
+    let mut last_peer_directory_reannounce_at = Instant::now()
+        .checked_sub(PEER_DIRECTORY_REANNOUNCE_INTERVAL)
+        .unwrap_or_else(Instant::now);
     let mut last_trust_bundle_sync_at = Instant::now()
         .checked_sub(TRUST_BUNDLE_REFRESH_INTERVAL)
         .unwrap_or_else(Instant::now);
-
     loop {
         let mut shutdown_requested = false;
         loop {
@@ -385,36 +388,22 @@ pub(crate) fn run_control_plane(
                     let mut snapshot = lock_telemetry_state(&state);
                     sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                 }
-                Ok(RuntimeCommand::PublishArtifact { descriptor, chunks }) => {
+                Ok(RuntimeCommand::PublishArtifact {
+                    descriptor,
+                    chunks,
+                    reply,
+                }) => {
                     shell.publish_artifact(descriptor, chunks);
+                    let _ = reply.send(Ok(()));
                 }
                 Ok(RuntimeCommand::FetchSnapshot {
                     peer_id,
                     timeout,
                     reply,
                 }) => {
-                    let deadline = Instant::now() + timeout;
-                    let mut result = Err(SwarmError::TimedOut("snapshot"));
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        let attempt_timeout = remaining.min(Duration::from_millis(500));
-                        result = shell.fetch_snapshot(&peer_id, attempt_timeout);
-                        match result {
-                            Ok(_) => break,
-                            Err(SwarmError::TimedOut(_)) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    let result = result.map_err(|error| error.to_string());
-                    if let Ok(remote_snapshot) = &result {
-                        let mut snapshot = lock_telemetry_state(&state);
-                        snapshot.last_snapshot_peer_id = Some(PeerId::new(peer_id.clone()));
-                        snapshot.last_snapshot = Some(remote_snapshot.clone());
-                        snapshot.updated_at = Utc::now();
-                    }
+                    let result = shell
+                        .fetch_snapshot(&peer_id, timeout)
+                        .map_err(|error| error.to_string());
                     let _ = reply.send(result);
                 }
                 Ok(RuntimeCommand::FetchArtifactManifest {
@@ -423,26 +412,9 @@ pub(crate) fn run_control_plane(
                     timeout,
                     reply,
                 }) => {
-                    let deadline = Instant::now() + timeout;
-                    let mut result = Err(SwarmError::TimedOut("artifact-manifest"));
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        let attempt_timeout = remaining.min(Duration::from_millis(500));
-                        result = shell.fetch_artifact_manifest(
-                            &peer_id,
-                            artifact_id.clone(),
-                            attempt_timeout,
-                        );
-                        match result {
-                            Ok(_) => break,
-                            Err(SwarmError::TimedOut(_)) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    let result = result.map_err(|error| error.to_string());
+                    let result = shell
+                        .fetch_artifact_manifest(&peer_id, artifact_id, timeout)
+                        .map_err(|error| error.to_string());
                     let _ = reply.send(result);
                 }
                 Ok(RuntimeCommand::FetchArtifactChunk {
@@ -452,27 +424,9 @@ pub(crate) fn run_control_plane(
                     timeout,
                     reply,
                 }) => {
-                    let deadline = Instant::now() + timeout;
-                    let mut result = Err(SwarmError::TimedOut("artifact-chunk"));
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        let attempt_timeout = remaining.min(Duration::from_millis(500));
-                        result = shell.fetch_artifact_chunk(
-                            &peer_id,
-                            artifact_id.clone(),
-                            chunk_id.clone(),
-                            attempt_timeout,
-                        );
-                        match result {
-                            Ok(_) => break,
-                            Err(SwarmError::TimedOut(_)) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    let result = result.map_err(|error| error.to_string());
+                    let result = shell
+                        .fetch_artifact_chunk(&peer_id, artifact_id, chunk_id, timeout)
+                        .map_err(|error| error.to_string());
                     let _ = reply.send(result);
                 }
                 Ok(RuntimeCommand::DialAddress { address }) => {
@@ -531,14 +485,32 @@ pub(crate) fn run_control_plane(
         }
 
         if last_connectivity_repair_at.elapsed() >= CONNECTIVITY_REPAIR_INTERVAL {
-            let dial_targets = {
+            let (dial_targets, offload_targets) = {
                 let snapshot = lock_telemetry_state(&state);
-                connectivity_repair_targets(&boundary, &snapshot, shell.connected_peer_count())
+                (
+                    connectivity_repair_targets(&boundary, &snapshot, shell.connected_peer_count()),
+                    bootstrap_offload_targets(&boundary, &snapshot),
+                )
             };
             for address in dial_targets {
                 let _ = shell.dial(address);
             }
+            for peer_id in offload_targets {
+                let _ = shell.disconnect_peer(peer_id.as_str());
+            }
             last_connectivity_repair_at = Instant::now();
+        }
+
+        if last_peer_directory_reannounce_at.elapsed() >= PEER_DIRECTORY_REANNOUNCE_INTERVAL {
+            let mut snapshot = lock_telemetry_state(&state);
+            publish_local_peer_directory(&mut shell, &boundary, &mut snapshot);
+            if let Some(storage) = storage.as_ref()
+                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
+            {
+                snapshot.last_error =
+                    Some(format!("failed to persist control plane state: {error}"));
+            }
+            last_peer_directory_reannounce_at = Instant::now();
         }
 
         if last_trust_bundle_sync_at.elapsed() >= TRUST_BUNDLE_REFRESH_INTERVAL {
@@ -558,215 +530,266 @@ pub(crate) fn run_control_plane(
             last_trust_bundle_sync_at = Instant::now();
         }
 
-        match shell.wait_event(Duration::from_millis(50)) {
-            Some(event) => {
-                let mut connection_request_error = None;
-                if let LiveControlPlaneEvent::ConnectionEstablished { peer_id } = &event
-                    && let Err(error) = shell.request_snapshot(peer_id)
-                {
-                    connection_request_error = Some((peer_id.clone(), error.to_string()));
-                }
+        let mut processed_event = false;
+        for batch_index in 0..32 {
+            let wait = if batch_index == 0 {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_millis(1)
+            };
+            let Some(event) = shell.wait_event(wait) else {
+                break;
+            };
+            processed_event = true;
+            handle_control_plane_event(
+                &mut shell,
+                &boundary,
+                storage.as_ref(),
+                &mut auth,
+                &state,
+                event,
+            );
+        }
+        if !processed_event {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
 
-                let mut snapshot = lock_telemetry_state(&state);
-                snapshot.connected_peers = shell.connected_peer_count();
-                snapshot.control_plane = shell.snapshot().clone();
-                if matches!(
-                    &event,
-                    LiveControlPlaneEvent::PubsubMessage { kind, .. }
-                        if kind == "control"
-                            || kind == "auth"
-                            || kind == "directory"
-                            || kind == "peer-directory"
-                            || kind == "lease"
-                ) && let Some(storage) = storage.as_ref()
-                    && let Err(error) =
-                        persist_control_plane_state(storage, &snapshot.control_plane)
-                {
-                    snapshot.last_error =
-                        Some(format!("failed to persist control plane state: {error}"));
-                }
-                if let Some((peer_id, message)) = connection_request_error {
-                    snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
-                        peer_id,
-                        request_id: None,
-                        message: message.clone(),
-                    });
-                    snapshot.last_error = Some(message);
-                }
-                match &event {
-                    LiveControlPlaneEvent::NewListenAddr { address } => {
-                        if !snapshot.listen_addresses.contains(address) {
-                            snapshot.listen_addresses.push(address.clone());
-                        }
-                        publish_local_peer_directory(&mut shell, &boundary, &mut snapshot);
-                        snapshot.control_plane = shell.snapshot().clone();
-                        if let Some(storage) = storage.as_ref()
-                            && let Err(error) =
-                                persist_control_plane_state(storage, &snapshot.control_plane)
-                        {
-                            snapshot.last_error =
-                                Some(format!("failed to persist control plane state: {error}"));
-                        }
-                    }
-                    LiveControlPlaneEvent::PeersDiscovered { peers } => {
-                        remember_known_peer_addresses(
-                            &mut snapshot,
-                            storage.as_ref(),
-                            peers.iter().map(|(_, address)| address.clone()),
-                        );
-                    }
-                    LiveControlPlaneEvent::PeerIdentified {
-                        listen_addresses, ..
-                    } => {
-                        remember_known_peer_addresses(
-                            &mut snapshot,
-                            storage.as_ref(),
-                            listen_addresses.iter().cloned(),
-                        );
-                    }
-                    LiveControlPlaneEvent::SnapshotReceived {
-                        peer_id,
-                        snapshot: remote_snapshot,
-                        ..
-                    } => {
-                        let new_peer_directory_announcements = remote_snapshot
-                            .peer_directory_announcements
-                            .iter()
-                            .filter(|announcement| {
-                                !snapshot
-                                    .control_plane
-                                    .peer_directory_announcements
-                                    .contains(announcement)
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        merge_control_plane_snapshot(&mut snapshot.control_plane, remote_snapshot);
-                        for announcement in &new_peer_directory_announcements {
-                            shell.publish_peer_directory(announcement.clone());
-                            if let Err(error) = shell.publish_pubsub(
-                                boundary.control_overlay.clone(),
-                                PubsubPayload::PeerDirectory(announcement.clone()),
-                            ) {
-                                snapshot.last_error = Some(error.to_string());
-                            }
-                        }
-                        remember_peer_directory_addresses(
-                            &mut snapshot,
-                            storage.as_ref(),
-                            &remote_snapshot.peer_directory_announcements,
-                        );
-                        snapshot.last_snapshot_peer_id = Some(PeerId::new(peer_id.clone()));
-                        snapshot.last_snapshot = Some(remote_snapshot.clone());
-                        if let Some(storage) = storage.as_ref()
-                            && let Err(error) =
-                                persist_control_plane_state(storage, &snapshot.control_plane)
-                        {
-                            snapshot.last_error =
-                                Some(format!("failed to persist control plane state: {error}"));
-                        }
-                        if let Some(policy) = auth
-                            .as_ref()
-                            .and_then(|auth| auth.admission_policy.as_ref())
-                        {
-                            match verify_snapshot_admission(
-                                policy,
-                                &PeerId::new(peer_id.clone()),
-                                remote_snapshot,
-                            ) {
-                                Ok(report)
-                                    if matches!(report.decision(), AdmissionDecision::Allow) =>
-                                {
-                                    note_admitted_peer(&mut snapshot, report);
-                                }
-                                Ok(report) => {
-                                    note_rejected_peer(
-                                        &mut snapshot,
-                                        PeerId::new(peer_id.clone()),
-                                        admission_rejection_reason(&report),
-                                        1,
-                                        0,
-                                    );
-                                    snapshot.last_error = Some(format!(
-                                        "peer {} failed admission with {} findings",
-                                        peer_id,
-                                        report.findings.len()
-                                    ));
-                                }
-                                Err(error) => {
-                                    note_rejected_peer(
-                                        &mut snapshot,
-                                        PeerId::new(peer_id.clone()),
-                                        error.to_string(),
-                                        0,
-                                        1,
-                                    );
-                                    snapshot.last_error =
-                                        Some(format!("peer {} admission error: {error}", peer_id));
-                                }
-                            }
-                        }
-                        reconcile_live_revocation_policy(
-                            &mut auth,
-                            &mut snapshot,
-                            storage.as_ref(),
-                        );
-                    }
-                    LiveControlPlaneEvent::RequestFailure { message, .. }
-                    | LiveControlPlaneEvent::InboundFailure { message, .. }
-                    | LiveControlPlaneEvent::ResponseSendFailure { message, .. }
-                    | LiveControlPlaneEvent::OutgoingConnectionError { message, .. }
-                    | LiveControlPlaneEvent::IncomingConnectionError { message } => {
-                        snapshot.last_error = Some(message.clone());
-                    }
-                    LiveControlPlaneEvent::PubsubMessage { .. }
-                    | LiveControlPlaneEvent::TopicSubscribed { .. }
-                    | LiveControlPlaneEvent::PeersExpired { .. }
-                    | LiveControlPlaneEvent::ConnectionClosed { .. } => {}
-                    LiveControlPlaneEvent::Other { .. }
-                    | LiveControlPlaneEvent::ConnectionEstablished { .. }
-                    | LiveControlPlaneEvent::ArtifactManifestRequested { .. }
-                    | LiveControlPlaneEvent::ArtifactManifestReceived { .. }
-                    | LiveControlPlaneEvent::ArtifactChunkRequested { .. }
-                    | LiveControlPlaneEvent::ArtifactChunkReceived { .. }
-                    | LiveControlPlaneEvent::SnapshotRequested { .. }
-                    | LiveControlPlaneEvent::SnapshotResponseSent { .. } => {}
-                }
-                if matches!(
-                    &event,
-                    LiveControlPlaneEvent::PubsubMessage { kind, .. }
-                        if kind == "control"
-                            || kind == "auth"
-                            || kind == "directory"
-                            || kind == "peer-directory"
+fn handle_control_plane_event(
+    shell: &mut ControlPlaneShell,
+    boundary: &RuntimeBoundary,
+    storage: Option<&StorageConfig>,
+    auth: &mut Option<AuthConfig>,
+    state: &Arc<Mutex<NodeTelemetrySnapshot>>,
+    event: LiveControlPlaneEvent,
+) {
+    let mut connection_request_error = None;
+    match &event {
+        LiveControlPlaneEvent::ConnectionEstablished { peer_id }
+        | LiveControlPlaneEvent::PeerIdentified { peer_id, .. } => {
+            if let Err(error) = shell.request_snapshot(peer_id) {
+                connection_request_error = Some((peer_id.clone(), error.to_string()));
+            }
+        }
+        _ => {}
+    }
+
+    let mut snapshot = lock_telemetry_state(state);
+    snapshot.connected_peers = shell.connected_peer_count();
+    snapshot.control_plane = shell.snapshot().clone();
+    let should_persist_control_plane = matches!(
+        &event,
+        LiveControlPlaneEvent::PubsubMessage { kind, .. }
+            if kind == "control"
+                || kind == "auth"
+                || kind == "directory"
+                || kind == "peer-directory"
+                || kind == "lease"
+    ) || matches!(
+        event,
+        LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
+    );
+    if should_persist_control_plane
+        && let Some(storage) = storage
+        && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
+    {
+        snapshot.last_error = Some(format!("failed to persist control plane state: {error}"));
+    }
+    if let Some((peer_id, message)) = connection_request_error {
+        snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
+            peer_id,
+            request_id: None,
+            message: message.clone(),
+        });
+        snapshot.last_error = Some(message);
+    }
+    match &event {
+        LiveControlPlaneEvent::NewListenAddr { address } => {
+            if !snapshot.listen_addresses.contains(address) {
+                snapshot.listen_addresses.push(address.clone());
+            }
+            publish_local_peer_directory(shell, boundary, &mut snapshot);
+            snapshot.control_plane = shell.snapshot().clone();
+            if let Some(storage) = storage
+                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
+            {
+                snapshot.last_error =
+                    Some(format!("failed to persist control plane state: {error}"));
+            }
+        }
+        LiveControlPlaneEvent::ReachableAddressConfirmed { address } => {
+            if !snapshot.listen_addresses.contains(address) {
+                snapshot.listen_addresses.push(address.clone());
+            }
+            publish_local_peer_directory(shell, boundary, &mut snapshot);
+            snapshot.control_plane = shell.snapshot().clone();
+            if let Some(storage) = storage
+                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
+            {
+                snapshot.last_error =
+                    Some(format!("failed to persist control plane state: {error}"));
+            }
+        }
+        LiveControlPlaneEvent::ReachableAddressExpired { address } => {
+            if let Some(position) = snapshot
+                .listen_addresses
+                .iter()
+                .position(|entry| entry == address)
+            {
+                snapshot.listen_addresses.remove(position);
+            }
+            publish_local_peer_directory(shell, boundary, &mut snapshot);
+            snapshot.control_plane = shell.snapshot().clone();
+        }
+        LiveControlPlaneEvent::PeersDiscovered { peers } => {
+            remember_known_peer_addresses(
+                &mut snapshot,
+                storage,
+                peers.iter().map(|(_, address)| address.clone()),
+            );
+        }
+        LiveControlPlaneEvent::PeerDirectoryRecordReceived { announcement } => {
+            remember_peer_directory_addresses(
+                &mut snapshot,
+                storage,
+                std::slice::from_ref(announcement),
+            );
+        }
+        LiveControlPlaneEvent::PeerIdentified {
+            listen_addresses, ..
+        } => {
+            remember_known_peer_addresses(&mut snapshot, storage, listen_addresses.iter().cloned());
+        }
+        LiveControlPlaneEvent::SnapshotReceived {
+            peer_id,
+            snapshot: remote_snapshot,
+            ..
+        } => {
+            let new_peer_directory_announcements = remote_snapshot
+                .peer_directory_announcements
+                .iter()
+                .filter(|announcement| {
+                    !snapshot
+                        .control_plane
+                        .peer_directory_announcements
+                        .contains(announcement)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            merge_control_plane_snapshot(&mut snapshot.control_plane, remote_snapshot);
+            for announcement in &new_peer_directory_announcements {
+                shell.publish_peer_directory(announcement.clone());
+                if let Err(error) = shell.publish_pubsub(
+                    boundary.control_overlay.clone(),
+                    PubsubPayload::PeerDirectory(announcement.clone()),
                 ) {
-                    let peer_directory_announcements =
-                        snapshot.control_plane.peer_directory_announcements.clone();
-                    remember_peer_directory_addresses(
-                        &mut snapshot,
-                        storage.as_ref(),
-                        &peer_directory_announcements,
-                    );
-                    let revocation_changed = reconcile_live_revocation_policy(
-                        &mut auth,
-                        &mut snapshot,
-                        storage.as_ref(),
-                    );
-                    if revocation_changed {
-                        for peer_id in connected_peer_ids(&snapshot) {
-                            let _ = shell.request_snapshot(peer_id.as_str());
-                        }
-                    }
-                }
-                snapshot.push_event(event);
-                if let Some(storage) = storage.as_ref()
-                    && let Err(error) = persist_runtime_security_state(storage, &snapshot)
-                {
-                    snapshot.last_error =
-                        Some(format!("failed to persist security state: {error}"));
+                    snapshot.last_error = Some(error.to_string());
                 }
             }
-            None => thread::sleep(Duration::from_millis(10)),
+            remember_peer_directory_addresses(
+                &mut snapshot,
+                storage,
+                &remote_snapshot.peer_directory_announcements,
+            );
+            snapshot.last_snapshot_peer_id = Some(PeerId::new(peer_id.clone()));
+            snapshot.last_snapshot = Some(remote_snapshot.clone());
+            if let Some(storage) = storage
+                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
+            {
+                snapshot.last_error =
+                    Some(format!("failed to persist control plane state: {error}"));
+            }
+            if let Some(policy) = auth
+                .as_ref()
+                .and_then(|auth| auth.admission_policy.as_ref())
+            {
+                match verify_snapshot_admission(
+                    policy,
+                    &PeerId::new(peer_id.clone()),
+                    remote_snapshot,
+                ) {
+                    Ok(report) if matches!(report.decision(), AdmissionDecision::Allow) => {
+                        note_admitted_peer(&mut snapshot, report);
+                    }
+                    Ok(report) => {
+                        note_rejected_peer(
+                            &mut snapshot,
+                            PeerId::new(peer_id.clone()),
+                            admission_rejection_reason(&report),
+                            1,
+                            0,
+                        );
+                        snapshot.last_error = Some(format!(
+                            "peer {} failed admission with {} findings",
+                            peer_id,
+                            report.findings.len()
+                        ));
+                    }
+                    Err(error) => {
+                        note_rejected_peer(
+                            &mut snapshot,
+                            PeerId::new(peer_id.clone()),
+                            error.to_string(),
+                            0,
+                            1,
+                        );
+                        snapshot.last_error =
+                            Some(format!("peer {} admission error: {error}", peer_id));
+                    }
+                }
+            }
+            reconcile_live_revocation_policy(auth, &mut snapshot, storage);
         }
+        LiveControlPlaneEvent::RequestFailure { message, .. }
+        | LiveControlPlaneEvent::InboundFailure { message, .. }
+        | LiveControlPlaneEvent::ResponseSendFailure { message, .. }
+        | LiveControlPlaneEvent::OutgoingConnectionError { message, .. }
+        | LiveControlPlaneEvent::IncomingConnectionError { message } => {
+            snapshot.last_error = Some(message.clone());
+        }
+        LiveControlPlaneEvent::PubsubMessage { .. }
+        | LiveControlPlaneEvent::TopicSubscribed { .. }
+        | LiveControlPlaneEvent::PeersExpired { .. }
+        | LiveControlPlaneEvent::ConnectionClosed { .. }
+        | LiveControlPlaneEvent::RelayReservationAccepted { .. }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { .. } => {}
+        LiveControlPlaneEvent::Other { .. }
+        | LiveControlPlaneEvent::ConnectionEstablished { .. }
+        | LiveControlPlaneEvent::ArtifactManifestRequested { .. }
+        | LiveControlPlaneEvent::ArtifactManifestReceived { .. }
+        | LiveControlPlaneEvent::ArtifactChunkRequested { .. }
+        | LiveControlPlaneEvent::ArtifactChunkReceived { .. }
+        | LiveControlPlaneEvent::SnapshotRequested { .. }
+        | LiveControlPlaneEvent::SnapshotResponseSent { .. }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeFailed { .. } => {}
+    }
+    if matches!(
+        &event,
+        LiveControlPlaneEvent::PubsubMessage { kind, .. }
+            if kind == "control"
+                || kind == "auth"
+                || kind == "directory"
+                || kind == "peer-directory"
+    ) || matches!(
+        event,
+        LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
+    ) {
+        let peer_directory_announcements =
+            snapshot.control_plane.peer_directory_announcements.clone();
+        remember_peer_directory_addresses(&mut snapshot, storage, &peer_directory_announcements);
+        let revocation_changed = reconcile_live_revocation_policy(auth, &mut snapshot, storage);
+        if revocation_changed {
+            for peer_id in connected_peer_ids(&snapshot) {
+                let _ = shell.request_snapshot(peer_id.as_str());
+            }
+        }
+    }
+    snapshot.push_event(event);
+    if let Some(storage) = storage
+        && let Err(error) = persist_runtime_security_state(storage, &snapshot)
+    {
+        snapshot.last_error = Some(format!("failed to persist security state: {error}"));
     }
 }
 
@@ -775,11 +798,14 @@ fn connectivity_repair_targets(
     snapshot: &NodeTelemetrySnapshot,
     connected_peers: usize,
 ) -> Vec<SwarmAddress> {
+    const STALE_PEER_DIRECTORY_AFTER: chrono::Duration = chrono::Duration::minutes(5);
+
     let target = boundary.transport_policy.target_connected_peers.max(1);
     if connected_peers >= target {
         return Vec::new();
     }
 
+    let now = Utc::now();
     let bootstrap_addresses = boundary
         .bootstrap_addresses
         .iter()
@@ -797,31 +823,70 @@ fn connectivity_repair_targets(
             .control_plane
             .peer_directory_announcements
             .iter()
+            .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
             .filter(|announcement| connected_peer_ids.contains(&announcement.peer_id))
             .flat_map(|announcement| announcement.addresses.iter().cloned())
             .collect::<BTreeSet<_>>()
     };
+    let connected_peer_address_keys = connected_peer_addresses
+        .iter()
+        .map(connectivity_address_key)
+        .collect::<BTreeSet<_>>();
+    let listen_address_keys = snapshot
+        .listen_addresses
+        .iter()
+        .map(connectivity_address_key)
+        .collect::<BTreeSet<_>>();
     let mut peer_directory_targets = snapshot
         .control_plane
         .peer_directory_announcements
         .iter()
+        .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
         .filter(|announcement| !connected_peer_ids.contains(&announcement.peer_id))
-        .flat_map(|announcement| announcement.addresses.iter().cloned())
-        .filter(|address| !bootstrap_addresses.contains(address))
-        .filter(|address| !snapshot.listen_addresses.contains(address))
+        .filter_map(|announcement| {
+            announcement
+                .addresses
+                .iter()
+                .filter(|address| !bootstrap_addresses.contains(*address))
+                .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
+                .min_by(|left, right| {
+                    left.is_relay_circuit()
+                        .cmp(&right.is_relay_circuit())
+                        .then_with(|| left.cmp(right))
+                })
+                .cloned()
+        })
         .collect::<Vec<_>>();
     let mut known_peer_targets = snapshot
         .known_peer_addresses
         .iter()
         .filter(|address| !bootstrap_addresses.contains(*address))
-        .filter(|address| !connected_peer_addresses.contains(*address))
-        .filter(|address| !snapshot.listen_addresses.contains(*address))
+        .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
+        .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
         .cloned()
         .collect::<Vec<_>>();
-    let mut bootstrap_targets = boundary.bootstrap_addresses.clone();
-    peer_directory_targets.sort();
-    known_peer_targets.sort();
-    bootstrap_targets.sort();
+    let mut bootstrap_targets = boundary
+        .bootstrap_addresses
+        .iter()
+        .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
+        .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
+        .cloned()
+        .collect::<Vec<_>>();
+    peer_directory_targets.sort_by(|left, right| {
+        left.is_relay_circuit()
+            .cmp(&right.is_relay_circuit())
+            .then_with(|| left.cmp(right))
+    });
+    known_peer_targets.sort_by(|left, right| {
+        left.is_relay_circuit()
+            .cmp(&right.is_relay_circuit())
+            .then_with(|| left.cmp(right))
+    });
+    bootstrap_targets.sort_by(|left, right| {
+        left.is_relay_circuit()
+            .cmp(&right.is_relay_circuit())
+            .then_with(|| left.cmp(right))
+    });
 
     let mut targets = peer_directory_targets
         .into_iter()
@@ -829,13 +894,79 @@ fn connectivity_repair_targets(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    if connected_peers == 0 {
+    if targets.is_empty() {
         targets.extend(bootstrap_targets);
     }
 
     targets
         .into_iter()
         .take(target.saturating_sub(connected_peers))
+        .collect()
+}
+
+fn connectivity_address_key(address: &SwarmAddress) -> String {
+    address
+        .as_str()
+        .rsplit_once("/p2p/")
+        .filter(|(_, suffix)| !suffix.contains('/'))
+        .map(|(prefix, _)| prefix.to_owned())
+        .unwrap_or_else(|| address.as_str().to_owned())
+}
+
+fn bootstrap_offload_targets(
+    boundary: &RuntimeBoundary,
+    snapshot: &NodeTelemetrySnapshot,
+) -> Vec<PeerId> {
+    const STALE_PEER_DIRECTORY_AFTER: chrono::Duration = chrono::Duration::minutes(5);
+
+    let connected = connected_peer_ids(snapshot);
+    if connected.is_empty() {
+        return Vec::new();
+    }
+
+    let now = Utc::now();
+    let target_connected_peers = boundary.transport_policy.target_connected_peers.max(1);
+    let target_bootstrap_seed_connections =
+        boundary.transport_policy.target_bootstrap_seed_connections;
+    let bootstrap_addresses = boundary
+        .bootstrap_addresses
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    let mut bootstrap_peers = snapshot
+        .control_plane
+        .peer_directory_announcements
+        .iter()
+        .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
+        .filter(|announcement| connected.contains(&announcement.peer_id))
+        .filter(|announcement| {
+            if let Some(roles) = announcement.advertised_roles.as_ref() {
+                roles.contains(&PeerRole::Bootstrap) || roles.contains(&PeerRole::RelayHelper)
+            } else {
+                announcement
+                    .addresses
+                    .iter()
+                    .any(|address| bootstrap_addresses.contains(address))
+            }
+        })
+        .map(|announcement| announcement.peer_id.clone())
+        .collect::<Vec<_>>();
+    bootstrap_peers.sort();
+    bootstrap_peers.dedup();
+
+    if bootstrap_peers.len() <= target_bootstrap_seed_connections {
+        return Vec::new();
+    }
+
+    let non_bootstrap_connected = connected.len().saturating_sub(bootstrap_peers.len());
+    if non_bootstrap_connected < target_connected_peers {
+        return Vec::new();
+    }
+
+    bootstrap_peers
+        .into_iter()
+        .skip(target_bootstrap_seed_connections)
         .collect()
 }
 
@@ -855,6 +986,7 @@ fn publish_local_peer_directory(
         network_id: boundary.control_overlay.network_id.clone(),
         peer_id: local_peer_id,
         addresses: snapshot.listen_addresses.clone(),
+        advertised_roles: Some(snapshot.configured_roles.clone()),
         announced_at: Utc::now(),
     };
     shell.publish_peer_directory(announcement.clone());
@@ -864,6 +996,8 @@ fn publish_local_peer_directory(
     ) {
         snapshot.last_error = Some(error.to_string());
     }
+    snapshot.control_plane = shell.snapshot().clone();
+    snapshot.updated_at = Utc::now();
 }
 
 fn remember_peer_directory_addresses(
@@ -871,9 +1005,13 @@ fn remember_peer_directory_addresses(
     storage: Option<&StorageConfig>,
     announcements: &[PeerDirectoryAnnouncement],
 ) {
+    const STALE_PEER_DIRECTORY_AFTER: chrono::Duration = chrono::Duration::minutes(5);
+
+    let now = Utc::now();
     let local_peer_id = snapshot.local_peer_id.clone();
     let addresses = announcements
         .iter()
+        .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
         .filter(|announcement| Some(&announcement.peer_id) != local_peer_id.as_ref())
         .flat_map(|announcement| announcement.addresses.iter().cloned())
         .collect::<Vec<_>>();
@@ -955,6 +1093,7 @@ mod tests {
                 network_id: NetworkId::new("repair-test"),
                 peer_id: seed_peer,
                 addresses: vec![bootstrap.clone()],
+                advertised_roles: None,
                 announced_at: Utc::now(),
             });
         snapshot
@@ -964,6 +1103,7 @@ mod tests {
                 network_id: NetworkId::new("repair-test"),
                 peer_id: trainer_peer,
                 addresses: vec![trainer.clone()],
+                advertised_roles: None,
                 announced_at: Utc::now(),
             });
 
@@ -980,5 +1120,265 @@ mod tests {
             0,
         );
         assert_eq!(targets, vec![bootstrap]);
+    }
+
+    #[test]
+    fn connectivity_repair_prefers_known_peer_addresses_before_bootstrap_seed_fallback() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/32501").expect("bootstrap");
+        let discovered = SwarmAddress::new("/ip4/127.0.0.1/tcp/32502").expect("discovered");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.known_peer_addresses.insert(discovered.clone());
+
+        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 0);
+        assert_eq!(targets, vec![discovered]);
+    }
+
+    #[test]
+    fn connectivity_repair_uses_bootstrap_when_under_connected_without_mesh_targets() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/33001").expect("bootstrap");
+        let trainer_peer = PeerId::new("12D3KooWTrainerRepairMesh11111111111111111111111");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(trainer_peer);
+
+        let targets =
+            connectivity_repair_targets(&test_boundary(vec![bootstrap.clone()]), &snapshot, 1);
+        assert_eq!(targets, vec![bootstrap]);
+    }
+
+    #[test]
+    fn connectivity_repair_ignores_stale_peer_directory_targets() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/34001").expect("bootstrap");
+        let stale_trainer = SwarmAddress::new("/ip4/127.0.0.1/tcp/34002").expect("trainer");
+        let seed_peer = PeerId::new("12D3KooWSeedRepairFresh111111111111111111111111");
+        let trainer_peer = PeerId::new("12D3KooWTrainerRepairFresh11111111111111111111");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: seed_peer,
+                addresses: vec![bootstrap.clone()],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: trainer_peer,
+                addresses: vec![stale_trainer],
+                advertised_roles: None,
+                announced_at: Utc::now() - chrono::Duration::minutes(10),
+            });
+
+        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn connectivity_repair_prefers_direct_addresses_before_relay_paths() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/35001").expect("bootstrap");
+        let seed_peer = PeerId::new("12D3KooWSeedRepairDirect11111111111111111111111");
+        let trainer_peer = PeerId::new("12D3KooWTrainerRepairDirect1111111111111111111");
+        let direct = SwarmAddress::new("/ip4/127.0.0.1/tcp/35002").expect("direct");
+        let relay = SwarmAddress::new("/ip4/127.0.0.1/tcp/35001/p2p-circuit").expect("relay");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: seed_peer,
+                addresses: vec![bootstrap.clone()],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: trainer_peer,
+                addresses: vec![relay, direct.clone()],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+
+        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        assert_eq!(targets, vec![direct]);
+    }
+
+    #[test]
+    fn connectivity_repair_falls_back_to_relay_path_when_no_direct_address_exists() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/36001").expect("bootstrap");
+        let seed_peer = PeerId::new("12D3KooWSeedRepairRelay111111111111111111111111");
+        let trainer_peer = PeerId::new("12D3KooWTrainerRepairRelay11111111111111111111");
+        let relay = SwarmAddress::new("/ip4/127.0.0.1/tcp/36001/p2p-circuit").expect("relay");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: seed_peer,
+                addresses: vec![bootstrap.clone()],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: trainer_peer,
+                addresses: vec![relay.clone()],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+
+        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        assert_eq!(targets, vec![relay]);
+    }
+
+    #[test]
+    fn bootstrap_offload_disconnects_seed_after_mesh_target_is_met() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/37001").expect("bootstrap");
+        let seed_peer = PeerId::new("12D3KooWSeedOffload11111111111111111111111111111");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: seed_peer.clone(),
+                addresses: vec![bootstrap.clone()],
+                advertised_roles: Some(PeerRoleSet::new([
+                    PeerRole::Bootstrap,
+                    PeerRole::RelayHelper,
+                ])),
+                announced_at: Utc::now(),
+            });
+
+        for index in 0..4 {
+            let peer_id = PeerId::new(format!(
+                "12D3KooWMeshOffload{index:02}1111111111111111111111111111"
+            ));
+            let address =
+                SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/37{:03}", index + 2)).expect("mesh");
+            snapshot.observed_peer_ids.insert(peer_id.clone());
+            snapshot
+                .control_plane
+                .peer_directory_announcements
+                .push(PeerDirectoryAnnouncement {
+                    network_id: NetworkId::new("repair-test"),
+                    peer_id,
+                    addresses: vec![address],
+                    advertised_roles: Some(PeerRoleSet::new([PeerRole::TrainerCpu])),
+                    announced_at: Utc::now(),
+                });
+        }
+
+        let targets = bootstrap_offload_targets(&test_boundary(vec![bootstrap]), &snapshot);
+        assert_eq!(targets, vec![seed_peer]);
+    }
+
+    #[test]
+    fn bootstrap_offload_keeps_seed_when_mesh_target_is_not_met() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/38001").expect("bootstrap");
+        let seed_peer = PeerId::new("12D3KooWSeedRetain111111111111111111111111111111");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: seed_peer,
+                addresses: vec![bootstrap.clone()],
+                advertised_roles: Some(PeerRoleSet::new([
+                    PeerRole::Bootstrap,
+                    PeerRole::RelayHelper,
+                ])),
+                announced_at: Utc::now(),
+            });
+
+        for index in 0..3 {
+            let peer_id = PeerId::new(format!(
+                "12D3KooWMeshRetain{index:02}11111111111111111111111111111"
+            ));
+            let address =
+                SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/38{:03}", index + 2)).expect("mesh");
+            snapshot.observed_peer_ids.insert(peer_id.clone());
+            snapshot
+                .control_plane
+                .peer_directory_announcements
+                .push(PeerDirectoryAnnouncement {
+                    network_id: NetworkId::new("repair-test"),
+                    peer_id,
+                    addresses: vec![address],
+                    advertised_roles: Some(PeerRoleSet::new([PeerRole::TrainerCpu])),
+                    announced_at: Utc::now(),
+                });
+        }
+
+        let targets = bootstrap_offload_targets(&test_boundary(vec![bootstrap]), &snapshot);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_offload_does_not_disconnect_non_bootstrap_peer_used_as_initial_seed() {
+        let validator_addr = SwarmAddress::new("/ip4/127.0.0.1/tcp/39001").expect("validator");
+        let validator_peer = PeerId::new("12D3KooWValidatorSeed11111111111111111111111111111");
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids.insert(validator_peer.clone());
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("repair-test"),
+                peer_id: validator_peer,
+                addresses: vec![validator_addr.clone()],
+                advertised_roles: Some(PeerRoleSet::new([
+                    PeerRole::Authority,
+                    PeerRole::Validator,
+                ])),
+                announced_at: Utc::now(),
+            });
+
+        for index in 0..4 {
+            let peer_id = PeerId::new(format!(
+                "12D3KooWMeshNoDrop{index:02}1111111111111111111111111111"
+            ));
+            let address =
+                SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/39{:03}", index + 2)).expect("mesh");
+            snapshot.observed_peer_ids.insert(peer_id.clone());
+            snapshot
+                .control_plane
+                .peer_directory_announcements
+                .push(PeerDirectoryAnnouncement {
+                    network_id: NetworkId::new("repair-test"),
+                    peer_id,
+                    addresses: vec![address],
+                    advertised_roles: Some(PeerRoleSet::new([PeerRole::TrainerCpu])),
+                    announced_at: Utc::now(),
+                });
+        }
+
+        let targets = bootstrap_offload_targets(&test_boundary(vec![validator_addr]), &snapshot);
+        assert!(targets.is_empty());
     }
 }

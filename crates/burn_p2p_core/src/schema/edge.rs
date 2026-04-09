@@ -222,8 +222,8 @@ pub struct ReenrollmentStatus {
     pub reason: String,
     /// The rotated at.
     pub rotated_at: Option<DateTime<Utc>>,
-    /// The legacy issuer peer IDs.
-    pub legacy_issuer_peer_ids: BTreeSet<PeerId>,
+    /// The retired issuer peer IDs.
+    pub retired_issuer_peer_ids: BTreeSet<PeerId>,
     /// The login path.
     pub login_path: String,
     /// The enroll path.

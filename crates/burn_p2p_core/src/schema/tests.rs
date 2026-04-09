@@ -147,7 +147,7 @@ fn release_and_network_manifests_round_trip() {
         app_semver: semver::Version::new(0, 2, 0),
         git_commit: "deadbeef".into(),
         cargo_lock_hash: ContentId::new("cargo-lock"),
-        burn_version_string: "0.21.0-pre.2".into(),
+        burn_version_string: "0.21.0-pre.3".into(),
         enabled_features_hash: ContentId::new("features"),
         protocol_major: 1,
         supported_workloads: vec![workload],

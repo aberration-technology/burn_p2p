@@ -86,6 +86,35 @@ resource "google_compute_instance" "validator" {
   })
 }
 
+resource "google_compute_instance" "reducer" {
+  count        = var.reducer_count
+  name         = format("%s-reducer-%02d", var.name_prefix, count.index + 1)
+  machine_type = var.reducer_machine_type
+  zone         = var.zone
+  tags         = [var.name_prefix]
+  labels       = merge(local.labels, { role = "reducer" })
+
+  boot_disk {
+    initialize_params {
+      image = data.google_compute_image.ubuntu.self_link
+    }
+  }
+
+  network_interface {
+    network    = var.network
+    subnetwork = var.subnetwork != "" ? var.subnetwork : null
+    access_config {}
+  }
+
+  metadata_startup_script = templatefile("${path.module}/startup/node.sh.tftpl", {
+    service_name = "${var.name_prefix}-reducer"
+    image        = var.reducer_image
+    command      = var.reducer_container_command
+    config_json  = var.reducer_config_json
+    gpu_enabled  = false
+  })
+}
+
 resource "google_compute_instance" "trainer" {
   count        = var.trainer_count
   name         = format("%s-trainer-%02d", var.name_prefix, count.index + 1)

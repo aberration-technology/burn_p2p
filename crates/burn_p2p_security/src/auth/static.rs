@@ -62,11 +62,7 @@ impl StaticIdentityConnector {
 impl IdentityConnector for StaticIdentityConnector {
     fn begin_login(&self, req: LoginRequest) -> Result<LoginStart, AuthError> {
         let expires_at = Utc::now() + self.session_ttl;
-        let state = format!(
-            "{}-{}",
-            req.network_id,
-            expires_at.timestamp_nanos_opt().unwrap_or(0)
-        );
+        let state = super::random_login_state_token("static login state")?;
         let login_id = burn_p2p_core::ContentId::derive(&(
             req.network_id.as_str(),
             &state,
@@ -172,5 +168,32 @@ impl IdentityConnector for StaticIdentityConnector {
             return Err(AuthError::SessionExpired(session.session_id.clone()));
         }
         Ok(session.claims.clone())
+    }
+
+    fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, AuthError> {
+        let pending = self
+            .pending
+            .lock()
+            .expect("static identity pending-login lock should not be poisoned")
+            .clone();
+        Ok(Some(burn_p2p_core::deterministic_cbor(&pending)?))
+    }
+
+    fn import_persistent_state(&self, state: Option<&[u8]>) -> Result<(), AuthError> {
+        let now = Utc::now();
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("static identity pending-login lock should not be poisoned");
+        *pending = match state {
+            Some(state) => burn_p2p_core::from_cbor_slice::<
+                BTreeMap<burn_p2p_core::ContentId, PendingLogin>,
+            >(state)?
+            .into_iter()
+            .filter(|(_, login)| login.expires_at >= now)
+            .collect(),
+            None => BTreeMap::new(),
+        };
+        Ok(())
     }
 }

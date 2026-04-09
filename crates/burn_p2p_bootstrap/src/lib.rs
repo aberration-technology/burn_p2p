@@ -534,6 +534,17 @@ mod tests {
     }
 
     #[test]
+    fn reducer_preset_derives_expected_services_and_roles() {
+        let plan = plan(BootstrapPreset::ReducerOnly);
+
+        assert!(plan.supports_service(&BootstrapService::Reducer));
+        assert!(plan.supports_service(&BootstrapService::AdminApi));
+        assert!(plan.roles.contains(&burn_p2p_core::PeerRole::Reducer));
+        assert!(!plan.roles.contains(&burn_p2p_core::PeerRole::Validator));
+        assert!(!plan.roles.contains(&burn_p2p_core::PeerRole::Authority));
+    }
+
+    #[test]
     fn authority_presets_require_authority_policy() {
         let error = BootstrapSpec {
             preset: BootstrapPreset::AuthorityValidator,
@@ -1298,6 +1309,7 @@ mod tests {
                     initialize_head_on_start: true,
                     restore_head_on_start: true,
                     validation_interval_millis: 100,
+                    reducer_interval_millis: None,
                     training_interval_millis: None,
                 },
             )

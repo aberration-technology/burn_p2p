@@ -46,7 +46,7 @@ struct AcceptedCohortCandidate {
 pub(super) fn evaluate_candidate_robustness<M>(
     engine: &burn_p2p_security::RobustnessEngine,
     prepared: &ValidationPreparedState,
-    candidate_models: &[ValidationCandidate<M>],
+    candidate_models: &[ValidationCandidateView<'_, M>],
     evaluated_at: DateTime<Utc>,
 ) -> CandidateRobustnessOutcome {
     let mut seen_receipt_roots = BTreeSet::new();
@@ -57,11 +57,8 @@ pub(super) fn evaluate_candidate_robustness<M>(
     let mut accepted_candidates = Vec::new();
     let mut candidate_states = Vec::new();
 
-    for (update_index, update) in prepared.updates.iter().enumerate() {
-        let candidate = candidate_models.iter().find(|candidate| {
-            candidate.peer_id == update.peer_id
-                && candidate.head.artifact_id == update.delta_artifact_id
-        });
+    for (update_index, candidate) in candidate_models.iter().enumerate() {
+        let update = candidate.update;
         let peer_state = prepared
             .robustness_state
             .peers
@@ -90,19 +87,19 @@ pub(super) fn evaluate_candidate_robustness<M>(
             expected_dataset_view_id: prepared.dataset_view_id.clone(),
             lease_id: update.lease_id.clone(),
             expected_lease_id: update.lease_id.clone(),
-            schema_matches: candidate.is_some(),
+            schema_matches: true,
             duplicate,
             quarantined: peer_state.quarantined,
             consecutive_rejections: peer_state.consecutive_rejections,
             current_trust_score: peer_state.trust_score,
-            canary_report: candidate.map(|candidate| candidate.canary_report.clone()),
+            canary_report: Some(candidate.canary_report.clone()),
             feature_sketch: update
                 .feature_sketch
                 .clone()
                 .unwrap_or_else(|| fallback_update_feature_sketch(update)),
         };
         let decision = engine.evaluate_update(&observation, evaluated_at);
-        if decision.accepted && candidate.is_some() {
+        if decision.accepted {
             let sketch = update
                 .feature_sketch
                 .clone()

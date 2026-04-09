@@ -237,6 +237,7 @@ impl PublicationStore {
             run_id,
             available_profiles,
             alias_history,
+            provider_peer_ids: Vec::new(),
         })
     }
 

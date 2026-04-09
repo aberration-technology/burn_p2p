@@ -4,10 +4,12 @@ subnet_id = "subnet-0123456789abcdef0"
 
 bootstrap_count = 2
 validator_count = 1
+reducer_count = 1
 trainer_count = 1
 
 bootstrap_instance_type = "t3.small"
 validator_instance_type = "t3.large"
+reducer_instance_type = "t3.large"
 trainer_instance_type = "g4dn.xlarge"
 
 ssh_cidrs = ["203.0.113.10/32"]

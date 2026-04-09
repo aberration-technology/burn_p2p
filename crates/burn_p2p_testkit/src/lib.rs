@@ -425,6 +425,17 @@ impl Default for SimulationRunner {
 }
 
 impl SimulationRunner {
+    fn validator_policy_for_fixture(&self, fixture: &PeerFixture) -> ValidatorPolicy {
+        if fixture.limit_profile.card.platform == ClientPlatform::Browser {
+            let mut policy = self.validator_policy.clone();
+            policy.evidence_requirement.minimum_attestation_level = AttestationLevel::Manifest;
+            policy.evidence_requirement.require_challenge_response = false;
+            policy
+        } else {
+            self.validator_policy.clone()
+        }
+    }
+
     /// Creates a value from the spec.
     pub fn from_spec(spec: &SimulationSpec) -> Result<Self, TestkitError> {
         let calibrator = CapabilityCalibrator::new(spec.limit_policy.clone())?;
@@ -962,11 +973,9 @@ impl SimulationRunner {
                 .push(burn_p2p_core::MicroShardId::new("unexpected-microshard"));
         }
 
-        let data_audit = self.validator_policy.audit_data_receipt(
-            &planned_lease.lease,
-            &data_receipt,
-            completed_at,
-        );
+        let validator_policy = self.validator_policy_for_fixture(fixture);
+        let data_audit =
+            validator_policy.audit_data_receipt(&planned_lease.lease, &data_receipt, completed_at);
 
         let base_head_for_receipt = match behavior {
             Some(MaliciousBehavior::WrongBaseHead) => HeadId::new("wrong-base-head"),
@@ -1019,9 +1028,8 @@ impl SimulationRunner {
             metrics,
             merge_cert_id: None,
         };
-        let update_audit = self
-            .validator_policy
-            .audit_update_receipt(&contribution_receipt, completed_at);
+        let update_audit =
+            validator_policy.audit_update_receipt(&contribution_receipt, completed_at);
 
         let evidence = MergeEvidence {
             peer_id: fixture.peer_id.clone(),
@@ -1032,9 +1040,8 @@ impl SimulationRunner {
             holdout_metrics: BTreeMap::from([("holdout_loss".into(), MetricValue::Float(0.5))]),
             reputation_score: fixture.reputation_state.score,
         };
-        let evidence_decision = self
-            .validator_policy
-            .evaluate_merge_evidence(&contribution_receipt, &evidence);
+        let evidence_decision =
+            validator_policy.evaluate_merge_evidence(&contribution_receipt, &evidence);
         let mut rejection_findings = data_audit.findings.clone();
         rejection_findings.extend(update_audit.findings.clone());
         if base_head_for_receipt != current_base_head {
@@ -1592,8 +1599,8 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::{
-        ChaosEvent, FaultType, MaliciousBehavior, SimulationRunner, SimulationSpec,
-        SyntheticArtifactGenerator,
+        ChaosEvent, FaultType, MaliciousBehavior, PeerFixtureMode, SimulationRunner,
+        SimulationSpec, SyntheticArtifactGenerator,
     };
 
     #[test]
@@ -1996,6 +2003,34 @@ mod tests {
                         })
                 })
         );
+    }
+
+    #[test]
+    fn simulation_runner_accepts_honest_browser_receipts() {
+        let runner = SimulationRunner::default();
+        let spec = SimulationSpec {
+            peer_count: 6,
+            browser_peer_count: 2,
+            window_count: 3,
+            ..SimulationSpec::default()
+        };
+
+        let outcome = runner.run(spec).expect("simulation");
+        let browser_peer_ids = outcome
+            .peer_fixtures
+            .iter()
+            .filter(|fixture| fixture.mode == PeerFixtureMode::HonestBrowser)
+            .map(|fixture| fixture.peer_id.clone())
+            .collect::<BTreeSet<_>>();
+        let accepted_browser_receipts = outcome
+            .windows
+            .iter()
+            .flat_map(|window| window.accepted_receipts.iter())
+            .filter(|receipt| browser_peer_ids.contains(&receipt.peer_id))
+            .count();
+
+        assert!(!browser_peer_ids.is_empty());
+        assert!(accepted_browser_receipts > 0);
     }
 
     #[test]

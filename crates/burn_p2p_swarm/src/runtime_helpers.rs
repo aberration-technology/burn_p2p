@@ -3,9 +3,15 @@ use std::convert::Infallible;
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{TcpListener, UdpSocket};
 
-use libp2p::{Multiaddr, StreamProtocol, multiaddr::Protocol as MultiaddrProtocol};
 #[cfg(not(target_arch = "wasm32"))]
-use libp2p_identity::Keypair;
+use libp2p::multiaddr::Protocol as MultiaddrProtocol;
+use libp2p::{Multiaddr, StreamProtocol};
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_identity::{Keypair, PeerId as Libp2pPeerId};
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_kad as kad;
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_rendezvous::Namespace;
 use libp2p_request_response as request_response;
 use libp2p_swarm::SwarmEvent;
 
@@ -96,6 +102,92 @@ pub(crate) fn stream_protocol(protocol: &ProtocolId) -> Result<StreamProtocol, S
 pub(crate) fn tls_config(keypair: &Keypair) -> Result<libp2p::tls::Config, SwarmError> {
     libp2p::tls::Config::new(keypair)
         .map_err(|error| SwarmError::Runtime(format!("failed to build tls config: {error}")))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn protocol_supports_relay_hop(protocols: &[String]) -> bool {
+    protocols
+        .iter()
+        .any(|protocol| protocol.as_str() == libp2p::relay::HOP_PROTOCOL_NAME.as_ref())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn protocol_supports_rendezvous(protocols: &[String]) -> bool {
+    protocols
+        .iter()
+        .any(|protocol| protocol.as_str() == "/rendezvous/1.0.0")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn kademlia_protocol_for_control_protocol(
+    protocol: &ProtocolId,
+) -> Result<StreamProtocol, SwarmError> {
+    let mut parts = protocol
+        .as_str()
+        .split('/')
+        .filter(|segment| !segment.is_empty());
+    let (Some("burn-p2p"), Some(network_id), Some("v1"), Some("control")) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(SwarmError::InvalidProtocolId(protocol.as_str().to_owned()));
+    };
+    if parts.next().is_some() {
+        return Err(SwarmError::InvalidProtocolId(protocol.as_str().to_owned()));
+    }
+
+    StreamProtocol::try_from_owned(format!("/burn-p2p/{network_id}/v1/kad"))
+        .map_err(|_| SwarmError::InvalidProtocolId(protocol.as_str().to_owned()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rendezvous_namespace_for_control_protocol(
+    protocol: &ProtocolId,
+) -> Result<Namespace, SwarmError> {
+    let mut parts = protocol
+        .as_str()
+        .split('/')
+        .filter(|segment| !segment.is_empty());
+    let (Some("burn-p2p"), Some(network_id), Some("v1"), Some("control")) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(SwarmError::InvalidProtocolId(protocol.as_str().to_owned()));
+    };
+    if parts.next().is_some() {
+        return Err(SwarmError::InvalidProtocolId(protocol.as_str().to_owned()));
+    }
+
+    Namespace::new(format!("burn-p2p:{network_id}"))
+        .map_err(|_| SwarmError::InvalidProtocolId(protocol.as_str().to_owned()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn relay_reservation_listen_addr(
+    relay_peer_id: &Libp2pPeerId,
+    listen_addresses: &[Multiaddr],
+) -> Option<Multiaddr> {
+    listen_addresses
+        .iter()
+        .find(|address| {
+            !address
+                .iter()
+                .any(|protocol| matches!(protocol, MultiaddrProtocol::P2pCircuit))
+        })
+        .map(|address| {
+            let mut relay_address = address.clone();
+            if !relay_address
+                .iter()
+                .any(|protocol| matches!(protocol, MultiaddrProtocol::P2p(_)))
+            {
+                relay_address.push(MultiaddrProtocol::P2p(*relay_peer_id));
+            }
+            relay_address.push(MultiaddrProtocol::P2pCircuit);
+            relay_address
+        })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn peer_directory_record_key_for_peer(peer_id: &str) -> kad::RecordKey {
+    kad::RecordKey::new(&format!("burn-p2p-peer-directory:{peer_id}"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

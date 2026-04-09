@@ -266,7 +266,7 @@ fn synthetic_release_manifest() -> ClientReleaseManifest {
         app_semver: Version::new(0, 2, 0),
         git_commit: "local-demo".into(),
         cargo_lock_hash: ContentId::new("cargo-lock"),
-        burn_version_string: "0.21.0-pre.2".into(),
+        burn_version_string: "0.21.0-pre.3".into(),
         enabled_features_hash: ContentId::new("burn-runtime"),
         protocol_major: 1,
         supported_workloads: vec![synthetic_workload_manifest()],

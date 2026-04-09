@@ -2,24 +2,25 @@ use super::*;
 use crate::config::{
     ClientReenrollmentStatus, RuntimeCommand, TrustBundleState, default_node_runtime_state,
 };
+use crate::handles::dedupe_peer_ids;
 mod control_plane;
 mod persistence;
 mod trust;
 
 pub(crate) use control_plane::run_control_plane;
+pub(crate) use persistence::{
+    inferred_next_window_id, load_head_state, load_json, load_known_peers,
+    load_latest_merge_certificate, load_limit_profile, load_primary_slot_assignment,
+    persist_auth_state, persist_control_plane_state, persist_head_state,
+    persist_in_flight_transfer_states, persist_json, persist_known_peers, persist_limit_profile,
+    persist_primary_slot_assignment, persist_runtime_binding_state, persist_runtime_security_state,
+    persist_window_id, remove_artifact_transfer_state, restore_auth_config,
+    restore_control_plane_state, restore_in_flight_transfer_states, restore_runtime_binding_config,
+    restore_runtime_security_state,
+};
 #[cfg(test)]
 pub(crate) use persistence::{
     load_artifact_transfer_state, load_scoped_lease_announcement, persist_artifact_transfer_state,
-};
-pub(crate) use persistence::{
-    load_head_state, load_json, load_known_peers, load_latest_merge_certificate,
-    load_limit_profile, load_primary_slot_assignment, next_window_id, persist_auth_state,
-    persist_control_plane_state, persist_head_state, persist_in_flight_transfer_states,
-    persist_json, persist_known_peers, persist_limit_profile, persist_primary_slot_assignment,
-    persist_runtime_binding_state, persist_runtime_security_state, persist_window_id,
-    remove_artifact_transfer_state, restore_auth_config, restore_control_plane_state,
-    restore_in_flight_transfer_states, restore_runtime_binding_config,
-    restore_runtime_security_state,
 };
 use persistence::{
     persist_local_peer_auth, seed_shell_control_plane_state, sync_control_plane_snapshot,
@@ -27,7 +28,8 @@ use persistence::{
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{
     admission_rejection_reason, note_admitted_peer, note_rejected_peer, peer_is_reducer_eligible,
-    peer_is_validator_eligible, reconcile_live_revocation_policy, reconcile_remote_trust_bundle,
+    peer_is_trainer_eligible, peer_is_validator_eligible, reconcile_live_revocation_policy,
+    reconcile_remote_trust_bundle,
 };
 
 pub(crate) fn runtime_limit_policy(estimate: &CapabilityEstimate) -> LimitPolicy {
@@ -128,11 +130,359 @@ pub(crate) fn connected_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<P
     snapshot.observed_peer_ids.clone()
 }
 
+pub(crate) fn experiment_snapshot_peer_ids(
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+) -> BTreeSet<PeerId> {
+    let mut peer_ids = BTreeSet::new();
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .head_announcements
+            .iter()
+            .filter(|announcement| matches_experiment_head(&announcement.head, experiment))
+            .filter_map(|announcement| announcement.provider_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .lease_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.lease.study_id == experiment.study_id
+                    && announcement.lease.experiment_id == experiment.experiment_id
+                    && announcement.lease.revision_id == experiment.revision_id
+            })
+            .map(|announcement| announcement.lease.peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .update_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.update.study_id == experiment.study_id
+                    && announcement.update.experiment_id == experiment.experiment_id
+                    && announcement.update.revision_id == experiment.revision_id
+            })
+            .flat_map(|announcement| {
+                std::iter::once(announcement.update.peer_id.clone())
+                    .chain(announcement.update.providers.iter().cloned())
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .merge_window_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.merge_window.study_id == experiment.study_id
+                    && announcement.merge_window.experiment_id == experiment.experiment_id
+                    && announcement.merge_window.revision_id == experiment.revision_id
+            })
+            .flat_map(|announcement| {
+                announcement
+                    .merge_window
+                    .validators
+                    .iter()
+                    .cloned()
+                    .chain(announcement.merge_window.reducers.iter().cloned())
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .aggregate_proposal_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.proposal.study_id == experiment.study_id
+                    && announcement.proposal.experiment_id == experiment.experiment_id
+                    && announcement.proposal.revision_id == experiment.revision_id
+            })
+            .flat_map(|announcement| {
+                std::iter::once(announcement.proposal.reducer_peer_id.clone())
+                    .chain(announcement.proposal.providers.iter().cloned())
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .reduction_certificate_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.certificate.study_id == experiment.study_id
+                    && announcement.certificate.experiment_id == experiment.experiment_id
+                    && announcement.certificate.revision_id == experiment.revision_id
+            })
+            .map(|announcement| announcement.certificate.validator.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .validation_quorum_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.certificate.study_id == experiment.study_id
+                    && announcement.certificate.experiment_id == experiment.experiment_id
+                    && announcement.certificate.revision_id == experiment.revision_id
+            })
+            .flat_map(|announcement| {
+                std::iter::once(announcement.certificate.coordinator.clone()).chain(
+                    announcement
+                        .certificate
+                        .attesting_validators
+                        .iter()
+                        .cloned(),
+                )
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .merge_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.certificate.study_id == experiment.study_id
+                    && announcement.certificate.experiment_id == experiment.experiment_id
+                    && announcement.certificate.revision_id == experiment.revision_id
+            })
+            .map(|announcement| announcement.certificate.validator.clone()),
+    );
+
+    if peer_ids.is_empty() {
+        connected_peer_ids(snapshot)
+    } else {
+        peer_ids
+    }
+}
+
+pub(crate) fn prioritized_experiment_snapshot_peer_ids(
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+) -> Vec<PeerId> {
+    let mut prioritized = Vec::new();
+
+    if let Some(announcement) = snapshot
+        .control_plane
+        .merge_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+        })
+        .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
+    {
+        prioritized.push(announcement.certificate.validator.clone());
+    }
+
+    if let Some(announcement) = snapshot
+        .control_plane
+        .validation_quorum_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+        })
+        .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
+    {
+        prioritized.push(announcement.certificate.coordinator.clone());
+        prioritized.extend(
+            announcement
+                .certificate
+                .attesting_validators
+                .iter()
+                .cloned(),
+        );
+    }
+
+    let mut proposals = snapshot
+        .control_plane
+        .aggregate_proposal_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.proposal.study_id == experiment.study_id
+                && announcement.proposal.experiment_id == experiment.experiment_id
+                && announcement.proposal.revision_id == experiment.revision_id
+        })
+        .collect::<Vec<_>>();
+    proposals.sort_by(|left, right| {
+        right
+            .proposal
+            .window_id
+            .cmp(&left.proposal.window_id)
+            .then(right.announced_at.cmp(&left.announced_at))
+    });
+    for announcement in proposals {
+        prioritized.push(announcement.proposal.reducer_peer_id.clone());
+        prioritized.extend(announcement.proposal.providers.iter().cloned());
+    }
+
+    if let Some(merge_window) =
+        latest_merge_window_from_snapshot(&snapshot.control_plane, experiment, None)
+    {
+        prioritized.extend(merge_window.validators);
+        prioritized.extend(merge_window.reducers);
+    }
+
+    let mut heads = snapshot
+        .control_plane
+        .head_announcements
+        .iter()
+        .filter(|announcement| matches_experiment_head(&announcement.head, experiment))
+        .collect::<Vec<_>>();
+    heads.sort_by(|left, right| {
+        right
+            .head
+            .global_step
+            .cmp(&left.head.global_step)
+            .then(right.head.created_at.cmp(&left.head.created_at))
+            .then(right.announced_at.cmp(&left.announced_at))
+    });
+    prioritized.extend(
+        heads
+            .into_iter()
+            .filter_map(|announcement| announcement.provider_peer_id.clone()),
+    );
+
+    let mut updates = snapshot
+        .control_plane
+        .update_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.update.study_id == experiment.study_id
+                && announcement.update.experiment_id == experiment.experiment_id
+                && announcement.update.revision_id == experiment.revision_id
+        })
+        .collect::<Vec<_>>();
+    updates.sort_by(|left, right| {
+        right
+            .update
+            .window_id
+            .cmp(&left.update.window_id)
+            .then(right.update.announced_at.cmp(&left.update.announced_at))
+    });
+    for announcement in updates {
+        prioritized.push(announcement.update.peer_id.clone());
+        prioritized.extend(announcement.update.providers.iter().cloned());
+    }
+
+    let mut leases = snapshot
+        .control_plane
+        .lease_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.lease.study_id == experiment.study_id
+                && announcement.lease.experiment_id == experiment.experiment_id
+                && announcement.lease.revision_id == experiment.revision_id
+        })
+        .collect::<Vec<_>>();
+    leases.sort_by(|left, right| {
+        right
+            .lease
+            .window_id
+            .cmp(&left.lease.window_id)
+            .then(right.announced_at.cmp(&left.announced_at))
+    });
+    prioritized.extend(
+        leases
+            .into_iter()
+            .map(|announcement| announcement.lease.peer_id.clone()),
+    );
+
+    prioritized.extend(experiment_snapshot_peer_ids(snapshot, experiment));
+    prioritized.extend(connected_peer_ids(snapshot));
+    dedupe_peer_ids(prioritized)
+}
+
+fn cached_snapshot_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId> {
+    let mut peer_ids = connected_peer_ids(snapshot);
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .auth_announcements
+            .iter()
+            .map(|announcement| announcement.peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .iter()
+            .map(|announcement| announcement.peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .head_announcements
+            .iter()
+            .filter_map(|announcement| announcement.provider_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .lease_announcements
+            .iter()
+            .map(|announcement| announcement.lease.peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .update_announcements
+            .iter()
+            .map(|announcement| announcement.update.peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .aggregate_proposal_announcements
+            .iter()
+            .map(|announcement| announcement.proposal.reducer_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .reduction_certificate_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.validator.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .validation_quorum_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.coordinator.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .merge_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.validator.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .reducer_assignment_announcements
+            .iter()
+            .map(|announcement| announcement.assignment.source_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .reducer_load_announcements
+            .iter()
+            .map(|announcement| announcement.report.peer_id.clone()),
+    );
+    peer_ids
+}
+
 pub(crate) fn cached_connected_snapshots(
     snapshot: &NodeTelemetrySnapshot,
 ) -> Vec<(PeerId, ControlPlaneSnapshot)> {
     let aggregate = &snapshot.control_plane;
-    connected_peer_ids(snapshot)
+    cached_snapshot_peer_ids(snapshot)
         .into_iter()
         .map(|peer_id| {
             (
@@ -228,27 +578,8 @@ fn latest_remote_head(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     experiment: &ExperimentHandle,
 ) -> Option<(PeerId, HeadDescriptor)> {
-    let remote_merged = snapshots
-        .iter()
-        .filter_map(|(peer_id, snapshot)| {
-            if let Some(merge) = latest_merge_from_snapshot(snapshot, experiment) {
-                return snapshot
-                    .head_announcements
-                    .iter()
-                    .find(|announcement| announcement.head.head_id == merge.merged_head_id)
-                    .map(|announcement| {
-                        (
-                            announcement
-                                .provider_peer_id
-                                .clone()
-                                .unwrap_or_else(|| peer_id.clone()),
-                            announcement.head.clone(),
-                        )
-                    });
-            }
-            None
-        })
-        .max_by(|left, right| {
+    let remote_merged =
+        latest_merged_head_from_snapshots(snapshots, experiment).max_by(|left, right| {
             left.1
                 .global_step
                 .cmp(&right.1.global_step)
@@ -326,6 +657,57 @@ fn latest_merge_from_snapshot(
         .map(|announcement| announcement.certificate.clone())
 }
 
+fn head_for_merged_head_id(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    merged_head_id: &HeadId,
+) -> Option<(PeerId, HeadDescriptor)> {
+    snapshots
+        .iter()
+        .flat_map(|(peer_id, snapshot)| {
+            snapshot
+                .head_announcements
+                .iter()
+                .filter(move |announcement| announcement.head.head_id == *merged_head_id)
+                .map(move |announcement| {
+                    (
+                        announcement
+                            .provider_peer_id
+                            .clone()
+                            .unwrap_or_else(|| peer_id.clone()),
+                        announcement.head.clone(),
+                    )
+                })
+        })
+        .max_by(|left, right| {
+            left.1
+                .global_step
+                .cmp(&right.1.global_step)
+                .then(left.1.created_at.cmp(&right.1.created_at))
+        })
+}
+
+fn latest_merged_head_from_snapshots<'a>(
+    snapshots: &'a [(PeerId, ControlPlaneSnapshot)],
+    experiment: &'a ExperimentHandle,
+) -> impl Iterator<Item = (PeerId, HeadDescriptor)> + 'a {
+    snapshots.iter().filter_map(move |(_, snapshot)| {
+        let merge = latest_merge_from_snapshot(snapshot, experiment)?;
+        head_for_merged_head_id(snapshots, &merge.merged_head_id)
+    })
+}
+
+pub(crate) fn snapshots_with_local_control_plane(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    local_peer_id: Option<&PeerId>,
+    local_snapshot: &ControlPlaneSnapshot,
+) -> Vec<(PeerId, ControlPlaneSnapshot)> {
+    let mut combined = snapshots.to_vec();
+    if let Some(local_peer_id) = local_peer_id {
+        combined.push((local_peer_id.clone(), local_snapshot.clone()));
+    }
+    combined
+}
+
 pub(crate) fn resolve_canonical_head(
     storage: &StorageConfig,
     experiment: &ExperimentHandle,
@@ -333,27 +715,8 @@ pub(crate) fn resolve_canonical_head(
 ) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
     let mut best = load_head_state(storage, experiment)?.map(|head| (PeerId::new("local"), head));
 
-    let remote_merged = snapshots
-        .iter()
-        .filter_map(|(peer_id, snapshot)| {
-            if let Some(merge) = latest_merge_from_snapshot(snapshot, experiment) {
-                return snapshot
-                    .head_announcements
-                    .iter()
-                    .find(|announcement| announcement.head.head_id == merge.merged_head_id)
-                    .map(|announcement| {
-                        (
-                            announcement
-                                .provider_peer_id
-                                .clone()
-                                .unwrap_or_else(|| peer_id.clone()),
-                            announcement.head.clone(),
-                        )
-                    });
-            }
-            None
-        })
-        .max_by(|left, right| {
+    let remote_merged =
+        latest_merged_head_from_snapshots(snapshots, experiment).max_by(|left, right| {
             left.1
                 .global_step
                 .cmp(&right.1.global_step)
@@ -624,16 +987,52 @@ pub(crate) fn runtime_merge_topology_policy(
 
 pub(crate) fn runtime_topology_peers(
     snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
     local_peer_id: &PeerId,
 ) -> Vec<PeerId> {
     let mut peers = connected_peer_ids(snapshot)
         .into_iter()
         .filter(|peer_id| peer_is_reducer_eligible(snapshot, peer_id))
         .collect::<BTreeSet<_>>();
-    if peer_is_reducer_eligible(snapshot, local_peer_id) {
+    if local_roles.contains(&PeerRole::Reducer) && peer_is_reducer_eligible(snapshot, local_peer_id)
+    {
         peers.insert(local_peer_id.clone());
     }
-    if peers.is_empty() {
+    if peers.is_empty() && local_roles.contains(&PeerRole::Reducer) {
+        peers.insert(local_peer_id.clone());
+    }
+    peers.into_iter().collect()
+}
+
+pub(crate) fn runtime_training_peers(
+    snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
+    local_peer_id: &PeerId,
+) -> Vec<PeerId> {
+    let mut candidates = connected_peer_ids(snapshot);
+    candidates.extend(
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .iter()
+            .map(|announcement| announcement.peer_id.clone()),
+    );
+    candidates.extend(
+        snapshot
+            .control_plane
+            .lease_announcements
+            .iter()
+            .map(|announcement| announcement.lease.peer_id.clone()),
+    );
+    let mut peers = candidates
+        .into_iter()
+        .filter(|peer_id| peer_is_trainer_eligible(snapshot, peer_id))
+        .collect::<BTreeSet<_>>();
+    if local_roles_allow_training(local_roles) && peer_is_trainer_eligible(snapshot, local_peer_id)
+    {
+        peers.insert(local_peer_id.clone());
+    }
+    if peers.is_empty() && local_roles_allow_training(local_roles) {
         peers.insert(local_peer_id.clone());
     }
     peers.into_iter().collect()
@@ -641,16 +1040,22 @@ pub(crate) fn runtime_topology_peers(
 
 pub(crate) fn runtime_validator_peers(
     snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
     local_peer_id: &PeerId,
 ) -> Vec<PeerId> {
     let mut peers = connected_peer_ids(snapshot)
         .into_iter()
         .filter(|peer_id| peer_is_validator_eligible(snapshot, peer_id))
         .collect::<BTreeSet<_>>();
-    if peer_is_validator_eligible(snapshot, local_peer_id) {
+    if (local_roles.contains(&PeerRole::Validator) || local_roles.contains(&PeerRole::Authority))
+        && peer_is_validator_eligible(snapshot, local_peer_id)
+    {
         peers.insert(local_peer_id.clone());
     }
-    if peers.is_empty() {
+    if peers.is_empty()
+        && (local_roles.contains(&PeerRole::Validator)
+            || local_roles.contains(&PeerRole::Authority))
+    {
         peers.insert(local_peer_id.clone());
     }
     peers.into_iter().collect()
@@ -670,6 +1075,11 @@ pub(crate) fn runtime_validators(
         validators.push(local_peer_id.clone());
     }
     for peer_id in peers {
+        if peer_id == local_peer_id
+            && !(roles.contains(&PeerRole::Validator) || roles.contains(&PeerRole::Authority))
+        {
+            continue;
+        }
         if !validators.contains(peer_id) {
             validators.push(peer_id.clone());
         }
@@ -686,6 +1096,13 @@ pub(crate) fn runtime_validators(
         );
     }
     validators
+}
+
+fn local_roles_allow_training(roles: &PeerRoleSet) -> bool {
+    roles.contains(&PeerRole::TrainerGpu)
+        || roles.contains(&PeerRole::TrainerCpu)
+        || roles.contains(&PeerRole::BrowserTrainerWgpu)
+        || roles.contains(&PeerRole::BrowserTrainer)
 }
 
 pub(crate) fn open_runtime_merge_window(
@@ -823,7 +1240,7 @@ mod tests {
     use super::*;
 
     fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
-        NodeTelemetrySnapshot::starting(
+        let mut snapshot = NodeTelemetrySnapshot::starting(
             &MainnetHandle {
                 genesis: GenesisSpec {
                     network_id: NetworkId::new("net-test"),
@@ -835,7 +1252,9 @@ mod tests {
                 roles: PeerRoleSet::new(roles),
             },
             &NodeConfig::default(),
-        )
+        );
+        snapshot.local_peer_id = Some(PeerId::new("local"));
+        snapshot
     }
 
     fn trust_score(
@@ -855,6 +1274,22 @@ mod tests {
         }
     }
 
+    fn advertise_peer(snapshot: &mut NodeTelemetrySnapshot, peer_id: &str, roles: &[PeerRole]) {
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("net-test"),
+                peer_id: PeerId::new(peer_id),
+                addresses: vec![
+                    SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/4{:03}", peer_id.len()))
+                        .expect("peer directory address"),
+                ],
+                advertised_roles: Some(PeerRoleSet::new(roles.iter().cloned())),
+                announced_at: Utc::now(),
+            });
+    }
+
     #[test]
     fn runtime_topology_peers_exclude_quarantined_and_reducer_demoted_peers() {
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
@@ -867,13 +1302,52 @@ mod tests {
             trust_score("peer-quarantined", false, false, true),
             trust_score("peer-validator-only", false, true, false),
         ];
+        advertise_peer(&mut snapshot, "peer-good", &[PeerRole::Reducer]);
+        advertise_peer(&mut snapshot, "peer-quarantined", &[PeerRole::Reducer]);
+        advertise_peer(&mut snapshot, "peer-validator-only", &[PeerRole::Validator]);
 
-        let peers = runtime_topology_peers(&snapshot, &PeerId::new("local"));
+        let peers = runtime_topology_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::Reducer]),
+            &PeerId::new("local"),
+        );
 
         assert!(peers.contains(&PeerId::new("local")));
         assert!(peers.contains(&PeerId::new("peer-good")));
         assert!(!peers.contains(&PeerId::new("peer-quarantined")));
         assert!(!peers.contains(&PeerId::new("peer-validator-only")));
+    }
+
+    #[test]
+    fn runtime_training_peers_exclude_non_trainers_and_quarantined_peers() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([
+            PeerId::new("peer-trainer"),
+            PeerId::new("peer-browser-trainer"),
+            PeerId::new("peer-validator"),
+            PeerId::new("peer-quarantined"),
+        ]);
+        snapshot.trust_scores = vec![trust_score("peer-quarantined", false, false, true)];
+        advertise_peer(&mut snapshot, "peer-trainer", &[PeerRole::TrainerGpu]);
+        advertise_peer(
+            &mut snapshot,
+            "peer-browser-trainer",
+            &[PeerRole::BrowserTrainerWgpu],
+        );
+        advertise_peer(&mut snapshot, "peer-validator", &[PeerRole::Validator]);
+        advertise_peer(&mut snapshot, "peer-quarantined", &[PeerRole::TrainerCpu]);
+
+        let peers = runtime_training_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        assert!(peers.contains(&PeerId::new("local")));
+        assert!(peers.contains(&PeerId::new("peer-trainer")));
+        assert!(peers.contains(&PeerId::new("peer-browser-trainer")));
+        assert!(!peers.contains(&PeerId::new("peer-validator")));
+        assert!(!peers.contains(&PeerId::new("peer-quarantined")));
     }
 
     #[test]
@@ -888,8 +1362,15 @@ mod tests {
             trust_score("peer-reducer-only", true, false, false),
             trust_score("peer-quarantined", false, false, true),
         ];
+        advertise_peer(&mut snapshot, "peer-good", &[PeerRole::Validator]);
+        advertise_peer(&mut snapshot, "peer-reducer-only", &[PeerRole::Reducer]);
+        advertise_peer(&mut snapshot, "peer-quarantined", &[PeerRole::Validator]);
 
-        let validator_peers = runtime_validator_peers(&snapshot, &PeerId::new("local"));
+        let validator_peers = runtime_validator_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::Validator]),
+            &PeerId::new("local"),
+        );
         let validators = runtime_validators(
             &PeerRoleSet::new([PeerRole::Validator]),
             &PeerId::new("local"),
@@ -923,5 +1404,26 @@ mod tests {
         assert_eq!(validators.len(), 2);
         assert_eq!(validators[0], PeerId::new("local"));
         assert_eq!(validators[1], PeerId::new("validator-00"));
+    }
+
+    #[test]
+    fn runtime_validator_peers_ignore_transport_only_observed_peers() {
+        let mut snapshot = test_snapshot([PeerRole::Validator]);
+        snapshot.local_peer_id = Some(PeerId::new("local"));
+        snapshot.observed_peer_ids = BTreeSet::from([
+            PeerId::new("peer-validator"),
+            PeerId::new("peer-transport-only"),
+        ]);
+        advertise_peer(&mut snapshot, "peer-validator", &[PeerRole::Validator]);
+
+        let validator_peers = runtime_validator_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::Validator]),
+            &PeerId::new("local"),
+        );
+
+        assert!(validator_peers.contains(&PeerId::new("local")));
+        assert!(validator_peers.contains(&PeerId::new("peer-validator")));
+        assert!(!validator_peers.contains(&PeerId::new("peer-transport-only")));
     }
 }

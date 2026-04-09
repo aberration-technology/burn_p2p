@@ -253,12 +253,19 @@ let experiment = trainer.experiment(
     RevisionId::new("rev-1"),
 );
 
-let outcome = trainer.train_window_once(&experiment)?;
+let mut trainer_session = trainer.continuous_trainer(&experiment)?;
+let outcome = trainer_session.train_next_window()?;
 ```
 
-That call to `train_window_once` is the actual “make this node a trainer” step.
-It pulls the current base head and assigned shards, runs one local training
-window, and publishes the candidate update.
+`continuous_trainer()` is the opinionated optimistic trainer path. It keeps a
+warm in-memory model, immediately begins the next local window after publishing,
+and reconciles newer canonical heads between windows using the default trainer
+policy.
+
+`train_window_once()` is still available as the low-level one-shot primitive.
+Use it when you explicitly want one published window and no retained trainer
+session state, or when you want external orchestration to wait for every
+canonical promotion before continuing.
 
 One important point: a trainer is not enough by itself. A validator / authority
 path must already exist in the network to initialize the revision head and

@@ -6,8 +6,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+native-gpu-probe = ["dep:burn", "burn_p2p/burn"]
+
 [dependencies]
 anyhow.workspace = true
+burn = { workspace = true, optional = true, features = ["autodiff", "wgpu", "cuda"] }
 burn_p2p = { path = "../burn_p2p" }
 burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap", default-features = false, features = [
   "admin-http",
@@ -55,6 +59,11 @@ harness = false
 [[bench]]
 name = "merge_topology"
 harness = false
+
+[[bin]]
+name = "burn-p2p-testkit-native-accelerator-probe"
+path = "src/bin/burn-p2p-testkit-native-accelerator-probe.rs"
+required-features = ["native-gpu-probe"]
 
 [lints]
 workspace = true

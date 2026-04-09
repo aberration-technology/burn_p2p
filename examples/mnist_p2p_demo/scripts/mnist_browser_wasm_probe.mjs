@@ -106,10 +106,67 @@ async function writeProfiledBody(response, bytes, profile) {
 
 async function startServer(config) {
   const requestLog = new Map(config.profiles.map((profile) => [profile.slug, []]));
+  const peerDatasetRoot = config.peer_dataset_root || null;
+  const peerHeadArtifactRoot = config.peer_head_artifact_root || null;
+  const peerArtifactManifestRequests = [];
+  const peerArtifactChunkRequests = [];
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
+      if (pathname.startsWith("/peer-swarm/manifest/")) {
+        const artifactId = pathname.split("/").filter(Boolean)[2] ?? "";
+        peerArtifactManifestRequests.push(artifactId);
+        if (!peerHeadArtifactRoot) {
+          response.writeHead(404);
+          response.end("missing peer head artifact root");
+          return;
+        }
+        const descriptorPath = path.join(
+          peerHeadArtifactRoot,
+          artifactId,
+          "descriptor.json",
+        );
+        if (!fs.existsSync(descriptorPath)) {
+          response.writeHead(404);
+          response.end("missing peer artifact descriptor");
+          return;
+        }
+        await writeProfiledBody(
+          response,
+          { path: "descriptor.json", data: fs.readFileSync(descriptorPath) },
+          { latency_ms: 0, bandwidth_bytes_per_sec: 0 },
+        );
+        return;
+      }
+      if (pathname.startsWith("/peer-swarm/chunk/")) {
+        const parts = pathname.split("/").filter(Boolean);
+        const artifactId = parts[2] ?? "";
+        const chunkId = parts[3] ?? "";
+        peerArtifactChunkRequests.push({ artifact_id: artifactId, chunk_id: chunkId });
+        if (!peerHeadArtifactRoot) {
+          response.writeHead(404);
+          response.end("missing peer head artifact root");
+          return;
+        }
+        const chunkPath = path.join(
+          peerHeadArtifactRoot,
+          artifactId,
+          "chunks",
+          `${chunkId}.bin`,
+        );
+        if (!fs.existsSync(chunkPath)) {
+          response.writeHead(404);
+          response.end("missing peer artifact chunk");
+          return;
+        }
+        await writeProfiledBody(
+          response,
+          { path: `${chunkId}.bin`, data: fs.readFileSync(chunkPath) },
+          { latency_ms: 0, bandwidth_bytes_per_sec: 0 },
+        );
+        return;
+      }
       const profile = profileForPath(config, pathname);
       if (profile) {
         const relativeDatasetPath = datasetPathForRequest(pathname);
@@ -119,17 +176,48 @@ async function startServer(config) {
           return;
         }
         requestLog.get(profile.slug).push(relativeDatasetPath);
-        const diskPath = path.join(config.dataset_root, relativeDatasetPath);
-        if (!fs.existsSync(diskPath)) {
-          response.writeHead(404);
-          response.end("missing dataset file");
-          return;
+        if (peerDatasetRoot) {
+          const diskPath = path.join(peerDatasetRoot, relativeDatasetPath);
+          if (!fs.existsSync(diskPath)) {
+            response.writeHead(404);
+            response.end("missing direct dataset file");
+            return;
+          }
+          await writeProfiledBody(
+            response,
+            { path: relativeDatasetPath, data: fs.readFileSync(diskPath) },
+            profile,
+          );
+        } else if (config.dataset_base_url) {
+          const upstream = await fetch(
+            `${config.dataset_base_url.replace(/\/+$/, "")}/${relativeDatasetPath}`,
+          );
+          if (!upstream.ok) {
+            response.writeHead(upstream.status);
+            response.end(`upstream dataset fetch failed: ${upstream.status}`);
+            return;
+          }
+          await writeProfiledBody(
+            response,
+            {
+              path: relativeDatasetPath,
+              data: Buffer.from(await upstream.arrayBuffer()),
+            },
+            profile,
+          );
+        } else {
+          const diskPath = path.join(config.dataset_root, relativeDatasetPath);
+          if (!fs.existsSync(diskPath)) {
+            response.writeHead(404);
+            response.end("missing dataset file");
+            return;
+          }
+          await writeProfiledBody(
+            response,
+            { path: relativeDatasetPath, data: fs.readFileSync(diskPath) },
+            profile,
+          );
         }
-        await writeProfiledBody(
-          response,
-          { path: relativeDatasetPath, data: fs.readFileSync(diskPath) },
-          profile,
-        );
         return;
       }
 
@@ -162,6 +250,8 @@ async function startServer(config) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   return {
+    peerArtifactChunkRequests,
+    peerArtifactManifestRequests,
     requestLog,
     origin: `http://127.0.0.1:${address.port}`,
     close: () => new Promise((resolve) => server.close(resolve)),
@@ -303,6 +393,46 @@ async function main() {
       await context.tracing.start({ screenshots: true, snapshots: true });
     }
     page = await context.newPage();
+    await page.addInitScript(({ peerSwarmBaseUrl }) => {
+      window.__burnP2PArtifactSwarm = {
+        async fetchArtifactManifest(request) {
+          if (!peerSwarmBaseUrl || !request?.artifact_id) {
+            return null;
+          }
+          const response = await fetch(
+            `${peerSwarmBaseUrl.replace(/\/+$/, "")}/manifest/${encodeURIComponent(request.artifact_id)}`,
+            { cache: "no-store" },
+          );
+          if (response.status === 404) {
+            return null;
+          }
+          if (!response.ok) {
+            throw new Error(`peer artifact manifest fetch failed: ${response.status}`);
+          }
+          return await response.json();
+        },
+        async fetchArtifactChunk(request) {
+          if (!peerSwarmBaseUrl || !request?.artifact?.artifact_id || !request?.chunk_id) {
+            return null;
+          }
+          const response = await fetch(
+            `${peerSwarmBaseUrl.replace(/\/+$/, "")}/chunk/${encodeURIComponent(request.artifact.artifact_id)}/${encodeURIComponent(request.chunk_id)}`,
+            { cache: "no-store" },
+          );
+          if (response.status === 404) {
+            return null;
+          }
+          if (!response.ok) {
+            throw new Error(`peer artifact chunk fetch failed: ${response.status}`);
+          }
+          return new Uint8Array(await response.arrayBuffer());
+        },
+      };
+    }, {
+      peerSwarmBaseUrl: config.peer_head_artifact_root
+        ? `${server.origin}/peer-swarm`
+        : null,
+    });
     page.on("console", (message) => {
       consoleMessages.push({ type: message.type(), text: message.text() });
     });
@@ -365,6 +495,34 @@ async function main() {
       leased_microshards: config.leased_microshards,
       browser_runtime: browserRuntime,
       profiles,
+      browser_dataset_access: {
+        upstream_mode:
+          config.browser_dataset_transport ??
+          (config.dataset_base_url ? "p2p-artifact-via-edge" : "http"),
+        browser_http_base_url: profiles[0]?.dataset_base_url ?? "",
+        fetch_manifest_requested: profiles.every((profile) => profile.fetch_manifest_requested),
+        leased_microshards: config.leased_microshards,
+        requested_paths: profiles[0]?.requested_paths ?? [],
+        fetched_only_leased_shards: profiles.every(
+          (profile) => profile.fetched_only_leased_shards,
+        ),
+        shards_distributed_over_p2p: !!config.shards_distributed_over_p2p,
+        notes:
+          config.browser_dataset_transport === "p2p-signed-peer-bundle"
+            ? [
+                "browser shard requests were served from a lease-scoped peer bundle materialized from the live p2p artifact",
+                "the live browser edge remained in the control/auth path, but dataset bytes were not fetched back through the edge route",
+              ]
+            : config.shards_distributed_over_p2p
+          ? [
+              "browser shard requests were proxied through the local latency harness into the live browser edge dataset route",
+              "the live browser edge served a bundle that had already been synced from a native peer over the artifact control plane",
+            ]
+          : [
+              "browser shard requests used the prepared dataset http origin",
+              "shard transport was not exercised over the peer overlay",
+            ],
+      },
       browser_execution: {
         live_browser_training:
           profiles.every((profile) => profile.wasm?.backend === "burn-webgpu-wasm") &&
@@ -379,9 +537,21 @@ async function main() {
           !!liveParticipantSummary?.receipt_submission_accepted,
         runtime_state: liveParticipantSummary?.runtime_state ?? null,
         transport: liveParticipantSummary?.transport ?? null,
+        head_artifact_transport: liveParticipantSummary?.head_artifact_transport ?? null,
         active_assignment: !!liveParticipantSummary?.active_assignment,
         emitted_receipt_id: liveParticipantSummary?.emitted_receipt_id ?? null,
         accepted_receipt_ids: liveParticipantSummary?.accepted_receipt_ids ?? [],
+      },
+      browser_artifact_access: {
+        upstream_mode:
+          liveParticipantSummary?.head_artifact_transport ??
+          config.browser_head_artifact_transport ??
+          "unknown",
+        requested_artifact_ids: [...new Set(server.peerArtifactManifestRequests)],
+        requested_chunk_ids: server.peerArtifactChunkRequests.map(
+          (request) => request.chunk_id,
+        ),
+        peer_swarm_enabled: !!config.peer_head_artifact_root,
       },
     };
 

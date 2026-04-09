@@ -45,6 +45,12 @@ variable "validator_count" {
   default     = 1
 }
 
+variable "reducer_count" {
+  type        = number
+  description = "Number of reducer nodes."
+  default     = 1
+}
+
 variable "trainer_count" {
   type        = number
   description = "Number of trainer nodes."
@@ -60,6 +66,12 @@ variable "bootstrap_machine_type" {
 variable "validator_machine_type" {
   type        = string
   description = "Machine type for validator nodes."
+  default     = "e2-standard-2"
+}
+
+variable "reducer_machine_type" {
+  type        = string
+  description = "Machine type for reducer nodes."
   default     = "e2-standard-2"
 }
 
@@ -90,13 +102,13 @@ variable "allowed_source_ranges" {
 variable "allowed_tcp_ports" {
   type        = list(string)
   description = "TCP ports exposed on the instances."
-  default     = ["22", "8787", "8788", "4001", "4002"]
+  default     = ["22", "8787", "8788", "8789", "4001", "4002", "4003"]
 }
 
 variable "allowed_udp_ports" {
   type        = list(string)
   description = "UDP ports exposed on the instances."
-  default     = ["4001", "4002"]
+  default     = ["4001", "4002", "4003"]
 }
 
 variable "bootstrap_image" {
@@ -107,6 +119,11 @@ variable "bootstrap_image" {
 variable "validator_image" {
   type        = string
   description = "Container image for the validator nodes."
+}
+
+variable "reducer_image" {
+  type        = string
+  description = "Container image for the reducer nodes."
 }
 
 variable "trainer_image" {
@@ -127,6 +144,12 @@ variable "validator_container_command" {
   default     = "/config/config.json"
 }
 
+variable "reducer_container_command" {
+  type        = string
+  description = "Arguments passed to the reducer image entrypoint."
+  default     = "/config/config.json"
+}
+
 variable "trainer_container_command" {
   type        = string
   description = "Arguments passed to the trainer image entrypoint."
@@ -141,6 +164,11 @@ variable "bootstrap_config_json" {
 variable "validator_config_json" {
   type        = string
   description = "Validator config JSON written onto each validator host."
+}
+
+variable "reducer_config_json" {
+  type        = string
+  description = "Reducer config JSON written onto each reducer host."
 }
 
 variable "trainer_config_json" {

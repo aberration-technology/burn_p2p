@@ -55,6 +55,8 @@ pub struct BootstrapEmbeddedDaemonConfig {
     pub restore_head_on_start: bool,
     /// The validation interval millis.
     pub validation_interval_millis: u64,
+    /// The reducer interval millis.
+    pub reducer_interval_millis: Option<u64>,
     /// The training interval millis.
     pub training_interval_millis: Option<u64>,
 }
@@ -82,6 +84,7 @@ impl Default for BootstrapEmbeddedDaemonConfig {
             initialize_head_on_start: true,
             restore_head_on_start: true,
             validation_interval_millis: 250,
+            reducer_interval_millis: None,
             training_interval_millis: None,
         }
     }
@@ -343,6 +346,7 @@ impl BootstrapPlan {
     ) -> anyhow::Result<BootstrapEmbeddedDaemon>
     where
         P: P2pWorkload + Send + 'static,
+        P::Model: Send + 'static,
     {
         let mut builder = NodeBuilder::new(project)
             .with_mainnet(self.genesis.clone())
@@ -448,12 +452,20 @@ fn embedded_daemon_loop<P>(
 ) -> anyhow::Result<()>
 where
     P: P2pWorkload,
+    P::Model: Send + 'static,
 {
     let experiment = config.active_experiment.handle(running.mainnet());
     let validation_interval = Duration::from_millis(config.validation_interval_millis.max(25));
+    let reducer_interval = config
+        .reducer_interval_millis
+        .map(|millis| Duration::from_millis(millis.max(25)))
+        .unwrap_or(validation_interval);
     let training_interval = config
         .training_interval_millis
         .map(|millis| Duration::from_millis(millis.max(25)));
+    let mut last_reduction = Instant::now()
+        .checked_sub(reducer_interval)
+        .unwrap_or_else(Instant::now);
     let mut last_validation = Instant::now()
         .checked_sub(validation_interval)
         .unwrap_or_else(Instant::now);
@@ -495,6 +507,13 @@ where
         {
             let _ = running.train_window_once(&experiment)?;
             last_training = Some(Instant::now());
+        }
+
+        if plan.supports_service(&BootstrapService::Reducer)
+            && last_reduction.elapsed() >= reducer_interval
+        {
+            let _ = running.reduce_candidates_once(&experiment)?;
+            last_reduction = Instant::now();
         }
 
         if plan.supports_service(&BootstrapService::Validator)
@@ -599,8 +618,16 @@ fn observed_peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> 
         | LiveControlPlaneEvent::PeerIdentified { peer_id, .. }
         | LiveControlPlaneEvent::RequestFailure { peer_id, .. }
         | LiveControlPlaneEvent::InboundFailure { peer_id, .. }
-        | LiveControlPlaneEvent::ResponseSendFailure { peer_id, .. } => {
+        | LiveControlPlaneEvent::ResponseSendFailure { peer_id, .. }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { peer_id }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeFailed { peer_id, .. } => {
             Some(PeerId::new(peer_id.clone()))
+        }
+        LiveControlPlaneEvent::PeerDirectoryRecordReceived { announcement } => {
+            Some(announcement.peer_id.clone())
+        }
+        LiveControlPlaneEvent::RelayReservationAccepted { relay_peer_id } => {
+            Some(PeerId::new(relay_peer_id.clone()))
         }
         LiveControlPlaneEvent::PeersDiscovered { peers }
         | LiveControlPlaneEvent::PeersExpired { peers } => peers
@@ -612,6 +639,8 @@ fn observed_peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> 
         } => Some(PeerId::new(peer_id.clone())),
         LiveControlPlaneEvent::ConnectionClosed { .. } => None,
         LiveControlPlaneEvent::NewListenAddr { .. }
+        | LiveControlPlaneEvent::ReachableAddressConfirmed { .. }
+        | LiveControlPlaneEvent::ReachableAddressExpired { .. }
         | LiveControlPlaneEvent::TopicSubscribed { .. }
         | LiveControlPlaneEvent::IncomingConnectionError { .. }
         | LiveControlPlaneEvent::OutgoingConnectionError { peer_id: None, .. }

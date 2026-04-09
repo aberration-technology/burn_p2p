@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    io::Cursor,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -14,30 +15,40 @@ use std::{
 
 use anyhow::{Context, ensure};
 use burn_p2p::{
-    AuthProvider, BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, ContentId,
+    ArtifactBuildSpec, ArtifactId, ArtifactKind, AssignmentLease, AuthProvider,
+    BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, ChunkingScheme, ContentId,
     ContributionReceipt, ExperimentDirectoryEntry, ExperimentId, ExperimentScope, HeadDescriptor,
     HeadId, IdentityConnector, LeaseId, MicroShardId, NetworkManifest,
-    NodeCertificateAuthority, NodeEnrollmentRequest, PeerId, PeerRole, PeerRoleSet,
-    PrincipalClaims, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
-    RevocationEpoch, StaticIdentityConnector, StaticPrincipalRecord, WorkloadId,
+    NodeCertificateAuthority, NodeEnrollmentRequest, PeerId, PeerRole, PeerRoleSet, Precision,
+    PrincipalClaims, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId, RunningNode,
+    ShardFetchManifest, StaticIdentityConnector, StaticPrincipalRecord, RevocationEpoch,
+    WorkloadId,
 };
 use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
-    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
-    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode,
+    ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BrowserLeaderboardEntry, BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse,
+    BrowserTransportSurface, DownloadDeliveryMode, DownloadTicket, DownloadTicketId,
+    PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus,
+    RunId, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode,
     TrustBundleExport, TrustedIssuerStatus,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
+use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifactView};
 use chrono::{Duration as ChronoDuration, Utc};
 use libp2p_identity::Keypair;
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+use crate::data::{MnistRecord, PreparedMnistData};
 
 const LOGIN_PATH: &str = "/login/static";
 const CALLBACK_PATH: &str = "/callback/static";
 const ENROLL_PATH: &str = "/enroll";
 const RECEIPTS_PATH: &str = "/receipts/browser";
 const PORTAL_SNAPSHOT_PATH: &str = "/portal/snapshot";
+const DATASET_PREFIX: &str = "/dataset";
+const DATASET_MANIFEST_PATH: &str = "/dataset/fetch-manifest.json";
+const DATASET_EVAL_PATH: &str = "/dataset/eval-records.json";
 const DIRECTORY_PATH: &str = "/directory";
 const SIGNED_DIRECTORY_PATH: &str = "/directory/signed";
 const HEADS_PATH: &str = "/heads";
@@ -50,6 +61,9 @@ const METRICS_LIVE_LATEST_PATH: &str = "/metrics/live/latest";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveBrowserProbeManifest {
     pub edge_base_url: String,
+    pub dataset_base_url: String,
+    pub peer_dataset_root: Option<String>,
+    pub peer_head_artifact_root: Option<String>,
     pub network_id: String,
     pub experiment_id: String,
     pub revision_id: String,
@@ -61,9 +75,44 @@ pub struct LiveBrowserProbeManifest {
     pub target_artifact_hash: String,
     pub workload_id: String,
     pub principal_id: String,
+    pub browser_dataset_transport: String,
+    pub browser_dataset_artifact_id: String,
+    pub browser_dataset_provider_peer_id: String,
+    pub browser_head_artifact_transport: String,
+    pub browser_head_artifact_id: String,
+    pub browser_head_artifact_provider_peer_ids: Vec<String>,
+    pub shards_distributed_over_p2p: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrowserDatasetBundle {
+    pub lease_id: LeaseId,
+    pub leased_microshards: Vec<MicroShardId>,
+    pub fetch_manifest: ShardFetchManifest,
+    pub eval_records: Vec<MnistRecord>,
+    pub shard_records: BTreeMap<String, Vec<MnistRecord>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LiveBrowserDatasetTransport {
+    pub upstream_mode: String,
+    pub provider_peer_id: PeerId,
+    pub artifact_id: ArtifactId,
+    pub bundle: BrowserDatasetBundle,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LiveBrowserHeadArtifactTransport {
+    pub upstream_mode: String,
+    pub provider_peer_ids: Vec<PeerId>,
+    pub descriptor: burn_p2p::ArtifactDescriptor,
+    pub bytes: Vec<u8>,
+    pub run_id: RunId,
+    pub publication_target_id: PublicationTargetId,
+    pub published_artifact_id: PublishedArtifactId,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LiveBrowserEdgeConfig {
     pub network_manifest: NetworkManifest,
     pub release_manifest: burn_p2p::ClientReleaseManifest,
@@ -77,6 +126,8 @@ pub struct LiveBrowserEdgeConfig {
     pub selected_revision_id: RevisionId,
     pub active_lease_id: LeaseId,
     pub leased_microshards: Vec<MicroShardId>,
+    pub browser_dataset: LiveBrowserDatasetTransport,
+    pub browser_head_artifact: LiveBrowserHeadArtifactTransport,
 }
 
 struct LiveBrowserEdgeState {
@@ -88,12 +139,248 @@ struct LiveBrowserEdgeState {
     signed_leaderboard: SignedPayload<SchemaEnvelope<BrowserLeaderboardSnapshot>>,
     metrics_catchup: Vec<MetricsCatchupBundle>,
     accepted_receipts: Vec<ContributionReceipt>,
+    browser_dataset: LiveBrowserDatasetTransport,
+    browser_head_artifact: LiveBrowserHeadArtifactTransport,
+    selected_head_id: HeadId,
+    selected_head: HeadDescriptor,
 }
 
 pub struct LiveBrowserEdgeServer {
     base_url: String,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<anyhow::Result<()>>>,
+}
+
+pub fn prepare_live_browser_dataset_transport<P>(
+    provider: &RunningNode<P>,
+    prepared_data: &PreparedMnistData,
+    lease: &AssignmentLease,
+) -> anyhow::Result<LiveBrowserDatasetTransport> {
+    let storage = provider
+        .config()
+        .storage
+        .as_ref()
+        .context("live browser dataset bundle requires provider storage")?;
+    let cache_root = storage
+        .dataset_cache_dir()
+        .join(prepared_data.registration.view.dataset_view_id.as_str());
+    let manifest_path = cache_root.join("fetch-manifest.json");
+    let full_manifest: ShardFetchManifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to decode {}", manifest_path.display()))?;
+    let lease_entries = full_manifest
+        .entries
+        .iter()
+        .filter(|entry| lease.microshards.contains(&entry.microshard_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure!(
+        !lease_entries.is_empty(),
+        "live browser dataset bundle requires at least one leased microshard"
+    );
+    let mut shard_records = BTreeMap::new();
+    for entry in &lease_entries {
+        let shard_path = cache_root.join(&entry.locator);
+        let records: Vec<MnistRecord> = serde_json::from_slice(
+            &fs::read(&shard_path)
+                .with_context(|| format!("failed to read {}", shard_path.display()))?,
+        )
+        .with_context(|| format!("failed to decode {}", shard_path.display()))?;
+        shard_records.insert(entry.locator.clone(), records);
+    }
+    let bundle = BrowserDatasetBundle {
+        lease_id: lease.lease_id.clone(),
+        leased_microshards: lease.microshards.clone(),
+        fetch_manifest: ShardFetchManifest {
+            dataset_view_id: full_manifest.dataset_view_id,
+            entries: lease_entries,
+        },
+        eval_records: prepared_data.eval_records.clone(),
+        shard_records,
+    };
+    let bundle_bytes =
+        serde_json::to_vec_pretty(&bundle).context("encode live browser dataset bundle")?;
+    let model_schema_hash = ContentId::derive(&(
+        "mnist-browser-data-bundle",
+        prepared_data.registration.view.dataset_view_id.as_str(),
+        lease.lease_id.as_str(),
+        bundle
+            .leased_microshards
+            .iter()
+            .map(MicroShardId::as_str)
+            .collect::<Vec<_>>(),
+    ))
+    .context("derive live browser dataset bundle hash")?;
+    let provider_store = provider
+        .artifact_store()
+        .context("live browser dataset bundle publish requires provider storage")?;
+    provider_store.ensure_layout()?;
+    let descriptor = provider_store.store_artifact_reader(
+        &ArtifactBuildSpec::new(
+            ArtifactKind::BrowserDataBundle,
+            Precision::Fp32,
+            model_schema_hash,
+            "burn-p2p:browser-data-bundle+json",
+        ),
+        Cursor::new(&bundle_bytes),
+        ChunkingScheme::new(64 * 1024).context("build browser dataset chunking scheme")?,
+    )?;
+
+    let provider_peer_id = provider
+        .telemetry()
+        .snapshot()
+        .local_peer_id
+        .context("provider missing local peer id for live browser dataset bundle")?;
+    let stored_bytes = provider_store
+        .materialize_artifact_bytes(&descriptor)
+        .context("materialize published live browser dataset bundle bytes")?;
+    let stored_bundle: BrowserDatasetBundle = serde_json::from_slice(&stored_bytes)
+        .context("decode published live browser dataset bundle")?;
+    ensure!(
+        stored_bundle == bundle,
+        "published live browser dataset bundle did not match the source bundle"
+    );
+
+    Ok(LiveBrowserDatasetTransport {
+        upstream_mode: "p2p-signed-peer-bundle".into(),
+        provider_peer_id,
+        artifact_id: descriptor.artifact_id,
+        bundle: stored_bundle,
+    })
+}
+
+pub fn materialize_live_browser_dataset_bundle(
+    output_root: &Path,
+    bundle: &BrowserDatasetBundle,
+) -> anyhow::Result<PathBuf> {
+    let root = output_root.join("browser-peer-dataset");
+    if root.exists() {
+        fs::remove_dir_all(&root)
+            .with_context(|| format!("failed to reset {}", root.display()))?;
+    }
+    fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create {}", root.display()))?;
+
+    fs::write(
+        root.join("fetch-manifest.json"),
+        serde_json::to_vec_pretty(&bundle.fetch_manifest)
+            .context("encode browser direct fetch manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", root.join("fetch-manifest.json").display()))?;
+    fs::write(
+        root.join("eval-records.json"),
+        serde_json::to_vec_pretty(&bundle.eval_records)
+            .context("encode browser direct eval records")?,
+    )
+    .with_context(|| format!("failed to write {}", root.join("eval-records.json").display()))?;
+
+    for (locator, records) in &bundle.shard_records {
+        let shard_path = root.join(locator);
+        if let Some(parent) = shard_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(
+            &shard_path,
+            serde_json::to_vec_pretty(records).context("encode browser direct shard records")?,
+        )
+        .with_context(|| format!("failed to write {}", shard_path.display()))?;
+    }
+
+    Ok(root)
+}
+
+pub fn prepare_live_browser_head_artifact_transport<P>(
+    provider: &RunningNode<P>,
+    head: &HeadDescriptor,
+    provider_peer_ids: Vec<PeerId>,
+) -> anyhow::Result<LiveBrowserHeadArtifactTransport> {
+    ensure!(
+        !provider_peer_ids.is_empty(),
+        "live browser head artifact transport requires at least one provider peer id"
+    );
+    let store = provider
+        .artifact_store()
+        .context("live browser head artifact transport requires provider storage")?;
+    let descriptor = store
+        .load_manifest(&head.artifact_id)
+        .with_context(|| format!("load live browser head manifest {}", head.artifact_id.as_str()))?;
+    let bytes = store
+        .materialize_artifact_bytes(&descriptor)
+        .with_context(|| {
+            format!(
+                "materialize live browser head artifact bytes {}",
+                descriptor.artifact_id.as_str()
+            )
+        })?;
+    ensure!(
+        !bytes.is_empty(),
+        "live browser head artifact transport requires non-empty artifact bytes"
+    );
+    Ok(LiveBrowserHeadArtifactTransport {
+        upstream_mode: "peer-native-artifact-swarm".into(),
+        provider_peer_ids,
+        descriptor,
+        bytes,
+        run_id: RunId::new(format!(
+            "{}-{}",
+            head.experiment_id.as_str(),
+            head.revision_id.as_str()
+        )),
+        publication_target_id: PublicationTargetId::new("mnist-browser-live-edge"),
+        published_artifact_id: PublishedArtifactId::new(format!(
+            "mnist-browser-head-{}",
+            head.head_id.as_str()
+        )),
+    })
+}
+
+pub fn materialize_live_browser_head_artifact_bundle(
+    output_root: &Path,
+    transport: &LiveBrowserHeadArtifactTransport,
+) -> anyhow::Result<PathBuf> {
+    let root = output_root.join("browser-peer-head-artifact");
+    if root.exists() {
+        fs::remove_dir_all(&root)
+            .with_context(|| format!("failed to reset {}", root.display()))?;
+    }
+    fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create {}", root.display()))?;
+    let artifact_root = root.join(transport.descriptor.artifact_id.as_str());
+    let chunk_root = artifact_root.join("chunks");
+    fs::create_dir_all(&chunk_root)
+        .with_context(|| format!("failed to create {}", chunk_root.display()))?;
+    fs::write(
+        artifact_root.join("descriptor.json"),
+        serde_json::to_vec_pretty(&transport.descriptor)
+            .context("encode browser head artifact descriptor")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            artifact_root.join("descriptor.json").display()
+        )
+    })?;
+    for chunk in &transport.descriptor.chunks {
+        let start = usize::try_from(chunk.offset_bytes)
+            .context("convert head artifact chunk offset to usize")?;
+        let length = usize::try_from(chunk.length_bytes)
+            .context("convert head artifact chunk length to usize")?;
+        let end = start
+            .checked_add(length)
+            .context("compute head artifact chunk end")?;
+        ensure!(
+            end <= transport.bytes.len(),
+            "head artifact chunk {} exceeds materialized bytes",
+            chunk.chunk_id.as_str()
+        );
+        let chunk_path = chunk_root.join(format!("{}.bin", chunk.chunk_id.as_str()));
+        fs::write(&chunk_path, &transport.bytes[start..end])
+            .with_context(|| format!("failed to write {}", chunk_path.display()))?;
+    }
+    Ok(root)
 }
 
 impl LiveBrowserEdgeServer {
@@ -112,8 +399,18 @@ impl LiveBrowserEdgeServer {
             signed_leaderboard(snapshot.leaderboard.clone(), authority.issuer_peer_id());
         let principal_id = PrincipalId::new("mnist-browser-trainer");
         let connector = build_connector(&config, &principal_id);
+        let selected_head = config
+            .heads
+            .iter()
+            .find(|head| head.head_id == config.selected_head_id)
+            .cloned()
+            .context("live browser edge missing selected head descriptor")?;
+        let selected_head_id = config.selected_head_id.clone();
         let manifest = LiveBrowserProbeManifest {
             edge_base_url: base_url.clone(),
+            dataset_base_url: format!("{base_url}{DATASET_PREFIX}"),
+            peer_dataset_root: None,
+            peer_head_artifact_root: None,
             network_id: config.network_manifest.network_id.as_str().into(),
             experiment_id: config.selected_experiment_id.as_str().into(),
             revision_id: config.selected_revision_id.as_str().into(),
@@ -129,6 +426,27 @@ impl LiveBrowserEdgeServer {
             target_artifact_hash: config.release_manifest.target_artifact_hash.as_str().into(),
             workload_id: config.workload_id.as_str().into(),
             principal_id: principal_id.as_str().into(),
+            browser_dataset_transport: config.browser_dataset.upstream_mode.clone(),
+            browser_dataset_artifact_id: config.browser_dataset.artifact_id.as_str().into(),
+            browser_dataset_provider_peer_id: config
+                .browser_dataset
+                .provider_peer_id
+                .as_str()
+                .into(),
+            browser_head_artifact_transport: config.browser_head_artifact.upstream_mode.clone(),
+            browser_head_artifact_id: config
+                .browser_head_artifact
+                .descriptor
+                .artifact_id
+                .as_str()
+                .into(),
+            browser_head_artifact_provider_peer_ids: config
+                .browser_head_artifact
+                .provider_peer_ids
+                .iter()
+                .map(|peer_id| peer_id.as_str().to_owned())
+                .collect(),
+            shards_distributed_over_p2p: true,
         };
 
         let state = Arc::new(Mutex::new(LiveBrowserEdgeState {
@@ -140,6 +458,10 @@ impl LiveBrowserEdgeServer {
             signed_leaderboard,
             metrics_catchup: config.metrics_catchup,
             accepted_receipts: Vec::new(),
+            browser_dataset: config.browser_dataset,
+            browser_head_artifact: config.browser_head_artifact,
+            selected_head_id,
+            selected_head,
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
@@ -199,6 +521,21 @@ pub fn write_live_browser_manifest(
     fs::write(&path, serde_json::to_vec_pretty(manifest)?)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path)
+}
+
+pub fn write_live_browser_edge_config(
+    output_root: &Path,
+    config: &LiveBrowserEdgeConfig,
+) -> anyhow::Result<PathBuf> {
+    let path = output_root.join("browser-live-edge-config.json");
+    fs::write(&path, serde_json::to_vec_pretty(config)?)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path)
+}
+
+pub fn read_live_browser_edge_config(path: &Path) -> anyhow::Result<LiveBrowserEdgeConfig> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("failed to decode {}", path.display()))
 }
 
 fn build_authority(config: &LiveBrowserEdgeConfig) -> anyhow::Result<NodeCertificateAuthority> {
@@ -267,7 +604,7 @@ fn build_snapshot(
         social_mode: SocialMode::Public,
         profile_mode: burn_p2p::ProfileMode::Public,
         transports: BrowserTransportSurface {
-            webrtc_direct: false,
+            webrtc_direct: true,
             webtransport_gateway: true,
             wss_fallback: true,
         },
@@ -366,6 +703,65 @@ fn signed_leaderboard(
     .expect("mnist live browser signed leaderboard should be serializable")
 }
 
+fn published_head_artifact_record(state: &LiveBrowserEdgeState) -> PublishedArtifactRecord {
+    PublishedArtifactRecord {
+        published_artifact_id: state.browser_head_artifact.published_artifact_id.clone(),
+        artifact_alias_id: None,
+        experiment_id: state.selected_head.experiment_id.clone(),
+        run_id: Some(state.browser_head_artifact.run_id.clone()),
+        head_id: state.selected_head.head_id.clone(),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: state.browser_head_artifact.publication_target_id.clone(),
+        object_key: format!(
+            "browser-heads/{}",
+            state.browser_head_artifact.descriptor.artifact_id.as_str()
+        ),
+        content_hash: state.browser_head_artifact.descriptor.root_hash.clone(),
+        content_length: state.browser_head_artifact.descriptor.bytes_len,
+        created_at: Utc::now(),
+        expires_at: None,
+        status: PublishedArtifactStatus::Ready,
+    }
+}
+
+fn live_head_artifact_view(state: &LiveBrowserEdgeState) -> HeadArtifactView {
+    HeadArtifactView {
+        head: state.selected_head.clone(),
+        run_id: state.browser_head_artifact.run_id.clone(),
+        eval_reports: Vec::new(),
+        aliases: Vec::new(),
+        published_artifacts: vec![published_head_artifact_record(state)],
+        available_profiles: BTreeSet::from([
+            ArtifactProfile::BrowserSnapshot,
+            ArtifactProfile::ManifestOnly,
+        ]),
+        alias_history: Vec::new(),
+        provider_peer_ids: state.browser_head_artifact.provider_peer_ids.clone(),
+    }
+}
+
+fn live_head_artifact_download_ticket(
+    state: &LiveBrowserEdgeState,
+    principal_id: PrincipalId,
+) -> DownloadTicketResponse {
+    let ticket_id = DownloadTicketId::new(format!(
+        "mnist-browser-ticket-{}",
+        state.selected_head_id.as_str()
+    ));
+    DownloadTicketResponse {
+        ticket: DownloadTicket {
+            download_ticket_id: ticket_id.clone(),
+            published_artifact_id: state.browser_head_artifact.published_artifact_id.clone(),
+            principal_id,
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + ChronoDuration::minutes(5),
+            delivery_mode: DownloadDeliveryMode::EdgeStream,
+        },
+        published_artifact: published_head_artifact_record(state),
+        download_path: format!("/artifacts/download/{}", ticket_id.as_str()),
+    }
+}
+
 fn run_http_server(
     listener: TcpListener,
     stop: Arc<AtomicBool>,
@@ -399,6 +795,43 @@ fn handle_connection(
             let snapshot = state.lock().expect("live browser state").snapshot.clone();
             write_json_response(&mut stream, 200, &snapshot)
         }
+        ("GET", DATASET_MANIFEST_PATH) => {
+            let manifest = state
+                .lock()
+                .expect("live browser state")
+                .browser_dataset
+                .bundle
+                .fetch_manifest
+                .clone();
+            write_json_response(&mut stream, 200, &manifest)
+        }
+        ("GET", DATASET_EVAL_PATH) => {
+            let eval_records = state
+                .lock()
+                .expect("live browser state")
+                .browser_dataset
+                .bundle
+                .eval_records
+                .clone();
+            write_json_response(&mut stream, 200, &eval_records)
+        }
+        ("GET", path) if path.starts_with(&format!("{DATASET_PREFIX}/")) => {
+            let locator = path
+                .strip_prefix(&format!("{DATASET_PREFIX}/"))
+                .unwrap_or_default();
+            let shard_records = state
+                .lock()
+                .expect("live browser state")
+                .browser_dataset
+                .bundle
+                .shard_records
+                .get(locator)
+                .cloned();
+            match shard_records {
+                Some(records) => write_json_response(&mut stream, 200, &records),
+                None => write_empty_response(&mut stream, 404),
+            }
+        }
         ("GET", DIRECTORY_PATH) => {
             let directory = state
                 .lock()
@@ -420,6 +853,14 @@ fn handle_connection(
         ("GET", HEADS_PATH) => {
             let heads = state.lock().expect("live browser state").snapshot.heads.clone();
             write_json_response(&mut stream, 200, &heads)
+        }
+        ("GET", path) if path.starts_with("/artifacts/heads/") => {
+            let head_id = path.strip_prefix("/artifacts/heads/").unwrap_or_default();
+            let state = state.lock().expect("live browser state");
+            if head_id != state.selected_head_id.as_str() {
+                return write_empty_response(&mut stream, 404);
+            }
+            write_json_response(&mut stream, 200, &live_head_artifact_view(&state))
         }
         ("GET", LEADERBOARD_PATH) => {
             let leaderboard = state
@@ -532,6 +973,53 @@ fn handle_connection(
                 .context("issue live browser certificate")?;
             write_json_response(&mut stream, 200, &certificate)
         }
+        ("POST", "/artifacts/download-ticket") => {
+            let request_body: DownloadTicketRequest = parse_json_body(&request.body)?;
+            let session_id = request
+                .headers
+                .get("x-session-id")
+                .cloned()
+                .context("browser artifact ticket request missing x-session-id header")?;
+            let session_id = ContentId::new(session_id);
+            let state = state.lock().expect("live browser state");
+            let session = state
+                .sessions
+                .get(&session_id)
+                .with_context(|| {
+                    format!(
+                        "live browser edge missing session {} for artifact download",
+                        session_id.as_str()
+                    )
+                })?;
+            ensure!(
+                request_body.head_id == state.selected_head_id,
+                "live browser edge only serves the selected head artifact"
+            );
+            write_json_response(
+                &mut stream,
+                200,
+                &live_head_artifact_download_ticket(&state, session.claims.principal_id.clone()),
+            )
+        }
+        ("GET", path) if path.starts_with("/artifacts/download/") => {
+            let ticket_id = path
+                .strip_prefix("/artifacts/download/")
+                .unwrap_or_default();
+            let state = state.lock().expect("live browser state");
+            let expected_ticket_id = format!(
+                "mnist-browser-ticket-{}",
+                state.selected_head_id.as_str()
+            );
+            if ticket_id != expected_ticket_id {
+                return write_empty_response(&mut stream, 404);
+            }
+            write_binary_response(
+                &mut stream,
+                200,
+                "application/octet-stream",
+                &state.browser_head_artifact.bytes,
+            )
+        }
         ("POST", RECEIPTS_PATH) => {
             let session_id = request
                 .headers
@@ -637,6 +1125,15 @@ fn write_json_response(
 
 fn write_empty_response(stream: &mut TcpStream, status: u16) -> anyhow::Result<()> {
     write_response(stream, status, "text/plain; charset=utf-8", &[])
+}
+
+fn write_binary_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> anyhow::Result<()> {
+    write_response(stream, status, content_type, body)
 }
 
 fn write_preflight_response(stream: &mut TcpStream) -> anyhow::Result<()> {

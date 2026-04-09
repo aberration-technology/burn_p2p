@@ -10,7 +10,7 @@ pub use auth::{
     AdmissionPolicy, AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart,
     NodeCertificateAuthority, NodeEnrollmentRequest, PeerAdmissionReport, PeerTrustLevel,
     PrincipalClaims, PrincipalSession, StaticIdentityConnector, StaticPrincipalRecord,
-    TrustedIssuer, create_peer_auth_envelope,
+    TrustedIssuer, create_peer_auth_envelope, random_login_state_token,
 };
 pub use robust::{
     CohortWeightDecision, FeatureLayer, RobustUpdateObservation, RobustnessEngine,

@@ -4,11 +4,11 @@ use std::sync::Mutex;
 use burn_p2p_core::{AuthProvider, ContentId, PrincipalId};
 use burn_p2p_security::{
     AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart, PrincipalClaims,
-    PrincipalSession, StaticPrincipalRecord,
+    PrincipalSession, StaticPrincipalRecord, random_login_state_token,
 };
 use chrono::{Duration, Utc};
 
-use crate::shared::{PendingLogin, validate_record_access};
+use crate::shared::{PendingLogin, ProxyConnectorState, validate_record_access};
 
 /// Authenticates principals through a trusted upstream proxy header.
 ///
@@ -67,11 +67,7 @@ impl ExternalProxyIdentityConnector {
 impl IdentityConnector for ExternalProxyIdentityConnector {
     fn begin_login(&self, req: LoginRequest) -> Result<LoginStart, AuthError> {
         let expires_at = Utc::now() + self.session_ttl;
-        let state = format!(
-            "{}-external-{}",
-            req.network_id,
-            expires_at.timestamp_nanos_opt().unwrap_or(0)
-        );
+        let state = random_login_state_token("external proxy login state")?;
         let login_id = ContentId::derive(&(
             req.network_id.as_str(),
             &state,
@@ -85,6 +81,8 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
             network_id: req.network_id,
             requested_scopes: req.requested_scopes,
             expires_at,
+            oidc_nonce: None,
+            pkce_verifier: None,
         };
         self.pending
             .lock()
@@ -180,5 +178,33 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
         let mut claims = session.claims.clone();
         claims.provider = self.provider();
         Ok(claims)
+    }
+
+    fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, AuthError> {
+        let state = ProxyConnectorState {
+            pending: self
+                .pending
+                .lock()
+                .expect("external identity pending-login lock should not be poisoned")
+                .clone(),
+        };
+        Ok(Some(burn_p2p_core::deterministic_cbor(&state)?))
+    }
+
+    fn import_persistent_state(&self, state: Option<&[u8]>) -> Result<(), AuthError> {
+        let now = Utc::now();
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("external identity pending-login lock should not be poisoned");
+        *pending = match state {
+            Some(state) => burn_p2p_core::from_cbor_slice::<ProxyConnectorState>(state)?
+                .pending
+                .into_iter()
+                .filter(|(_, login)| login.expires_at >= now)
+                .collect(),
+            None => BTreeMap::new(),
+        };
+        Ok(())
     }
 }

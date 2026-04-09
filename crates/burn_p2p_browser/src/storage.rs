@@ -31,6 +31,12 @@ pub struct BrowserStorageSnapshot {
     pub session: BrowserSessionState,
     /// The cached chunk artifacts.
     pub cached_chunk_artifacts: BTreeSet<ArtifactId>,
+    /// Heads whose active artifact has already been synced into the browser cache.
+    #[serde(default)]
+    pub cached_head_artifact_heads: BTreeSet<HeadId>,
+    #[serde(default)]
+    /// Transport that most recently delivered the active head artifact into the browser cache.
+    pub last_head_artifact_transport: Option<String>,
     /// The cached microshards.
     pub cached_microshards: BTreeSet<MicroShardId>,
     /// The stored receipts.
@@ -70,6 +76,8 @@ impl Default for BrowserStorageSnapshot {
             metadata_version: 1,
             session: BrowserSessionState::default(),
             cached_chunk_artifacts: BTreeSet::new(),
+            cached_head_artifact_heads: BTreeSet::new(),
+            last_head_artifact_transport: None,
             cached_microshards: BTreeSet::new(),
             stored_receipts: BTreeSet::new(),
             pending_receipts: Vec::new(),
@@ -182,6 +190,19 @@ impl BrowserStorageSnapshot {
         self.updated_at = Utc::now();
     }
 
+    /// Performs the remember synced head artifact operation.
+    pub fn remember_synced_head_artifact(
+        &mut self,
+        head_id: HeadId,
+        artifact_id: ArtifactId,
+        transport: impl Into<String>,
+    ) {
+        self.cached_head_artifact_heads.insert(head_id);
+        self.cached_chunk_artifacts.insert(artifact_id);
+        self.last_head_artifact_transport = Some(transport.into());
+        self.updated_at = Utc::now();
+    }
+
     /// Performs the remember microshard operation.
     pub fn remember_microshard(&mut self, microshard_id: MicroShardId) {
         self.cached_microshards.insert(microshard_id);
@@ -225,6 +246,8 @@ impl BrowserStorageSnapshot {
     /// Performs the clear cached data operation.
     pub fn clear_cached_data(&mut self) {
         self.cached_chunk_artifacts.clear();
+        self.cached_head_artifact_heads.clear();
+        self.last_head_artifact_transport = None;
         self.cached_microshards.clear();
         self.updated_at = Utc::now();
     }

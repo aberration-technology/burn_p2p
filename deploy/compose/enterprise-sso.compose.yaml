@@ -1,4 +1,11 @@
 services:
+  burn-p2p-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - burn-p2p-redis-data:/data
+    restart: unless-stopped
+
   burn-p2p-bootstrap:
     build:
       context: ../..
@@ -6,6 +13,8 @@ services:
       args:
         BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,browser-edge,rbac,auth-oidc}
     command: ["/config/enterprise-sso.json"]
+    depends_on:
+      - burn-p2p-redis
     ports:
       - "8787:8787"
       - "4001:4001/tcp"
@@ -19,3 +28,4 @@ services:
 
 volumes:
   burn-p2p-bootstrap-data: {}
+  burn-p2p-redis-data: {}

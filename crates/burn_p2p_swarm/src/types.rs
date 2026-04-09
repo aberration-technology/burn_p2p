@@ -193,6 +193,11 @@ impl SwarmAddress {
     pub fn is_memory(&self) -> bool {
         self.0.starts_with("/memory/")
     }
+
+    /// Returns whether the value is a relayed circuit address.
+    pub fn is_relay_circuit(&self) -> bool {
+        self.0.contains("/p2p-circuit")
+    }
 }
 
 impl TryFrom<&str> for SwarmAddress {
@@ -302,6 +307,10 @@ pub struct RuntimeTransportPolicy {
     pub preferred_transports: Vec<TransportKind>,
     /// The target number of direct peers to maintain before the runtime stops proactive dialing.
     pub target_connected_peers: usize,
+    #[serde(default)]
+    /// The number of bootstrap/coherence-seed connections to keep once a healthy non-bootstrap
+    /// mesh has formed. Most peers can drop to zero and reconnect only when rediscovery is needed.
+    pub target_bootstrap_seed_connections: usize,
     /// The supports direct streams.
     pub supports_direct_streams: bool,
     /// The maximum number of established inbound connections accepted by the runtime.
@@ -313,6 +322,27 @@ pub struct RuntimeTransportPolicy {
     #[serde(default)]
     /// Enables local multicast discovery for development-oriented native swarms.
     pub enable_local_discovery: bool,
+    #[serde(default)]
+    /// Enables the relay client transport and relay fallback dialing.
+    pub enable_relay_client: bool,
+    #[serde(default)]
+    /// Enables serving relay reservations for other peers.
+    pub enable_relay_server: bool,
+    #[serde(default)]
+    /// Enables direct connection upgrade attempts after relayed rendezvous.
+    pub enable_hole_punching: bool,
+    #[serde(default)]
+    /// Enables autonat reachability probing for native peers.
+    pub enable_autonat: bool,
+    #[serde(default)]
+    /// Enables rendezvous-based registration and discovery against reachable seed peers.
+    pub enable_rendezvous_client: bool,
+    #[serde(default)]
+    /// Enables serving rendezvous registrations and discovery for other peers.
+    pub enable_rendezvous_server: bool,
+    #[serde(default)]
+    /// Enables Kademlia-backed native peer discovery and routing-table learning.
+    pub enable_kademlia: bool,
     /// The export openmetrics.
     pub export_openmetrics: bool,
 }
@@ -339,6 +369,7 @@ impl RuntimeTransportPolicy {
             } else {
                 4
             },
+            target_bootstrap_seed_connections: 0,
             supports_direct_streams: true,
             max_established_incoming: if bootstrap {
                 Some(96)
@@ -356,6 +387,13 @@ impl RuntimeTransportPolicy {
             },
             max_established_per_peer: Some(1),
             enable_local_discovery: false,
+            enable_relay_client: true,
+            enable_relay_server: bootstrap,
+            enable_hole_punching: true,
+            enable_autonat: true,
+            enable_rendezvous_client: true,
+            enable_rendezvous_server: bootstrap,
+            enable_kademlia: true,
             export_openmetrics: true,
         }
     }
@@ -365,16 +403,24 @@ impl RuntimeTransportPolicy {
         Self {
             environment: RuntimeEnvironment::Browser,
             preferred_transports: vec![
-                TransportKind::WebTransport,
                 TransportKind::WebRtc,
+                TransportKind::WebTransport,
                 TransportKind::WebSocket,
             ],
             target_connected_peers: 3,
+            target_bootstrap_seed_connections: 0,
             supports_direct_streams: true,
             max_established_incoming: None,
             max_established_total: None,
             max_established_per_peer: Some(1),
             enable_local_discovery: false,
+            enable_relay_client: false,
+            enable_relay_server: false,
+            enable_hole_punching: false,
+            enable_autonat: false,
+            enable_rendezvous_client: false,
+            enable_rendezvous_server: false,
+            enable_kademlia: false,
             export_openmetrics: true,
         }
     }
