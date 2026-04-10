@@ -1169,15 +1169,20 @@ fn wait_for_candidate_artifacts<P, const NODE_COUNT: usize, const N: usize>(
     let mut last_error = None::<String>;
     while Instant::now() < deadline {
         let mut all_ready = true;
-        for (label, consumer) in &consumers {
-            for outcome in outcomes {
+        for outcome in outcomes {
+            let mut provider_peer_ids = vec![outcome.training.contribution.peer_id.clone()];
+            for (label, consumer) in &consumers {
                 match consumer.wait_for_artifact_from_peers(
-                    std::slice::from_ref(&outcome.training.contribution.peer_id),
+                    &provider_peer_ids,
                     &outcome.training.head.artifact_id,
                     DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
                 ) {
                     Ok(_) => {
+                        if let Some(local_peer_id) = consumer.telemetry().snapshot().local_peer_id {
+                            provider_peer_ids.push(local_peer_id);
+                        }
                         consumer.publish_head_provider(experiment, &outcome.training.head)?;
+                        consumer.publish_artifact_from_store(&outcome.training.head.artifact_id)?;
                     }
                     Err(error) => {
                         all_ready = false;
