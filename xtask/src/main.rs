@@ -1,5 +1,6 @@
 mod artifacts;
 mod cli;
+mod formal;
 mod profile;
 mod runner;
 
@@ -41,8 +42,11 @@ use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
     CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction, DeployCloudArgs,
-    DeployCommand, DeployComposeArgs, E2eCommand, MultiprocessArgs, RunArgs, SetupCommand,
-    StressCommand,
+    DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs, RunArgs,
+    SetupCommand, StressCommand,
+};
+use formal::{
+    run_formal_check, run_formal_export_trace, run_formal_modelcheck, run_formal_verify_trace,
 };
 use profile::Profile;
 use runner::{SpawnedStep, StepRecord, Workspace, command_available};
@@ -187,6 +191,12 @@ fn main() -> anyhow::Result<()> {
             DeployCommand::Compose(args) => run_deploy_compose(&workspace, args),
             DeployCommand::Aws(args) => run_deploy_cloud(&workspace, "aws", args),
             DeployCommand::Gcp(args) => run_deploy_cloud(&workspace, "gcp", args),
+        },
+        Command::Formal { command } => match command {
+            FormalCommand::Check(args) => run_formal_check(&workspace, args),
+            FormalCommand::Modelcheck(args) => run_formal_modelcheck(&workspace, args),
+            FormalCommand::ExportTrace(args) => run_formal_export_trace(&workspace, args),
+            FormalCommand::VerifyTrace(args) => run_formal_verify_trace(&workspace, args),
         },
         Command::Ci { command } => match command {
             CiCommand::PrFast(args) => run_ci_pr_fast(&workspace, args),

@@ -50,6 +50,11 @@ pub enum Command {
         #[command(subcommand)]
         command: DeployCommand,
     },
+    /// Run optional formal verification helpers and trace exports.
+    Formal {
+        #[command(subcommand)]
+        command: FormalCommand,
+    },
     /// Run the same grouped lanes used by CI workflows.
     Ci {
         #[command(subcommand)]
@@ -151,6 +156,18 @@ pub enum DeployCommand {
     Aws(DeployCloudArgs),
     /// Run the GCP terraform deployment wrapper.
     Gcp(DeployCloudArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FormalCommand {
+    /// Build the standalone formal/veil project.
+    Check(FormalArgs),
+    /// Build the dedicated modelcheck target in formal/veil.
+    Modelcheck(FormalArgs),
+    /// Export a versioned protocol trace for refinement checks.
+    ExportTrace(FormalExportArgs),
+    /// Generate a lean fixture from a rust trace export and verify it under lake.
+    VerifyTrace(FormalExportArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -313,4 +330,34 @@ pub struct CiArgs {
     /// Preserve generated artifacts even for successful local runs.
     #[arg(long)]
     pub keep_artifacts: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct FormalArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum FormalTraceScenarioArg {
+    MnistSmoke,
+    ReducerAdversarial,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum FormalTraceFormatArg {
+    Json,
+    Cbor,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct FormalExportArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    /// Named formal trace scenario to export.
+    #[arg(long, value_enum, default_value_t = FormalTraceScenarioArg::MnistSmoke)]
+    pub scenario: FormalTraceScenarioArg,
+    /// Output format for the exported trace.
+    #[arg(long, value_enum, default_value_t = FormalTraceFormatArg::Json)]
+    pub format: FormalTraceFormatArg,
 }

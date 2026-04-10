@@ -78,10 +78,22 @@ impl Workspace {
         args: &[String],
         envs: &BTreeMap<String, String>,
     ) -> anyhow::Result<StepRecord> {
+        self.run_in_dir(artifacts, label, &self.root, program, args, envs)
+    }
+
+    pub fn run_in_dir(
+        &self,
+        artifacts: &ArtifactLayout,
+        label: &str,
+        current_dir: &Path,
+        program: &str,
+        args: &[String],
+        envs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<StepRecord> {
         println!("==> {label}");
         let started = Instant::now();
         let output = Command::new(program)
-            .current_dir(&self.root)
+            .current_dir(current_dir)
             .envs(envs)
             .args(args)
             .output()

@@ -11485,6 +11485,7 @@ dependencies = [
  "burn_p2p_testkit",
  "burn_p2p_views",
  "chrono",
+ "ciborium",
  "clap",
  "serde",
  "serde_json",

@@ -1,0 +1,11 @@
+name = "burn_p2p_formal"
+version = "0.1.0"
+defaultTargets = ["BurnP2P"]
+
+[[lean_lib]]
+name = "BurnP2P"
+
+[[require]]
+name = "veil"
+git = "https://github.com/verse-lab/veil.git"
+rev = "main"

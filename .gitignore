@@ -3,4 +3,6 @@ target/
 /.burn_p2p*/
 examples/torch_mnist_p2p_demo/.burn_p2p-python-mnist/
 deploy/terraform/**/.terraform/
+formal/veil/.lake/
+formal/veil/.cache/
 __pycache__/

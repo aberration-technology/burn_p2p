@@ -5,6 +5,8 @@
 pub mod adversarial;
 /// Static browser-app wasm asset build helpers.
 pub mod browser_app_assets;
+/// Versioned protocol-trace exports for formal verification and refinement checks.
+pub mod formal_trace;
 /// Public APIs for merge topology.
 pub mod merge_topology;
 /// Public APIs for multiprocess.
@@ -1608,6 +1610,10 @@ mod tests {
     use super::{
         ChaosEvent, FaultType, MaliciousBehavior, PeerFixtureMode, SimulationRunner,
         SimulationSpec, SyntheticArtifactGenerator,
+        formal_trace::{
+            FormalProtocolAction, FormalProtocolEvent, FormalTraceConformanceError,
+            FormalTraceScenario, check_protocol_trace, lower_protocol_trace, sample_protocol_trace,
+        },
     };
 
     #[test]
@@ -2217,5 +2223,67 @@ mod tests {
             point.metric == DerivedMetricKind::RejectionRatioByReason
                 && point.series_label.as_deref() == Some("late")
         }));
+    }
+
+    #[test]
+    fn formal_trace_samples_are_versioned_and_non_empty() {
+        let mnist = sample_protocol_trace(FormalTraceScenario::MnistSmoke);
+        let adversarial = sample_protocol_trace(FormalTraceScenario::ReducerAdversarial);
+
+        assert_eq!(mnist.schema_version, "burn_p2p.formal_trace.v1");
+        assert_eq!(adversarial.schema_version, "burn_p2p.formal_trace.v1");
+        assert!(!mnist.events.is_empty());
+        assert!(!adversarial.events.is_empty());
+    }
+
+    #[test]
+    fn formal_trace_samples_pass_protocol_conformance_checks() {
+        let mnist = sample_protocol_trace(FormalTraceScenario::MnistSmoke);
+        let adversarial = sample_protocol_trace(FormalTraceScenario::ReducerAdversarial);
+
+        let mnist_report = check_protocol_trace(&mnist).expect("mnist formal trace should conform");
+        let adversarial_report =
+            check_protocol_trace(&adversarial).expect("adversarial formal trace should conform");
+
+        assert_eq!(mnist_report.canonical_promotion_count, 1);
+        assert_eq!(adversarial_report.canonical_promotion_count, 1);
+        assert_eq!(adversarial_report.accepted_candidate_count, 1);
+        assert!(adversarial_report.lowered_action_count > 0);
+    }
+
+    #[test]
+    fn formal_trace_checker_rejects_promotion_without_quorum() {
+        let mut trace = sample_protocol_trace(FormalTraceScenario::MnistSmoke);
+        trace
+            .events
+            .retain(|event| !matches!(event, FormalProtocolEvent::QuorumCertificateEmitted { .. }));
+
+        let error = check_protocol_trace(&trace).expect_err("promotion without quorum should fail");
+        assert!(matches!(
+            error,
+            FormalTraceConformanceError::MissingQuorumForPromotion { .. }
+        ));
+    }
+
+    #[test]
+    fn formal_trace_lowering_matches_expected_action_sequence() {
+        let trace = sample_protocol_trace(FormalTraceScenario::ReducerAdversarial);
+        let actions = lower_protocol_trace(&trace);
+
+        assert!(matches!(
+            actions.first(),
+            Some(FormalProtocolAction::PublishUpdate { .. })
+        ));
+        assert!(matches!(
+            actions.iter().find(|action| matches!(
+                action,
+                FormalProtocolAction::PublishReducerProposal { .. }
+            )),
+            Some(_)
+        ));
+        assert!(matches!(
+            actions.last(),
+            Some(FormalProtocolAction::RevokePeer { .. })
+        ));
     }
 }

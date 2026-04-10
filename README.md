@@ -175,6 +175,7 @@ best follow-up docs:
 - [docs/downstream-burn-guide.md](docs/downstream-burn-guide.md)
 - [docs/learning-dynamics.md](docs/learning-dynamics.md)
 - [docs/protocol-shape.md](docs/protocol-shape.md)
+- [docs/formal-verification-plan.md](docs/formal-verification-plan.md)
 - [docs/production-roadmap.md](docs/production-roadmap.md)
 - [deploy/README.md](deploy/README.md)
 - [docs/operator-runbook.md](docs/operator-runbook.md)
