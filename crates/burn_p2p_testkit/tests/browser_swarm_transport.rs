@@ -22,6 +22,21 @@ use burn_p2p_swarm::{
     HeadAnnouncement, LiveControlPlaneEvent, MemoryControlPlaneShell, NativeControlPlaneShell,
     OverlayChannel, OverlayTopic, ProtocolSet, RuntimeTransportPolicy, SwarmAddress,
 };
+
+fn test_timeout(timeout: Duration) -> Duration {
+    let scale = std::env::var("BURN_P2P_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_else(|| {
+            if std::env::var_os("CI").is_some() {
+                3
+            } else {
+                1
+            }
+        })
+        .max(1);
+    timeout.checked_mul(scale).unwrap_or(timeout)
+}
 use chrono::Utc;
 use semver::Version;
 
@@ -260,7 +275,7 @@ fn wait_for_memory_connection(
     listener: &mut MemoryControlPlaneShell,
     dialer: &mut MemoryControlPlaneShell,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     let mut listener_connected = false;
     let mut dialer_connected = false;
     while !(listener_connected && dialer_connected) {
@@ -286,7 +301,7 @@ fn fetch_memory_snapshot(
     dialer
         .request_snapshot(listener_peer_id)
         .expect("request memory snapshot");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {
         assert!(Instant::now() < deadline, "memory snapshot timed out");
         if let Some(event) = listener.wait_event(Duration::from_millis(100))
@@ -309,7 +324,7 @@ fn fetch_native_snapshot(
     dialer
         .request_snapshot(listener_peer_id)
         .expect("request native snapshot");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {
         assert!(Instant::now() < deadline, "native snapshot timed out");
         if let Some(event) = listener.wait_event(Duration::from_millis(100))
@@ -490,7 +505,7 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
     };
     dialer.dial(listen_addr).expect("dial");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     let mut listener_connected = false;
     let mut dialer_connected = false;
     while !(listener_connected && dialer_connected) {

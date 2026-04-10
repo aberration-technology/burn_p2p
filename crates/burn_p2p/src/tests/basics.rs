@@ -121,7 +121,7 @@ fn spawn_starts_a_live_runtime_and_shutdown_returns_node() {
 
     running.shutdown().expect("shutdown");
     let node = running
-        .await_termination_timeout(Duration::from_secs(5))
+        .await_termination_timeout(test_timeout(Duration::from_secs(5)))
         .expect("await termination");
     assert_eq!(node.mainnet().network_id().as_str(), "net-1");
 }

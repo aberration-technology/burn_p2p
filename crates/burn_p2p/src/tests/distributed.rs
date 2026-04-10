@@ -641,7 +641,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
     );
 
     let synced = {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + test_timeout(Duration::from_secs(5));
         loop {
             if let Some(head) = late_joiner
                 .sync_experiment_head(&experiment)

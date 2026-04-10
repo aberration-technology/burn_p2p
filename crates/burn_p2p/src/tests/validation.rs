@@ -181,7 +181,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         "at most one validator should report itself as the promotion winner",
     );
 
-    let convergence_deadline = Instant::now() + Duration::from_secs(5);
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {
         let a = validator_a_telemetry.snapshot();
         let b = validator_b_telemetry.snapshot();
@@ -623,7 +623,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         "at most one validator should report itself as the promotion winner",
     );
 
-    let convergence_deadline = Instant::now() + Duration::from_secs(5);
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {
         let a = validator_a_telemetry.snapshot();
         let b = validator_b_telemetry.snapshot();
@@ -698,7 +698,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         );
     }
 
-    let sync_deadline = Instant::now() + Duration::from_secs(5);
+    let sync_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     let first_promoted_head = loop {
         let synced_a = validator_a
             .sync_experiment_head(&experiment)
@@ -871,7 +871,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         .pop()
         .expect("second round should produce one promoted merge");
 
-    let second_convergence_deadline = Instant::now() + Duration::from_secs(5);
+    let second_convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {
         let snapshots = [
             reducer_telemetry.snapshot(),

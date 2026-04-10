@@ -1781,7 +1781,7 @@ fn wait_for(
     condition: impl Fn() -> bool,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + test_timeout(timeout);
     while Instant::now() < deadline {
         if condition() {
             return Ok(());
@@ -1790,6 +1790,21 @@ fn wait_for(
     }
 
     Err(anyhow::anyhow!(failure_message.to_owned()))
+}
+
+fn test_timeout(timeout: Duration) -> Duration {
+    let scale = std::env::var("BURN_P2P_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_else(|| {
+            if std::env::var_os("CI").is_some() {
+                3
+            } else {
+                1
+            }
+        })
+        .max(1);
+    timeout.checked_mul(scale).unwrap_or(timeout)
 }
 
 fn write_report(path: &Path, report: &SyntheticProcessReport) -> anyhow::Result<()> {

@@ -370,6 +370,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     validator.publish_head_provider(&baseline, &baseline_head)?;
     validator.publish_head_provider(&low_lr, &low_lr_head)?;
     wait_for_artifact_from_provider(
+        (VALIDATOR_LABEL, &validator),
         [
             (REDUCER_LABEL, &reducer),
             (VALIDATOR_B_LABEL, &validator_b),
@@ -382,6 +383,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         "baseline genesis head artifact was not fetchable from validator",
     )?;
     wait_for_artifact_from_provider(
+        (VALIDATOR_LABEL, &validator),
         [
             (REDUCER_LABEL, &reducer),
             (VALIDATOR_B_LABEL, &validator_b),
@@ -1780,13 +1782,14 @@ where
     );
     reducer.publish_artifact_from_store(&reduced.aggregate.aggregate_artifact_id)?;
     wait_for_artifact_from_provider(
+        (REDUCER_LABEL, reducer),
         [
             (VALIDATOR_LABEL, validator),
             (VALIDATOR_B_LABEL, validator_b),
         ],
         reducer_peer_id,
         &reduced.aggregate.aggregate_artifact_id,
-        Duration::from_secs(20),
+        DEMO_VALIDATION_ROUND_TIMEOUT,
         "validators could not fetch the dedicated reducer aggregate artifact",
     )?;
 
@@ -1883,6 +1886,7 @@ where
     if validation.merge_certificate.validator == validator_peer_id {
         validator.publish_head_provider(experiment, &validation.merged_head)?;
         wait_for_artifact_from_provider(
+            (VALIDATOR_LABEL, validator),
             [
                 (REDUCER_LABEL, reducer),
                 (VALIDATOR_B_LABEL, validator_b),
@@ -1895,6 +1899,7 @@ where
     } else {
         validator_b.publish_head_provider(experiment, &validation.merged_head)?;
         wait_for_artifact_from_provider(
+            (VALIDATOR_B_LABEL, validator_b),
             [
                 (REDUCER_LABEL, reducer),
                 (VALIDATOR_LABEL, validator),
@@ -2139,6 +2144,7 @@ fn log_demo_validation_coordination(
 }
 
 fn wait_for_artifact_from_provider<P, const N: usize>(
+    provider: (&str, &burn_p2p::RunningNode<P>),
     consumers: [(&str, &burn_p2p::RunningNode<P>); N],
     provider_peer_id: &PeerId,
     artifact_id: &burn_p2p::ArtifactId,
@@ -2148,6 +2154,15 @@ fn wait_for_artifact_from_provider<P, const N: usize>(
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
     while Instant::now() < deadline {
+        if let Err(error) = provider.1.publish_artifact_from_store(artifact_id) {
+            last_error = Some(format!(
+                "{}: could not republish {}: {error}",
+                provider.0,
+                artifact_id.as_str(),
+            ));
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         let mut all_ready = true;
         for (label, consumer) in &consumers {
             if let Err(error) = consumer.wait_for_artifact_from_peers(
