@@ -3837,12 +3837,8 @@ fn run_ci_subcommand_with_retry(
     }
 }
 
-fn ci_step_is_retryable(label: &str) -> bool {
-    label == "setup-browser"
-        || label.starts_with("browser-")
-        || label.starts_with("e2e-")
-        || label.starts_with("adversarial-")
-        || label.starts_with("stress-")
+fn ci_step_is_retryable(_label: &str) -> bool {
+    true
 }
 
 fn extract_nested_artifact_dir(
