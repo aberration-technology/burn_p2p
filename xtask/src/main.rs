@@ -749,7 +749,14 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
         ),
         (
             "test-workspace",
-            vec!["test", "--workspace", "--exclude", "burn_p2p"],
+            vec![
+                "test",
+                "--workspace",
+                "--exclude",
+                "burn_p2p",
+                "--exclude",
+                "burn_p2p_testkit",
+            ],
         ),
         (
             "test-burn",

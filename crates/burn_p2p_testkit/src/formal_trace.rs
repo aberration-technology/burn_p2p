@@ -377,7 +377,7 @@ pub fn check_protocol_trace(
                         peer_id: peer_id.clone(),
                     });
                 }
-                published_updates.insert(((*window_id).0, peer_id.clone(), artifact_id.clone()));
+                published_updates.insert((window_id.0, peer_id.clone(), artifact_id.clone()));
             }
             FormalProtocolEvent::CandidateAccepted {
                 candidate_peer_id,
@@ -392,7 +392,7 @@ pub fn check_protocol_trace(
                 ..
             } => {
                 if !published_updates.contains(&(
-                    (*window_id).0,
+                    window_id.0,
                     candidate_peer_id.clone(),
                     artifact_id.clone(),
                 )) {

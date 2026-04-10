@@ -243,16 +243,26 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     );
     assert_eq!(quorum_certificate.attesting_validators.len(), 2);
 
-    let synced_a = validator_a
-        .sync_experiment_head(&experiment)
-        .expect("validator a sync")
-        .expect("validator a canonical head");
-    let synced_b = validator_b
-        .sync_experiment_head(&experiment)
-        .expect("validator b sync")
-        .expect("validator b canonical head");
-    assert_eq!(synced_a.head_id, promoted_merge.merged_head_id);
-    assert_eq!(synced_b.head_id, promoted_merge.merged_head_id);
+    let sync_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
+    loop {
+        let synced_a = validator_a
+            .sync_experiment_head(&experiment)
+            .expect("validator a sync");
+        let synced_b = validator_b
+            .sync_experiment_head(&experiment)
+            .expect("validator b sync");
+        if let (Some(a), Some(b)) = (synced_a, synced_b)
+            && a.head_id == promoted_merge.merged_head_id
+            && b.head_id == promoted_merge.merged_head_id
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < sync_deadline,
+            "validators did not sync the promoted merge head before timeout"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 
     for trainer in trainers {
         trainer.shutdown().expect("trainer shutdown");

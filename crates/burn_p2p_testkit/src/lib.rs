@@ -2274,13 +2274,15 @@ mod tests {
             actions.first(),
             Some(FormalProtocolAction::PublishUpdate { .. })
         ));
-        assert!(matches!(
-            actions.iter().find(|action| matches!(
-                action,
-                FormalProtocolAction::PublishReducerProposal { .. }
-            )),
-            Some(_)
-        ));
+        assert!(
+            actions
+                .iter()
+                .find(|action| matches!(
+                    action,
+                    FormalProtocolAction::PublishReducerProposal { .. }
+                ))
+                .is_some()
+        );
         assert!(matches!(
             actions.last(),
             Some(FormalProtocolAction::RevokePeer { .. })

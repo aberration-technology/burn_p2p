@@ -680,10 +680,10 @@ fn collect_revoked_peers(trace: &FormalProtocolTrace) -> Vec<String> {
 }
 
 fn resolve_lake_bin() -> Option<String> {
-    if let Ok(lake) = env::var("LAKE") {
-        if !lake.trim().is_empty() {
-            return Some(lake);
-        }
+    if let Ok(lake) = env::var("LAKE")
+        && !lake.trim().is_empty()
+    {
+        return Some(lake);
     }
     if command_available("lake") {
         return Some("lake".into());

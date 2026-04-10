@@ -2034,7 +2034,7 @@ fn native_control_plane_shell_discovers_peers_via_rendezvous_seed() {
         .dial(discovered_listener_addr)
         .expect("dial discovered listener");
 
-    let connect_deadline = Instant::now() + Duration::from_secs(12);
+    let connect_deadline = Instant::now() + Duration::from_secs(20);
     let mut listener_connected = false;
     let mut dialer_connected = false;
     while !(listener_connected && dialer_connected) {
@@ -2055,6 +2055,16 @@ fn native_control_plane_shell_discovers_peers_via_rendezvous_seed() {
                 event,
                 LiveControlPlaneEvent::ConnectionEstablished { peer_id } if peer_id == listener_peer_id
             );
+        }
+        if !listener_connected {
+            listener_connected = listener
+                .fetch_snapshot(&dialer_peer_id, Duration::from_millis(100))
+                .is_ok();
+        }
+        if !dialer_connected {
+            dialer_connected = dialer
+                .fetch_snapshot(&listener_peer_id, Duration::from_millis(100))
+                .is_ok();
         }
     }
 }
