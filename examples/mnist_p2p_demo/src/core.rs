@@ -374,27 +374,18 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     validator.publish_head_provider(&low_lr, &low_lr_head)?;
     wait_for_artifact_from_provider(
         (VALIDATOR_LABEL, &validator),
-        [
-            (REDUCER_LABEL, &reducer),
-            (VALIDATOR_B_LABEL, &validator_b),
-            (TRAINER_A1_LABEL, &trainer_a1),
-            (TRAINER_A2_LABEL, &trainer_a2),
-        ],
+        [(REDUCER_LABEL, &reducer), (VALIDATOR_B_LABEL, &validator_b)],
         &validator_peer_id,
         &baseline_head.artifact_id,
-        Duration::from_secs(20),
+        demo_provider_artifact_timeout(),
         "baseline genesis head artifact was not fetchable from validator",
     )?;
     wait_for_artifact_from_provider(
         (VALIDATOR_LABEL, &validator),
-        [
-            (REDUCER_LABEL, &reducer),
-            (VALIDATOR_B_LABEL, &validator_b),
-            (TRAINER_B_LABEL, &trainer_b),
-        ],
+        [(REDUCER_LABEL, &reducer), (VALIDATOR_B_LABEL, &validator_b)],
         &validator_peer_id,
         &low_lr_head.artifact_id,
-        Duration::from_secs(20),
+        demo_provider_artifact_timeout(),
         "low-lr genesis head artifact was not fetchable from validator",
     )?;
     wait_for_specific_head(
@@ -1303,53 +1294,13 @@ fn wait_for_head_artifacts<P>(
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None;
-    let mut staged_provider_peer_ids = provider_peer_ids.to_vec();
-    while Instant::now() < deadline {
-        let mut all_ready = true;
-        for (label, consumer) in consumers {
-            if record_artifact_provider(
-                *label,
-                consumer,
-                artifact_id,
-                &mut staged_provider_peer_ids,
-                &mut last_error,
-            ) {
-                continue;
-            }
-
-            if let Err(error) = consumer.wait_for_artifact_from_peers(
-                &staged_provider_peer_ids,
-                artifact_id,
-                demo_artifact_sync_attempt_timeout(),
-            ) {
-                all_ready = false;
-                last_error = Some(format!("{label}: {error}"));
-                break;
-            }
-            if !record_artifact_provider(
-                *label,
-                consumer,
-                artifact_id,
-                &mut staged_provider_peer_ids,
-                &mut last_error,
-            ) {
-                all_ready = false;
-                break;
-            }
-        }
-
-        if all_ready {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    if let Some(error) = last_error {
-        anyhow::bail!("{failure_message}: {error}");
-    }
-    anyhow::bail!(failure_message.to_owned())
+    wait_for_artifact_from_fixed_providers(
+        consumers,
+        provider_peer_ids,
+        artifact_id,
+        timeout,
+        failure_message,
+    )
 }
 
 fn wait_for_artifact_from_topology<P, const N: usize>(
@@ -1450,10 +1401,88 @@ fn demo_artifact_sync_attempt_timeout() -> Duration {
     }
 }
 
+fn demo_provider_artifact_timeout() -> Duration {
+    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+        Duration::from_secs(45)
+    } else {
+        Duration::from_secs(20)
+    }
+}
+
+fn demo_validation_round_timeout() -> Duration {
+    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+        Duration::from_secs(75)
+    } else {
+        DEMO_VALIDATION_ROUND_TIMEOUT
+    }
+}
+
 fn push_provider_list(target: &mut Vec<PeerId>, source: &[PeerId]) {
     for peer_id in source {
         push_unique_peer_id(target, peer_id.clone());
     }
+}
+
+fn wait_for_artifact_from_fixed_providers<P>(
+    consumers: &[(&str, &burn_p2p::RunningNode<P>)],
+    provider_peer_ids: &[PeerId],
+    artifact_id: &burn_p2p::ArtifactId,
+    timeout: Duration,
+    failure_message: &str,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None::<String>;
+    let provider_peer_ids = provider_peer_ids.to_vec();
+
+    while Instant::now() < deadline {
+        let mut all_ready = true;
+        for (label, consumer) in consumers {
+            let mut ignored_provider_peer_ids = Vec::new();
+            if record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut ignored_provider_peer_ids,
+                &mut last_error,
+            ) {
+                continue;
+            }
+
+            match consumer.wait_for_artifact_from_peers(
+                &provider_peer_ids,
+                artifact_id,
+                demo_artifact_sync_attempt_timeout(),
+            ) {
+                Ok(_) => {}
+                Err(error) => {
+                    all_ready = false;
+                    last_error = Some(format!("{label}: {error}"));
+                    break;
+                }
+            }
+
+            if !record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut ignored_provider_peer_ids,
+                &mut last_error,
+            ) {
+                all_ready = false;
+                break;
+            }
+        }
+
+        if all_ready {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    if let Some(error) = last_error {
+        anyhow::bail!("{failure_message}: {error}");
+    }
+    anyhow::bail!(failure_message.to_owned())
 }
 
 fn record_artifact_provider<P>(
@@ -1955,7 +1984,7 @@ where
         ],
         reducer_peer_id,
         &reduced.aggregate.aggregate_artifact_id,
-        DEMO_VALIDATION_ROUND_TIMEOUT,
+        demo_validation_round_timeout(),
         "validators could not fetch the dedicated reducer aggregate artifact",
     )?;
 
@@ -2059,7 +2088,7 @@ where
             ],
             &validator_peer_id,
             &validation.merged_head.artifact_id,
-            Duration::from_secs(20),
+            demo_provider_artifact_timeout(),
             "reducer tier could not fetch the promoted merged head from validator",
         )?;
     } else {
@@ -2072,7 +2101,7 @@ where
             ],
             &validator_b_peer_id,
             &validation.merged_head.artifact_id,
-            Duration::from_secs(20),
+            demo_provider_artifact_timeout(),
             "reducer tier could not fetch the promoted merged head from validator-b",
         )?;
     }
@@ -2327,9 +2356,18 @@ fn wait_for_artifact_from_provider<P, const N: usize>(
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    wait_for_artifact_from_topology(
-        &[(provider.0, provider.1, provider_peer_id.clone())],
+    let mut ignored_provider_peer_ids = Vec::new();
+    let mut last_error = None::<String>;
+    let _ = record_artifact_provider(
+        provider.0,
+        provider.1,
+        artifact_id,
+        &mut ignored_provider_peer_ids,
+        &mut last_error,
+    );
+    wait_for_artifact_from_fixed_providers(
         &consumers,
+        &[provider_peer_id.clone()],
         artifact_id,
         timeout,
         failure_message,
