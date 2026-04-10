@@ -65,14 +65,7 @@ pub type BurnLearnerOutput<LC> =
 pub type BurnTrainLoader<LC> = burn::train::TrainLoader<LC>;
 
 /// Type alias for burn's upstream validation dataloader.
-pub type BurnValidLoader<LC> = burn::train::ValidLoader<LC>;
-
-/// Type alias for the evaluation dataloader used by the burn-facing p2p api.
-///
-/// `burn` names the upstream type `ValidLoader`; `burn_p2p` uses `eval`
-/// terminology at the public api layer because validation is only one possible
-/// evaluation pattern.
-pub type BurnEvalLoader<LC> = BurnValidLoader<LC>;
+pub type BurnValidationLoader<LC> = burn::train::ValidLoader<LC>;
 
 /// Type alias for the training batch input used by [`BurnLearnerWorkload`].
 pub type BurnTrainBatch<W> = <<W as BurnLearnerWorkload>::Model as TrainStep>::Input;
@@ -88,20 +81,11 @@ type LearnerBenchmarkFn<LC> = dyn Fn(&BurnLearnerModel<LC>, &BurnLearnerDevice<L
     + Sync;
 type LearnerEvaluateFn<LC> =
     dyn Fn(&BurnLearnerEvalModel<LC>, EvalSplit) -> MetricReport + Send + Sync;
-type LearnerDatasetRegistrationFn =
-    dyn Fn() -> anyhow::Result<crate::DatasetRegistration> + Send + Sync;
-type LearnerMicroshardPlanFn =
-    dyn Fn(&crate::DatasetRegistration) -> anyhow::Result<crate::MicroShardPlan> + Send + Sync;
 type LearnerBatchLoaderFn<LC> = dyn Fn(
         &AssignmentLease,
         &[CachedMicroShard],
         &BurnLearnerDevice<LC>,
     ) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
-    + Send
-    + Sync;
-type LearnerBatchFn<LC> =
-    dyn Fn(&BurnLearnerDevice<LC>) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>> + Send + Sync;
-type LearnerAssignmentBatchFn<LC> = dyn Fn(&AssignmentLease, &BurnLearnerDevice<LC>) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
     + Send
     + Sync;
 type LearnerStepMetricFn<LC> = dyn Fn(usize, &BurnLearnerOutput<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
@@ -110,6 +94,43 @@ type LearnerStepMetricFn<LC> = dyn Fn(usize, &BurnLearnerOutput<LC>, &mut BTreeM
 type LearnerWindowMetricFn<LC> = dyn Fn(&BurnLearner<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
     + Send
     + Sync;
+
+pub(crate) fn extend_window_metrics_with_cached_microshard_counts(
+    metrics: &mut BTreeMap<String, MetricValue>,
+    cached_microshards: &[CachedMicroShard],
+) {
+    let examples_processed = cached_microshards
+        .iter()
+        .map(|cached| cached.microshard.estimated_examples)
+        .sum::<u64>();
+    let tokens_processed = cached_microshards
+        .iter()
+        .map(|cached| cached.microshard.estimated_tokens)
+        .sum::<u64>();
+
+    if examples_processed > 0 {
+        metrics.insert(
+            "examples_processed".into(),
+            MetricValue::Integer(examples_processed as i64),
+        );
+    }
+    if tokens_processed > 0 {
+        metrics.insert(
+            "tokens_processed".into(),
+            MetricValue::Integer(tokens_processed as i64),
+        );
+    }
+    if !cached_microshards.is_empty() {
+        metrics.insert(
+            "microshard_count".into(),
+            MetricValue::Integer(cached_microshards.len() as i64),
+        );
+    }
+}
+
+/// Type alias for a lease/micro-epoch data pipeline backing one burn learner.
+pub type BurnLearnerDataPipeline<LC> =
+    crate::LeaseDataPipeline<BurnLearnerDevice<LC>, BurnLearnerBatch<LC>>;
 
 #[derive(Clone, Debug)]
 /// Represents a record bytes runtime artifact options.
@@ -381,7 +402,6 @@ impl BurnTarget {
     }
 }
 
-pub mod advanced;
 mod dataset;
 mod learner;
 pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
@@ -504,8 +524,8 @@ pub trait BurnLearnerWorkload {
     }
 
     /// Returns the contribution weight used for receipt scoring.
-    fn contribution_weight(&self, _report: &WindowReport<BTreeMap<String, MetricValue>>) -> f64 {
-        1.0
+    fn contribution_weight(&self, report: &WindowReport<BTreeMap<String, MetricValue>>) -> f64 {
+        burn_p2p_workload::standard_contribution_weight(&report.stats).unwrap_or(1.0)
     }
 
     /// Applies an optional runtime patch.
@@ -554,6 +574,7 @@ where
 
         let mut metrics =
             BTreeMap::from([("batch_count".into(), MetricValue::Integer(batch_count))]);
+        extend_window_metrics_with_cached_microshard_counts(&mut metrics, &ctx.cached_microshards);
 
         for (step_index, batch) in ctx.batches.drain(..).enumerate() {
             learner.lr_step();
@@ -688,8 +709,9 @@ pub trait BurnWorkload {
     ) -> BTreeMap<String, MetricValue>;
 
     /// Returns the contribution weight used for receipt scoring.
-    fn contribution_weight(&self, _report: &WindowReport<Self::WindowStats>) -> f64 {
-        1.0
+    fn contribution_weight(&self, report: &WindowReport<Self::WindowStats>) -> f64 {
+        let metrics = self.contribution_metrics(report);
+        burn_p2p_workload::standard_contribution_weight(&metrics).unwrap_or(1.0)
     }
 
     /// Applies an optional runtime patch.

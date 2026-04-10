@@ -146,7 +146,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
         let prepared_for_eval = prepared_data.clone();
         let train_loader = prepared_data.build_train_loader(&device);
-        let eval_loader = prepared_data.build_eval_loader(&device);
+        let validation_loader = prepared_data.build_eval_loader(&device);
         Ok(from_loaders(
             Learner::new(
                 MnistModel::<RuntimeBackend>::new(&device),
@@ -155,7 +155,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             ),
             device,
             train_loader,
-            eval_loader,
+            validation_loader,
         )
         .with_benchmark(|_model, _device| burn_p2p::CapabilityEstimate {
             preferred_backends: vec!["ndarray".into()],
@@ -184,7 +184,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let build_validator_project = |learning_rate: f64| -> anyhow::Result<_> {
         let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
         let prepared_for_eval = prepared_data.clone();
-        let eval_loader = prepared_data.build_eval_loader(&device);
+        let validation_loader = prepared_data.build_eval_loader(&device);
         Ok(from_learner(
             Learner::new(
                 MnistModel::<RuntimeBackend>::new(&device),
@@ -198,7 +198,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             work_units_per_second: 16.0,
             target_window_seconds: 1,
         })
-        .with_eval_loader(eval_loader)
+        .with_validation_loader(validation_loader)
         .with_evaluate(move |model, _split| evaluate_model(model, &prepared_for_eval)))
     };
     let build_service_project = |learning_rate: f64| -> anyhow::Result<_> {

@@ -11,10 +11,12 @@ use burn_p2p_core::{
 };
 #[cfg(feature = "metrics-indexer")]
 use burn_p2p_metrics::{
-    MetricEnvelope, MetricsCatchupBundle, MetricsIndexer, MetricsIndexerConfig, MetricsSnapshot,
-    MetricsStore, PeerWindowDistributionDetail, PeerWindowDistributionSummary,
-    build_catchup_bundles, build_live_event, derive_peer_window_distribution_detail_with_limit,
-    derive_peer_window_distribution_summaries,
+    CanonicalHeadAdoptionCurve, MetricEnvelope, MetricsCatchupBundle, MetricsIndexer,
+    MetricsIndexerConfig, MetricsSnapshot, MetricsStore, PeerWindowDistributionDetail,
+    PeerWindowDistributionSummary, VisibleHeadPopulationHistogram, build_catchup_bundles,
+    build_live_event, derive_canonical_head_adoption_curves,
+    derive_latest_canonical_head_population_histograms,
+    derive_peer_window_distribution_detail_with_limit, derive_peer_window_distribution_summaries,
 };
 #[cfg(feature = "metrics-indexer")]
 use chrono::Utc;
@@ -207,6 +209,78 @@ impl BootstrapAdminState {
             base_head_id,
             self.metrics_retention.max_peer_window_detail_windows,
         ))
+    }
+
+    /// Exports canonical-head adoption curves across all loaded experiment revisions.
+    pub fn export_metrics_head_adoption_curves(
+        &self,
+    ) -> anyhow::Result<Vec<CanonicalHeadAdoptionCurve>> {
+        if let Some(store) = self.metrics_store()? {
+            let curves = store.load_head_adoption_curves()?;
+            if !curves.is_empty() || self.metric_envelopes().is_empty() {
+                return Ok(curves);
+            }
+        }
+        Ok(derive_canonical_head_adoption_curves(
+            &self
+                .export_metrics_snapshots()?
+                .into_iter()
+                .flat_map(|snapshot| snapshot.peer_window_metrics.into_iter())
+                .collect::<Vec<_>>(),
+            &self
+                .export_metrics_snapshots()?
+                .into_iter()
+                .flat_map(|snapshot| snapshot.head_eval_reports.into_iter())
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Exports canonical-head adoption curves for one experiment.
+    pub fn export_metrics_head_adoption_curves_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> anyhow::Result<Vec<CanonicalHeadAdoptionCurve>> {
+        Ok(self
+            .export_metrics_head_adoption_curves()?
+            .into_iter()
+            .filter(|curve| &curve.experiment_id == experiment_id)
+            .collect())
+    }
+
+    /// Exports latest-canonical visible-head population histograms across revisions.
+    pub fn export_metrics_head_populations(
+        &self,
+    ) -> anyhow::Result<Vec<VisibleHeadPopulationHistogram>> {
+        if let Some(store) = self.metrics_store()? {
+            let histograms = store.load_visible_head_population_histograms()?;
+            if !histograms.is_empty() || self.metric_envelopes().is_empty() {
+                return Ok(histograms);
+            }
+        }
+        Ok(derive_latest_canonical_head_population_histograms(
+            &self
+                .export_metrics_snapshots()?
+                .into_iter()
+                .flat_map(|snapshot| snapshot.peer_window_metrics.into_iter())
+                .collect::<Vec<_>>(),
+            &self
+                .export_metrics_snapshots()?
+                .into_iter()
+                .flat_map(|snapshot| snapshot.head_eval_reports.into_iter())
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Exports latest-canonical visible-head population histograms for one experiment.
+    pub fn export_metrics_head_populations_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> anyhow::Result<Vec<VisibleHeadPopulationHistogram>> {
+        Ok(self
+            .export_metrics_head_populations()?
+            .into_iter()
+            .filter(|histogram| &histogram.experiment_id == experiment_id)
+            .collect())
     }
 
     /// Exports candidate-focused reducer cohorts across all loaded experiment revisions.

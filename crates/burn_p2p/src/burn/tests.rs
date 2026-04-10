@@ -11,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use super::advanced::BurnLearnerProjectBuilderAdvancedExt;
 use super::*;
 use burn::{
     backend::{Autodiff, NdArray},
@@ -273,7 +272,7 @@ fn tiny_train_loader() -> BurnTrainLoader<TinyLearnerComponents> {
         ]))
 }
 
-fn tiny_eval_loader() -> BurnEvalLoader<TinyLearnerComponents> {
+fn tiny_validation_loader() -> BurnValidationLoader<TinyLearnerComponents> {
     DataLoaderBuilder::new(TinyLearnerBatcher)
         .batch_size(1)
         .build(InMemDataset::new(vec![TinyLearnerItem { value: 2.0 }]))
@@ -612,6 +611,7 @@ fn learner_workload_runs_default_burn_window() {
             microshards: vec![crate::MicroShardId::new("shard-1")],
             assignment_hash: ContentId::new("assign-1"),
         },
+        cached_microshards: Vec::new(),
         batches: vec![
             TinyLearnerWorkload::batch::<LearnerBackend>(&device, 1.0),
             TinyLearnerWorkload::batch::<LearnerBackend>(&device, 2.0),
@@ -634,6 +634,34 @@ fn learner_workload_runs_default_burn_window() {
         report.stats.get("loss"),
         Some(MetricValue::Float(_))
     ));
+}
+
+#[test]
+fn burn_workload_default_contribution_weight_uses_processed_work_metrics() {
+    let report = WindowReport {
+        contribution: None,
+        stats: BTreeMap::from([
+            ("examples_processed".into(), MetricValue::Integer(64)),
+            ("tokens_processed".into(), MetricValue::Integer(2048)),
+        ]),
+        completed_at: Utc::now(),
+    };
+
+    assert_eq!(TinyBurnWorkload.contribution_weight(&report), 2048.0);
+}
+
+#[test]
+fn burn_learner_workload_default_contribution_weight_falls_back_to_batch_count() {
+    let report = WindowReport {
+        contribution: None,
+        stats: BTreeMap::from([("batch_count".into(), MetricValue::Integer(4))]),
+        completed_at: Utc::now(),
+    };
+
+    assert_eq!(
+        BurnLearnerWorkload::contribution_weight(&TinyLearnerWorkload, &report),
+        4.0
+    );
 }
 
 #[test]
@@ -684,7 +712,7 @@ fn from_loaders_builder_wraps_single_burn_workload_with_trainer_roles() {
         ),
         device,
         tiny_train_loader(),
-        tiny_eval_loader(),
+        tiny_validation_loader(),
     )
     .trainer(release_manifest, supported_workload.clone())
     .expect("trainer builder")
@@ -747,7 +775,7 @@ fn from_learner_validator_builder_does_not_require_training_dataset_hooks() {
         ),
         device,
     )
-    .with_eval_loader(tiny_eval_loader())
+    .with_validation_loader(tiny_validation_loader())
     .validator(release_manifest, supported_workload.clone())
     .expect("validator builder")
     .with_network(network_manifest)
@@ -890,36 +918,6 @@ fn from_learner_trainer_builder_still_requires_training_dataset_hooks() {
 }
 
 #[test]
-fn from_learner_builder_accepts_train_loader_directly() {
-    let device = <LearnerBackend as Backend>::Device::default();
-    let project = from_learner(
-        BurnLearner::new(
-            TinyLearnerModel::<LearnerBackend>::new(&device),
-            SgdConfig::new().init(),
-            0.05,
-        ),
-        device,
-    )
-    .with_train_loader(tiny_train_loader())
-    .build()
-    .expect("learner project");
-
-    let batches = project
-        .load_batches(&tiny_assignment_lease(), &[])
-        .expect("train loader batches");
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(
-        project
-            .dataset_registration()
-            .expect("local registration")
-            .manifest
-            .format,
-        "runtime-local"
-    );
-}
-
-#[test]
 fn from_loaders_builder_defaults_evaluate_and_local_dataset_hooks() {
     let device = <LearnerBackend as Backend>::Device::default();
     let project = from_loaders(
@@ -930,7 +928,7 @@ fn from_loaders_builder_defaults_evaluate_and_local_dataset_hooks() {
         ),
         device,
         tiny_train_loader(),
-        tiny_eval_loader(),
+        tiny_validation_loader(),
     )
     .build()
     .expect("learner project");
@@ -989,7 +987,7 @@ fn from_loaders_builder_supports_sharded_dataset_training_hooks() {
         ),
         device,
         tiny_train_loader(),
-        tiny_eval_loader(),
+        tiny_validation_loader(),
     )
     .with_sharded_dataset(dataset.clone(), TinyLearnerBatcher, 2)
     .build()
@@ -1007,6 +1005,72 @@ fn from_loaders_builder_supports_sharded_dataset_training_hooks() {
     assert_eq!(registration, dataset.registration().clone());
     assert_eq!(plan, dataset.microshard_plan().clone());
     assert_eq!(loaded_records.len(), dataset.examples_for_lease(&lease));
+    assert_eq!(batches.len(), 1);
+}
+
+#[test]
+fn from_loaders_builder_supports_explicit_data_pipeline() {
+    let dataset_root = tempdir().expect("dataset root");
+    let cache_root = tempdir().expect("cache root");
+    let dataset = tiny_sharded_dataset(dataset_root.path(), 2).expect("sharded dataset");
+    let lease = crate::LeasePlanner::default()
+        .plan_lease(
+            crate::NetworkId::new("net-1"),
+            crate::StudyId::new("study-1"),
+            crate::ExperimentId::new("exp-1"),
+            crate::RevisionId::new("rev-1"),
+            &dataset.microshard_plan().dataset_view,
+            crate::PeerId::new("peer-1"),
+            crate::WindowId(1),
+            Utc::now(),
+            1,
+            &dataset.microshard_plan().microshards[..1],
+        )
+        .expect("lease")
+        .lease;
+    let cached = crate::ShardCache::new(cache_root.path())
+        .fetch_lease_microshards(dataset.registration(), dataset.microshard_plan(), &lease)
+        .expect("cached shards");
+    let registration = dataset.registration().clone();
+    let plan = dataset.microshard_plan().clone();
+    let batch_dataset = dataset.clone();
+    let data_pipeline = crate::LeaseDataPipeline::new(
+        crate::LeaseDataPipelineDescriptor::new(
+            "tiny-indexed-pipeline",
+            crate::LeaseDataPipelineKind::IndexedDataset,
+        ),
+        move || Ok(registration.clone()),
+        move |_registration| Ok(plan.clone()),
+        move |_lease, cached_microshards, device| {
+            batch_dataset.load_batches(cached_microshards, TinyLearnerBatcher, 2, device)
+        },
+    );
+
+    let device = <LearnerBackend as Backend>::Device::default();
+    let project = from_loaders(
+        BurnLearner::new(
+            TinyLearnerModel::<LearnerBackend>::new(&device),
+            SgdConfig::new().init(),
+            0.05,
+        ),
+        device,
+        tiny_train_loader(),
+        tiny_validation_loader(),
+    )
+    .with_data_pipeline(data_pipeline)
+    .build()
+    .expect("learner project");
+
+    let resolved_registration = project.dataset_registration().expect("registration");
+    let resolved_plan = project
+        .microshard_plan(&resolved_registration)
+        .expect("microshard plan");
+    let batches = project
+        .load_batches(&lease, &cached)
+        .expect("loaded batches");
+
+    assert_eq!(resolved_registration, dataset.registration().clone());
+    assert_eq!(resolved_plan, dataset.microshard_plan().clone());
     assert_eq!(batches.len(), 1);
 }
 
@@ -1132,7 +1196,60 @@ fn sharded_dataset_http_upstream_fetches_only_assigned_shards() {
 }
 
 #[test]
-fn from_learner_builder_supports_assignment_aware_batches_with_local_dataset_defaults() {
+fn from_learner_builder_supports_generated_data_pipeline() {
+    let registration = crate::DatasetRegistration {
+        manifest: crate::DatasetManifest {
+            dataset_id: crate::DatasetId::new("generated-dataset"),
+            source_uri: "runtime-generated://tiny".into(),
+            format: "generated".into(),
+            manifest_hash: ContentId::new("generated-manifest"),
+            metadata: BTreeMap::new(),
+        },
+        view: crate::DatasetView {
+            dataset_view_id: crate::DatasetViewId::new("generated-view"),
+            dataset_id: crate::DatasetId::new("generated-dataset"),
+            preprocessing_hash: ContentId::new("generated-preprocess"),
+            tokenizer_hash: None,
+            manifest_hash: ContentId::new("generated-manifest"),
+            metadata: BTreeMap::new(),
+        },
+        upstream: crate::UpstreamAdapter::Local { root: ".".into() },
+    };
+    let plan = crate::MicroShardPlanner::new(crate::MicroShardPlannerConfig {
+        target_microshard_bytes: 1,
+        min_microshards: 1,
+        max_microshards: 1,
+    })
+    .expect("planner")
+    .plan(
+        &registration.view,
+        crate::DatasetSizing {
+            total_examples: 2,
+            total_tokens: 0,
+            total_bytes: 1,
+        },
+    )
+    .expect("plan");
+    let data_pipeline = crate::LeaseDataPipeline::new(
+        crate::LeaseDataPipelineDescriptor::new(
+            "tiny-generated-pipeline",
+            crate::LeaseDataPipelineKind::GeneratedDataset,
+        ),
+        {
+            let registration = registration.clone();
+            move || Ok(registration.clone())
+        },
+        {
+            let plan = plan.clone();
+            move |_registration| Ok(plan.clone())
+        },
+        move |lease, _cached_microshards, device| {
+            let value = if lease.window_id.0 == 1 { 1.0 } else { 2.0 };
+            Ok(vec![TinyLearnerWorkload::batch::<LearnerBackend>(
+                device, value,
+            )])
+        },
+    );
     let device = <LearnerBackend as Backend>::Device::default();
     let project = from_learner(
         BurnLearner::new(
@@ -1142,12 +1259,7 @@ fn from_learner_builder_supports_assignment_aware_batches_with_local_dataset_def
         ),
         device,
     )
-    .with_assignment_batches(|lease, device| {
-        let value = if lease.window_id.0 == 1 { 1.0 } else { 2.0 };
-        Ok(vec![TinyLearnerWorkload::batch::<LearnerBackend>(
-            device, value,
-        )])
-    })
+    .with_data_pipeline(data_pipeline)
     .build()
     .expect("learner project");
 
@@ -1157,11 +1269,7 @@ fn from_learner_builder_supports_assignment_aware_batches_with_local_dataset_def
 
     assert_eq!(batches.len(), 1);
     assert_eq!(
-        project
-            .dataset_registration()
-            .expect("local registration")
-            .manifest
-            .format,
-        "runtime-local"
+        project.data_pipeline_kind(),
+        crate::LeaseDataPipelineKind::GeneratedDataset
     );
 }

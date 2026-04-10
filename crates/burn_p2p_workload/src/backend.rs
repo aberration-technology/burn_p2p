@@ -1,4 +1,12 @@
-use super::*;
+use std::{collections::BTreeMap, error::Error as StdError, fmt};
+
+use burn_p2p_core::{
+    AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ContentId,
+    ContributionReceipt, HeadDescriptor, HeadId, MergeCertificate, MetricValue, PeerId,
+    ReducerLoadReport,
+};
+use burn_p2p_dataloader::CachedMicroShard;
+use chrono::{DateTime, Utc};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Dataset split selector for evaluation calls.
@@ -77,6 +85,8 @@ pub struct WindowCtx<D, M, T> {
     pub model: M,
     /// The lease being executed.
     pub lease: AssignmentLease,
+    /// Cached microshard metadata materialized for the active lease.
+    pub cached_microshards: Vec<CachedMicroShard>,
     /// Materialized batches for the lease.
     pub batches: Vec<T>,
 }

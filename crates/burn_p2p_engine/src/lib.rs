@@ -467,7 +467,11 @@ where
     Ok(ContentId::derive(&shape_only)?)
 }
 
-/// Performs the merge weighted mean modules operation.
+/// Performs the merge weighted mean modules operation relative to a shared base module.
+///
+/// The merged value is computed as:
+///
+/// `base + sum_i(weight_i * (candidate_i - base)) / sum_i(weight_i)`
 pub fn merge_weighted_mean_modules<B, M>(
     base_module: &M,
     candidates: &[BurnMergeCandidate<'_, M>],
@@ -512,7 +516,7 @@ where
         }
         replacements.insert(
             path.clone(),
-            weighted_mean_tensor_data(base_snapshot, &weighted_inputs)?,
+            weighted_mean_delta_tensor_data(base_snapshot, &weighted_inputs)?,
         );
     }
 
@@ -607,13 +611,16 @@ fn validate_snapshot_layout(
     Ok(())
 }
 
-fn weighted_mean_tensor_data(
-    reference: &TensorSnapshot,
+fn weighted_mean_delta_tensor_data(
+    base: &TensorSnapshot,
     inputs: &[(f64, &TensorSnapshot)],
 ) -> Result<burn::tensor::TensorData, EngineError> {
-    let shape = reference.shape.clone();
+    let base_data = base
+        .to_data()
+        .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+    let shape = base_data.shape.clone();
     let element_count: usize = shape.iter().product();
-    let mut accum = vec![0.0_f64; element_count];
+    let mut delta_accum = vec![0.0_f64; element_count];
     let mut total_weight = 0.0_f64;
 
     for (weight, snapshot) in inputs {
@@ -626,29 +633,33 @@ fn weighted_mean_tensor_data(
         if data.shape != shape {
             return Err(EngineError::ModuleMerge(format!(
                 "tensor shape mismatch for weighted mean at {}: expected {:?}, got {:?}",
-                reference.full_path(),
+                base.full_path(),
                 shape,
                 data.shape
             )));
         }
 
-        for (slot, value) in accum.iter_mut().zip(data.iter::<f64>()) {
-            *slot += value * *weight;
+        for ((slot, candidate_value), base_value) in delta_accum
+            .iter_mut()
+            .zip(data.iter::<f64>())
+            .zip(base_data.iter::<f64>())
+        {
+            *slot += (candidate_value - base_value) * *weight;
         }
         total_weight += *weight;
     }
 
     if total_weight <= f64::EPSILON {
-        return reference
-            .to_data()
-            .map_err(|error| EngineError::TensorSnapshot(error.to_string()));
+        return Ok(base_data);
     }
 
-    for value in &mut accum {
-        *value /= total_weight;
-    }
+    let blended = base_data
+        .iter::<f64>()
+        .zip(delta_accum)
+        .map(|(base_value, delta_sum)| base_value + (delta_sum / total_weight))
+        .collect::<Vec<_>>();
 
-    Ok(burn::tensor::TensorData::new(accum, shape))
+    Ok(burn::tensor::TensorData::new(blended, shape))
 }
 
 fn ema_tensor_data(
@@ -1423,6 +1434,51 @@ mod tests {
                 .to_vec::<f32>()
                 .expect("bias data"),
             5.0,
+        );
+    }
+
+    #[test]
+    fn weighted_mean_merge_is_rooted_in_base_delta_space() {
+        let device = <TestBackend as Backend>::Device::default();
+        let base = fill_model(TinyModel::<TestBackend>::new(&device), 10.0);
+        let left = fill_model(TinyModel::<TestBackend>::new(&device), 12.0);
+        let right = fill_model(TinyModel::<TestBackend>::new(&device), 18.0);
+
+        let merged = merge_weighted_mean_modules::<TestBackend, _>(
+            &base,
+            &[
+                BurnMergeCandidate {
+                    module: &left,
+                    weight: 1.0,
+                },
+                BurnMergeCandidate {
+                    module: &right,
+                    weight: 3.0,
+                },
+            ],
+        )
+        .expect("merge")
+        .expect("merged model");
+
+        assert_all_close(
+            &merged
+                .linear
+                .weight
+                .to_data()
+                .to_vec::<f32>()
+                .expect("weight data"),
+            16.5,
+        );
+        assert_all_close(
+            &merged
+                .linear
+                .bias
+                .as_ref()
+                .expect("bias")
+                .to_data()
+                .to_vec::<f32>()
+                .expect("bias data"),
+            16.5,
         );
     }
 

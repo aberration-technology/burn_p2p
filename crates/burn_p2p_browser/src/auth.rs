@@ -12,8 +12,8 @@ use burn_p2p_core::{
     SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
-    MetricsCatchupBundle, MetricsSnapshot, PeerWindowDistributionDetail,
-    PeerWindowDistributionSummary,
+    CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
+    PeerWindowDistributionDetail, PeerWindowDistributionSummary, VisibleHeadPopulationHistogram,
 };
 use burn_p2p_publish::{
     ArtifactAliasStatus, ArtifactRunSummary, ArtifactRunView, DownloadTicketRequest,
@@ -665,6 +665,48 @@ impl BrowserEdgeClient {
             experiment_id.as_str(),
             revision_id.as_str(),
             base_head_id.as_str(),
+        );
+        self.get_json(&path, None).await
+    }
+
+    /// Fetches canonical-head adoption curves across visible experiment revisions.
+    pub async fn fetch_metrics_head_adoption_curves(
+        &self,
+    ) -> Result<Vec<CanonicalHeadAdoptionCurve>, BrowserAuthClientError> {
+        self.get_json(&self.bindings.paths.metrics_head_adoption_curves_path, None)
+            .await
+    }
+
+    /// Fetches canonical-head adoption curves for one experiment.
+    pub async fn fetch_metrics_head_adoption_curves_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<CanonicalHeadAdoptionCurve>, BrowserAuthClientError> {
+        let path = format!(
+            "{}/{}",
+            self.bindings.paths.metrics_head_adoption_curves_path,
+            experiment_id.as_str()
+        );
+        self.get_json(&path, None).await
+    }
+
+    /// Fetches latest-canonical visible-head population histograms across revisions.
+    pub async fn fetch_metrics_head_populations(
+        &self,
+    ) -> Result<Vec<VisibleHeadPopulationHistogram>, BrowserAuthClientError> {
+        self.get_json(&self.bindings.paths.metrics_head_populations_path, None)
+            .await
+    }
+
+    /// Fetches latest-canonical visible-head population histograms for one experiment.
+    pub async fn fetch_metrics_head_populations_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<VisibleHeadPopulationHistogram>, BrowserAuthClientError> {
+        let path = format!(
+            "{}/{}",
+            self.bindings.paths.metrics_head_populations_path,
+            experiment_id.as_str()
         );
         self.get_json(&path, None).await
     }

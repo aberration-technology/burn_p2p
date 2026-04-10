@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use burn_p2p_core::{
-    DatasetViewId, ExperimentId, HeadId, NetworkId, PeerWindowMetrics, PeerWindowStatus,
-    RevisionId, WorkloadId,
+    DatasetViewId, ExperimentId, HeadEvalReport, HeadEvalStatus, HeadId, MetricTrustClass,
+    NetworkId, PeerId, PeerWindowMetrics, PeerWindowStatus, RevisionId, WorkloadId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -85,6 +85,100 @@ pub struct PeerWindowDistributionDetail {
     pub summary: PeerWindowDistributionSummary,
     /// Raw peer-window records contributing to that summary.
     pub windows: Vec<PeerWindowMetrics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One cumulative checkpoint-adoption sample for a canonical head.
+pub struct CanonicalHeadAdoptionPoint {
+    /// Timestamp when the sampled peer-window batch started.
+    pub observed_at: DateTime<Utc>,
+    /// Milliseconds since the canonical head was certified.
+    pub elapsed_since_certified_ms: u64,
+    /// Number of peer windows seen so far in the head's visibility interval.
+    pub cumulative_window_count: usize,
+    /// Number of peer windows seen so far that started from the canonical head.
+    pub cumulative_adopted_window_count: usize,
+    /// Share of peer windows seen so far that adopted the canonical head.
+    pub adoption_coverage: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Cumulative adoption curve for one canonical head inside its visibility interval.
+pub struct CanonicalHeadAdoptionCurve {
+    /// Network identifier covered by the curve.
+    pub network_id: NetworkId,
+    /// Experiment identifier covered by the curve.
+    pub experiment_id: ExperimentId,
+    /// Revision identifier covered by the curve.
+    pub revision_id: RevisionId,
+    /// Workload identifier covered by the curve.
+    pub workload_id: WorkloadId,
+    /// Dataset view identifier covered by the curve.
+    pub dataset_view_id: DatasetViewId,
+    /// Canonical head whose diffusion is being measured.
+    pub canonical_head_id: HeadId,
+    /// Parent head for the canonical head, when known.
+    pub parent_head_id: Option<HeadId>,
+    /// Timestamp when the canonical head was certified.
+    pub certified_at: DateTime<Utc>,
+    /// Timestamp when the next canonical head was certified, when known.
+    pub next_canonical_certified_at: Option<DateTime<Utc>>,
+    /// Number of peer windows in the measured interval.
+    pub total_window_count: usize,
+    /// Number of peer windows in the measured interval that adopted the canonical head.
+    pub adopted_window_count: usize,
+    /// Final cumulative adoption coverage for the interval.
+    pub final_adoption_coverage: f64,
+    /// Cumulative adoption samples over time.
+    pub points: Vec<CanonicalHeadAdoptionPoint>,
+    /// Latest timestamp covered by the curve.
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One visible-head bucket inside a latest-head population histogram.
+pub struct VisibleHeadPopulationBucket {
+    /// Base head currently visible in the peer population bucket.
+    pub base_head_id: HeadId,
+    /// Number of peers whose latest recent window used this base head.
+    pub peer_count: usize,
+    /// Share of visible peers whose latest recent window used this base head.
+    pub peer_share: f64,
+    /// Number of recent peer windows that used this base head.
+    pub recent_window_count: usize,
+    /// Share of recent peer windows that used this base head.
+    pub recent_window_share: f64,
+    /// Whether the bucket corresponds to the latest canonical head.
+    pub is_latest_canonical: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Histogram of the latest visible peer population after a canonical promotion.
+pub struct VisibleHeadPopulationHistogram {
+    /// Network identifier covered by the histogram.
+    pub network_id: NetworkId,
+    /// Experiment identifier covered by the histogram.
+    pub experiment_id: ExperimentId,
+    /// Revision identifier covered by the histogram.
+    pub revision_id: RevisionId,
+    /// Workload identifier covered by the histogram.
+    pub workload_id: WorkloadId,
+    /// Dataset view identifier covered by the histogram.
+    pub dataset_view_id: DatasetViewId,
+    /// Latest canonical head anchoring the histogram.
+    pub canonical_head_id: HeadId,
+    /// Parent head for the latest canonical head, when known.
+    pub parent_head_id: Option<HeadId>,
+    /// Timestamp when the latest canonical head was certified.
+    pub certified_at: DateTime<Utc>,
+    /// Number of peers with a visible recent window after certification.
+    pub total_visible_peer_count: usize,
+    /// Number of peer windows observed after certification.
+    pub total_recent_window_count: usize,
+    /// Population buckets grouped by visible base head.
+    pub buckets: Vec<VisibleHeadPopulationBucket>,
+    /// Latest timestamp covered by the histogram.
+    pub captured_at: DateTime<Utc>,
 }
 
 /// Derives peer-window distribution summaries across one or more experiment revisions.
@@ -173,6 +267,267 @@ pub fn derive_peer_window_distribution_detail_with_limit(
         summary,
         windows: filtered,
     })
+}
+
+/// Derives canonical-head adoption curves across one or more experiment revisions.
+pub fn derive_canonical_head_adoption_curves(
+    peer_windows: &[PeerWindowMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Vec<CanonicalHeadAdoptionCurve> {
+    let mut curves = Vec::new();
+    let grouped_windows = peer_windows.iter().fold(
+        BTreeMap::<(ExperimentId, RevisionId), Vec<PeerWindowMetrics>>::new(),
+        |mut acc, metrics| {
+            acc.entry((metrics.experiment_id.clone(), metrics.revision_id.clone()))
+                .or_default()
+                .push(metrics.clone());
+            acc
+        },
+    );
+    let grouped_reports = head_reports.iter().fold(
+        BTreeMap::<(ExperimentId, RevisionId), Vec<HeadEvalReport>>::new(),
+        |mut acc, report| {
+            acc.entry((report.experiment_id.clone(), report.revision_id.clone()))
+                .or_default()
+                .push(report.clone());
+            acc
+        },
+    );
+
+    for (revision_key, reports) in grouped_reports {
+        let Some(canonical_reports) = canonical_head_anchors(&reports) else {
+            continue;
+        };
+        let revision_windows = grouped_windows
+            .get(&revision_key)
+            .cloned()
+            .unwrap_or_default();
+        for (index, report) in canonical_reports.iter().enumerate() {
+            let next_certified_at = canonical_reports
+                .get(index + 1)
+                .map(|next| next.finished_at);
+            let mut interval_windows = revision_windows
+                .iter()
+                .filter(|metrics| {
+                    metrics.window_started_at >= report.finished_at
+                        && next_certified_at
+                            .map(|next| metrics.window_started_at < next)
+                            .unwrap_or(true)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if interval_windows.is_empty() {
+                continue;
+            }
+            interval_windows.sort_by(|left, right| {
+                left.window_started_at
+                    .cmp(&right.window_started_at)
+                    .then_with(|| left.peer_id.cmp(&right.peer_id))
+            });
+
+            let grouped_points = interval_windows.iter().fold(
+                BTreeMap::<DateTime<Utc>, Vec<PeerWindowMetrics>>::new(),
+                |mut acc, metrics| {
+                    acc.entry(metrics.window_started_at)
+                        .or_default()
+                        .push(metrics.clone());
+                    acc
+                },
+            );
+            let mut cumulative_window_count = 0usize;
+            let mut cumulative_adopted_window_count = 0usize;
+            let mut points = Vec::new();
+            for (observed_at, windows_at_ts) in grouped_points {
+                cumulative_window_count += windows_at_ts.len();
+                cumulative_adopted_window_count += windows_at_ts
+                    .iter()
+                    .filter(|metrics| metrics.base_head_id == report.head_id)
+                    .count();
+                points.push(CanonicalHeadAdoptionPoint {
+                    observed_at,
+                    elapsed_since_certified_ms: (observed_at - report.finished_at)
+                        .num_milliseconds()
+                        .max(0) as u64,
+                    cumulative_window_count,
+                    cumulative_adopted_window_count,
+                    adoption_coverage: cumulative_adopted_window_count as f64
+                        / cumulative_window_count as f64,
+                });
+            }
+            let adopted_window_count = interval_windows
+                .iter()
+                .filter(|metrics| metrics.base_head_id == report.head_id)
+                .count();
+            curves.push(CanonicalHeadAdoptionCurve {
+                network_id: report.network_id.clone(),
+                experiment_id: report.experiment_id.clone(),
+                revision_id: report.revision_id.clone(),
+                workload_id: report.workload_id.clone(),
+                dataset_view_id: report.dataset_view_id.clone(),
+                canonical_head_id: report.head_id.clone(),
+                parent_head_id: report.base_head_id.clone(),
+                certified_at: report.finished_at,
+                next_canonical_certified_at: next_certified_at,
+                total_window_count: interval_windows.len(),
+                adopted_window_count,
+                final_adoption_coverage: adopted_window_count as f64
+                    / interval_windows.len() as f64,
+                captured_at: interval_windows
+                    .iter()
+                    .map(|metrics| metrics.window_finished_at)
+                    .max()
+                    .unwrap_or(report.finished_at),
+                points,
+            });
+        }
+    }
+
+    curves.sort_by(|left, right| {
+        right
+            .certified_at
+            .cmp(&left.certified_at)
+            .then_with(|| left.experiment_id.cmp(&right.experiment_id))
+            .then_with(|| left.revision_id.cmp(&right.revision_id))
+            .then_with(|| left.canonical_head_id.cmp(&right.canonical_head_id))
+    });
+    curves
+}
+
+/// Derives latest-canonical visible-head population histograms across experiment revisions.
+pub fn derive_latest_canonical_head_population_histograms(
+    peer_windows: &[PeerWindowMetrics],
+    head_reports: &[HeadEvalReport],
+) -> Vec<VisibleHeadPopulationHistogram> {
+    let grouped_windows = peer_windows.iter().fold(
+        BTreeMap::<(ExperimentId, RevisionId), Vec<PeerWindowMetrics>>::new(),
+        |mut acc, metrics| {
+            acc.entry((metrics.experiment_id.clone(), metrics.revision_id.clone()))
+                .or_default()
+                .push(metrics.clone());
+            acc
+        },
+    );
+    let grouped_reports = head_reports.iter().fold(
+        BTreeMap::<(ExperimentId, RevisionId), Vec<HeadEvalReport>>::new(),
+        |mut acc, report| {
+            acc.entry((report.experiment_id.clone(), report.revision_id.clone()))
+                .or_default()
+                .push(report.clone());
+            acc
+        },
+    );
+
+    let mut histograms = Vec::new();
+    for (revision_key, reports) in grouped_reports {
+        let Some(canonical_reports) = canonical_head_anchors(&reports) else {
+            continue;
+        };
+        let Some(latest_canonical) = canonical_reports.last() else {
+            continue;
+        };
+        let mut recent_windows = grouped_windows
+            .get(&revision_key)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|metrics| metrics.window_started_at >= latest_canonical.finished_at)
+            .collect::<Vec<_>>();
+        if recent_windows.is_empty() {
+            continue;
+        }
+        recent_windows.sort_by(|left, right| {
+            right
+                .window_started_at
+                .cmp(&left.window_started_at)
+                .then_with(|| right.window_finished_at.cmp(&left.window_finished_at))
+                .then_with(|| left.peer_id.cmp(&right.peer_id))
+        });
+
+        let latest_by_peer = recent_windows.iter().fold(
+            BTreeMap::<PeerId, PeerWindowMetrics>::new(),
+            |mut acc, metrics| {
+                acc.entry(metrics.peer_id.clone())
+                    .and_modify(|current| {
+                        if metrics.window_started_at > current.window_started_at
+                            || (metrics.window_started_at == current.window_started_at
+                                && metrics.window_finished_at > current.window_finished_at)
+                        {
+                            *current = metrics.clone();
+                        }
+                    })
+                    .or_insert_with(|| metrics.clone());
+                acc
+            },
+        );
+        let latest_peer_count_by_head = latest_by_peer.into_values().fold(
+            BTreeMap::<HeadId, usize>::new(),
+            |mut acc, metrics| {
+                *acc.entry(metrics.base_head_id.clone()).or_default() += 1;
+                acc
+            },
+        );
+        let recent_window_count_by_head =
+            recent_windows
+                .iter()
+                .fold(BTreeMap::<HeadId, usize>::new(), |mut acc, metrics| {
+                    *acc.entry(metrics.base_head_id.clone()).or_default() += 1;
+                    acc
+                });
+        let total_visible_peer_count = latest_peer_count_by_head.values().sum::<usize>();
+        let total_recent_window_count = recent_windows.len();
+        let mut buckets = latest_peer_count_by_head
+            .into_iter()
+            .map(|(base_head_id, peer_count)| {
+                let recent_window_count = recent_window_count_by_head
+                    .get(&base_head_id)
+                    .copied()
+                    .unwrap_or_default();
+                VisibleHeadPopulationBucket {
+                    base_head_id: base_head_id.clone(),
+                    peer_count,
+                    peer_share: peer_count as f64 / total_visible_peer_count.max(1) as f64,
+                    recent_window_count,
+                    recent_window_share: recent_window_count as f64
+                        / total_recent_window_count.max(1) as f64,
+                    is_latest_canonical: base_head_id == latest_canonical.head_id,
+                }
+            })
+            .collect::<Vec<_>>();
+        buckets.sort_by(|left, right| {
+            right
+                .peer_count
+                .cmp(&left.peer_count)
+                .then_with(|| right.recent_window_count.cmp(&left.recent_window_count))
+                .then_with(|| left.base_head_id.cmp(&right.base_head_id))
+        });
+        histograms.push(VisibleHeadPopulationHistogram {
+            network_id: latest_canonical.network_id.clone(),
+            experiment_id: latest_canonical.experiment_id.clone(),
+            revision_id: latest_canonical.revision_id.clone(),
+            workload_id: latest_canonical.workload_id.clone(),
+            dataset_view_id: latest_canonical.dataset_view_id.clone(),
+            canonical_head_id: latest_canonical.head_id.clone(),
+            parent_head_id: latest_canonical.base_head_id.clone(),
+            certified_at: latest_canonical.finished_at,
+            total_visible_peer_count,
+            total_recent_window_count,
+            captured_at: recent_windows
+                .iter()
+                .map(|metrics| metrics.window_finished_at)
+                .max()
+                .unwrap_or(latest_canonical.finished_at),
+            buckets,
+        });
+    }
+
+    histograms.sort_by(|left, right| {
+        right
+            .certified_at
+            .cmp(&left.certified_at)
+            .then_with(|| left.experiment_id.cmp(&right.experiment_id))
+            .then_with(|| left.revision_id.cmp(&right.revision_id))
+    });
+    histograms
 }
 
 fn summarize_peer_window_distribution(
@@ -357,6 +712,35 @@ fn summarize_peer_window_distribution(
             .max()
             .unwrap_or(first.window_finished_at),
     })
+}
+
+fn canonical_head_anchors(head_reports: &[HeadEvalReport]) -> Option<Vec<HeadEvalReport>> {
+    let mut by_head = head_reports
+        .iter()
+        .filter(|report| {
+            report.status == HeadEvalStatus::Completed
+                && report.trust_class == MetricTrustClass::Canonical
+        })
+        .fold(
+            BTreeMap::<HeadId, HeadEvalReport>::new(),
+            |mut acc, report| {
+                acc.entry(report.head_id.clone())
+                    .and_modify(|current| {
+                        if report.finished_at < current.finished_at {
+                            *current = report.clone();
+                        }
+                    })
+                    .or_insert_with(|| report.clone());
+                acc
+            },
+        )
+        .into_values()
+        .collect::<Vec<_>>();
+    if by_head.is_empty() {
+        return None;
+    }
+    by_head.sort_by_key(|report| report.finished_at);
+    Some(by_head)
 }
 
 fn percentile_nearest_rank(sorted_values: &[f64], percentile: f64) -> f64 {

@@ -1048,6 +1048,7 @@ dependencies = [
  "burn_p2p_security",
  "burn_p2p_swarm",
  "burn_p2p_views",
+ "burn_p2p_workload",
  "chrono",
  "futures",
  "libp2p-identity",
@@ -1235,6 +1236,20 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "burn_p2p_workload"
+version = "0.21.0-pre.7"
+dependencies = [
+ "anyhow",
+ "burn_p2p_checkpoint",
+ "burn_p2p_core",
+ "burn_p2p_dataloader",
+ "burn_p2p_experiment",
+ "burn_p2p_limits",
+ "chrono",
+ "serde",
 ]
 
 [[package]]

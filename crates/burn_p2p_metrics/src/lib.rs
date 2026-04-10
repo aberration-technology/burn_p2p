@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 
 pub use derive::{MetricsIndexer, derive_network_performance_summary};
 pub use query::{
-    PeerWindowDistributionDetail, PeerWindowDistributionSummary,
+    CanonicalHeadAdoptionCurve, CanonicalHeadAdoptionPoint, PeerWindowDistributionDetail,
+    PeerWindowDistributionSummary, VisibleHeadPopulationBucket, VisibleHeadPopulationHistogram,
+    derive_canonical_head_adoption_curves, derive_latest_canonical_head_population_histograms,
     derive_peer_window_distribution_detail, derive_peer_window_distribution_detail_with_limit,
     derive_peer_window_distribution_summaries,
 };
@@ -132,6 +134,10 @@ pub enum DerivedMetricKind {
     HeadAdoptionLagP50,
     /// P90 head adoption lag.
     HeadAdoptionLagP90,
+    /// Fraction of recent peer windows that started from the latest canonical head.
+    LatestCanonicalAdoptionCoverage,
+    /// Number of distinct base heads still visible in recent peer windows after latest canonical promotion.
+    RecentBaseHeadFragmentation,
     /// Acceptance ratio across attempted and accepted work.
     AcceptanceRatio,
     /// Rejection ratio grouped by reason.
@@ -460,6 +466,7 @@ mod tests {
 
     use super::{
         DerivedMetricKind, MetricEnvelope, MetricsIndexer, MetricsIndexerConfig, MetricsStore,
+        derive_canonical_head_adoption_curves, derive_latest_canonical_head_population_histograms,
         derive_network_performance_summary, derive_peer_window_distribution_detail,
         derive_peer_window_distribution_detail_with_limit,
         derive_peer_window_distribution_summaries, derive_robustness_rollup,
@@ -636,6 +643,442 @@ mod tests {
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].segment_seq, 0);
         assert_eq!(segments[1].prev_hash, Some(segments[0].hash.clone()));
+    }
+
+    #[test]
+    fn metrics_indexer_derives_latest_canonical_adoption_and_fragmentation() {
+        let mut indexer = MetricsIndexer::new(MetricsIndexerConfig::default());
+        let started_at = Utc::now();
+        indexer.ingest_head_eval_report(HeadEvalReport {
+            network_id: NetworkId::new("network-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: WorkloadId::new("workload-a"),
+            head_id: HeadId::new("head-b"),
+            base_head_id: Some(HeadId::new("head-a")),
+            eval_protocol_id: ContentId::new("eval-a"),
+            evaluator_set_id: ContentId::new("eval-set-a"),
+            metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.25))]),
+            sample_count: 128,
+            dataset_view_id: DatasetViewId::new("view-a"),
+            started_at: started_at + Duration::seconds(10),
+            finished_at: started_at + Duration::seconds(14),
+            trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+            status: burn_p2p_core::HeadEvalStatus::Completed,
+            signature_bundle: Vec::new(),
+        });
+        indexer.ingest_peer_window_metrics(PeerWindowMetrics {
+            network_id: NetworkId::new("network-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: WorkloadId::new("workload-a"),
+            dataset_view_id: DatasetViewId::new("view-a"),
+            peer_id: burn_p2p_core::PeerId::new("peer-a"),
+            principal_id: None,
+            lease_id: LeaseId::new("lease-a"),
+            base_head_id: HeadId::new("head-b"),
+            window_started_at: started_at + Duration::seconds(15),
+            window_finished_at: started_at + Duration::seconds(20),
+            attempted_tokens_or_samples: 64,
+            accepted_tokens_or_samples: Some(64),
+            local_train_loss_mean: Some(0.3),
+            local_train_loss_last: Some(0.2),
+            grad_or_delta_norm: Some(1.0),
+            optimizer_step_count: 8,
+            compute_time_ms: 5_000,
+            data_fetch_time_ms: 100,
+            publish_latency_ms: 50,
+            head_lag_at_start: 0,
+            head_lag_at_finish: 0,
+            backend_class: BackendClass::Cpu,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        });
+        indexer.ingest_peer_window_metrics(PeerWindowMetrics {
+            network_id: NetworkId::new("network-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            revision_id: RevisionId::new("rev-a"),
+            workload_id: WorkloadId::new("workload-a"),
+            dataset_view_id: DatasetViewId::new("view-a"),
+            peer_id: burn_p2p_core::PeerId::new("peer-b"),
+            principal_id: None,
+            lease_id: LeaseId::new("lease-b"),
+            base_head_id: HeadId::new("head-a"),
+            window_started_at: started_at + Duration::seconds(16),
+            window_finished_at: started_at + Duration::seconds(21),
+            attempted_tokens_or_samples: 64,
+            accepted_tokens_or_samples: Some(64),
+            local_train_loss_mean: Some(0.35),
+            local_train_loss_last: Some(0.25),
+            grad_or_delta_norm: Some(1.1),
+            optimizer_step_count: 8,
+            compute_time_ms: 5_000,
+            data_fetch_time_ms: 100,
+            publish_latency_ms: 50,
+            head_lag_at_start: 1,
+            head_lag_at_finish: 1,
+            backend_class: BackendClass::Cpu,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        });
+
+        let derived =
+            indexer.derive_metrics(&ExperimentId::new("exp-a"), &RevisionId::new("rev-a"));
+        let coverage = derived
+            .iter()
+            .find(|point| point.metric == DerivedMetricKind::LatestCanonicalAdoptionCoverage)
+            .expect("coverage point");
+        let fragmentation = derived
+            .iter()
+            .find(|point| point.metric == DerivedMetricKind::RecentBaseHeadFragmentation)
+            .expect("fragmentation point");
+
+        assert_eq!(coverage.canonical_head_id, Some(HeadId::new("head-b")));
+        assert!((coverage.value - 0.5).abs() < f64::EPSILON);
+        assert_eq!(fragmentation.canonical_head_id, Some(HeadId::new("head-b")));
+        assert_eq!(fragmentation.value, 2.0);
+    }
+
+    #[test]
+    fn canonical_head_adoption_curves_respect_visibility_intervals() {
+        let started_at = Utc::now();
+        let curves = derive_canonical_head_adoption_curves(
+            &[
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-a"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-a"),
+                    base_head_id: HeadId::new("head-b"),
+                    window_started_at: started_at + Duration::seconds(15),
+                    window_finished_at: started_at + Duration::seconds(20),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(64),
+                    local_train_loss_mean: Some(0.2),
+                    local_train_loss_last: Some(0.1),
+                    grad_or_delta_norm: Some(1.0),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 5_000,
+                    data_fetch_time_ms: 100,
+                    publish_latency_ms: 50,
+                    head_lag_at_start: 0,
+                    head_lag_at_finish: 0,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-b"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-b"),
+                    base_head_id: HeadId::new("head-a"),
+                    window_started_at: started_at + Duration::seconds(16),
+                    window_finished_at: started_at + Duration::seconds(22),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(32),
+                    local_train_loss_mean: Some(0.3),
+                    local_train_loss_last: Some(0.2),
+                    grad_or_delta_norm: Some(1.1),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 5_500,
+                    data_fetch_time_ms: 110,
+                    publish_latency_ms: 50,
+                    head_lag_at_start: 1,
+                    head_lag_at_finish: 1,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-c"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-c"),
+                    base_head_id: HeadId::new("head-c"),
+                    window_started_at: started_at + Duration::seconds(31),
+                    window_finished_at: started_at + Duration::seconds(36),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(64),
+                    local_train_loss_mean: Some(0.15),
+                    local_train_loss_last: Some(0.1),
+                    grad_or_delta_norm: Some(0.9),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 4_900,
+                    data_fetch_time_ms: 90,
+                    publish_latency_ms: 40,
+                    head_lag_at_start: 0,
+                    head_lag_at_finish: 0,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+            ],
+            &[
+                HeadEvalReport {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    head_id: HeadId::new("head-b"),
+                    base_head_id: Some(HeadId::new("head-a")),
+                    eval_protocol_id: ContentId::new("eval-a"),
+                    evaluator_set_id: ContentId::new("eval-set-a"),
+                    metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.25))]),
+                    sample_count: 128,
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    started_at: started_at + Duration::seconds(10),
+                    finished_at: started_at + Duration::seconds(14),
+                    trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+                    status: burn_p2p_core::HeadEvalStatus::Completed,
+                    signature_bundle: Vec::new(),
+                },
+                HeadEvalReport {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    head_id: HeadId::new("head-c"),
+                    base_head_id: Some(HeadId::new("head-b")),
+                    eval_protocol_id: ContentId::new("eval-a"),
+                    evaluator_set_id: ContentId::new("eval-set-a"),
+                    metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.2))]),
+                    sample_count: 128,
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    started_at: started_at + Duration::seconds(26),
+                    finished_at: started_at + Duration::seconds(30),
+                    trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+                    status: burn_p2p_core::HeadEvalStatus::Completed,
+                    signature_bundle: Vec::new(),
+                },
+            ],
+        );
+
+        assert_eq!(curves.len(), 2);
+        let head_b = curves
+            .iter()
+            .find(|curve| curve.canonical_head_id.as_str() == "head-b")
+            .expect("head-b curve");
+        assert_eq!(head_b.total_window_count, 2);
+        assert_eq!(head_b.adopted_window_count, 1);
+        assert!((head_b.final_adoption_coverage - 0.5).abs() < f64::EPSILON);
+        assert_eq!(
+            head_b.next_canonical_certified_at,
+            Some(started_at + Duration::seconds(30))
+        );
+        assert_eq!(head_b.points.len(), 2);
+        assert!((head_b.points[0].adoption_coverage - 1.0).abs() < f64::EPSILON);
+        assert!((head_b.points[1].adoption_coverage - 0.5).abs() < f64::EPSILON);
+
+        let head_c = curves
+            .iter()
+            .find(|curve| curve.canonical_head_id.as_str() == "head-c")
+            .expect("head-c curve");
+        assert_eq!(head_c.total_window_count, 1);
+        assert_eq!(head_c.adopted_window_count, 1);
+        assert!((head_c.final_adoption_coverage - 1.0).abs() < f64::EPSILON);
+        assert_eq!(head_c.points.len(), 1);
+    }
+
+    #[test]
+    fn visible_head_population_histogram_tracks_latest_visible_peers() {
+        let started_at = Utc::now();
+        let histograms = derive_latest_canonical_head_population_histograms(
+            &[
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-a"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-a"),
+                    base_head_id: HeadId::new("head-c"),
+                    window_started_at: started_at + Duration::seconds(31),
+                    window_finished_at: started_at + Duration::seconds(35),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(64),
+                    local_train_loss_mean: Some(0.2),
+                    local_train_loss_last: Some(0.1),
+                    grad_or_delta_norm: Some(1.0),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 4_500,
+                    data_fetch_time_ms: 90,
+                    publish_latency_ms: 40,
+                    head_lag_at_start: 0,
+                    head_lag_at_finish: 0,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-b"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-b"),
+                    base_head_id: HeadId::new("head-b"),
+                    window_started_at: started_at + Duration::seconds(32),
+                    window_finished_at: started_at + Duration::seconds(36),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(32),
+                    local_train_loss_mean: Some(0.3),
+                    local_train_loss_last: Some(0.2),
+                    grad_or_delta_norm: Some(1.1),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 4_700,
+                    data_fetch_time_ms: 95,
+                    publish_latency_ms: 45,
+                    head_lag_at_start: 1,
+                    head_lag_at_finish: 1,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-b"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-b-2"),
+                    base_head_id: HeadId::new("head-c"),
+                    window_started_at: started_at + Duration::seconds(34),
+                    window_finished_at: started_at + Duration::seconds(38),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(64),
+                    local_train_loss_mean: Some(0.18),
+                    local_train_loss_last: Some(0.1),
+                    grad_or_delta_norm: Some(0.95),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 4_400,
+                    data_fetch_time_ms: 88,
+                    publish_latency_ms: 40,
+                    head_lag_at_start: 0,
+                    head_lag_at_finish: 0,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+                PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new("peer-c"),
+                    principal_id: None,
+                    lease_id: LeaseId::new("lease-c"),
+                    base_head_id: HeadId::new("head-b"),
+                    window_started_at: started_at + Duration::seconds(33),
+                    window_finished_at: started_at + Duration::seconds(37),
+                    attempted_tokens_or_samples: 64,
+                    accepted_tokens_or_samples: Some(32),
+                    local_train_loss_mean: Some(0.28),
+                    local_train_loss_last: Some(0.2),
+                    grad_or_delta_norm: Some(1.0),
+                    optimizer_step_count: 8,
+                    compute_time_ms: 4_600,
+                    data_fetch_time_ms: 92,
+                    publish_latency_ms: 42,
+                    head_lag_at_start: 1,
+                    head_lag_at_finish: 1,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                },
+            ],
+            &[
+                HeadEvalReport {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    head_id: HeadId::new("head-b"),
+                    base_head_id: Some(HeadId::new("head-a")),
+                    eval_protocol_id: ContentId::new("eval-a"),
+                    evaluator_set_id: ContentId::new("eval-set-a"),
+                    metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.25))]),
+                    sample_count: 128,
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    started_at: started_at + Duration::seconds(10),
+                    finished_at: started_at + Duration::seconds(14),
+                    trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+                    status: burn_p2p_core::HeadEvalStatus::Completed,
+                    signature_bundle: Vec::new(),
+                },
+                HeadEvalReport {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    head_id: HeadId::new("head-c"),
+                    base_head_id: Some(HeadId::new("head-b")),
+                    eval_protocol_id: ContentId::new("eval-a"),
+                    evaluator_set_id: ContentId::new("eval-set-a"),
+                    metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.2))]),
+                    sample_count: 128,
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    started_at: started_at + Duration::seconds(26),
+                    finished_at: started_at + Duration::seconds(30),
+                    trust_class: burn_p2p_core::MetricTrustClass::Canonical,
+                    status: burn_p2p_core::HeadEvalStatus::Completed,
+                    signature_bundle: Vec::new(),
+                },
+            ],
+        );
+
+        assert_eq!(histograms.len(), 1);
+        let histogram = &histograms[0];
+        assert_eq!(histogram.canonical_head_id.as_str(), "head-c");
+        assert_eq!(histogram.total_visible_peer_count, 3);
+        assert_eq!(histogram.total_recent_window_count, 4);
+
+        let latest_bucket = histogram
+            .buckets
+            .iter()
+            .find(|bucket| bucket.base_head_id.as_str() == "head-c")
+            .expect("latest canonical bucket");
+        assert_eq!(latest_bucket.peer_count, 2);
+        assert_eq!(latest_bucket.recent_window_count, 2);
+        assert!(latest_bucket.is_latest_canonical);
+        assert!((latest_bucket.peer_share - (2.0 / 3.0)).abs() < f64::EPSILON);
+
+        let stale_bucket = histogram
+            .buckets
+            .iter()
+            .find(|bucket| bucket.base_head_id.as_str() == "head-b")
+            .expect("stale bucket");
+        assert_eq!(stale_bucket.peer_count, 1);
+        assert_eq!(stale_bucket.recent_window_count, 2);
+        assert!(!stale_bucket.is_latest_canonical);
     }
 
     #[test]

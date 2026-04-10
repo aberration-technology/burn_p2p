@@ -118,8 +118,8 @@ Why `BurnShardedDataset` matters:
 - train data is fetched lease-by-lease through the runtime cache path
 - the same prepared dataset can be flipped to http upstream for browser or wasm
   trainers with `.with_http_upstream(...)`
-- the demo proves shard fetch / assignment behavior without dropping to
-  the advanced `burn_p2p::burn::advanced` hooks
+- the demo proves shard fetch / assignment behavior through the normal
+  `from_loaders(...)` + `.with_sharded_dataset(...)` path
 
 Browser data transport in the demo is intentionally not p2p shard gossip:
 

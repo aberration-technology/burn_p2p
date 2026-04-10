@@ -58,6 +58,10 @@ pub struct BrowserEdgeEndpoints {
     pub metrics_disagreements_path: String,
     /// The peer-window distribution metrics path prefix.
     pub metrics_peer_windows_path: String,
+    /// The canonical-head adoption-curve metrics path prefix.
+    pub metrics_head_adoption_curves_path: String,
+    /// The latest-canonical visible-head population metrics path prefix.
+    pub metrics_head_populations_path: String,
     /// The head metrics path prefix.
     pub metrics_heads_path: String,
     /// The experiment metrics path prefix.
@@ -109,6 +113,8 @@ impl Default for BrowserEdgeEndpoints {
             metrics_candidates_path: "/metrics/candidates".into(),
             metrics_disagreements_path: "/metrics/disagreements".into(),
             metrics_peer_windows_path: "/metrics/peer-windows".into(),
+            metrics_head_adoption_curves_path: "/metrics/head-adoption-curves".into(),
+            metrics_head_populations_path: "/metrics/head-populations".into(),
             metrics_heads_path: "/metrics/heads".into(),
             metrics_experiments_path: "/metrics/experiments".into(),
             artifacts_aliases_path: "/artifacts/aliases".into(),
@@ -177,6 +183,11 @@ impl BrowserUiBindings {
                 metrics_candidates_path: snapshot.paths.metrics_candidates_path.clone(),
                 metrics_disagreements_path: snapshot.paths.metrics_disagreements_path.clone(),
                 metrics_peer_windows_path: snapshot.paths.metrics_peer_windows_path.clone(),
+                metrics_head_adoption_curves_path: snapshot
+                    .paths
+                    .metrics_head_adoption_curves_path
+                    .clone(),
+                metrics_head_populations_path: snapshot.paths.metrics_head_populations_path.clone(),
                 metrics_heads_path: snapshot.paths.metrics_heads_path.clone(),
                 metrics_experiments_path: snapshot.paths.metrics_experiments_path.clone(),
                 artifacts_aliases_path: snapshot.paths.artifacts_aliases_path.clone(),

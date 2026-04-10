@@ -276,6 +276,23 @@ pub struct BrowserAppPerformanceView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Canonical diffusion and fragmentation summary surfaced in the browser app.
+pub struct BrowserAppDiffusionView {
+    /// Latest canonical head currently being summarized.
+    pub canonical_head_id: String,
+    /// Timestamp of the diffusion snapshot.
+    pub captured_at: String,
+    /// Human-readable peer adoption share for the latest canonical head.
+    pub peer_adoption: String,
+    /// Human-readable recent-window adoption share for the latest canonical head.
+    pub recent_window_adoption: String,
+    /// Human-readable visible fragmentation summary.
+    pub fragmentation: String,
+    /// Human-readable diffusion timeline summary.
+    pub timeline: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Training-focused summary derived entirely on the browser client.
 pub struct BrowserAppTrainingView {
     /// Whether training is available for the selected experiment.
@@ -365,6 +382,9 @@ pub struct BrowserAppNetworkView {
     /// Aggregate training/validation performance summary, when available.
     #[serde(default)]
     pub performance: Option<BrowserAppPerformanceView>,
+    /// Canonical checkpoint diffusion summary, when available.
+    #[serde(default)]
+    pub diffusion: Option<BrowserAppDiffusionView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,6 +435,9 @@ pub type NodeAppMetricPreview = BrowserAppMetricPreview;
 
 /// Platform-agnostic alias for one aggregate performance summary.
 pub type NodeAppPerformanceView = BrowserAppPerformanceView;
+
+/// Platform-agnostic alias for one diffusion/fragmentation summary.
+pub type NodeAppDiffusionView = BrowserAppDiffusionView;
 
 /// Platform-agnostic alias for one leaderboard preview row.
 pub type NodeAppLeaderboardPreview = BrowserAppLeaderboardPreview;

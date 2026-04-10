@@ -3,6 +3,8 @@ resolver = "3"
 members = [
   "xtask",
   "crates/burn_p2p",
+  "crates/burn_p2p_workload",
+  "crates/burn_p2p_python",
   "crates/burn_p2p_auth_external",
   "crates/burn_p2p_auth_github",
   "crates/burn_p2p_auth_oidc",
@@ -40,6 +42,8 @@ anyhow = "1.0"
 burn = { version = "0.21.0-pre.3", default-features = false, features = ["std", "ndarray", "train", "store"] }
 burn-store = { version = "0.21.0-pre.3", default-features = false, features = ["std", "burnpack", "safetensors"] }
 burn_p2p = { version = "=0.21.0-pre.7", path = "crates/burn_p2p" }
+burn_p2p_workload = { version = "=0.21.0-pre.7", path = "crates/burn_p2p_workload" }
+burn_p2p_python = { version = "=0.21.0-pre.7", path = "crates/burn_p2p_python" }
 burn_p2p_auth_external = { version = "=0.21.0-pre.7", path = "crates/burn_p2p_auth_external" }
 burn_p2p_auth_github = { version = "=0.21.0-pre.7", path = "crates/burn_p2p_auth_github" }
 burn_p2p_auth_oidc = { version = "=0.21.0-pre.7", path = "crates/burn_p2p_auth_oidc" }

@@ -31,7 +31,7 @@ let mut trainer = from_loaders(
     Learner::new(model, optimizer, scheduler),
     device,
     train_loader,
-    eval_loader,
+    validation_loader,
 )
 .trainer(release_manifest, supported_workload)?
 .with_network(network_manifest)?
@@ -52,7 +52,7 @@ println!("published {}", outcome.head.head_id.as_str());
 
 keep your existing burn model, optimizer, scheduler, and loaders.
 
-Use `train_window_once(...)` instead when you want a single strictly
+use `train_window_once(...)` instead when you want a single strictly
 orchestrated training window with no retained session state.
 
 `burn_p2p` handles:
@@ -78,17 +78,39 @@ roles.
 
 ## data
 
-trainers fetch only their assigned shard with `with_sharded_dataset(...)`.
+one lease is one micro-epoch. that is the unit that drives publish cadence and
+canonical reconcile.
+
+use `with_sharded_dataset(...)` when data already lives as prepared shard
+files.
+
+use `LeaseDataPipeline<Device, Batch>` when batches should be rebuilt from
+indices, samplers, seeds, recipes, or custom lease metadata.
+
+pipeline kinds stay simple:
+- `ShardedStatic`: shard files
+- `IndexedDataset`: dataset + sampler scope
+- `GeneratedDataset`: deterministic generation
+- `Custom`: anything else
+
+burn uses `.with_data_pipeline(...)`. python/torch uses
+`PythonTorchProject::new_with_data_pipeline(...)`.
+
+both adapters expose the same inspection surface:
+- `data_pipeline_descriptor()`
+- `data_pipeline_kind()`
+- `local_upstream_root()`
+
+`local_upstream_root()` only returns `Some(...)` for local shard-backed
+pipelines.
 
 native peers exchange control-plane state, heads, checkpoints, and artifacts
 over the peer network.
 
 browser peers fetch only the active lease-scoped shard data through the browser
-edge. in the current codebase that browser path is peer-backed
-(`p2p-artifact-via-edge`): native peers sync the prepared shard bundle over the
-overlay, and the browser edge serves only the leased slice to the browser. that
-means browser data is no longer tied to a separate static dataset sidecar, but
-browser peers are still edge-mediated rather than direct libp2p peers.
+edge. today that path is peer-backed (`p2p-artifact-via-edge`): native peers
+sync the prepared shard bundle over the overlay, and the edge serves only the
+leased slice to the browser.
 
 ## what the repo includes
 
@@ -98,6 +120,7 @@ browser peers are still edge-mediated rather than direct libp2p peers.
 - `burn_p2p_browser`: browser runtime bridge and wasm-facing transport glue
 - `burn_p2p_app`: reference dioxus app and browser-edge product surface
 - `examples/mnist_p2p_demo`: real downstream-style mixed-fleet demo used by `cargo xtask e2e mnist`
+- `examples/torch_mnist_p2p_demo`: python/torch subprocess-backed mnist demo using the same p2p runtime
 
 same experiment layout works across native and browser peers. browser-facing
 runtime and ui live in the companion crates above.
@@ -114,6 +137,7 @@ best follow-up docs:
 
 - [docs/examples/mnist.md](docs/examples/mnist.md)
 - [docs/downstream-burn-guide.md](docs/downstream-burn-guide.md)
+- [docs/learning-dynamics.md](docs/learning-dynamics.md)
 - [docs/features.md](docs/features.md)
 
 non-burn runtime? implement `P2pWorkload` directly.

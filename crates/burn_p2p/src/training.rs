@@ -1,5 +1,4 @@
 use super::*;
-use crate::backend::TrainingWindowTiming;
 use crate::metrics_runtime::{
     TrainingMetricBuildArgs, build_metrics_announcement, build_training_peer_window_metrics,
     persist_peer_window_metrics,
@@ -438,6 +437,7 @@ impl<P> RunningNode<P> {
             device,
             model,
             lease: planned.lease.lease.clone(),
+            cached_microshards,
             batches,
         };
 

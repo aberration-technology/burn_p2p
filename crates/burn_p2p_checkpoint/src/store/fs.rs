@@ -291,6 +291,40 @@ impl FsArtifactStore {
         Ok(bytes)
     }
 
+    /// Performs the materialize artifact file operation.
+    pub fn materialize_artifact_file(
+        &self,
+        artifact: &ArtifactDescriptor,
+        path: impl AsRef<Path>,
+    ) -> Result<PathBuf, CheckpointError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| CheckpointError::Io(error.to_string()))?;
+        }
+
+        let mut file =
+            File::create(path).map_err(|error| CheckpointError::Io(error.to_string()))?;
+        let mut root_hasher = Sha256::new();
+
+        for chunk in &artifact.chunks {
+            let chunk_bytes = self.load_chunk_bytes(chunk)?;
+            root_hasher.update(&chunk_bytes);
+            file.write_all(&chunk_bytes)
+                .map_err(|error| CheckpointError::Io(error.to_string()))?;
+        }
+        file.flush()
+            .map_err(|error| CheckpointError::Io(error.to_string()))?;
+
+        let root_hash = content_id_from_sha256_digest(root_hasher.finalize());
+        if root_hash != artifact.root_hash {
+            return Err(CheckpointError::ArtifactRootHashMismatch {
+                artifact_id: artifact.artifact_id.clone(),
+            });
+        }
+
+        Ok(path.to_path_buf())
+    }
+
     /// Performs the garbage collect operation.
     pub fn garbage_collect(&self) -> Result<GarbageCollectionReport, CheckpointError> {
         self.ensure_layout()?;

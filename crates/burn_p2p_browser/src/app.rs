@@ -1,11 +1,15 @@
 use burn_p2p::{
     BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, RevisionId,
 };
-use burn_p2p_metrics::MetricsCatchupBundle;
+use burn_p2p_metrics::{
+    MetricsCatchupBundle, derive_canonical_head_adoption_curves,
+    derive_latest_canonical_head_population_histograms,
+};
 use burn_p2p_views::{
-    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppLeaderboardPreview,
-    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppSurface,
-    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+    BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
+    BrowserAppLeaderboardPreview, BrowserAppMetricPreview, BrowserAppNetworkView,
+    BrowserAppPerformanceView, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
+    BrowserAppViewerView,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -257,6 +261,7 @@ impl BrowserAppModel {
             .map(|report| metric_preview(&report.metric_values))
             .unwrap_or_default();
         let performance_summary = metrics_bundle.and_then(network_performance_view);
+        let diffusion_summary = metrics_bundle.and_then(network_diffusion_view);
         let validate_available = selected_experiment
             .as_ref()
             .is_some_and(|experiment| experiment.validate_available);
@@ -392,6 +397,7 @@ impl BrowserAppModel {
                     .clone()
                     .or_else(|| self.runtime.transport.last_error.clone()),
                 performance: performance_summary,
+                diffusion: diffusion_summary,
             },
         }
     }
@@ -847,6 +853,50 @@ fn network_performance_view(bundle: &MetricsCatchupBundle) -> Option<BrowserAppP
         ),
         wait_time: format_duration_ms(wait_time_ms),
         idle_time: format_duration_ms(idle_time_ms),
+    })
+}
+
+fn network_diffusion_view(bundle: &MetricsCatchupBundle) -> Option<BrowserAppDiffusionView> {
+    let histogram = derive_latest_canonical_head_population_histograms(
+        &bundle.snapshot.peer_window_metrics,
+        &bundle.snapshot.head_eval_reports,
+    )
+    .into_iter()
+    .next()?;
+    let latest_bucket = histogram
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_latest_canonical)?;
+    let curve = derive_canonical_head_adoption_curves(
+        &bundle.snapshot.peer_window_metrics,
+        &bundle.snapshot.head_eval_reports,
+    )
+    .into_iter()
+    .find(|curve| curve.canonical_head_id == histogram.canonical_head_id);
+    let timeline = curve
+        .as_ref()
+        .and_then(|curve| curve.points.last().map(|point| (curve, point)))
+        .map(|(curve, point)| {
+            format!(
+                "{} point(s) over {}",
+                curve.points.len(),
+                format_duration_ms(point.elapsed_since_certified_ms)
+            )
+        })
+        .unwrap_or_else(|| "no post-certification windows yet".into());
+    Some(BrowserAppDiffusionView {
+        canonical_head_id: histogram.canonical_head_id.as_str().to_owned(),
+        captured_at: histogram.captured_at.to_rfc3339(),
+        peer_adoption: format!(
+            "{} / {} peers",
+            latest_bucket.peer_count, histogram.total_visible_peer_count
+        ),
+        recent_window_adoption: format!(
+            "{} / {} windows",
+            latest_bucket.recent_window_count, histogram.total_recent_window_count
+        ),
+        fragmentation: format!("{} visible head(s)", histogram.buckets.len()),
+        timeline,
     })
 }
 

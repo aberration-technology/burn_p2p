@@ -140,6 +140,7 @@ pub fn build_node_app_view(
             last_directory_sync_at: Some(snapshot.updated_at.to_rfc3339()),
             last_error: snapshot.last_error.clone(),
             performance: None,
+            diffusion: None,
         },
     }
 }

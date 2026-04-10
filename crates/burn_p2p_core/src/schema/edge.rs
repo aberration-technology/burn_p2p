@@ -310,6 +310,10 @@ pub struct BrowserEdgePaths {
     pub metrics_disagreements_path: String,
     /// The peer-window distribution metrics path prefix.
     pub metrics_peer_windows_path: String,
+    /// The canonical-head adoption-curve metrics path prefix.
+    pub metrics_head_adoption_curves_path: String,
+    /// The latest-canonical visible-head population metrics path prefix.
+    pub metrics_head_populations_path: String,
     /// The head-scoped metrics path prefix.
     pub metrics_heads_path: String,
     /// The experiment-scoped metrics path prefix.
@@ -362,6 +366,8 @@ impl Default for BrowserEdgePaths {
             metrics_candidates_path: "/metrics/candidates".into(),
             metrics_disagreements_path: "/metrics/disagreements".into(),
             metrics_peer_windows_path: "/metrics/peer-windows".into(),
+            metrics_head_adoption_curves_path: "/metrics/head-adoption-curves".into(),
+            metrics_head_populations_path: "/metrics/head-populations".into(),
             metrics_heads_path: "/metrics/heads".into(),
             metrics_experiments_path: "/metrics/experiments".into(),
             artifacts_aliases_path: "/artifacts/aliases".into(),

@@ -13,6 +13,8 @@ snapshots, and design diaries are intentionally not kept here.
   dependency shapes
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
   `burn_p2p` into a Burn project
+- [learning-dynamics.md](learning-dynamics.md): how windowed p2p averaging
+  learns, how contributions are weighted, and where it differs from sync ddp
 - [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
   multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance

@@ -1,12 +1,12 @@
-# Downstream Burn Integration Guide
+# downstream burn integration guide
 
-This guide shows the recommended shape for embedding `burn_p2p` into a Burn
+this guide shows the recommended shape for embedding `burn_p2p` into a burn
 project today.
 
-## Recommended Mental Model
+## recommended mental model
 
-Treat `burn_p2p` as a runtime that wraps your existing burn learner. You do not
-switch to a separate training stack. Start from:
+treat `burn_p2p` as a runtime around your existing burn learner. the basic path
+is:
 
 1. keep your burn `TrainStep` / `InferenceStep` model
 2. build `burn::train::Learner::new(model, optimizer, scheduler)`
@@ -14,20 +14,19 @@ switch to a separate training stack. Start from:
 4. wrap it with `burn_p2p::burn::from_loaders(...)`
 5. call `.trainer(...)` or `.validator(...)`
 
-translation is:
+mental model:
 
 - your train model stays your burn `TrainStep` model
 - your learner stays `Learner::new(model, optimizer, scheduler)`
 - your batch type stays the burn train input
-- your loss and optimizer step stay inside burn `TrainStep`
-- your canonical loader path lives in burn `TrainLoader` / `ValidLoader`, exposed here as train/eval loaders
-- your evaluation metrics can live in `.with_evaluate(...)`
-- your shard-backed train dataset can usually live in `BurnShardedDataset` plus `.with_sharded_dataset(...)`
-- low-level shard hooks still exist, but now live behind `burn_p2p::burn::advanced`
-- the adapter handles the window loop, checkpoint load/save, schema hashing, merge defaults,
-  local dataset plumbing, neutral fallback validation metrics, and optional root ema
+- your loss and optimizer step stay in burn `TrainStep`
+- your train/validation loader path stays in burn `TrainLoader` / `ValidLoader`
+- lease-scoped micro-epochs are the unit that drives checkpoint publication and canonical reconcile
+- use `BurnShardedDataset` + `.with_sharded_dataset(...)` for shard files
+- use `LeaseDataPipeline` for indexed, generated, or custom data flows
+- use `.with_evaluate(...)` if you want real validation metrics
 
-runtime path is:
+runtime path:
 
 1. clone learner
 2. load current p2p head into the learner model
@@ -36,35 +35,34 @@ runtime path is:
 5. run `optimizer_step(grads)`
 6. publish the updated model artifact
 
-## Minimal Integration Flow
+## minimal integration flow
 
-### 1. Define a backend-facing project type
+### 1. define a backend-facing project type
 
-Your project type owns runtime-local configuration such as dataset paths,
+your project type owns runtime-local configuration such as dataset paths,
 evaluation behavior, or hyperparameters.
 
-Example reference:
+reference:
 
 - [burn_ndarray_runtime.rs](../crates/burn_p2p/examples/burn_ndarray_runtime.rs)
 
-### 2. Add the runtime hooks
+### 2. add the runtime hooks
 
-For Burn-native projects, the recommended integration point is now
+for burn-native projects, the recommended integration point is
 `burn_p2p::burn::from_loaders(...)`.
 
-Practical guidance:
+practical guidance:
 
 - keep your forward pass, loss fn, and optimizer step in burn `TrainStep`
 - start from `Learner::new(model, optimizer, scheduler)`
 - pass burn `TrainLoader` / `ValidLoader` directly when they already exist
-- add `.with_sharded_dataset(...)` when the train dataset should be fetched lease-by-lease by native or browser/wasm peers
-- use `.with_train_loader(...)` when only the training loader is available
-- use `.with_eval_loader(...)` when only the evaluation loader is available
+- add `.with_sharded_dataset(...)` for prepared shard files
+- use `LeaseDataPipeline` plus `.with_data_pipeline(...)` for indexed, generated, or custom micro-epochs
+- use `.with_validation_loader(...)` when a validator/viewer should use the default validation loop
 - add `.with_evaluate(...)` when validator or trainer should emit real validation metrics
 - use `.with_step_metrics(...)` / `.with_window_metrics(...)` for extra metric rows
-- use `burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt` only when you need local batch closures or fully custom shard hooks
 
-The adapter fills in:
+the adapter fills in:
 
 - learner restore from the current head
 - per-window learner loop
@@ -75,28 +73,28 @@ The adapter fills in:
 - neutral validation metrics when you omit `.with_evaluate(...)`
 - optional root ema
 
-Use `BurnLearnerWorkload` when you want the same hooks on a reusable project
+use `BurnLearnerWorkload` when you want the same hooks on a reusable project
 trait.
 
-Use `BurnWorkload` only when you need a fully custom window loop.
+use `BurnWorkload` only when you need a fully custom window loop.
 
-Use `P2pWorkload` directly only for non-Burn or fully custom runtimes.
+use `P2pWorkload` directly only for non-burn or fully custom runtimes.
 
-## 3. Wrap the workload in a project family
+## 3. wrap the workload in a project family
 
-The Burn-native happy path is:
+the burn-native happy path is:
 
 ```rust
 let trainer = burn_p2p::burn::from_loaders(
     Learner::new(model, optimizer, scheduler),
     device,
     train_loader,
-    eval_loader,
+    validation_loader,
 )
 .trainer(release_manifest, supported_workload)?;
 ```
 
-If the train dataset should be p2p-distributed, keep the same loader entry and
+if the train dataset should be p2p-distributed, keep the same loader entry and
 add the shard helper:
 
 ```rust
@@ -110,7 +108,7 @@ let trainer = burn_p2p::burn::from_loaders(
     Learner::new(model, optimizer, scheduler),
     device,
     train_loader,
-    eval_loader,
+    validation_loader,
 )
 .with_sharded_dataset(train_dataset, train_batcher, 32)
 .trainer(release_manifest, supported_workload)?;
@@ -119,14 +117,14 @@ let trainer = burn_p2p::burn::from_loaders(
 `.trainer(...)` returns the normal `NodeBuilder`, already wrapped around a
 single-workload Burn family.
 
-Validator-only path is simpler:
+validator-only path is simpler:
 
 ```rust
 let validator = burn_p2p::burn::from_learner(
     Learner::new(model, optimizer, scheduler),
     device,
 )
-.with_eval_loader(eval_loader)
+.with_validation_loader(validation_loader)
 .with_evaluate(|model, split| evaluate(model, split))
 .validator(release_manifest, supported_workload)?;
 ```
@@ -134,9 +132,9 @@ let validator = burn_p2p::burn::from_learner(
 `.validator(...)` does not need a train loader unless the same local node also
 trains.
 
-Use `.connect(BurnTarget::Custom(...), ...)` when you want a custom role set.
+use `.connect(BurnTarget::Custom(...), ...)` when you want a custom role set.
 
-Non-training custom roles can stay minimal:
+non-training custom roles can stay minimal:
 
 ```rust
 let viewer = burn_p2p::burn::from_learner(
@@ -155,11 +153,11 @@ let viewer = burn_p2p::burn::from_learner(
 )?;
 ```
 
-Use `.trainer_with_config(...)`, `.validator_with_config(...)`, or
+use `.trainer_with_config(...)`, `.validator_with_config(...)`, or
 `.connect_with_config(...)` when you want to override artifact format, chunking,
 or merge behavior.
 
-If browser or wasm peers should fetch the same assigned shards over http, point
+if browser or wasm peers should fetch the same assigned shards over http, point
 the prepared dataset at an http origin:
 
 ```rust
@@ -168,47 +166,56 @@ let browser_train_dataset = train_dataset
     .with_http_upstream("https://edge.example/datasets/train");
 ```
 
-If you already have a real dataset registration and custom shard path, drop to
-the advanced hooks:
+if micro-epochs should be derived from a sampler or generator instead of shard
+files, make that explicit:
 
 ```rust
-use burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt;
+use burn_p2p::{
+    LeaseDataPipeline,
+    LeaseDataPipelineDescriptor,
+    LeaseDataPipelineKind,
+};
 
-.with_evaluate(|model, split| evaluate(model, split))
-.with_dataset(dataset_registration, microshard_plan)
-.with_load_batches(|lease, cached_microshards, device| {
-    load_batches(lease, cached_microshards, device)
-})
-```
-
-If your project has no burn dataloader yet, the low-friction fallback is:
-
-```rust
-use burn_p2p::burn::advanced::BurnLearnerProjectBuilderAdvancedExt;
+let micro_epoch_pipeline = LeaseDataPipeline::new(
+    LeaseDataPipelineDescriptor::new(
+        "nca-generated-micro-epochs",
+        LeaseDataPipelineKind::GeneratedDataset,
+    ),
+    move || Ok(dataset_registration.clone()),
+    move |_registration| Ok(microshard_plan.clone()),
+    move |lease, _cached_microshards, device| {
+        build_batches_from_seed_bank(lease, device)
+    },
+);
 
 let trainer = burn_p2p::burn::from_learner(
     Learner::new(model, optimizer, scheduler),
     device,
 )
-.with_batches(|device| build_training_batches(device))
+.with_data_pipeline(micro_epoch_pipeline)
 .trainer(release_manifest, supported_workload)?;
 ```
 
-shared ui/auth contract now looks like:
+the same concept is available on the python/torch side through
+`burn_p2p_python::PythonTorchProject::new_with_data_pipeline(...)`.
+the built-in helpers are:
 
-- browser runtime builds `burn_p2p_views::NodeAppClientView` through `BrowserAppController`
-- native runtime builds the same contract through `RunningNode::app_view(...)`
-- headless/native auth uses `burn_p2p::EdgeAuthClient`
-- `burn_p2p_app` now renders the same dioxus component tree on web and native hosts
+- `sharded_data_pipeline(...)` for prepared shard files
+- `indexed_dataset_pipeline(...)` for existing `Dataset` / `Sampler` / `DataLoader` style code
+- `generated_dataset_pipeline(...)` for deterministic synthetic or recipe-driven flows
 
-current host situation:
+those helpers keep the network cadence aligned with one leased micro-epoch per
+checkpoint publication, while leaving the inner dataloader or generator logic
+inside the backend runtime.
 
-- shared typed app state is common
-- browser host is the wasm `web-client` entry
-- native host is `burn_p2p_app::launch_node_app(...)` behind `desktop-client`
-- linux desktop builds need gtk/webkit pkg-config libs
+for parity with the burn adapter, python/torch projects now expose the same
+pipeline introspection methods as `BurnLearnerProject`:
+`data_pipeline_descriptor()`, `data_pipeline_kind()`, and `local_upstream_root()`.
+treat `local_upstream_root()` as optional by design; indexed/generated
+micro-epoch pipelines may not have any meaningful filesystem root.
 
-If you want full manual control, you can still use `SingleWorkloadProjectFamily`.
+if you want full manual control, you can still use
+`SingleWorkloadProjectFamily`.
 
 ```rust
 let workload = my_workload.into_p2p_workload(config)?;
@@ -219,12 +226,12 @@ let family = SingleWorkloadProjectFamily::new(
 )?;
 ```
 
-If you have multiple workloads, implement `P2pProjectFamily` directly and use
+if you have multiple workloads, implement `P2pProjectFamily` directly and use
 the family to select the workload before spawning the node.
 
-## 4. Build the node
+## 4. build the node
 
-The intended downstream builder flow is:
+the intended downstream builder flow is:
 
 1. `NodeBuilder::new(family)`
 2. `for_workload(...)` if the family has more than one workload
@@ -234,10 +241,10 @@ The intended downstream builder flow is:
 6. `with_identity(...)` or enrollment/auth configuration
 7. `spawn()`
 
-The exact builder methods available depend on the enabled feature set and the
+the exact builder methods available depend on the enabled feature set and the
 runtime profile being used.
 
-For a trainer, the minimal practical shape is:
+for a trainer, the minimal practical shape is:
 
 ```rust
 let mut trainer = NodeBuilder::new(family)
@@ -257,73 +264,57 @@ let mut trainer_session = trainer.continuous_trainer(&experiment)?;
 let outcome = trainer_session.train_next_window()?;
 ```
 
-`continuous_trainer()` is the opinionated optimistic trainer path. It keeps a
+`continuous_trainer()` is the opinionated optimistic trainer path. it keeps a
 warm in-memory model, immediately begins the next local window after publishing,
 and reconciles newer canonical heads between windows using the default trainer
 policy.
 
 `train_window_once()` is still available as the low-level one-shot primitive.
-Use it when you explicitly want one published window and no retained trainer
+use it when you explicitly want one published window and no retained trainer
 session state, or when you want external orchestration to wait for every
 canonical promotion before continuing.
 
-One important point: a trainer is not enough by itself. A validator / authority
+one important point: a trainer is not enough by itself. a validator / authority
 path must already exist in the network to initialize the revision head and
 validate/promote candidate updates.
 
-## 5. Pick a role and capability profile deliberately
+## 5. choose roles deliberately
 
-Use runtime capability estimates to choose realistic roles:
+use runtime capability estimates to choose realistic roles:
 
 - CPU / NdArray: good for synthetic flows, low-end validation, and some small native training
 - native WGPU: good for mid-tier native GPU participation where supported
 - browser WGPU: best treated as explicitly browser-enabled trainer work with short windows
 - CUDA: preferred high-throughput native trainer path
 
-If you are unsure, start with:
+if you are unsure, start with:
 
 - validator or verifier on CPU/native
 - observer or verifier in browser
 - trainer only once capability estimates and window budgets are calibrated
 
-## 6. Wire dataset registration and shard loading carefully
+## 6. wire data carefully
 
-Your runtime integration should provide:
+your runtime integration should provide:
 
 - stable dataset registration metadata
 - a deterministic dataset view
 - shard fetch/materialization behavior that matches your storage layout
 
-The examples in this repository use synthetic and local-file flows. Production
+the examples in this repository use synthetic and local-file flows. production
 integrations should document:
 
 - where manifests live
 - how dataset views are versioned
 - how shard bytes are fetched and cached
 
-## Current Caveats
+## starting points
 
-- The facade crate is still large, so browsing docs through the source can feel
-  heavier than it should.
-- Browser and social surfaces are optional deployment services. They are not
-  required for native Burn integration.
-
-## Suggested Starting Points
-
-- Minimal family/workload example:
+- minimal family/workload example:
   [family_workload_minimal.rs](../crates/burn_p2p/examples/family_workload_minimal.rs)
-- Minimal native example:
+- minimal native example:
   [synthetic_trainer.rs](../crates/burn_p2p/examples/synthetic_trainer.rs)
-- Burn example:
+- burn example:
   [burn_ndarray_runtime.rs](../crates/burn_p2p/examples/burn_ndarray_runtime.rs)
-- Embedded daemon example:
+- embedded daemon example:
   [embedded_runtime_daemon.rs](../crates/burn_p2p_bootstrap/examples/embedded_runtime_daemon.rs)
-
-## Recommended Next Improvements For This Guide
-
-This guide is the canonical downstream path for now, but it should evolve
-toward:
-
-- a thinner overall facade surface
-- a dedicated multi-workload guide
-- example compilation in CI as a hard gate

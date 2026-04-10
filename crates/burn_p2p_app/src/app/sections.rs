@@ -1,5 +1,6 @@
 use burn_p2p_views::{
-    NodeAppClientView, NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppPerformanceView,
+    NodeAppClientView, NodeAppDiffusionView, NodeAppExperimentSummary, NodeAppLeaderboardPreview,
+    NodeAppPerformanceView,
 };
 use dioxus::prelude::*;
 
@@ -457,6 +458,7 @@ pub(crate) fn TrainSections(
 #[component]
 pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
     let performance = view.network.performance.clone();
+    let diffusion = view.network.diffusion.clone();
     rsx! {
         div { class: "surface-layout browser-surface-layout",
             section { class: "panel primary-panel browser-focus-panel",
@@ -482,6 +484,9 @@ pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
                     }
                     if let Some(performance) = performance.clone() {
                         PerformanceMetricBand { performance }
+                    }
+                    if let Some(diffusion) = diffusion.clone() {
+                        DiffusionMetricBand { diffusion }
                     }
                 }
             }
@@ -526,6 +531,21 @@ pub(crate) fn NetworkSections(view: NodeAppClientView) -> Element {
                             KeyValueRow { label: "captured", value: performance.captured_at }
                             KeyValueRow { label: "wait", value: performance.wait_time }
                             KeyValueRow { label: "idle", value: performance.idle_time }
+                        }
+                    }
+                }
+                if let Some(diffusion) = diffusion {
+                    section { class: "panel compact-panel",
+                        SectionHeader {
+                            eyebrow: "diffusion",
+                            title: "checkpoint diffusion",
+                            detail: "latest canonical head adoption and active fragmentation.",
+                        }
+                        KeyValueList {
+                            KeyValueRow { label: "head", value: diffusion.canonical_head_id }
+                            KeyValueRow { label: "captured", value: diffusion.captured_at }
+                            KeyValueRow { label: "fragmentation", value: diffusion.fragmentation }
+                            KeyValueRow { label: "timeline", value: diffusion.timeline }
                         }
                     }
                 }
@@ -605,6 +625,34 @@ fn PerformanceMetricBand(performance: NodeAppPerformanceView) -> Element {
                 label: "idle",
                 value: performance.idle_time,
                 detail: Some("between windows".into()),
+            }
+        }
+    }
+}
+
+#[component]
+fn DiffusionMetricBand(diffusion: NodeAppDiffusionView) -> Element {
+    rsx! {
+        div { class: "browser-metric-band",
+            StatTile {
+                label: "latest head",
+                value: diffusion.canonical_head_id,
+                detail: Some("canonical".into()),
+            }
+            StatTile {
+                label: "peer adoption",
+                value: diffusion.peer_adoption,
+                detail: Some("latest visible".into()),
+            }
+            StatTile {
+                label: "window adoption",
+                value: diffusion.recent_window_adoption,
+                detail: Some("recent".into()),
+            }
+            StatTile {
+                label: "fragmentation",
+                value: diffusion.fragmentation,
+                detail: Some("visible".into()),
             }
         }
     }

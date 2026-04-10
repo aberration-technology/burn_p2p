@@ -9,9 +9,11 @@ use burn_p2p_core::{
 use chrono::{DateTime, Duration, Utc};
 
 use crate::{
-    DerivedMetricKind, DerivedMetricPoint, HeadEvaluationPerformanceSummary, MetricEnvelope,
-    MetricsIndexerConfig, MetricsSnapshot, NetworkPerformanceSummary, PeerPerformanceSummary,
-    PeerWindowDistributionSummary, ReducerPerformanceSummary, WorkClassPerformanceSummary,
+    CanonicalHeadAdoptionCurve, DerivedMetricKind, DerivedMetricPoint,
+    HeadEvaluationPerformanceSummary, MetricEnvelope, MetricsIndexerConfig, MetricsSnapshot,
+    NetworkPerformanceSummary, PeerPerformanceSummary, PeerWindowDistributionSummary,
+    ReducerPerformanceSummary, VisibleHeadPopulationHistogram, WorkClassPerformanceSummary,
+    derive_canonical_head_adoption_curves, derive_latest_canonical_head_population_histograms,
     derive_peer_window_distribution_summaries,
 };
 
@@ -331,6 +333,38 @@ impl MetricsIndexer {
                 percentile_nearest_rank(&adoption_lags_ms, 0.90),
             ));
         }
+        if let Some(latest_canonical) = canonical_reports.last() {
+            let recent_windows = peer_windows
+                .iter()
+                .filter(|metrics| metrics.window_started_at >= latest_canonical.finished_at)
+                .collect::<Vec<_>>();
+            if !recent_windows.is_empty() {
+                let adoption_coverage = recent_windows
+                    .iter()
+                    .filter(|metrics| metrics.base_head_id == latest_canonical.head_id)
+                    .count() as f64
+                    / recent_windows.len() as f64;
+                let fragmentation = recent_windows
+                    .iter()
+                    .map(|metrics| metrics.base_head_id.clone())
+                    .collect::<BTreeSet<_>>()
+                    .len() as f64;
+                points.push(context.point(
+                    DerivedMetricKind::LatestCanonicalAdoptionCoverage,
+                    MetricScope::Network,
+                    MetricTrustClass::Derived,
+                    None,
+                    adoption_coverage,
+                ));
+                points.push(context.point(
+                    DerivedMetricKind::RecentBaseHeadFragmentation,
+                    MetricScope::Network,
+                    MetricTrustClass::Derived,
+                    None,
+                    fragmentation,
+                ));
+            }
+        }
         if canonical_reports.len() >= 2 {
             let earliest = canonical_reports
                 .first()
@@ -378,6 +412,32 @@ impl MetricsIndexer {
         derive_peer_window_distribution_summaries(
             &self.peer_window_metrics(experiment_id, revision_id),
         )
+    }
+
+    /// Derives canonical-head adoption curves for one experiment revision.
+    pub fn derive_head_adoption_curves(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+    ) -> Vec<CanonicalHeadAdoptionCurve> {
+        derive_canonical_head_adoption_curves(
+            &self.peer_window_metrics(experiment_id, revision_id),
+            &self.head_eval_reports(experiment_id, revision_id),
+        )
+    }
+
+    /// Derives the latest-canonical visible-head population histogram for one experiment revision.
+    pub fn derive_visible_head_population_histogram(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+    ) -> Option<VisibleHeadPopulationHistogram> {
+        derive_latest_canonical_head_population_histograms(
+            &self.peer_window_metrics(experiment_id, revision_id),
+            &self.head_eval_reports(experiment_id, revision_id),
+        )
+        .into_iter()
+        .next()
     }
 
     /// Exports one metrics snapshot for the selected experiment revision.

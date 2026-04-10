@@ -2,8 +2,26 @@ use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
 
-use super::advanced::{BurnLearnerProjectBuilderAdvancedExt, BurnLocalDatasetConfig};
 use super::*;
+
+#[derive(Clone, Debug)]
+struct BurnLocalDatasetConfig {
+    dataset_name: String,
+    sizing: crate::DatasetSizing,
+}
+
+impl Default for BurnLocalDatasetConfig {
+    fn default() -> Self {
+        Self {
+            dataset_name: "burn-local-dataset".into(),
+            sizing: crate::DatasetSizing {
+                total_examples: 1,
+                total_tokens: 0,
+                total_bytes: 1,
+            },
+        }
+    }
+}
 
 /// Learner-first workload built directly from a burn [`BurnLearner`].
 pub struct BurnLearnerProject<LC>
@@ -14,9 +32,7 @@ where
     device: BurnLearnerDevice<LC>,
     benchmark: Arc<LearnerBenchmarkFn<LC>>,
     evaluate: Arc<LearnerEvaluateFn<LC>>,
-    dataset_registration: Arc<LearnerDatasetRegistrationFn>,
-    microshard_plan: Arc<LearnerMicroshardPlanFn>,
-    load_batches: Arc<LearnerBatchLoaderFn<LC>>,
+    data_pipeline: BurnLearnerDataPipeline<LC>,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
 }
@@ -31,12 +47,36 @@ where
             device: self.device.clone(),
             benchmark: Arc::clone(&self.benchmark),
             evaluate: Arc::clone(&self.evaluate),
-            dataset_registration: Arc::clone(&self.dataset_registration),
-            microshard_plan: Arc::clone(&self.microshard_plan),
-            load_batches: Arc::clone(&self.load_batches),
+            data_pipeline: self.data_pipeline.clone(),
             after_train_step: Arc::clone(&self.after_train_step),
             after_window: Arc::clone(&self.after_window),
         }
+    }
+}
+
+impl<LC> BurnLearnerProject<LC>
+where
+    LC: LearningComponentsTypes + 'static,
+{
+    /// Returns the static lease/micro-epoch data pipeline descriptor.
+    pub fn data_pipeline_descriptor(&self) -> &crate::LeaseDataPipelineDescriptor {
+        self.data_pipeline.descriptor()
+    }
+
+    /// Returns the configured lease/micro-epoch pipeline kind.
+    pub fn data_pipeline_kind(&self) -> crate::LeaseDataPipelineKind {
+        self.data_pipeline.kind()
+    }
+
+    /// Returns the dataset registration backing the current pipeline.
+    pub fn data_pipeline_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
+        self.data_pipeline.dataset_registration()
+    }
+
+    /// Returns the local upstream root when the current pipeline is backed by
+    /// a `Local` dataset registration.
+    pub fn local_upstream_root(&self) -> anyhow::Result<Option<PathBuf>> {
+        crate::local_upstream_root_for_pipeline(&self.data_pipeline)
     }
 }
 
@@ -49,13 +89,9 @@ where
     device: BurnLearnerDevice<LC>,
     benchmark: Arc<LearnerBenchmarkFn<LC>>,
     evaluate: Option<Arc<LearnerEvaluateFn<LC>>>,
-    dataset_registration: Option<Arc<LearnerDatasetRegistrationFn>>,
-    microshard_plan: Option<Arc<LearnerMicroshardPlanFn>>,
-    load_batches: Option<Arc<LearnerBatchLoaderFn<LC>>>,
+    data_pipeline: Option<BurnLearnerDataPipeline<LC>>,
     train_loader: Option<BurnTrainLoader<LC>>,
-    valid_loader: Option<BurnValidLoader<LC>>,
-    local_batches: Option<Arc<LearnerBatchFn<LC>>>,
-    assignment_batches: Option<Arc<LearnerAssignmentBatchFn<LC>>>,
+    validation_loader: Option<BurnValidationLoader<LC>>,
     local_dataset: BurnLocalDatasetConfig,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
@@ -91,17 +127,17 @@ where
 }
 
 /// Starts the higher-level loader-based integration path from a burn learner
-/// plus train/eval dataloaders.
+/// plus train/validation dataloaders.
 ///
 /// Prefer this when the project already has a clean `Learner + train loader +
-/// eval loader` seam.
+/// validation loader` seam.
 ///
 /// loader naming here is intentionally generic:
 ///
 /// - train loader: batches used for local window training
-/// - eval loader: batches used for local model evaluation
+/// - validation loader: batches used for local model evaluation
 ///
-/// self-supervised workloads fit naturally if they already expose train/eval
+/// self-supervised workloads fit naturally if they already expose train/validation
 /// batch loaders. paradigms that do not naturally use dataloaders, such as
 /// some rl flows, should usually use [`BurnLearnerWorkload`] or
 /// [`BurnWorkload`] instead.
@@ -109,7 +145,7 @@ pub fn from_loaders<LC>(
     learner: BurnLearner<LC>,
     device: BurnLearnerDevice<LC>,
     train_loader: BurnTrainLoader<LC>,
-    eval_loader: BurnEvalLoader<LC>,
+    validation_loader: BurnValidationLoader<LC>,
 ) -> BurnLearnerProjectBuilder<LC>
 where
     LC: LearningComponentsTypes + 'static,
@@ -124,7 +160,10 @@ where
         + Clone
         + 'static,
 {
-    from_learner(learner, device).with_loaders(train_loader, eval_loader)
+    let mut builder = from_learner(learner, device);
+    builder.train_loader = Some(train_loader);
+    builder.validation_loader = Some(validation_loader);
+    builder
 }
 
 impl<LC> BurnLearnerProjectBuilder<LC>
@@ -148,13 +187,9 @@ where
             device,
             benchmark: Arc::new(default_learner_benchmark::<LC>),
             evaluate: None,
-            dataset_registration: None,
-            microshard_plan: None,
-            load_batches: None,
+            data_pipeline: None,
             train_loader: None,
-            valid_loader: None,
-            local_batches: None,
-            assignment_batches: None,
+            validation_loader: None,
             local_dataset: BurnLocalDatasetConfig::default(),
             after_train_step: Arc::new(default_learner_step_metrics::<LC>),
             after_window: Arc::new(default_learner_window_metrics::<LC>),
@@ -182,32 +217,12 @@ where
         self
     }
 
-    /// Sets the train dataloader used for p2p windows.
-    ///
-    /// `burn_p2p` will iterate the loader once per window and use the emitted
-    /// batches as the local contribution for that lease.
-    pub fn with_train_loader(mut self, train_loader: BurnTrainLoader<LC>) -> Self {
-        self.train_loader = Some(train_loader);
-        self
-    }
-
-    /// Sets the evaluation dataloader used by the default evaluation path.
+    /// Sets the validation dataloader used by the default evaluation path.
     ///
     /// If no custom `.with_evaluate(...)` hook is provided, `burn_p2p` will run
     /// the inference model over the loader and emit generic evaluation counts.
-    pub fn with_eval_loader(mut self, eval_loader: BurnEvalLoader<LC>) -> Self {
-        self.valid_loader = Some(eval_loader);
-        self
-    }
-
-    /// Sets both train and eval dataloaders.
-    pub fn with_loaders(
-        mut self,
-        train_loader: BurnTrainLoader<LC>,
-        eval_loader: BurnEvalLoader<LC>,
-    ) -> Self {
-        self.train_loader = Some(train_loader);
-        self.valid_loader = Some(eval_loader);
+    pub fn with_validation_loader(mut self, validation_loader: BurnValidationLoader<LC>) -> Self {
+        self.validation_loader = Some(validation_loader);
         self
     }
 
@@ -237,11 +252,24 @@ where
         let registration = dataset.registration().clone();
         let microshard_plan = dataset.microshard_plan().clone();
         let load_dataset = dataset.clone();
-        self.dataset_registration = Some(Arc::new(move || Ok(registration.clone())));
-        self.microshard_plan = Some(Arc::new(move |_registration| Ok(microshard_plan.clone())));
-        self.load_batches = Some(Arc::new(move |_lease, cached_microshards, device| {
-            load_dataset.load_batches(cached_microshards, batcher.clone(), batch_size, device)
-        }));
+        self.data_pipeline = Some(crate::LeaseDataPipeline::new(
+            crate::LeaseDataPipelineDescriptor::new(
+                "burn-sharded-dataset",
+                crate::LeaseDataPipelineKind::ShardedStatic,
+            )
+            .with_metadata_entry("format", "burn-sharded-dataset"),
+            move || Ok(registration.clone()),
+            move |_registration| Ok(microshard_plan.clone()),
+            move |_lease, cached_microshards, device| {
+                load_dataset.load_batches(cached_microshards, batcher.clone(), batch_size, device)
+            },
+        ));
+        self
+    }
+
+    /// Sets a complete lease/micro-epoch data pipeline in one value.
+    pub fn with_data_pipeline(mut self, data_pipeline: BurnLearnerDataPipeline<LC>) -> Self {
+        self.data_pipeline = Some(data_pipeline);
         self
     }
 
@@ -285,133 +313,62 @@ where
         self,
         require_training_hooks: bool,
     ) -> anyhow::Result<BurnLearnerProject<LC>> {
-        let local_dataset_bundle = if self.load_batches.is_none() {
-            if let Some(batches) = self.local_batches.as_ref() {
+        let Self {
+            learner,
+            device,
+            benchmark,
+            evaluate,
+            data_pipeline,
+            train_loader,
+            validation_loader,
+            local_dataset,
+            after_train_step,
+            after_window,
+        } = self;
+        let local_data_pipeline = if data_pipeline.is_none() {
+            if let Some(train_loader) = train_loader.as_ref() {
                 Some(local_dataset_bundle::<LC>(
-                    &self.local_dataset,
-                    Arc::new({
-                        let batches = batches.clone();
-                        move |_lease: &AssignmentLease,
-                              _cached_microshards: &[CachedMicroShard],
-                              device: &BurnLearnerDevice<LC>| {
-                            batches(device)
-                        }
-                    }),
-                )?)
-            } else if let Some(train_loader) = self.train_loader.as_ref() {
-                Some(local_dataset_bundle::<LC>(
-                    &self.local_dataset,
+                    &local_dataset,
+                    crate::LeaseDataPipelineKind::IndexedDataset,
                     loader_batch_source::<LC>(train_loader.clone()),
                 )?)
             } else {
-                self.assignment_batches
-                    .as_ref()
-                    .map(|batches| {
-                        local_dataset_bundle::<LC>(
-                            &self.local_dataset,
-                            Arc::new({
-                                let batches = batches.clone();
-                                move |lease: &AssignmentLease,
-                                      _cached_microshards: &[CachedMicroShard],
-                                      device: &BurnLearnerDevice<LC>| { batches(lease, device) }
-                            }),
-                        )
-                    })
-                    .transpose()?
+                None
             }
         } else {
             None
         };
-        let passive_dataset_bundle = if !require_training_hooks
-            && self.dataset_registration.is_none()
-            && self.microshard_plan.is_none()
-            && self.load_batches.is_none()
-            && local_dataset_bundle.is_none()
+        let passive_data_pipeline = if !require_training_hooks
+            && data_pipeline.is_none()
+            && local_data_pipeline.is_none()
         {
-            Some(passive_dataset_bundle::<LC>(&self.local_dataset)?)
+            Some(passive_dataset_bundle::<LC>(&local_dataset)?)
         } else {
             None
         };
+        let resolved_data_pipeline = data_pipeline
+            .or(local_data_pipeline)
+            .or(passive_data_pipeline);
 
         Ok(BurnLearnerProject {
-            learner: self.learner,
-            device: self.device,
-            benchmark: self.benchmark,
-            evaluate: self
-                .evaluate
+            learner,
+            device,
+            benchmark,
+            evaluate: evaluate
                 .or_else(|| {
-                    self.valid_loader.as_ref().map(|valid_loader| {
-                        loader_evaluate_fn::<LC>(valid_loader.clone())
-                    })
+                    validation_loader
+                        .as_ref()
+                        .map(|validation_loader| loader_evaluate_fn::<LC>(validation_loader.clone()))
                 })
                 .unwrap_or_else(|| Arc::new(default_learner_evaluate::<LC>)),
-            dataset_registration: self
-                .dataset_registration
-                .or_else(|| {
-                    local_dataset_bundle.as_ref().map(|(registration, _, _)| {
-                        Arc::new({
-                            let registration = registration.clone();
-                            move || Ok(registration.clone())
-                        }) as Arc<LearnerDatasetRegistrationFn>
-                    })
-                })
-                .or_else(|| {
-                    passive_dataset_bundle.as_ref().map(|(registration, _, _)| {
-                        Arc::new({
-                            let registration = registration.clone();
-                            move || Ok(registration.clone())
-                        }) as Arc<LearnerDatasetRegistrationFn>
-                    })
-                })
+            data_pipeline: resolved_data_pipeline
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "missing burn learner training data; use from_loaders(...), with_train_loader(...), with_sharded_dataset(...), or the advanced dataset hooks"
+                        "missing burn learner training data; use from_loaders(...), with_sharded_dataset(...), or with_data_pipeline(...)"
                     )
                 })?,
-            microshard_plan: self
-                .microshard_plan
-                .or_else(|| {
-                    local_dataset_bundle.as_ref().map(|(_, plan, _)| {
-                        let plan = plan.clone();
-                        let plan_fn: Arc<LearnerMicroshardPlanFn> = Arc::new(
-                            move |_registration: &crate::DatasetRegistration| Ok(plan.clone()),
-                        );
-                        plan_fn
-                    })
-                })
-                .or_else(|| {
-                    passive_dataset_bundle.as_ref().map(|(_, plan, _)| {
-                        let plan = plan.clone();
-                        let plan_fn: Arc<LearnerMicroshardPlanFn> = Arc::new(
-                            move |_registration: &crate::DatasetRegistration| Ok(plan.clone()),
-                        );
-                        plan_fn
-                    })
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "missing burn learner training data; use from_loaders(...), with_train_loader(...), with_sharded_dataset(...), or the advanced dataset hooks"
-                    )
-                })?,
-            load_batches: self
-                .load_batches
-                .or_else(|| {
-                    local_dataset_bundle
-                        .as_ref()
-                        .map(|(_, _, load_batches)| load_batches.clone())
-                })
-                .or_else(|| {
-                    passive_dataset_bundle
-                        .as_ref()
-                        .map(|(_, _, load_batches)| load_batches.clone())
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "missing burn learner batch loader; use from_loaders(...), with_train_loader(...), with_sharded_dataset(...), or the advanced dataset hooks"
-                    )
-                })?,
-            after_train_step: self.after_train_step,
-            after_window: self.after_window,
+            after_train_step,
+            after_window,
         })
     }
 
@@ -519,95 +476,6 @@ where
     }
 }
 
-impl<LC> BurnLearnerProjectBuilderAdvancedExt<LC> for BurnLearnerProjectBuilder<LC>
-where
-    LC: LearningComponentsTypes + 'static,
-    BurnLearnerModel<LC>: BurnModuleTarget<BurnLearnerBackend<LC>>
-        + TrainStep
-        + AutodiffModule<BurnLearnerBackend<LC>, InnerModule = BurnLearnerEvalModel<LC>>
-        + Clone
-        + core::fmt::Display
-        + 'static,
-    BurnLearnerEvalModel<LC>: BurnModuleTarget<<BurnLearnerBackend<LC> as AutodiffBackend>::InnerBackend>
-        + InferenceStep
-        + Clone
-        + 'static,
-{
-    fn with_dataset_registration<F>(mut self, dataset_registration: F) -> Self
-    where
-        F: Fn() -> anyhow::Result<crate::DatasetRegistration> + Send + Sync + 'static,
-    {
-        self.dataset_registration = Some(Arc::new(dataset_registration));
-        self
-    }
-
-    fn with_dataset(
-        mut self,
-        registration: crate::DatasetRegistration,
-        microshard_plan: crate::MicroShardPlan,
-    ) -> Self {
-        self.dataset_registration = Some(Arc::new(move || Ok(registration.clone())));
-        self.microshard_plan = Some(Arc::new(move |_registration| Ok(microshard_plan.clone())));
-        self
-    }
-
-    fn with_local_dataset(mut self, config: BurnLocalDatasetConfig) -> Self {
-        self.local_dataset = config;
-        self
-    }
-
-    fn with_microshard_plan<F>(mut self, microshard_plan: F) -> Self
-    where
-        F: Fn(&crate::DatasetRegistration) -> anyhow::Result<crate::MicroShardPlan>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.microshard_plan = Some(Arc::new(microshard_plan));
-        self
-    }
-
-    fn with_load_batches<F>(mut self, load_batches: F) -> Self
-    where
-        F: Fn(
-                &AssignmentLease,
-                &[CachedMicroShard],
-                &BurnLearnerDevice<LC>,
-            ) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.load_batches = Some(Arc::new(load_batches));
-        self
-    }
-
-    fn with_batches<F>(mut self, batches: F) -> Self
-    where
-        F: Fn(&BurnLearnerDevice<LC>) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.local_batches = Some(Arc::new(batches));
-        self
-    }
-
-    fn with_assignment_batches<F>(mut self, batches: F) -> Self
-    where
-        F: Fn(
-                &AssignmentLease,
-                &BurnLearnerDevice<LC>,
-            ) -> anyhow::Result<Vec<BurnLearnerBatch<LC>>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.assignment_batches = Some(Arc::new(batches));
-        self
-    }
-}
-
 fn default_learner_benchmark<LC>(
     model: &BurnLearnerModel<LC>,
     _device: &BurnLearnerDevice<LC>,
@@ -644,7 +512,7 @@ where
 fn default_loader_evaluate<LC>(
     model: &BurnLearnerEvalModel<LC>,
     split: EvalSplit,
-    valid_loader: BurnValidLoader<LC>,
+    validation_loader: BurnValidationLoader<LC>,
 ) -> MetricReport
 where
     LC: LearningComponentsTypes + 'static,
@@ -659,10 +527,10 @@ where
         .into_iter()
         .next()
         .expect("burn evaluation model should expose at least one device");
-    let valid_loader = valid_loader.to_device(&device);
-    let evaluation_items = valid_loader.num_items() as i64;
+    let validation_loader = validation_loader.to_device(&device);
+    let evaluation_items = validation_loader.num_items() as i64;
     let mut evaluation_batches = 0_i64;
-    let iterator = valid_loader.iter();
+    let iterator = validation_loader.iter();
     for item in iterator {
         let _ = model.step(item);
         evaluation_batches += 1;
@@ -678,7 +546,7 @@ where
     report
 }
 
-fn loader_evaluate_fn<LC>(valid_loader: BurnValidLoader<LC>) -> Arc<LearnerEvaluateFn<LC>>
+fn loader_evaluate_fn<LC>(validation_loader: BurnValidationLoader<LC>) -> Arc<LearnerEvaluateFn<LC>>
 where
     LC: LearningComponentsTypes + 'static,
     BurnLearnerEvalModel<LC>: BurnModuleTarget<<BurnLearnerBackend<LC> as AutodiffBackend>::InnerBackend>
@@ -688,7 +556,7 @@ where
 {
     Arc::new(
         move |model: &BurnLearnerEvalModel<LC>, split: EvalSplit| -> MetricReport {
-            default_loader_evaluate::<LC>(model, split, valid_loader.clone())
+            default_loader_evaluate::<LC>(model, split, validation_loader.clone())
         },
     )
 }
@@ -722,12 +590,9 @@ where
 
 fn local_dataset_bundle<LC>(
     config: &BurnLocalDatasetConfig,
+    pipeline_kind: crate::LeaseDataPipelineKind,
     load_batches: Arc<LearnerBatchLoaderFn<LC>>,
-) -> anyhow::Result<(
-    crate::DatasetRegistration,
-    crate::MicroShardPlan,
-    Arc<LearnerBatchLoaderFn<LC>>,
-)>
+) -> anyhow::Result<BurnLearnerDataPipeline<LC>>
 where
     LC: LearningComponentsTypes + 'static,
 {
@@ -788,21 +653,25 @@ where
         fs::write(root.join(PathBuf::from(&entry.locator)), bytes)?;
     }
 
-    Ok((registration, plan, load_batches))
+    Ok(crate::LeaseDataPipeline::new(
+        crate::LeaseDataPipelineDescriptor::new(config.dataset_name.clone(), pipeline_kind)
+            .with_metadata_entry("source_uri", registration.manifest.source_uri.clone())
+            .with_metadata_entry("format", registration.manifest.format.clone()),
+        move || Ok(registration.clone()),
+        move |_registration| Ok(plan.clone()),
+        move |lease, cached_microshards, device| load_batches(lease, cached_microshards, device),
+    ))
 }
 
 fn passive_dataset_bundle<LC>(
     config: &BurnLocalDatasetConfig,
-) -> anyhow::Result<(
-    crate::DatasetRegistration,
-    crate::MicroShardPlan,
-    Arc<LearnerBatchLoaderFn<LC>>,
-)>
+) -> anyhow::Result<BurnLearnerDataPipeline<LC>>
 where
     LC: LearningComponentsTypes + 'static,
 {
     local_dataset_bundle::<LC>(
         config,
+        crate::LeaseDataPipelineKind::Custom,
         Arc::new(
             |_lease: &AssignmentLease,
              _cached_microshards: &[CachedMicroShard],
@@ -875,6 +744,10 @@ where
 
         let mut metrics =
             BTreeMap::from([("batch_count".into(), MetricValue::Integer(batch_count))]);
+        super::extend_window_metrics_with_cached_microshard_counts(
+            &mut metrics,
+            &ctx.cached_microshards,
+        );
 
         for (step_index, batch) in ctx.batches.drain(..).enumerate() {
             learner.lr_step();
@@ -909,14 +782,14 @@ where
     }
 
     fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
-        (self.dataset_registration)()
+        self.data_pipeline.dataset_registration()
     }
 
     fn microshard_plan(
         &self,
         registration: &crate::DatasetRegistration,
     ) -> anyhow::Result<crate::MicroShardPlan> {
-        (self.microshard_plan)(registration)
+        self.data_pipeline.microshard_plan(registration)
     }
 
     fn load_batches(
@@ -924,7 +797,8 @@ where
         lease: &AssignmentLease,
         cached_microshards: &[CachedMicroShard],
     ) -> anyhow::Result<Vec<Self::Batch>> {
-        (self.load_batches)(lease, cached_microshards, &self.device)
+        self.data_pipeline
+            .load_batches(lease, cached_microshards, &self.device)
     }
 
     fn contribution_metrics(

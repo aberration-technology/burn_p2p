@@ -88,6 +88,35 @@ pub(crate) fn handle_metrics_indexer_route(
             write_json(stream, &current_metrics_peer_windows(&context.state)?)?;
             return Ok(true);
         }
+        "/metrics/head-adoption-curves" => {
+            if !cfg!(feature = "metrics-indexer") {
+                write_response(
+                    stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"metrics indexer disabled".to_vec(),
+                )?;
+                return Ok(true);
+            }
+            write_json(
+                stream,
+                &current_metrics_head_adoption_curves(&context.state)?,
+            )?;
+            return Ok(true);
+        }
+        "/metrics/head-populations" => {
+            if !cfg!(feature = "metrics-indexer") {
+                write_response(
+                    stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"metrics indexer disabled".to_vec(),
+                )?;
+                return Ok(true);
+            }
+            write_json(stream, &current_metrics_head_populations(&context.state)?)?;
+            return Ok(true);
+        }
         "/metrics/live" => {
             if !cfg!(feature = "metrics-indexer") {
                 write_response(
@@ -246,6 +275,44 @@ pub(crate) fn handle_metrics_indexer_route(
         write_json(
             stream,
             &current_metrics_peer_windows_for_experiment(
+                &context.state,
+                &burn_p2p::ExperimentId::new(experiment_id),
+            )?,
+        )?;
+        return Ok(true);
+    }
+    if let Some(experiment_id) = request.path.strip_prefix("/metrics/head-adoption-curves/") {
+        if !cfg!(feature = "metrics-indexer") {
+            write_response(
+                stream,
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"metrics indexer disabled".to_vec(),
+            )?;
+            return Ok(true);
+        }
+        write_json(
+            stream,
+            &current_metrics_head_adoption_curves_for_experiment(
+                &context.state,
+                &burn_p2p::ExperimentId::new(experiment_id),
+            )?,
+        )?;
+        return Ok(true);
+    }
+    if let Some(experiment_id) = request.path.strip_prefix("/metrics/head-populations/") {
+        if !cfg!(feature = "metrics-indexer") {
+            write_response(
+                stream,
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"metrics indexer disabled".to_vec(),
+            )?;
+            return Ok(true);
+        }
+        write_json(
+            stream,
+            &current_metrics_head_populations_for_experiment(
                 &context.state,
                 &burn_p2p::ExperimentId::new(experiment_id),
             )?,
@@ -473,6 +540,78 @@ pub(crate) fn current_metrics_peer_window_detail(
     _revision_id: &burn_p2p::RevisionId,
     _base_head_id: &burn_p2p::HeadId,
 ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
+    Err("metrics indexer disabled".into())
+}
+
+#[cfg(feature = "metrics-indexer")]
+pub(crate) fn current_metrics_head_adoption_curves(
+    state: &Arc<Mutex<BootstrapAdminState>>,
+) -> Result<Vec<burn_p2p_metrics::CanonicalHeadAdoptionCurve>, Box<dyn std::error::Error>> {
+    Ok(state
+        .lock()
+        .expect("bootstrap admin state should not be poisoned")
+        .export_metrics_head_adoption_curves()?)
+}
+
+#[cfg(not(feature = "metrics-indexer"))]
+pub(crate) fn current_metrics_head_adoption_curves(
+    _state: &Arc<Mutex<BootstrapAdminState>>,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    Err("metrics indexer disabled".into())
+}
+
+#[cfg(feature = "metrics-indexer")]
+pub(crate) fn current_metrics_head_adoption_curves_for_experiment(
+    state: &Arc<Mutex<BootstrapAdminState>>,
+    experiment_id: &burn_p2p::ExperimentId,
+) -> Result<Vec<burn_p2p_metrics::CanonicalHeadAdoptionCurve>, Box<dyn std::error::Error>> {
+    Ok(state
+        .lock()
+        .expect("bootstrap admin state should not be poisoned")
+        .export_metrics_head_adoption_curves_for_experiment(experiment_id)?)
+}
+
+#[cfg(not(feature = "metrics-indexer"))]
+pub(crate) fn current_metrics_head_adoption_curves_for_experiment(
+    _state: &Arc<Mutex<BootstrapAdminState>>,
+    _experiment_id: &burn_p2p::ExperimentId,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    Err("metrics indexer disabled".into())
+}
+
+#[cfg(feature = "metrics-indexer")]
+pub(crate) fn current_metrics_head_populations(
+    state: &Arc<Mutex<BootstrapAdminState>>,
+) -> Result<Vec<burn_p2p_metrics::VisibleHeadPopulationHistogram>, Box<dyn std::error::Error>> {
+    Ok(state
+        .lock()
+        .expect("bootstrap admin state should not be poisoned")
+        .export_metrics_head_populations()?)
+}
+
+#[cfg(not(feature = "metrics-indexer"))]
+pub(crate) fn current_metrics_head_populations(
+    _state: &Arc<Mutex<BootstrapAdminState>>,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    Err("metrics indexer disabled".into())
+}
+
+#[cfg(feature = "metrics-indexer")]
+pub(crate) fn current_metrics_head_populations_for_experiment(
+    state: &Arc<Mutex<BootstrapAdminState>>,
+    experiment_id: &burn_p2p::ExperimentId,
+) -> Result<Vec<burn_p2p_metrics::VisibleHeadPopulationHistogram>, Box<dyn std::error::Error>> {
+    Ok(state
+        .lock()
+        .expect("bootstrap admin state should not be poisoned")
+        .export_metrics_head_populations_for_experiment(experiment_id)?)
+}
+
+#[cfg(not(feature = "metrics-indexer"))]
+pub(crate) fn current_metrics_head_populations_for_experiment(
+    _state: &Arc<Mutex<BootstrapAdminState>>,
+    _experiment_id: &burn_p2p::ExperimentId,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
     Err("metrics indexer disabled".into())
 }
 

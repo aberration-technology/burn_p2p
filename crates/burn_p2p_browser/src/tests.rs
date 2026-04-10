@@ -20,11 +20,11 @@ use burn_p2p_core::{
     ArtifactProfile, BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
     BrowserEdgeSnapshot, BrowserLeaderboardEntry, BrowserLeaderboardIdentity,
     BrowserLeaderboardSnapshot, BrowserLoginProvider, BrowserTransportSurface,
-    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, LeaseId, MetricsLiveEvent,
-    MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics,
-    PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus,
-    ReenrollmentStatus, RevocationEpoch, RunId, SchemaEnvelope, SignatureAlgorithm,
-    SignatureMetadata, SignedPayload, TrustBundleExport,
+    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, HeadEvalReport, LeaseId, MetricValue,
+    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
+    PeerWindowMetrics, PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord,
+    PublishedArtifactStatus, ReenrollmentStatus, RevocationEpoch, RunId, SchemaEnvelope,
+    SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
 use chrono::Utc;
@@ -2898,6 +2898,24 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     }];
     let performance_summary =
         derive_network_performance_summary(&peer_window_metrics, &Vec::new(), &Vec::new());
+    let head_eval_reports = vec![HeadEvalReport {
+        network_id: NetworkId::new("net-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        workload_id: WorkloadId::new("workload-browser"),
+        head_id: HeadId::new("head-browser"),
+        base_head_id: Some(HeadId::new("head-parent")),
+        eval_protocol_id: ContentId::new("eval-browser"),
+        evaluator_set_id: ContentId::new("eval-set-browser"),
+        metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.25))]),
+        sample_count: 128,
+        dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+        started_at: Utc::now() - chrono::Duration::seconds(20),
+        finished_at: Utc::now() - chrono::Duration::seconds(15),
+        trust_class: burn_p2p::MetricTrustClass::Canonical,
+        status: burn_p2p::HeadEvalStatus::Completed,
+        signature_bundle: Vec::new(),
+    }];
     runtime
         .storage
         .remember_metrics_catchup(vec![MetricsCatchupBundle {
@@ -2919,7 +2937,7 @@ fn browser_app_model_projects_trainer_focused_client_view() {
                     created_at: Utc::now(),
                     signatures: Vec::new(),
                 },
-                head_eval_reports: Vec::new(),
+                head_eval_reports,
                 peer_window_metrics,
                 reducer_cohort_metrics: Vec::new(),
                 derived_metrics: Vec::new(),
@@ -2946,6 +2964,13 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     assert!(!view.validation.can_validate);
     assert!(view.training.train_available);
     assert!(view.training.can_train);
+    assert_eq!(
+        view.network
+            .diffusion
+            .as_ref()
+            .map(|diffusion| diffusion.canonical_head_id.as_str()),
+        Some("head-browser")
+    );
     assert_eq!(
         view.training.active_assignment.as_deref(),
         Some("exp-browser/rev-browser")

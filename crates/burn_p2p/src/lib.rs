@@ -18,7 +18,6 @@
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
-    error::Error as StdError,
     fmt, fs,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
@@ -32,7 +31,6 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 mod app_view;
-mod backend;
 mod browser_join;
 mod config;
 mod edge_auth;
@@ -46,12 +44,6 @@ mod validation;
 use handles::dedupe_peer_ids;
 
 pub use app_view::{NodeAppSelection, build_node_app_view};
-pub use backend::{
-    ContinuousTrainerPolicy, EvalSplit, MergeModelCandidate, MetricReport, PatchOutcome,
-    ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy, TrainingWindowOutcome,
-    ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome, WindowCtx,
-    WindowReport,
-};
 pub use browser_join::{BrowserJoinPolicy, browser_join_policy_for_entry};
 pub use burn_p2p_checkpoint::{
     AggregateArtifactBytes, AggregateArtifactInput, AggregateArtifactRecord, ArtifactBuildSpec,
@@ -127,6 +119,14 @@ pub use burn_p2p_swarm::{
     RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
     TransportKind, UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
+pub use burn_p2p_workload::{
+    ContinuousTrainerPolicy, EvalSplit, LeaseDataPipeline, LeaseDataPipelineDescriptor,
+    LeaseDataPipelineKind, MergeModelCandidate, MetricReport, P2pWorkload, PatchOutcome,
+    ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy, TrainingWindowOutcome,
+    TrainingWindowTiming, ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome,
+    WindowCtx, WindowReport, local_upstream_root, local_upstream_root_for_pipeline,
+    standard_contribution_weight,
+};
 pub use config::{
     ArtifactTransferPhase, ArtifactTransferState, AuthConfig, ClientReenrollmentStatus,
     ControlHandle, DatasetConfig, IdentityConfig, MetricsRetentionBudget, MetricsRetentionConfig,
@@ -140,9 +140,7 @@ pub use edge_auth::{
 pub use handles::{
     CheckpointSyncHandle, ExperimentHandle, ExperimentOverlayTopics, MainnetHandle, RoleSet,
 };
-pub use project_family::{
-    P2pProjectFamily, P2pWorkload, SelectedWorkloadProject, SingleWorkloadProjectFamily,
-};
+pub use project_family::{P2pProjectFamily, SelectedWorkloadProject, SingleWorkloadProjectFamily};
 use runtime_support::{
     assess_head_lag, cached_connected_snapshots, connected_peer_ids, effective_limit_profile,
     inferred_next_window_id, latest_head_from_snapshot,
@@ -1301,7 +1299,7 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
     ) -> anyhow::Result<HeadDescriptor>
     where
-        P: project_family::P2pWorkload,
+        P: P2pWorkload,
     {
         let assignment = SlotAssignmentState::from_experiment(experiment);
         self.persist_primary_assignment(&assignment)?;

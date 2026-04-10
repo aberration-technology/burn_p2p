@@ -29,6 +29,7 @@ burn_p2p_limits.workspace = true
 burn_p2p_security.workspace = true
 burn_p2p_swarm.workspace = true
 burn_p2p_views.workspace = true
+burn_p2p_workload.workspace = true
 thiserror.workspace = true
 
 [features]

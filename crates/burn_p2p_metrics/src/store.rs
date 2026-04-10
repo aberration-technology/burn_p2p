@@ -13,8 +13,10 @@ use chrono::Utc;
 use thiserror::Error;
 
 use crate::{
-    MetricEnvelope, MetricsCatchupBundle, MetricsIndexer, MetricsIndexerConfig, MetricsSnapshot,
-    PeerWindowDistributionDetail, PeerWindowDistributionSummary,
+    CanonicalHeadAdoptionCurve, MetricEnvelope, MetricsCatchupBundle, MetricsIndexer,
+    MetricsIndexerConfig, MetricsSnapshot, PeerWindowDistributionDetail,
+    PeerWindowDistributionSummary, VisibleHeadPopulationHistogram,
+    derive_canonical_head_adoption_curves, derive_latest_canonical_head_population_histograms,
     derive_peer_window_distribution_detail_with_limit, derive_peer_window_distribution_summaries,
 };
 
@@ -356,6 +358,82 @@ impl MetricsStore {
             base_head_id,
             self.indexer.config.max_peer_window_detail_windows,
         ))
+    }
+
+    /// Loads canonical-head adoption curves across all persisted experiment revisions.
+    pub fn load_head_adoption_curves(
+        &self,
+    ) -> Result<Vec<CanonicalHeadAdoptionCurve>, MetricsStoreError> {
+        Ok(derive_canonical_head_adoption_curves(
+            &self
+                .indexer
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MetricEnvelope::PeerWindow(metrics) => Some(metrics.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            &self
+                .indexer
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MetricEnvelope::HeadEval(report) => Some(report.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Loads canonical-head adoption curves for one experiment.
+    pub fn load_head_adoption_curves_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<CanonicalHeadAdoptionCurve>, MetricsStoreError> {
+        Ok(self
+            .load_head_adoption_curves()?
+            .into_iter()
+            .filter(|curve| &curve.experiment_id == experiment_id)
+            .collect())
+    }
+
+    /// Loads latest-canonical visible-head population histograms across persisted revisions.
+    pub fn load_visible_head_population_histograms(
+        &self,
+    ) -> Result<Vec<VisibleHeadPopulationHistogram>, MetricsStoreError> {
+        Ok(derive_latest_canonical_head_population_histograms(
+            &self
+                .indexer
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MetricEnvelope::PeerWindow(metrics) => Some(metrics.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            &self
+                .indexer
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MetricEnvelope::HeadEval(report) => Some(report.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Loads latest-canonical visible-head population histograms for one experiment.
+    pub fn load_visible_head_population_histograms_for_experiment(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<VisibleHeadPopulationHistogram>, MetricsStoreError> {
+        Ok(self
+            .load_visible_head_population_histograms()?
+            .into_iter()
+            .filter(|histogram| &histogram.experiment_id == experiment_id)
+            .collect())
     }
 
     fn snapshot_path(&self, experiment_id: &ExperimentId, revision_id: &RevisionId) -> PathBuf {

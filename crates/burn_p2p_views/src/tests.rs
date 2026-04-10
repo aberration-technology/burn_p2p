@@ -17,18 +17,19 @@ use chrono::{Duration, Utc};
 
 use crate::{
     AggregateDagView, AuthAppView, AuthorityActionRecord, BrowserAppClientView,
-    BrowserAppExperimentSummary, BrowserAppLeaderboardPreview, BrowserAppLiveView,
-    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink,
-    BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
-    BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
-    BrowserExperimentPickerCard, BrowserExperimentPickerState, BrowserExperimentPickerView,
-    CheckpointDagEdgeKind, CheckpointDagView, CheckpointDownload, ContributionIdentityPanel,
-    CostPerformancePoint, EmaFlowView, ExperimentMigrationView, ExperimentPickerView,
-    ExperimentVariantView, GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView,
-    MergeQueueEntry, MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
-    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView,
-    ParticipantAppView, ParticipantProfile, ReducerUtilizationView, RobustnessPanelView,
-    ShardAssignmentHeatmap, StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
+    BrowserAppDiffusionView, BrowserAppExperimentSummary, BrowserAppLeaderboardPreview,
+    BrowserAppLiveView, BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView,
+    BrowserAppRouteLink, BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard,
+    BrowserAppSurface, BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView,
+    BrowserAppViewerView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
+    BrowserExperimentPickerView, CheckpointDagEdgeKind, CheckpointDagView, CheckpointDownload,
+    ContributionIdentityPanel, CostPerformancePoint, EmaFlowView, ExperimentMigrationView,
+    ExperimentPickerView, ExperimentVariantView, GitHubProfileLink, HeadPromotionTimelineEntry,
+    LoginProviderView, MergeQueueEntry, MergeQueueStatus, MergeTopologyDashboardView,
+    MergeWindowView, MetricPoint, NodeAppDiffusionView, OperatorConsoleView,
+    OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView, ParticipantAppView,
+    ParticipantProfile, ReducerUtilizationView, RobustnessPanelView, ShardAssignmentHeatmap,
+    StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
 };
 
 #[test]
@@ -435,6 +436,14 @@ fn browser_app_live_view_serializes_flat_live_contract() {
 
 #[test]
 fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
+    let diffusion: NodeAppDiffusionView = BrowserAppDiffusionView {
+        canonical_head_id: "head-8".into(),
+        captured_at: "2026-04-04T18:00:00Z".into(),
+        peer_adoption: "4 / 5 peers".into(),
+        recent_window_adoption: "6 / 8 windows".into(),
+        fragmentation: "2 visible head(s)".into(),
+        timeline: "4 point(s) over 8.0s".into(),
+    };
     let bootstrap = BrowserAppStaticBootstrap {
         app_name: "burn_p2p browser app".into(),
         asset_base_url: "https://cdn.example/burn-p2p".into(),
@@ -542,6 +551,7 @@ fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
                 wait_time: "820 ms".into(),
                 idle_time: "6.2s".into(),
             }),
+            diffusion: Some(diffusion),
         },
     };
 
@@ -557,6 +567,7 @@ fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
     assert!(view_json.contains("\"estimated_network_size\":256"));
     assert!(view_json.contains("\"training_throughput\":\"84.2 work/s\""));
     assert!(view_json.contains("\"idle_time\":\"6.2s\""));
+    assert!(view_json.contains("\"peer_adoption\":\"4 / 5 peers\""));
 }
 
 #[test]

@@ -17,14 +17,15 @@ pub use auth::{
     ParticipantAppView, ParticipantProfile, TrustBadgeView,
 };
 pub use browser_app::{
-    BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppFocusPanel,
-    BrowserAppLeaderboardPreview, BrowserAppLiveView, BrowserAppMetricPreview,
-    BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink, BrowserAppShellView,
-    BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface, BrowserAppSurfaceTab,
-    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView, NodeAppClientView,
-    NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppMetricPreview, NodeAppNetworkView,
-    NodeAppPerformanceView, NodeAppShellView, NodeAppStaticBootstrap, NodeAppSurface,
-    NodeAppTrainingView, NodeAppValidationView, NodeAppViewerView,
+    BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
+    BrowserAppFocusPanel, BrowserAppLeaderboardPreview, BrowserAppLiveView,
+    BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink,
+    BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
+    BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+    NodeAppClientView, NodeAppDiffusionView, NodeAppExperimentSummary, NodeAppLeaderboardPreview,
+    NodeAppMetricPreview, NodeAppNetworkView, NodeAppPerformanceView, NodeAppShellView,
+    NodeAppStaticBootstrap, NodeAppSurface, NodeAppTrainingView, NodeAppValidationView,
+    NodeAppViewerView,
 };
 pub use dashboard::{
     AggregateDagEdge, AggregateDagNode, AggregateDagView, AuthorityActionRecord, CheckpointDagEdge,

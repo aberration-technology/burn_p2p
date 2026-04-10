@@ -151,6 +151,7 @@ impl NodeAppUiState {
                 last_directory_sync_at: None,
                 last_error: None,
                 performance: None,
+                diffusion: None,
             },
             selected_experiment: None,
         })
