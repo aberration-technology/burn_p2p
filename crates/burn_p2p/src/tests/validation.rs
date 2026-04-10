@@ -907,6 +907,58 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         thread::sleep(Duration::from_millis(25));
     }
 
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let reducer_head = reducer
+                .sync_experiment_head(&experiment)
+                .expect("reducer second sync during convergence");
+            let validator_a_head = validator_a
+                .sync_experiment_head(&experiment)
+                .expect("validator a second sync during convergence");
+            let validator_b_head = validator_b
+                .sync_experiment_head(&experiment)
+                .expect("validator b second sync during convergence");
+            matches!(
+                (
+                    reducer_head.as_ref(),
+                    validator_a_head.as_ref(),
+                    validator_b_head.as_ref()
+                ),
+                (Some(reducer_head), Some(validator_a_head), Some(validator_b_head))
+                    if reducer_head.head_id == second_promoted.merged_head.head_id
+                        && validator_a_head.head_id == second_promoted.merged_head.head_id
+                        && validator_b_head.head_id == second_promoted.merged_head.head_id
+                        && reducer_head.parent_head_id == Some(first_promoted_head.head_id.clone())
+                        && validator_a_head.parent_head_id
+                            == Some(first_promoted_head.head_id.clone())
+                        && validator_b_head.parent_head_id
+                            == Some(first_promoted_head.head_id.clone())
+            )
+        },
+        "second reducer/validator round did not adopt the promoted canonical head",
+    );
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let persisted_a =
+                crate::runtime_support::load_head_state(&validator_a_storage, &experiment)
+                    .expect("load validator a second persisted head during convergence");
+            let persisted_b =
+                crate::runtime_support::load_head_state(&validator_b_storage, &experiment)
+                    .expect("load validator b second persisted head during convergence");
+            matches!(
+                (persisted_a.as_ref(), persisted_b.as_ref()),
+                (Some(a), Some(b))
+                    if a.head_id == second_promoted.merged_head.head_id
+                        && b.head_id == second_promoted.merged_head.head_id
+                        && a.parent_head_id == Some(first_promoted_head.head_id.clone())
+                        && b.parent_head_id == Some(first_promoted_head.head_id.clone())
+            )
+        },
+        "validators did not persist the second promoted canonical head",
+    );
+
     let synced_reducer_second = reducer
         .sync_experiment_head(&experiment)
         .expect("reducer second sync")
