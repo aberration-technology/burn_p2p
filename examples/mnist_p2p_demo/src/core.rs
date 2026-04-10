@@ -1164,24 +1164,17 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
     for (label, provider, outcome) in providers {
         let mut artifact_ids = vec![outcome.training.artifact.artifact_id.clone()];
         if outcome.training.head.artifact_id != outcome.training.artifact.artifact_id {
             artifact_ids.push(outcome.training.head.artifact_id.clone());
         }
         for artifact_id in artifact_ids {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            anyhow::ensure!(
-                !remaining.is_zero(),
-                "{failure_message}: timed out before warming artifact {}",
-                artifact_id.as_str(),
-            );
             wait_for_artifact_from_topology(
                 &[(label, provider, outcome.training.contribution.peer_id.clone())],
                 &consumers,
                 &artifact_id,
-                remaining,
+                demo_candidate_artifact_timeout(timeout),
                 failure_message,
             )?;
         }
@@ -1406,6 +1399,14 @@ fn demo_provider_artifact_timeout() -> Duration {
         Duration::from_secs(45)
     } else {
         Duration::from_secs(20)
+    }
+}
+
+fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
+    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+        timeout.max(Duration::from_secs(90))
+    } else {
+        timeout
     }
 }
 

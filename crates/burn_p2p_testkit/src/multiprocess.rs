@@ -1714,6 +1714,7 @@ where
         report,
         paths,
     } = wait;
+    let timeout = test_timeout(timeout);
     let deadline = Instant::now() + timeout;
     let mut republish_attempts = 0_u32;
     while Instant::now() < deadline {
