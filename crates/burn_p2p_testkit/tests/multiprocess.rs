@@ -52,6 +52,28 @@ fn multiprocess_test_guard() -> MutexGuard<'static, ()> {
         .expect("multiprocess test guard")
 }
 
+fn timeout_scale() -> u32 {
+    std::env::var("BURN_P2P_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_else(|| {
+            if std::env::var_os("CI").is_some() {
+                3
+            } else {
+                1
+            }
+        })
+        .max(1)
+}
+
+fn test_timeout(timeout: Duration) -> Duration {
+    timeout.checked_mul(timeout_scale()).unwrap_or(timeout)
+}
+
+fn test_timeout_secs(seconds: u64) -> u64 {
+    seconds.saturating_mul(u64::from(timeout_scale()))
+}
+
 #[test]
 fn smoke_cluster_runs_across_processes() -> anyhow::Result<()> {
     let _guard = multiprocess_test_guard();
@@ -68,9 +90,9 @@ fn smoke_cluster_runs_across_processes() -> anyhow::Result<()> {
         validator_report_path.clone(),
     );
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
-    validator_config.startup_timeout_secs = 30;
-    validator_config.sync_timeout_secs = 30;
-    validator_config.merge_wait_timeout_secs = 45;
+    validator_config.startup_timeout_secs = test_timeout_secs(30);
+    validator_config.sync_timeout_secs = test_timeout_secs(30);
+    validator_config.merge_wait_timeout_secs = test_timeout_secs(45);
     fs::write(
         &validator_config_path,
         serde_json::to_vec_pretty(&validator_config)?,
@@ -179,9 +201,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         validator_report_path.clone(),
     );
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
-    validator_config.startup_timeout_secs = 30;
-    validator_config.sync_timeout_secs = 30;
-    validator_config.merge_wait_timeout_secs = 45;
+    validator_config.startup_timeout_secs = test_timeout_secs(30);
+    validator_config.sync_timeout_secs = test_timeout_secs(30);
+    validator_config.merge_wait_timeout_secs = test_timeout_secs(45);
     fs::write(
         &validator_config_path,
         serde_json::to_vec_pretty(&validator_config)?,
@@ -203,9 +225,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         vec![validator_addr],
     );
     let mut trainer_config = trainer_config;
-    trainer_config.startup_timeout_secs = 30;
-    trainer_config.sync_timeout_secs = 30;
-    trainer_config.merge_wait_timeout_secs = 45;
+    trainer_config.startup_timeout_secs = test_timeout_secs(30);
+    trainer_config.sync_timeout_secs = test_timeout_secs(30);
+    trainer_config.merge_wait_timeout_secs = test_timeout_secs(45);
     fs::write(
         &trainer_config_path,
         serde_json::to_vec_pretty(&trainer_config)?,
@@ -240,9 +262,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         restarted_report_path.clone(),
     );
     restarted_config.shutdown_sentinel = Some(restarted_shutdown.clone());
-    restarted_config.startup_timeout_secs = 30;
-    restarted_config.sync_timeout_secs = 30;
-    restarted_config.merge_wait_timeout_secs = 90;
+    restarted_config.startup_timeout_secs = test_timeout_secs(30);
+    restarted_config.sync_timeout_secs = test_timeout_secs(30);
+    restarted_config.merge_wait_timeout_secs = test_timeout_secs(90);
     fs::write(
         &restarted_config_path,
         serde_json::to_vec_pretty(&restarted_config)?,
@@ -269,9 +291,9 @@ fn validator_restart_restores_head_across_processes() -> anyhow::Result<()> {
         vec![restarted_addr],
     );
     late_joiner_config.learning_rate = 0.25;
-    late_joiner_config.startup_timeout_secs = 30;
-    late_joiner_config.sync_timeout_secs = 30;
-    late_joiner_config.merge_wait_timeout_secs = 90;
+    late_joiner_config.startup_timeout_secs = test_timeout_secs(30);
+    late_joiner_config.sync_timeout_secs = test_timeout_secs(30);
+    late_joiner_config.merge_wait_timeout_secs = test_timeout_secs(90);
     // This restart-path test is validating that the restarted validator recovers
     // and merges a fresh post-restart contribution. The late joiner only needs to
     // publish and remain reachable for artifact fetch, not block on its own
@@ -397,10 +419,10 @@ fn native_process_soak_runner_reports_persistent_multi_window_progress() -> anyh
             trainer_window_count: 3,
             persistent_trainers: true,
             continuous_training: false,
-            startup_timeout_secs: 30,
+            startup_timeout_secs: test_timeout_secs(30),
             poll_interval_ms: 50,
-            sync_timeout_secs: 30,
-            merge_wait_timeout_secs: 45,
+            sync_timeout_secs: test_timeout_secs(30),
+            merge_wait_timeout_secs: test_timeout_secs(45),
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -454,10 +476,10 @@ fn native_process_soak_runner_supports_continuous_speculative_training() -> anyh
             trainer_window_count: 3,
             persistent_trainers: true,
             continuous_training: true,
-            startup_timeout_secs: 30,
+            startup_timeout_secs: test_timeout_secs(30),
             poll_interval_ms: 50,
-            sync_timeout_secs: 30,
-            merge_wait_timeout_secs: 45,
+            sync_timeout_secs: test_timeout_secs(30),
+            merge_wait_timeout_secs: test_timeout_secs(45),
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -493,10 +515,10 @@ fn burn_native_process_soak_runner_reports_persistent_multi_window_progress() ->
             trainer_window_count: 2,
             persistent_trainers: true,
             continuous_training: false,
-            startup_timeout_secs: 30,
+            startup_timeout_secs: test_timeout_secs(30),
             poll_interval_ms: 50,
-            sync_timeout_secs: 30,
-            merge_wait_timeout_secs: 45,
+            sync_timeout_secs: test_timeout_secs(30),
+            merge_wait_timeout_secs: test_timeout_secs(45),
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -530,10 +552,10 @@ fn burn_native_process_soak_runner_supports_persistent_multi_trainer_rounds() ->
             trainer_window_count: 2,
             persistent_trainers: true,
             continuous_training: false,
-            startup_timeout_secs: 30,
+            startup_timeout_secs: test_timeout_secs(30),
             poll_interval_ms: 50,
-            sync_timeout_secs: 45,
-            merge_wait_timeout_secs: 45,
+            sync_timeout_secs: test_timeout_secs(45),
+            merge_wait_timeout_secs: test_timeout_secs(45),
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -567,10 +589,10 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
             trainer_window_count: 2,
             persistent_trainers: false,
             continuous_training: false,
-            startup_timeout_secs: 30,
+            startup_timeout_secs: test_timeout_secs(30),
             poll_interval_ms: 50,
-            sync_timeout_secs: 45,
-            merge_wait_timeout_secs: 45,
+            sync_timeout_secs: test_timeout_secs(45),
+            merge_wait_timeout_secs: test_timeout_secs(45),
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -610,7 +632,7 @@ fn wait_for_report(
     timeout: Duration,
     predicate: impl Fn(&SyntheticProcessReport) -> bool,
 ) -> anyhow::Result<SyntheticProcessReport> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + test_timeout(timeout);
     let mut last_report = None;
     while Instant::now() < deadline {
         if path.exists() {
