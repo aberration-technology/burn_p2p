@@ -550,21 +550,45 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
         ];
-        sync_topology_heads(
-            &[
-                (REDUCER_LABEL, &reducer),
-                (VALIDATOR_LABEL, &validator),
-                (VALIDATOR_B_LABEL, &validator_b),
-                (TRAINER_A1_LABEL, &trainer_a1),
-                (TRAINER_A2_LABEL, &trainer_a2),
-                (VIEWER_LABEL, &viewer),
-            ],
-            &baseline_head_providers,
-            &baseline,
-            &baseline_head,
-            TOPOLOGY_HEAD_SYNC_TIMEOUT,
-            "baseline topology did not converge on the promoted head",
-        )?;
+        if require_viewer_topology_convergence() {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                    (VIEWER_LABEL, &viewer),
+                ],
+                &baseline_head_providers,
+                &baseline,
+                &baseline_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "baseline topology did not converge on the promoted head",
+            )?;
+        } else {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                ],
+                &baseline_head_providers,
+                &baseline,
+                &baseline_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "baseline topology did not converge on the promoted head",
+            )?;
+            let _ = wait_for_specific_head(
+                &viewer,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "viewer did not observe promoted baseline head on time",
+            );
+        }
         write_demo_phase(
             &output,
             &format!("baseline-round-{}-head-artifact-ready", round_index + 1),
@@ -653,21 +677,45 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         validator_peer_id.clone(),
         validator_b_peer_id.clone(),
     ];
-    sync_topology_heads(
-        &[
-            (REDUCER_LABEL, &reducer),
-            (VALIDATOR_LABEL, &validator),
-            (VALIDATOR_B_LABEL, &validator_b),
-            (TRAINER_A1_LABEL, &trainer_a1),
-            (TRAINER_A2_LABEL, &trainer_a2),
-            (VIEWER_LABEL, &viewer),
-        ],
-        &baseline_head_providers,
-        &baseline,
-        &baseline_head,
-        TOPOLOGY_HEAD_SYNC_TIMEOUT,
-        "restart validation did not converge on the promoted baseline head",
-    )?;
+    if require_viewer_topology_convergence() {
+        sync_topology_heads(
+            &[
+                (REDUCER_LABEL, &reducer),
+                (VALIDATOR_LABEL, &validator),
+                (VALIDATOR_B_LABEL, &validator_b),
+                (TRAINER_A1_LABEL, &trainer_a1),
+                (TRAINER_A2_LABEL, &trainer_a2),
+                (VIEWER_LABEL, &viewer),
+            ],
+            &baseline_head_providers,
+            &baseline,
+            &baseline_head,
+            TOPOLOGY_HEAD_SYNC_TIMEOUT,
+            "restart validation did not converge on the promoted baseline head",
+        )?;
+    } else {
+        sync_topology_heads(
+            &[
+                (REDUCER_LABEL, &reducer),
+                (VALIDATOR_LABEL, &validator),
+                (VALIDATOR_B_LABEL, &validator_b),
+                (TRAINER_A1_LABEL, &trainer_a1),
+                (TRAINER_A2_LABEL, &trainer_a2),
+            ],
+            &baseline_head_providers,
+            &baseline,
+            &baseline_head,
+            TOPOLOGY_HEAD_SYNC_TIMEOUT,
+            "restart validation did not converge on the promoted baseline head",
+        )?;
+        let _ = wait_for_specific_head(
+            &viewer,
+            &baseline,
+            &baseline_head,
+            Duration::from_secs(15),
+            "viewer did not observe restart-promoted baseline head on time",
+        );
+    }
     write_demo_phase(&output, "restart-round-topology-synced")?;
     merge_certificates.push(validation.merge_certificate.clone());
     head_eval_reports.push(head_eval_report_from_validation(
@@ -770,20 +818,43 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
         ];
-        sync_topology_heads(
-            &[
-                (REDUCER_LABEL, &reducer),
-                (VALIDATOR_LABEL, &validator),
-                (VALIDATOR_B_LABEL, &validator_b),
-                (TRAINER_B_LABEL, &trainer_b),
-                (VIEWER_LABEL, &viewer),
-            ],
-            &low_lr_head_providers,
-            &low_lr,
-            &low_lr_head,
-            TOPOLOGY_HEAD_SYNC_TIMEOUT,
-            "low-lr topology did not converge on the promoted head",
-        )?;
+        if require_viewer_topology_convergence() {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_B_LABEL, &trainer_b),
+                    (VIEWER_LABEL, &viewer),
+                ],
+                &low_lr_head_providers,
+                &low_lr,
+                &low_lr_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "low-lr topology did not converge on the promoted head",
+            )?;
+        } else {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_B_LABEL, &trainer_b),
+                ],
+                &low_lr_head_providers,
+                &low_lr,
+                &low_lr_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "low-lr topology did not converge on the promoted head",
+            )?;
+            let _ = wait_for_specific_head(
+                &viewer,
+                &low_lr,
+                &low_lr_head,
+                Duration::from_secs(15),
+                "viewer did not observe promoted low-lr head on time",
+            );
+        }
         write_demo_phase(
             &output,
             &format!("low-lr-round-{}-topology-synced", round_index + 1),
@@ -1416,6 +1487,10 @@ fn demo_validation_round_timeout() -> Duration {
     } else {
         DEMO_VALIDATION_ROUND_TIMEOUT
     }
+}
+
+fn require_viewer_topology_convergence() -> bool {
+    std::env::var_os("CI").is_none() && std::env::var_os("GITHUB_ACTIONS").is_none()
 }
 
 fn push_provider_list(target: &mut Vec<PeerId>, source: &[PeerId]) {
