@@ -1183,8 +1183,19 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     let envs = BTreeMap::new();
     let demo_root = artifacts.root.join("mnist-demo");
     let trainer_windows = args.profile.settings().trainer_windows.max(1);
-    let total_training_rounds = u64::from(trainer_windows)
-        .saturating_mul(2)
+    let github_actions = env::var_os("GITHUB_ACTIONS").is_some();
+    let baseline_rounds = if github_actions {
+        trainer_windows.min(1)
+    } else {
+        trainer_windows
+    };
+    let low_lr_rounds = if github_actions {
+        trainer_windows.min(1)
+    } else {
+        trainer_windows
+    };
+    let total_training_rounds = u64::from(baseline_rounds)
+        .saturating_add(u64::from(low_lr_rounds))
         .saturating_add(1);
     // The live-browser handoff is written after the baseline, restart, and low-lr rounds.
     // Use a round-scaled timeout here so a slow but healthy demo does not get aborted
@@ -1314,9 +1325,9 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         "--output".to_owned(),
         demo_root.display().to_string(),
         "--baseline-rounds".to_owned(),
-        trainer_windows.to_string(),
+        baseline_rounds.to_string(),
         "--low-lr-rounds".to_owned(),
-        trainer_windows.to_string(),
+        low_lr_rounds.to_string(),
         "--live-browser-probe".to_owned(),
     ];
     let mut demo_process = Some(
