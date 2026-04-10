@@ -598,7 +598,30 @@ fn run_fast_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()
             "--tests",
             "--exclude",
             "burn_p2p_testkit",
+            "--exclude",
+            "burn_p2p_swarm",
+            "--exclude",
+            "burn_p2p",
         ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "test-swarm",
+        &[
+            "test",
+            "-p",
+            "burn_p2p_swarm",
+            "--lib",
+            "--",
+            "--test-threads=1",
+        ],
+        &envs,
+    )?);
+    steps.push(workspace.run_cargo(
+        &artifacts,
+        "test-burn",
+        &["test", "-p", "burn_p2p", "--lib", "--", "--test-threads=1"],
         &envs,
     )?);
     steps.push(workspace.run_cargo(
