@@ -61,10 +61,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask ci integration --keep-artifacts
+      - run: cargo xtask setup browser
+      - run: cargo xtask e2e mixed --profile ci-integration --keep-artifacts
+      - run: cargo xtask stress multiprocess --profile ci-integration --peers 8 --duration 90s --keep-artifacts
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-artifacts
+          name: integration-mixed-and-stress-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  e2e-mnist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask setup browser
+      - run: cargo xtask e2e mnist --profile ci-integration --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-mnist-artifacts
           path: target/test-artifacts
           if-no-files-found: ignore

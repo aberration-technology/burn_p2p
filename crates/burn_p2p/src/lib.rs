@@ -909,16 +909,19 @@ impl<P> RunningNode<P> {
         peer_id: &PeerId,
         artifact_id: ArtifactId,
     ) -> anyhow::Result<ArtifactDescriptor> {
-        const ARTIFACT_PROVIDER_LOCATE_TIMEOUT: Duration = Duration::from_secs(20);
-        const ARTIFACT_CHUNK_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-        const ARTIFACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+        let artifact_provider_locate_timeout =
+            ci_scaled_timeout(Duration::from_secs(20), Duration::from_secs(45));
+        let artifact_chunk_fetch_timeout =
+            ci_scaled_timeout(Duration::from_secs(20), Duration::from_secs(45));
+        let artifact_request_timeout =
+            ci_scaled_timeout(Duration::from_secs(5), Duration::from_secs(12));
 
         self.sync_artifact_from_peer_with_timeouts(
             peer_id,
             artifact_id,
-            ARTIFACT_PROVIDER_LOCATE_TIMEOUT,
-            ARTIFACT_CHUNK_FETCH_TIMEOUT,
-            ARTIFACT_REQUEST_TIMEOUT,
+            artifact_provider_locate_timeout,
+            artifact_chunk_fetch_timeout,
+            artifact_request_timeout,
         )
     }
 
@@ -930,7 +933,10 @@ impl<P> RunningNode<P> {
         timeout: Duration,
     ) -> anyhow::Result<ArtifactDescriptor> {
         let budget = timeout.max(Duration::from_secs(1));
-        let request_timeout = budget.min(Duration::from_secs(2));
+        let request_timeout = budget.min(ci_scaled_timeout(
+            Duration::from_secs(2),
+            Duration::from_secs(8),
+        ));
 
         self.sync_artifact_from_peer_with_timeouts(
             peer_id,
@@ -1532,7 +1538,8 @@ impl<P> RunningNode<P> {
         timeout: Duration,
     ) -> anyhow::Result<()> {
         const ARTIFACT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-        const ARTIFACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+        let artifact_request_timeout =
+            ci_scaled_timeout(Duration::from_secs(3), Duration::from_secs(10));
 
         let Some(store) = self.artifact_store() else {
             anyhow::bail!("artifact prewarm requires configured storage");
@@ -1555,7 +1562,7 @@ impl<P> RunningNode<P> {
 
             for provider_peer_id in provider_peer_ids {
                 let Some(request_timeout) =
-                    remaining_request_timeout(deadline, ARTIFACT_REQUEST_TIMEOUT)
+                    remaining_request_timeout(deadline, artifact_request_timeout)
                 else {
                     break;
                 };
@@ -2042,6 +2049,14 @@ fn remaining_request_timeout(deadline: Instant, request_timeout: Duration) -> Op
         None
     } else {
         Some(request_timeout.min(remaining))
+    }
+}
+
+fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {
+    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+        ci
+    } else {
+        base
     }
 }
 

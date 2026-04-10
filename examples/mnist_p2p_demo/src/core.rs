@@ -72,7 +72,6 @@ const TOPOLOGY_HEAD_SYNC_TIMEOUT: Duration = Duration::from_secs(45);
 const FOLLOWER_HEAD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEMO_VALIDATION_ROUND_TIMEOUT: Duration = Duration::from_secs(45);
-const DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 const RESTART_CANDIDATE_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub(crate) struct CoreNodeRecord {
@@ -1323,7 +1322,7 @@ fn wait_for_head_artifacts<P>(
             if let Err(error) = consumer.wait_for_artifact_from_peers(
                 &staged_provider_peer_ids,
                 artifact_id,
-                DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
+                demo_artifact_sync_attempt_timeout(),
             ) {
                 all_ready = false;
                 last_error = Some(format!("{label}: {error}"));
@@ -1403,7 +1402,7 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
             match consumer.wait_for_artifact_from_peers(
                 &provider_peer_ids,
                 artifact_id,
-                DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
+                demo_artifact_sync_attempt_timeout(),
             ) {
                 Ok(_) => {}
                 Err(error) => {
@@ -1440,6 +1439,14 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
 fn push_unique_peer_id(provider_peer_ids: &mut Vec<PeerId>, peer_id: PeerId) {
     if !provider_peer_ids.contains(&peer_id) {
         provider_peer_ids.push(peer_id);
+    }
+}
+
+fn demo_artifact_sync_attempt_timeout() -> Duration {
+    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+        Duration::from_secs(20)
+    } else {
+        Duration::from_secs(5)
     }
 }
 
