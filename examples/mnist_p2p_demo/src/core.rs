@@ -24,8 +24,11 @@ use burn_p2p::{
     MetricValue, NetworkManifest, P2pWorkload, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
     PeerWindowStatus, Precision, PrincipalId, ProjectFamilyId, ReducerCohortMetrics,
     RevisionId, RevisionManifest, StorageConfig, StudyId, SupportedWorkload, WindowActivation,
-    WindowId, WorkloadId,
-    burn::{BurnTarget, from_learner, from_loaders, inspect_module},
+    WindowId, WorkloadId, ChunkingScheme,
+    burn::{
+        BurnArtifactConfig, BurnRecordPrecision, BurnTarget, BurnWorkloadConfig, from_learner,
+        from_loaders, inspect_module,
+    },
 };
 use burn_p2p_core::{BackendClass, BrowserLeaderboardEntry, BrowserLeaderboardIdentity};
 use burn_p2p_metrics::{MetricsIndexerConfig, MetricsStore};
@@ -139,6 +142,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         },
     )?;
     let supported_workload = supported_workload()?;
+    let burn_workload_config = mnist_burn_workload_config(supported_workload.clone());
     let release_manifest = release_manifest(&supported_workload);
     let network_manifest = network_manifest(&release_manifest);
 
@@ -219,13 +223,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     };
 
     let helper = build_service_project(1.0e-3)?
-        .connect(
+        .connect_with_config(
             BurnTarget::Custom(PeerRoleSet::new([
                 PeerRole::Bootstrap,
                 PeerRole::RelayHelper,
             ])),
             release_manifest.clone(),
-            supported_workload.clone(),
+            burn_workload_config.clone(),
         )?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(HELPER_LABEL)))
@@ -243,7 +247,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let helper_addr = helper.telemetry().snapshot().listen_addresses[0].clone();
 
     let validator = build_validator_project(1.0e-3)?
-        .validator(release_manifest.clone(), supported_workload.clone())?
+        .validator_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(VALIDATOR_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
@@ -260,10 +264,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     )?;
 
     let reducer = build_validator_project(1.0e-3)?
-        .connect(
+        .connect_with_config(
             BurnTarget::Custom(PeerRoleSet::new([PeerRole::Reducer])),
             release_manifest.clone(),
-            supported_workload.clone(),
+            burn_workload_config.clone(),
         )?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(REDUCER_LABEL)))
@@ -271,7 +275,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .spawn()?;
 
     let validator_b = build_validator_project(1.0e-3)?
-        .validator(release_manifest.clone(), supported_workload.clone())?
+        .validator_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(VALIDATOR_B_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
@@ -291,13 +295,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     )?;
 
     let viewer = build_service_project(1.0e-3)?
-        .connect(
+        .connect_with_config(
             BurnTarget::Custom(PeerRoleSet::new([
                 PeerRole::Viewer,
                 PeerRole::BrowserObserver,
             ])),
             release_manifest.clone(),
-            supported_workload.clone(),
+            burn_workload_config.clone(),
         )?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(VIEWER_LABEL)))
@@ -305,19 +309,19 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .spawn()?;
 
     let trainer_a1 = build_trainer_project(1.0e-3)?
-        .trainer(release_manifest.clone(), supported_workload.clone())?
+        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_A1_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
         .spawn()?;
     let trainer_a2 = build_trainer_project(1.0e-3)?
-        .trainer(release_manifest.clone(), supported_workload.clone())?
+        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
         .spawn()?;
     let trainer_b = build_trainer_project(2.0e-4)?
-        .trainer(release_manifest.clone(), supported_workload.clone())?
+        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_B_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
@@ -593,7 +597,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
     write_demo_phase(&output, "restart-trainer-shutdown-complete")?;
     let mut trainer_a2 = build_trainer_project(1.0e-3)?
-        .trainer(release_manifest.clone(), supported_workload.clone())?
+        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
@@ -684,7 +688,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let trainer_restart_resumed_training = true;
 
     let late_joiner = build_trainer_project(1.0e-3)?
-        .trainer(release_manifest.clone(), supported_workload.clone())?
+        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
@@ -1048,6 +1052,7 @@ where
 {
     let training = trainer.train_window_once_with_pinned_head(experiment, pinned_head)?;
     trainer.publish_head_provider(experiment, &training.head)?;
+    trainer.publish_artifact_from_store(&training.artifact.artifact_id)?;
     trainer.publish_artifact_from_store(&training.head.artifact_id)?;
     wait_for_local_training_publication(
         trainer,
@@ -1171,19 +1176,25 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     for (label, provider, outcome) in providers {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        anyhow::ensure!(
-            !remaining.is_zero(),
-            "{failure_message}: timed out before warming artifact {}",
-            outcome.training.head.artifact_id.as_str(),
-        );
-        wait_for_artifact_from_topology(
-            &[(label, provider, outcome.training.contribution.peer_id.clone())],
-            &consumers,
-            &outcome.training.head.artifact_id,
-            remaining,
-            failure_message,
-        )?;
+        let mut artifact_ids = vec![outcome.training.artifact.artifact_id.clone()];
+        if outcome.training.head.artifact_id != outcome.training.artifact.artifact_id {
+            artifact_ids.push(outcome.training.head.artifact_id.clone());
+        }
+        for artifact_id in artifact_ids {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "{failure_message}: timed out before warming artifact {}",
+                artifact_id.as_str(),
+            );
+            wait_for_artifact_from_topology(
+                &[(label, provider, outcome.training.contribution.peer_id.clone())],
+                &consumers,
+                &artifact_id,
+                remaining,
+                failure_message,
+            )?;
+        }
         for (_, consumer) in &consumers {
             consumer.publish_head_provider(experiment, &outcome.training.head)?;
         }
@@ -1295,17 +1306,37 @@ fn wait_for_head_artifacts<P>(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
+    let mut staged_provider_peer_ids = provider_peer_ids.to_vec();
     while Instant::now() < deadline {
         let mut all_ready = true;
         for (label, consumer) in consumers {
+            if record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut staged_provider_peer_ids,
+                &mut last_error,
+            ) {
+                continue;
+            }
+
             if let Err(error) = consumer.wait_for_artifact_from_peers(
-                provider_peer_ids,
+                &staged_provider_peer_ids,
                 artifact_id,
                 DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
-            )
-            {
+            ) {
                 all_ready = false;
                 last_error = Some(format!("{label}: {error}"));
+                break;
+            }
+            if !record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut staged_provider_peer_ids,
+                &mut last_error,
+            ) {
+                all_ready = false;
                 break;
             }
         }
@@ -1331,12 +1362,16 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None::<String>;
+    let mut staged_provider_peer_ids = providers
+        .iter()
+        .map(|(_, _, peer_id)| peer_id.clone())
+        .collect::<Vec<_>>();
     while Instant::now() < deadline {
-        let mut provider_peer_ids = Vec::with_capacity(providers.len() + consumers.len());
+        let mut provider_peer_ids = staged_provider_peer_ids.clone();
         let mut republish_failed = false;
         for (label, provider, peer_id) in providers {
             match provider.publish_artifact_from_store(artifact_id) {
-                Ok(_) => provider_peer_ids.push(peer_id.clone()),
+                Ok(_) => push_unique_peer_id(&mut provider_peer_ids, peer_id.clone()),
                 Err(error) => {
                     republish_failed = true;
                     last_error = Some(format!(
@@ -1354,34 +1389,40 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
 
         let mut all_ready = true;
         for (label, consumer) in consumers {
+            if record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut provider_peer_ids,
+                &mut last_error,
+            ) {
+                push_provider_list(&mut staged_provider_peer_ids, &provider_peer_ids);
+                continue;
+            }
+
             match consumer.wait_for_artifact_from_peers(
                 &provider_peer_ids,
                 artifact_id,
                 DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
             ) {
-                Ok(_) => {
-                    match consumer.publish_artifact_from_store(artifact_id) {
-                        Ok(_) => {
-                            if let Some(local_peer_id) = consumer.telemetry().snapshot().local_peer_id {
-                                provider_peer_ids.push(local_peer_id);
-                            }
-                        }
-                        Err(error) => {
-                            all_ready = false;
-                            last_error = Some(format!(
-                                "{label}: could not republish {}: {error}",
-                                artifact_id.as_str(),
-                            ));
-                            break;
-                        }
-                    }
-                }
+                Ok(_) => {}
                 Err(error) => {
                     all_ready = false;
                     last_error = Some(format!("{label}: {error}"));
                     break;
                 }
             }
+            if !record_artifact_provider(
+                *label,
+                consumer,
+                artifact_id,
+                &mut provider_peer_ids,
+                &mut last_error,
+            ) {
+                all_ready = false;
+                break;
+            }
+            push_provider_list(&mut staged_provider_peer_ids, &provider_peer_ids);
         }
 
         if all_ready {
@@ -1394,6 +1435,55 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
         anyhow::bail!("{failure_message}: {error}");
     }
     anyhow::bail!(failure_message.to_owned())
+}
+
+fn push_unique_peer_id(provider_peer_ids: &mut Vec<PeerId>, peer_id: PeerId) {
+    if !provider_peer_ids.contains(&peer_id) {
+        provider_peer_ids.push(peer_id);
+    }
+}
+
+fn push_provider_list(target: &mut Vec<PeerId>, source: &[PeerId]) {
+    for peer_id in source {
+        push_unique_peer_id(target, peer_id.clone());
+    }
+}
+
+fn record_artifact_provider<P>(
+    label: &str,
+    node: &burn_p2p::RunningNode<P>,
+    artifact_id: &burn_p2p::ArtifactId,
+    provider_peer_ids: &mut Vec<PeerId>,
+    last_error: &mut Option<String>,
+) -> bool {
+    let Some(store) = node.artifact_store() else {
+        return false;
+    };
+    if !store.has_manifest(artifact_id) {
+        return false;
+    }
+
+    let Some(local_peer_id) = node.telemetry().snapshot().local_peer_id else {
+        *last_error = Some(format!(
+            "{label}: local peer id unavailable while staging {}",
+            artifact_id.as_str(),
+        ));
+        return false;
+    };
+
+    match node.publish_artifact_from_store(artifact_id) {
+        Ok(_) => {
+            push_unique_peer_id(provider_peer_ids, local_peer_id);
+            true
+        }
+        Err(error) => {
+            *last_error = Some(format!(
+                "{label}: could not republish {}: {error}",
+                artifact_id.as_str(),
+            ));
+            false
+        }
+    }
 }
 
 fn write_demo_phase(output_root: &Path, phase: &str) -> anyhow::Result<()> {
@@ -1598,10 +1688,17 @@ pub(crate) fn supported_workload() -> anyhow::Result<SupportedWorkload> {
         workload_id: WorkloadId::new(WORKLOAD_ID),
         workload_name: "MNIST classifier".into(),
         model_program_hash: ContentId::new("mnist-demo-mlp-v1"),
-        checkpoint_format_hash: ContentId::new("mnist-demo-burnpack"),
+        checkpoint_format_hash: ContentId::new("mnist-demo-named-mpk"),
         supported_revision_family: ContentId::new("mnist-demo-revision-family"),
         resource_class: "cpu".into(),
     })
+}
+
+fn mnist_burn_workload_config(supported_workload: SupportedWorkload) -> BurnWorkloadConfig {
+    BurnWorkloadConfig::new(
+        supported_workload,
+        BurnArtifactConfig::named_mpk(BurnRecordPrecision::Full, ChunkingScheme::default()),
+    )
 }
 
 pub(crate) fn release_manifest(supported_workload: &SupportedWorkload) -> ClientReleaseManifest {
@@ -1985,10 +2082,20 @@ fn record_promoted_validation_outcome(
     let Some(outcome) = outcome else {
         return Ok(promoted);
     };
+    anyhow::ensure!(
+        outcome.merge_certificate.merged_head_id == outcome.merged_head.head_id
+            && outcome.merge_certificate.merged_artifact_id == outcome.merged_head.artifact_id,
+        "validator promoted merge certificate/head mismatch for {}",
+        outcome.merged_head.head_id.as_str(),
+    );
     if let Some(existing) = &promoted {
         anyhow::ensure!(
             existing.merged_head.head_id == outcome.merged_head.head_id,
             "validators promoted different merged heads for the same aggregate proposal",
+        );
+        anyhow::ensure!(
+            existing.merged_head.artifact_id == outcome.merged_head.artifact_id,
+            "validators promoted different merged artifacts for the same aggregate proposal",
         );
         Ok(promoted)
     } else {

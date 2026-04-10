@@ -671,9 +671,9 @@ fn latest_merge_from_snapshot(
         .map(|announcement| announcement.certificate.clone())
 }
 
-fn head_for_merged_head_id(
+fn head_for_merge_certificate(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
-    merged_head_id: &HeadId,
+    merge: &MergeCertificate,
 ) -> Option<(PeerId, HeadDescriptor)> {
     snapshots
         .iter()
@@ -681,7 +681,10 @@ fn head_for_merged_head_id(
             snapshot
                 .head_announcements
                 .iter()
-                .filter(move |announcement| announcement.head.head_id == *merged_head_id)
+                .filter(move |announcement| {
+                    announcement.head.head_id == merge.merged_head_id
+                        && announcement.head.artifact_id == merge.merged_artifact_id
+                })
                 .map(move |announcement| {
                     (
                         announcement
@@ -693,9 +696,9 @@ fn head_for_merged_head_id(
                 })
         })
         .max_by(|left, right| {
-            left.1
-                .global_step
-                .cmp(&right.1.global_step)
+            (left.0 == merge.validator)
+                .cmp(&(right.0 == merge.validator))
+                .then(left.1.global_step.cmp(&right.1.global_step))
                 .then(left.1.created_at.cmp(&right.1.created_at))
         })
 }
@@ -706,7 +709,7 @@ fn latest_merged_head_from_snapshots<'a>(
 ) -> impl Iterator<Item = (PeerId, HeadDescriptor)> + 'a {
     snapshots.iter().filter_map(move |(_, snapshot)| {
         let merge = latest_merge_from_snapshot(snapshot, experiment)?;
-        head_for_merged_head_id(snapshots, &merge.merged_head_id)
+        head_for_merge_certificate(snapshots, &merge)
     })
 }
 

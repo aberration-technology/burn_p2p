@@ -1933,6 +1933,7 @@ impl<P> RunningNode<P> {
             .ok_or_else(|| anyhow::anyhow!("runtime does not have a local peer id yet"))?;
         if let Some(merge_certificate) = load_latest_merge_certificate(&storage, experiment)?
             && merge_certificate.merged_head_id == head.head_id
+            && merge_certificate.merged_artifact_id == head.artifact_id
         {
             self.control.publish_merge(MergeAnnouncement {
                 overlay: experiment.overlay_set()?.heads,

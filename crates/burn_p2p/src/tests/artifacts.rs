@@ -589,6 +589,87 @@ fn cached_connected_snapshots_filter_peer_scoped_announcements() {
 }
 
 #[test]
+fn resolve_canonical_head_uses_merge_artifact_id_not_only_head_id() {
+    let experiment = experiment();
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let validator_a = crate::PeerId::new("validator-a");
+    let validator_b = crate::PeerId::new("validator-b");
+    let merged_head_id = crate::HeadId::new("merged-window-1");
+    let merged_artifact_a = crate::ArtifactId::new("merged-artifact-a");
+    let merged_artifact_b = crate::ArtifactId::new("merged-artifact-b");
+    let created_at = Utc::now();
+
+    let head_a = HeadDescriptor {
+        head_id: merged_head_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: merged_artifact_a.clone(),
+        parent_head_id: Some(crate::HeadId::new("parent")),
+        global_step: 2,
+        created_at,
+        metrics: BTreeMap::new(),
+    };
+    let head_b = HeadDescriptor {
+        head_id: merged_head_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: merged_artifact_b,
+        parent_head_id: Some(crate::HeadId::new("parent")),
+        global_step: 2,
+        created_at: created_at + chrono::Duration::milliseconds(1),
+        metrics: BTreeMap::new(),
+    };
+
+    let mut snapshot_a = crate::ControlPlaneSnapshot::default();
+    snapshot_a.head_announcements = vec![HeadAnnouncement {
+        overlay: overlay.clone(),
+        provider_peer_id: Some(validator_a.clone()),
+        head: head_a.clone(),
+        announced_at: created_at,
+    }];
+    snapshot_a.merge_announcements = vec![crate::MergeAnnouncement {
+        overlay: overlay.clone(),
+        certificate: MergeCertificate {
+            merge_cert_id: crate::MergeCertId::new("merge-a"),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            base_head_id: crate::HeadId::new("parent"),
+            merged_head_id: merged_head_id.clone(),
+            merged_artifact_id: merged_artifact_a.clone(),
+            policy: crate::MergePolicy::WeightedMean,
+            issued_at: created_at,
+            validator: validator_a.clone(),
+            contribution_receipts: vec![crate::ContributionReceiptId::new("receipt-a")],
+        },
+        announced_at: created_at,
+    }];
+
+    let mut snapshot_b = crate::ControlPlaneSnapshot::default();
+    snapshot_b.head_announcements = vec![HeadAnnouncement {
+        overlay,
+        provider_peer_id: Some(validator_b.clone()),
+        head: head_b,
+        announced_at: created_at + chrono::Duration::milliseconds(1),
+    }];
+
+    let storage_root = tempdir().expect("tempdir");
+    let resolved = crate::runtime_support::resolve_canonical_head(
+        &StorageConfig::new(storage_root.path()),
+        &experiment,
+        &[(validator_a.clone(), snapshot_a), (validator_b, snapshot_b)],
+    )
+    .expect("resolve canonical head")
+    .expect("merged head");
+
+    assert_eq!(resolved.0, validator_a);
+    assert_eq!(resolved.1.head_id, merged_head_id);
+    assert_eq!(resolved.1.artifact_id, merged_artifact_a);
+}
+
+#[test]
 fn experiment_snapshot_peer_ids_only_include_relevant_experiment_peers() {
     let experiment = experiment();
     let other_experiment = mainnet().experiment(
