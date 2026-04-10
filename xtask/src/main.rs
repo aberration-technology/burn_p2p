@@ -1647,10 +1647,10 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     );
     ensure!(
         correctness
-            .pointer("/topology/reducer_load_only_from_dedicated_reducer")
+            .pointer("/topology/reducer_load_publishers_within_reducer_validation_tier")
             .and_then(serde_json::Value::as_bool)
             == Some(true),
-        "mnist demo observed reducer-load telemetry from non-reducer peers",
+        "mnist demo observed reducer-load telemetry outside the reducer/validator tier",
     );
     ensure!(
         correctness

@@ -114,7 +114,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
             && topology.mesh_fanout_beyond_seed_observed
             && topology.dedicated_reducer_participated
             && topology.aggregate_proposals_only_from_dedicated_reducer
-            && topology.reducer_load_only_from_dedicated_reducer
+            && topology.reducer_load_publishers_within_reducer_validation_tier
             && topology.reduction_attestations_only_from_validators
             && topology.merge_certificates_only_from_validators
             && topology.validators_observed_validation_quorum,
@@ -644,6 +644,11 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
         .flat_map(|snapshot| snapshot.control_plane.reducer_load_announcements.iter())
         .map(|announcement| announcement.report.peer_id.clone())
         .collect::<BTreeSet<_>>();
+    let allowed_reducer_load_publishers = validator_peer_ids
+        .iter()
+        .cloned()
+        .chain(std::iter::once(reducer_peer_id.clone()))
+        .collect::<BTreeSet<_>>();
     let reduction_attesters = topology_labels
         .iter()
         .filter_map(|label| run.final_snapshots.get(label))
@@ -705,6 +710,11 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
             && aggregate_proposal_reducers == BTreeSet::from([reducer_peer_id.clone()]),
         reducer_load_only_from_dedicated_reducer: !reducer_load_publishers.is_empty()
             && reducer_load_publishers == BTreeSet::from([reducer_peer_id.clone()]),
+        reducer_load_publishers_within_reducer_validation_tier: !reducer_load_publishers
+            .is_empty()
+            && reducer_load_publishers
+                .iter()
+                .all(|peer_id| allowed_reducer_load_publishers.contains(peer_id)),
         reduction_attestations_only_from_validators: !reduction_attesters.is_empty()
             && reduction_attesters
                 .iter()
@@ -717,6 +727,7 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
         notes: vec![
             "all non-seed nodes join the run through the helper seed instead of dialing the validator directly".into(),
             "the dedicated reducer publishes aggregate proposals while validators only attest and promote".into(),
+            "validators may locally materialize aggregates during verification, so reducer-load telemetry can appear from validator peers even when reducer authority remains isolated".into(),
             "healthy peers are expected to learn non-seed addresses and fan out beyond the helper seed".into(),
         ],
     })

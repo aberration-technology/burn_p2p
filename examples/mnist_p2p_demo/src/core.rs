@@ -508,12 +508,15 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         )?;
         wait_for_candidate_artifacts(
             [
+                (TRAINER_A1_LABEL, &trainer_a1, &outcome_a1),
+                (TRAINER_A2_LABEL, &trainer_a2, &outcome_a2),
+            ],
+            [
                 (REDUCER_LABEL, &reducer),
                 (VALIDATOR_LABEL, &validator),
                 (VALIDATOR_B_LABEL, &validator_b),
             ],
             &baseline,
-            [&outcome_a1, &outcome_a2],
             Duration::from_secs(45),
             "baseline trainer artifacts were not fetchable by the reducer/validator tier",
         )?;
@@ -617,13 +620,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     )?;
     write_demo_phase(&output, "restart-round-trained")?;
     wait_for_candidate_artifacts(
+        [(TRAINER_A2_LABEL, &trainer_a2, &restarted_outcome)],
         [
             (REDUCER_LABEL, &reducer),
             (VALIDATOR_LABEL, &validator),
             (VALIDATOR_B_LABEL, &validator_b),
         ],
         &baseline,
-        [&restarted_outcome],
         RESTART_CANDIDATE_ARTIFACT_TIMEOUT,
         "restarted trainer-a2 artifact was not fetchable by the reducer/validator tier",
     )?;
@@ -728,13 +731,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             &format!("low-lr-round-{}-trained", round_index + 1),
         )?;
         wait_for_candidate_artifacts(
+            [(TRAINER_B_LABEL, &trainer_b, &low_lr_outcome)],
             [
                 (REDUCER_LABEL, &reducer),
                 (VALIDATOR_LABEL, &validator),
                 (VALIDATOR_B_LABEL, &validator_b),
             ],
             &low_lr,
-            [&low_lr_outcome],
             Duration::from_secs(45),
             "low-lr trainer artifact was not fetchable by the reducer/validator tier",
         )?;
@@ -1045,6 +1048,7 @@ where
 {
     let training = trainer.train_window_once_with_pinned_head(experiment, pinned_head)?;
     trainer.publish_head_provider(experiment, &training.head)?;
+    trainer.publish_artifact_from_store(&training.head.artifact_id)?;
     wait_for_local_training_publication(
         trainer,
         label,
@@ -1158,54 +1162,33 @@ where
     )
 }
 
-fn wait_for_candidate_artifacts<P, const NODE_COUNT: usize, const N: usize>(
+fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT: usize>(
+    providers: [(&str, &burn_p2p::RunningNode<P>, &TrainingRecord); PROVIDER_COUNT],
     consumers: [(&str, &burn_p2p::RunningNode<P>); NODE_COUNT],
     experiment: &burn_p2p::ExperimentHandle,
-    outcomes: [&TrainingRecord; N],
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
-    let mut last_error = None::<String>;
-    while Instant::now() < deadline {
-        let mut all_ready = true;
-        for outcome in outcomes {
-            let mut provider_peer_ids = vec![outcome.training.contribution.peer_id.clone()];
-            for (label, consumer) in &consumers {
-                match consumer.wait_for_artifact_from_peers(
-                    &provider_peer_ids,
-                    &outcome.training.head.artifact_id,
-                    DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
-                ) {
-                    Ok(_) => {
-                        if let Some(local_peer_id) = consumer.telemetry().snapshot().local_peer_id {
-                            provider_peer_ids.push(local_peer_id);
-                        }
-                        consumer.publish_head_provider(experiment, &outcome.training.head)?;
-                        consumer.publish_artifact_from_store(&outcome.training.head.artifact_id)?;
-                    }
-                    Err(error) => {
-                        all_ready = false;
-                        last_error = Some(format!("{label}: {error}"));
-                        break;
-                    }
-                }
-            }
-            if !all_ready {
-                break;
-            }
+    for (label, provider, outcome) in providers {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "{failure_message}: timed out before warming artifact {}",
+            outcome.training.head.artifact_id.as_str(),
+        );
+        wait_for_artifact_from_topology(
+            &[(label, provider, outcome.training.contribution.peer_id.clone())],
+            &consumers,
+            &outcome.training.head.artifact_id,
+            remaining,
+            failure_message,
+        )?;
+        for (_, consumer) in &consumers {
+            consumer.publish_head_provider(experiment, &outcome.training.head)?;
         }
-
-        if all_ready {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
     }
-
-    if let Some(error) = last_error {
-        anyhow::bail!("{failure_message}: {error}");
-    }
-    anyhow::bail!(failure_message.to_owned())
+    Ok(())
 }
 
 fn wait_for_candidate_control_plane<P, const NODE_COUNT: usize, const OUTCOME_COUNT: usize>(
@@ -1324,6 +1307,80 @@ fn wait_for_head_artifacts<P>(
                 all_ready = false;
                 last_error = Some(format!("{label}: {error}"));
                 break;
+            }
+        }
+
+        if all_ready {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    if let Some(error) = last_error {
+        anyhow::bail!("{failure_message}: {error}");
+    }
+    anyhow::bail!(failure_message.to_owned())
+}
+
+fn wait_for_artifact_from_topology<P, const N: usize>(
+    providers: &[(&str, &burn_p2p::RunningNode<P>, PeerId)],
+    consumers: &[(&str, &burn_p2p::RunningNode<P>); N],
+    artifact_id: &burn_p2p::ArtifactId,
+    timeout: Duration,
+    failure_message: &str,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None::<String>;
+    while Instant::now() < deadline {
+        let mut provider_peer_ids = Vec::with_capacity(providers.len() + consumers.len());
+        let mut republish_failed = false;
+        for (label, provider, peer_id) in providers {
+            match provider.publish_artifact_from_store(artifact_id) {
+                Ok(_) => provider_peer_ids.push(peer_id.clone()),
+                Err(error) => {
+                    republish_failed = true;
+                    last_error = Some(format!(
+                        "{label}: could not republish {}: {error}",
+                        artifact_id.as_str(),
+                    ));
+                    break;
+                }
+            }
+        }
+        if republish_failed {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
+        let mut all_ready = true;
+        for (label, consumer) in consumers {
+            match consumer.wait_for_artifact_from_peers(
+                &provider_peer_ids,
+                artifact_id,
+                DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
+            ) {
+                Ok(_) => {
+                    match consumer.publish_artifact_from_store(artifact_id) {
+                        Ok(_) => {
+                            if let Some(local_peer_id) = consumer.telemetry().snapshot().local_peer_id {
+                                provider_peer_ids.push(local_peer_id);
+                            }
+                        }
+                        Err(error) => {
+                            all_ready = false;
+                            last_error = Some(format!(
+                                "{label}: could not republish {}: {error}",
+                                artifact_id.as_str(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    all_ready = false;
+                    last_error = Some(format!("{label}: {error}"));
+                    break;
+                }
             }
         }
 
@@ -2156,41 +2213,13 @@ fn wait_for_artifact_from_provider<P, const N: usize>(
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None;
-    while Instant::now() < deadline {
-        if let Err(error) = provider.1.publish_artifact_from_store(artifact_id) {
-            last_error = Some(format!(
-                "{}: could not republish {}: {error}",
-                provider.0,
-                artifact_id.as_str(),
-            ));
-            thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        let mut all_ready = true;
-        for (label, consumer) in &consumers {
-            if let Err(error) = consumer.wait_for_artifact_from_peers(
-                std::slice::from_ref(provider_peer_id),
-                artifact_id,
-                DEMO_ARTIFACT_SYNC_ATTEMPT_TIMEOUT,
-            ) {
-                all_ready = false;
-                last_error = Some(format!("{label}: {error}"));
-                break;
-            }
-        }
-
-        if all_ready {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    if let Some(error) = last_error {
-        anyhow::bail!("{failure_message}: {error}");
-    }
-    anyhow::bail!(failure_message.to_owned())
+    wait_for_artifact_from_topology(
+        &[(provider.0, provider.1, provider_peer_id.clone())],
+        &consumers,
+        artifact_id,
+        timeout,
+        failure_message,
+    )
 }
 
 fn head_eval_report(

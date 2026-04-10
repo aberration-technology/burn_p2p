@@ -226,6 +226,7 @@ pub struct TopologyExerciseSummary {
     pub dedicated_reducer_participated: bool,
     pub aggregate_proposals_only_from_dedicated_reducer: bool,
     pub reducer_load_only_from_dedicated_reducer: bool,
+    pub reducer_load_publishers_within_reducer_validation_tier: bool,
     pub reduction_attestations_only_from_validators: bool,
     pub merge_certificates_only_from_validators: bool,
     pub validators_observed_validation_quorum: bool,
