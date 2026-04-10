@@ -42,6 +42,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
       - run: cargo xtask ci pr-fast --keep-artifacts
       - if: always()
         uses: actions/upload-artifact@v4
