@@ -17,6 +17,10 @@ use crate::{AdmissionDecision, AuditFinding};
 
 pub use static_connector::{StaticIdentityConnector, StaticPrincipalRecord};
 
+/// Default upper bound for connector-owned pending login state kept in memory
+/// or persisted across restarts.
+pub const DEFAULT_PENDING_LOGIN_LIMIT: usize = 256;
+
 #[derive(Debug, thiserror::Error)]
 /// Enumerates the supported auth error values.
 pub enum AuthError {
@@ -207,6 +211,54 @@ pub fn random_login_state_token(label: &str) -> Result<String, AuthError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| AuthError::Entropy(format!("{label}: {error}")))?;
     Ok(hex::encode(bytes))
+}
+
+/// Validates that a principal record is authorized for the requested network
+/// and experiment scopes.
+pub fn validate_principal_record_access(
+    record: &StaticPrincipalRecord,
+    network_id: &NetworkId,
+    requested_scopes: &BTreeSet<ExperimentScope>,
+) -> Result<(), AuthError> {
+    if !record.allowed_networks.contains(network_id) {
+        return Err(AuthError::NetworkNotGranted(network_id.clone()));
+    }
+
+    for scope in requested_scopes {
+        if !record.claims.granted_scopes.contains(scope) && !scope.allows_directory_discovery() {
+            return Err(AuthError::ScopeNotGranted(scope.clone()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Prunes expired entries and keeps only the newest bounded tail in-memory.
+pub fn prune_expiring_entries<K, V, F>(
+    entries: &mut BTreeMap<K, V>,
+    now: DateTime<Utc>,
+    max_entries: usize,
+    expires_at: F,
+) where
+    K: Clone + Ord,
+    F: Fn(&V) -> DateTime<Utc>,
+{
+    entries.retain(|_, value| expires_at(value) >= now);
+    if entries.len() <= max_entries {
+        return;
+    }
+
+    let mut retained = entries
+        .iter()
+        .map(|(key, value)| (key.clone(), expires_at(value)))
+        .collect::<Vec<_>>();
+    retained.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+    let retained_keys = retained
+        .into_iter()
+        .take(max_entries)
+        .map(|(key, _)| key)
+        .collect::<BTreeSet<_>>();
+    entries.retain(|key, _| retained_keys.contains(key));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

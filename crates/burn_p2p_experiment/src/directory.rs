@@ -570,6 +570,7 @@ mod tests {
             platform,
             roles: PeerRoleSet::new(roles),
             preferred_backends: preferred_backends.into_iter().map(str::to_string).collect(),
+            browser_capabilities: BTreeSet::new(),
             recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
             device_memory_bytes,
             system_memory_bytes,

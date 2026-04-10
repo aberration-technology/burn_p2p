@@ -311,6 +311,8 @@ fn main() -> anyhow::Result<()> {
                 )?,
                 evidence_requirement: MergeEvidenceRequirement::default(),
             },
+            validator_set_manifest: None,
+            authority_epoch_manifest: None,
         }),
         archive: ArchivePlan::default(),
         admin_api: AdminApiPlan::default(),

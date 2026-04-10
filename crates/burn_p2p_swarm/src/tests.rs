@@ -650,6 +650,7 @@ fn peer_store_aggregates_connected_peers_and_eta() {
         platform: ClientPlatform::Native,
         roles: PeerRoleSet::default_trainer(),
         preferred_backends: vec!["cuda".into()],
+        browser_capabilities: BTreeSet::new(),
         recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
         device_memory_bytes: Some(24 * 1024 * 1024 * 1024),
         system_memory_bytes: 64 * 1024 * 1024 * 1024,
@@ -705,6 +706,33 @@ fn peer_store_aggregates_connected_peers_and_eta() {
     assert_eq!(stats.network_estimate.estimated_total_flops, Some(1250.0));
     assert_eq!(stats.network_estimate.eta_lower_seconds, Some(8));
     assert_eq!(stats.network_estimate.eta_upper_seconds, Some(12));
+}
+
+#[test]
+fn peer_store_prunes_stale_and_excess_disconnected_observations() {
+    let now = Utc::now();
+    let mut store = PeerStore::default();
+
+    for offset in 0..300 {
+        store.mark_connection(
+            PeerId::new(format!("disconnected-{offset}")),
+            false,
+            now - chrono::Duration::minutes(offset as i64),
+        );
+    }
+    store.mark_connection(PeerId::new("connected-a"), true, now);
+    store.mark_connection(PeerId::new("connected-b"), true, now);
+
+    let disconnected = store
+        .observations()
+        .filter(|observation| !observation.connected)
+        .count();
+
+    assert!(disconnected <= 256);
+    assert!(store.get(&PeerId::new("connected-a")).is_some());
+    assert!(store.get(&PeerId::new("connected-b")).is_some());
+    assert!(store.get(&PeerId::new("disconnected-0")).is_some());
+    assert!(store.get(&PeerId::new("disconnected-299")).is_none());
 }
 
 #[test]
@@ -888,6 +916,170 @@ fn metrics_announcements_keep_a_bounded_recent_tail() {
     assert_eq!(
         snapshot.metrics_announcements[63].event.cursors[0].latest_snapshot_seq,
         Some(79)
+    );
+}
+
+#[test]
+fn control_plane_snapshot_caps_live_announcement_histories() {
+    const MAX_HEADS: usize = 256;
+    const MAX_LEASES: usize = 128;
+    const MAX_MERGE_WINDOWS: usize = 128;
+    const MAX_REDUCER_ASSIGNMENTS: usize = 128;
+    const MAX_UPDATES: usize = 256;
+    const MAX_REDUCER_LOADS: usize = 128;
+
+    let overlay = semantic_test_overlay();
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+
+    for index in 0..320u64 {
+        snapshot.insert_head_announcement(HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(PeerId::new(format!("provider-{index:03}"))),
+            head: HeadDescriptor {
+                study_id: StudyId::new("study"),
+                experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                head_id: HeadId::new(format!("head-{index:03}")),
+                artifact_id: ArtifactId::new(format!("artifact-{index:03}")),
+                parent_head_id: None,
+                global_step: index,
+                created_at: now + chrono::Duration::seconds(index as i64),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: now + chrono::Duration::seconds(index as i64),
+        });
+        snapshot.insert_lease_announcement(super::LeaseAnnouncement {
+            overlay: overlay.clone(),
+            lease: burn_p2p_core::AssignmentLease {
+                lease_id: burn_p2p_core::LeaseId::new(format!("lease-{index:03}")),
+                network_id: NetworkId::new("semantic-net"),
+                study_id: StudyId::new("study"),
+                experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                peer_id: PeerId::new(format!("trainer-{index:03}")),
+                dataset_view_id: burn_p2p_core::DatasetViewId::new("dataset"),
+                window_id: WindowId(index),
+                granted_at: now + chrono::Duration::seconds(index as i64),
+                expires_at: now + chrono::Duration::seconds(index as i64 + 60),
+                budget_work_units: 1,
+                microshards: vec![burn_p2p_core::MicroShardId::new(format!(
+                    "microshard-{index:03}"
+                ))],
+                assignment_hash: ContentId::new(format!("assignment-{index:03}")),
+            },
+            announced_at: now + chrono::Duration::seconds(index as i64),
+        });
+        snapshot.insert_merge_window_announcement(super::MergeWindowAnnouncement {
+            overlay: overlay.clone(),
+            merge_window: burn_p2p_core::MergeWindowState {
+                merge_window_id: ContentId::new(format!("merge-window-{index:03}")),
+                network_id: NetworkId::new("semantic-net"),
+                study_id: StudyId::new("study"),
+                experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                window_id: WindowId(index),
+                base_head_id: HeadId::new("base-head"),
+                policy: burn_p2p_core::MergeTopologyPolicy::default(),
+                reducers: vec![PeerId::new("reducer-a")],
+                validators: vec![PeerId::new("validator-a")],
+                opened_at: now + chrono::Duration::seconds(index as i64),
+                closes_at: now + chrono::Duration::seconds(index as i64 + 30),
+            },
+            announced_at: now + chrono::Duration::seconds(index as i64),
+        });
+        snapshot.insert_reducer_assignment_announcement(super::ReducerAssignmentAnnouncement {
+            overlay: overlay.clone(),
+            assignment: burn_p2p_core::ReducerAssignment {
+                assignment_id: ContentId::new(format!("assignment-{index:03}")),
+                window_id: WindowId(index),
+                source_peer_id: PeerId::new(format!("trainer-{index:03}")),
+                assigned_reducers: vec![PeerId::new("reducer-a")],
+                repair_reducers: vec![PeerId::new("reducer-b")],
+                upper_tier_reducers: vec![PeerId::new("reducer-root")],
+                assigned_at: now + chrono::Duration::seconds(index as i64),
+            },
+            announced_at: now + chrono::Duration::seconds(index as i64),
+        });
+        snapshot.insert_update_announcement(super::UpdateEnvelopeAnnouncement {
+            overlay: overlay.clone(),
+            update: burn_p2p_core::UpdateAnnounce {
+                peer_id: PeerId::new(format!("trainer-{index:03}")),
+                study_id: StudyId::new("study"),
+                experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                window_id: WindowId(index),
+                base_head_id: HeadId::new("base-head"),
+                lease_id: Some(burn_p2p_core::LeaseId::new(format!("lease-{index:03}"))),
+                delta_artifact_id: ArtifactId::new(format!("delta-{index:03}")),
+                sample_weight: 1.0,
+                quality_weight: 1.0,
+                norm_stats: burn_p2p_core::UpdateNormStats {
+                    l2_norm: 1.0,
+                    max_abs: 1.0,
+                    clipped: false,
+                    non_finite_tensors: 0,
+                },
+                feature_sketch: None,
+                receipt_root: ContentId::new(format!("receipt-root-{index:03}")),
+                receipt_ids: Vec::new(),
+                providers: vec![PeerId::new("provider-a")],
+                announced_at: now + chrono::Duration::seconds(index as i64),
+            },
+        });
+        snapshot.insert_reducer_load_announcement(super::ReducerLoadAnnouncement {
+            overlay: overlay.clone(),
+            report: burn_p2p_core::ReducerLoadReport {
+                peer_id: PeerId::new(format!("reducer-{index:03}")),
+                window_id: WindowId(index),
+                assigned_leaf_updates: 1,
+                assigned_aggregate_inputs: 1,
+                ingress_bytes: index as u128,
+                egress_bytes: index as u128,
+                duplicate_transfer_ratio: 0.0,
+                overload_ratio: 0.0,
+                reported_at: now + chrono::Duration::seconds(index as i64),
+            },
+        });
+    }
+
+    assert_eq!(snapshot.head_announcements.len(), MAX_HEADS);
+    assert_eq!(snapshot.lease_announcements.len(), MAX_LEASES);
+    assert_eq!(snapshot.merge_window_announcements.len(), MAX_MERGE_WINDOWS);
+    assert_eq!(
+        snapshot.reducer_assignment_announcements.len(),
+        MAX_REDUCER_ASSIGNMENTS
+    );
+    assert_eq!(snapshot.update_announcements.len(), MAX_UPDATES);
+    assert_eq!(snapshot.reducer_load_announcements.len(), MAX_REDUCER_LOADS);
+
+    assert_eq!(
+        snapshot
+            .head_announcements
+            .first()
+            .map(|announcement| announcement.head.global_step),
+        Some((320 - MAX_HEADS) as u64)
+    );
+    assert_eq!(
+        snapshot
+            .lease_announcements
+            .first()
+            .map(|announcement| announcement.lease.window_id),
+        Some(WindowId((320 - MAX_LEASES) as u64))
+    );
+    assert_eq!(
+        snapshot
+            .update_announcements
+            .first()
+            .map(|announcement| announcement.update.window_id),
+        Some(WindowId((320 - MAX_UPDATES) as u64))
+    );
+    assert_eq!(
+        snapshot
+            .reducer_load_announcements
+            .first()
+            .map(|announcement| announcement.report.window_id),
+        Some(WindowId((320 - MAX_REDUCER_LOADS) as u64))
     );
 }
 

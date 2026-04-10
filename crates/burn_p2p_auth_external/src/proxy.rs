@@ -4,11 +4,13 @@ use std::sync::Mutex;
 use burn_p2p_core::{AuthProvider, ContentId, PrincipalId};
 use burn_p2p_security::{
     AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart, PrincipalClaims,
-    PrincipalSession, StaticPrincipalRecord, random_login_state_token,
+    PrincipalSession, StaticPrincipalRecord,
+    auth::{DEFAULT_PENDING_LOGIN_LIMIT, prune_expiring_entries, validate_principal_record_access},
+    random_login_state_token,
 };
 use chrono::{Duration, Utc};
 
-use crate::shared::{PendingLogin, ProxyConnectorState, validate_record_access};
+use crate::shared::{PendingLogin, ProxyConnectorState};
 
 /// Authenticates principals through a trusted upstream proxy header.
 ///
@@ -84,10 +86,13 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
             oidc_nonce: None,
             pkce_verifier: None,
         };
-        self.pending
+        let mut pending_logins = self
+            .pending
             .lock()
-            .expect("external identity pending-login lock should not be poisoned")
-            .insert(login_id.clone(), pending);
+            .expect("external identity pending-login lock should not be poisoned");
+        prune_pending_logins(&mut pending_logins, Utc::now());
+        pending_logins.insert(login_id.clone(), pending);
+        prune_pending_logins(&mut pending_logins, Utc::now());
 
         Ok(LoginStart {
             login_id,
@@ -99,12 +104,16 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
     }
 
     fn complete_login(&self, callback: CallbackPayload) -> Result<PrincipalSession, AuthError> {
-        let pending = self
-            .pending
-            .lock()
-            .expect("external identity pending-login lock should not be poisoned")
-            .remove(&callback.login_id)
-            .ok_or_else(|| AuthError::UnknownLogin(callback.login_id.clone()))?;
+        let pending = {
+            let mut pending_logins = self
+                .pending
+                .lock()
+                .expect("external identity pending-login lock should not be poisoned");
+            prune_pending_logins(&mut pending_logins, Utc::now());
+            pending_logins
+                .remove(&callback.login_id)
+                .ok_or_else(|| AuthError::UnknownLogin(callback.login_id.clone()))?
+        };
 
         if callback.state != pending.state {
             return Err(AuthError::StateMismatch);
@@ -121,7 +130,7 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
             .principals
             .get(&principal_id)
             .ok_or_else(|| AuthError::UnknownPrincipal(principal_id.clone()))?;
-        validate_record_access(record, &pending.network_id, &pending.requested_scopes)?;
+        validate_principal_record_access(record, &pending.network_id, &pending.requested_scopes)?;
 
         let issued_at = Utc::now();
         let expires_at = issued_at + self.session_ttl;
@@ -149,10 +158,19 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
         if session.expires_at < Utc::now() {
             return Err(AuthError::SessionExpired(session.session_id.clone()));
         }
+        let record = self
+            .principals
+            .get(&session.claims.principal_id)
+            .ok_or_else(|| AuthError::UnknownPrincipal(session.claims.principal_id.clone()))?;
+        validate_principal_record_access(
+            record,
+            &session.network_id,
+            &session.claims.granted_scopes,
+        )?;
 
         let issued_at = Utc::now();
         let expires_at = issued_at + self.session_ttl;
-        let mut claims = session.claims.clone();
+        let mut claims = record.claims.clone();
         claims.provider = self.provider();
         claims.issued_at = issued_at;
         claims.expires_at = expires_at;
@@ -181,13 +199,16 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
     }
 
     fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, AuthError> {
-        let state = ProxyConnectorState {
-            pending: self
+        let now = Utc::now();
+        let pending = {
+            let mut pending = self
                 .pending
                 .lock()
-                .expect("external identity pending-login lock should not be poisoned")
-                .clone(),
+                .expect("external identity pending-login lock should not be poisoned");
+            prune_pending_logins(&mut pending, now);
+            pending.clone()
         };
+        let state = ProxyConnectorState { pending };
         Ok(Some(burn_p2p_core::deterministic_cbor(&state)?))
     }
 
@@ -205,6 +226,16 @@ impl IdentityConnector for ExternalProxyIdentityConnector {
                 .collect(),
             None => BTreeMap::new(),
         };
+        prune_pending_logins(&mut pending, now);
         Ok(())
     }
+}
+
+fn prune_pending_logins(
+    pending: &mut BTreeMap<ContentId, PendingLogin>,
+    now: chrono::DateTime<Utc>,
+) {
+    prune_expiring_entries(pending, now, DEFAULT_PENDING_LOGIN_LIMIT, |login| {
+        login.expires_at
+    });
 }

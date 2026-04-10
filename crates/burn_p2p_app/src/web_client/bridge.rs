@@ -129,20 +129,51 @@ pub(crate) fn log_error(message: &str) {
 
 fn detect_capability() -> BrowserCapabilityReport {
     let mut report = BrowserCapabilityReport::default();
-    let has_webgpu = window()
-        .map(JsValue::from)
-        .and_then(|window| Reflect::get(&window, &JsValue::from_str("navigator")).ok())
-        .and_then(|navigator| Reflect::get(&navigator, &JsValue::from_str("gpu")).ok())
+    let window_value = window().map(JsValue::from);
+    let navigator = window_value
+        .as_ref()
+        .and_then(|window| Reflect::get(window, &JsValue::from_str("navigator")).ok());
+    let has_webgpu = navigator
+        .as_ref()
+        .and_then(|navigator| Reflect::get(navigator, &JsValue::from_str("gpu")).ok())
         .is_some_and(|value| !value.is_null() && !value.is_undefined());
+    let has_worker = window_value
+        .as_ref()
+        .and_then(|window| Reflect::get(window, &JsValue::from_str("Worker")).ok())
+        .is_some_and(|value| !value.is_null() && !value.is_undefined());
+    let has_storage_manager = navigator
+        .as_ref()
+        .and_then(|navigator| Reflect::get(navigator, &JsValue::from_str("storage")).ok())
+        .is_some_and(|value| !value.is_null() && !value.is_undefined());
+    let has_web_transport = window_value
+        .as_ref()
+        .and_then(|window| Reflect::get(window, &JsValue::from_str("WebTransport")).ok())
+        .is_some_and(|value| !value.is_null() && !value.is_undefined());
+    let has_webrtc = window_value
+        .as_ref()
+        .and_then(|window| Reflect::get(window, &JsValue::from_str("RTCPeerConnection")).ok())
+        .is_some_and(|value| !value.is_null() && !value.is_undefined());
+
+    report.dedicated_worker = if has_worker {
+        burn_p2p_browser::BrowserWorkerSupport::DedicatedWorker
+    } else {
+        burn_p2p_browser::BrowserWorkerSupport::Unavailable("worker unavailable".into())
+    };
+    report.persistent_storage_exposed = has_storage_manager;
+    report.web_transport_exposed = has_web_transport;
+    report.web_rtc_exposed = has_webrtc;
 
     if has_webgpu {
         report.navigator_gpu_exposed = true;
-        report.worker_gpu_exposed = true;
+        report.worker_gpu_exposed = has_worker;
         report.gpu_support = BrowserGpuSupport::Available;
         report.recommended_role = BrowserRuntimeRole::BrowserTrainerWgpu;
-    } else {
+    } else if has_worker {
         report.gpu_support = BrowserGpuSupport::Unavailable("webgpu unavailable".into());
         report.recommended_role = BrowserRuntimeRole::BrowserVerifier;
+    } else {
+        report.gpu_support = BrowserGpuSupport::Unavailable("webgpu unavailable".into());
+        report.recommended_role = BrowserRuntimeRole::BrowserFallback;
     }
 
     report

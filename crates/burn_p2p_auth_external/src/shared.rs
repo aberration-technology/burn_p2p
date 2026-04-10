@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{AuthProvider, ContentId, ExperimentScope, NetworkId, PrincipalId};
-use burn_p2p_security::{AuthError, StaticPrincipalRecord};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +26,7 @@ pub(crate) struct ProviderConnectorState {
     #[serde(default)]
     pub(crate) pending: BTreeMap<ContentId, PendingLogin>,
     #[serde(default)]
-    pub(crate) provider_sessions: BTreeMap<ContentId, ProviderSessionMaterial>,
+    pub(crate) provider_sessions: BTreeMap<ContentId, StoredProviderSession>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +157,18 @@ impl ProviderSessionMaterial {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredProviderSession {
+    pub(crate) material: ProviderSessionMaterial,
+    pub(crate) local_expires_at: DateTime<Utc>,
+}
+
+impl StoredProviderSession {
+    pub(crate) fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.local_expires_at < now
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProviderRefreshRequest {
     pub(crate) network_id: NetworkId,
     pub(crate) principal_id: PrincipalId,
@@ -219,22 +230,4 @@ pub(crate) enum ProviderExchangeOutcome {
         session: ProviderSessionMaterial,
     },
     SessionOnly(ProviderSessionMaterial),
-}
-
-pub(crate) fn validate_record_access(
-    record: &StaticPrincipalRecord,
-    network_id: &NetworkId,
-    requested_scopes: &BTreeSet<ExperimentScope>,
-) -> Result<(), AuthError> {
-    if !record.allowed_networks.contains(network_id) {
-        return Err(AuthError::NetworkNotGranted(network_id.clone()));
-    }
-
-    for scope in requested_scopes {
-        if !record.claims.granted_scopes.contains(scope) && !scope.allows_directory_discovery() {
-            return Err(AuthError::ScopeNotGranted(scope.clone()));
-        }
-    }
-
-    Ok(())
 }

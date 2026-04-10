@@ -1,13 +1,12 @@
-# Docs
+# docs
 
-This folder keeps only docs that help someone integrate, run, or operate the
+this folder keeps only docs that help someone integrate, run, or operate the
 code.
 
-Code, tests, examples, deployment configs, and scripts are the source of
-truth. Historical notes, audit snapshots, release paperwork, dependency
-snapshots, and design diaries are intentionally not kept here.
+code, tests, examples, deployment configs, and scripts are the source of
+truth. docs here should stay short and code-adjacent.
 
-## Start Here
+## start here
 
 - [features.md](features.md): feature flags, crate composition, and common
   dependency shapes
@@ -15,6 +14,13 @@ snapshots, and design diaries are intentionally not kept here.
   `burn_p2p` into a Burn project
 - [learning-dynamics.md](learning-dynamics.md): how windowed p2p averaging
   learns, how contributions are weighted, and where it differs from sync ddp
+- [memory-retention.md](memory-retention.md): crate-by-crate memory-growth
+  audit, retention boundaries, and the remaining long-run operator/storage
+  tradeoffs
+- [protocol-shape.md](protocol-shape.md): reducer vs validator authority,
+  canonical promotion, and the intended trust boundary
+- [production-roadmap.md](production-roadmap.md): what is already production
+  hardened, what only has seams today, and what is still open work
 - [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
   multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance
@@ -29,9 +35,9 @@ snapshots, and design diaries are intentionally not kept here.
 - [testing/adversarial.md](testing/adversarial.md): robustness smoke, matrix,
   seeded replay, and benchmark commands
 
-## Code First
+## code first
 
-For implementation-heavy areas, prefer the code directly:
+for implementation-heavy areas, prefer the code directly:
 
 - metrics: `crates/burn_p2p_core/src/schema/metrics.rs`,
   `crates/burn_p2p/src/metrics_runtime.rs`,
@@ -43,6 +49,9 @@ For implementation-heavy areas, prefer the code directly:
   `crates/burn_p2p_testkit/tests/browser_real_device.rs`
 - auth and admission: `crates/burn_p2p_security/src/`,
   `crates/burn_p2p_auth_*/src/`
+- backend-neutral workload seam and python adapter:
+  `crates/burn_p2p_workload/src/`,
+  `crates/burn_p2p_python/src/`
 - dataloader planning and cache/fetch flow: `crates/burn_p2p_dataloader/src/`
 - deployment examples: `crates/burn_p2p_bootstrap/examples/` and
   `deploy/`

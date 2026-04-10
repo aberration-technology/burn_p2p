@@ -13,3 +13,11 @@ reducer_instance_type = "t3.large"
 trainer_instance_type = "g4dn.xlarge"
 
 ssh_cidrs = ["203.0.113.10/32"]
+bootstrap_public_ip_enabled = true
+validator_public_ip_enabled = false
+reducer_public_ip_enabled = false
+trainer_public_ip_enabled = false
+
+bootstrap_public_cidrs = ["0.0.0.0/0"]
+bootstrap_public_tcp_ports = [4001]
+bootstrap_public_udp_ports = [4001]

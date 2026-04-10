@@ -1533,6 +1533,7 @@ mod tests {
                 platform: ClientPlatform::Native,
                 roles: PeerRoleSet::default_trainer(),
                 preferred_backends: vec!["cuda".into()],
+                browser_capabilities: BTreeSet::new(),
                 recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
                 device_memory_bytes: Some(1),
                 system_memory_bytes: 1,

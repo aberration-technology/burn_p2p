@@ -9,6 +9,8 @@ pub mod auth;
 pub mod bridge;
 /// Capability detection and reporting helpers.
 pub mod capability;
+/// Durable browser storage helpers.
+pub mod durability;
 /// Runtime state and execution helpers.
 pub mod runtime;
 /// Persistence and cache helpers.
@@ -46,7 +48,10 @@ pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSu
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,
 };
-pub use storage::{BrowserStorageSnapshot, BrowserStoredAssignment};
+pub use storage::{
+    BrowserReceiptOutbox, BrowserReceiptOutboxBackend, BrowserStorageSnapshot,
+    BrowserStoredAssignment,
+};
 pub use training::{BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingResult};
 pub use transport::{BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus};
 pub use ui_bindings::{

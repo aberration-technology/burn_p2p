@@ -275,7 +275,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "burn_p2p"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -294,12 +294,13 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sysinfo",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "burn_p2p_checkpoint"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -313,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_core"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "chrono",
  "ciborium",
@@ -327,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_dataloader"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -341,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_experiment"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -352,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_limits"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -362,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_python"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -378,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_security"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -393,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_swarm"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -421,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_views"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -434,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_workload"
-version = "0.21.0-pre.7"
+version = "0.21.0-pre.8"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -2357,6 +2358,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntapi"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2388,6 +2398,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags 2.11.0",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -3205,6 +3234,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sysinfo"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows",
+]
+
+[[package]]
 name = "system-configuration"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3752,6 +3795,28 @@ name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"

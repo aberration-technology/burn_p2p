@@ -14,7 +14,7 @@ readme = "../../README.md"
 burn_p2p.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_metrics.workspace = true
-burn_p2p_publish = { version = "=0.21.0-pre.7", path = "../burn_p2p_publish" }
+burn_p2p_publish = { version = "=0.21.0-pre.8", path = "../burn_p2p_publish" }
 burn_p2p_swarm.workspace = true
 burn_p2p_views.workspace = true
 chrono.workspace = true
@@ -30,7 +30,7 @@ js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window"] }
+web-sys = { version = "0.3", features = ["Storage", "Window"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["net", "rt", "time"] }

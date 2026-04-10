@@ -1,0 +1,56 @@
+{
+  "spec": {
+    "preset": "BootstrapOnly",
+    "genesis": {
+      "network_id": "reference-fleet-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Reference Bootstrap Fleet",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {
+        "purpose": "reference-bootstrap"
+      }
+    },
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": [
+      "/ip4/0.0.0.0/tcp/4001",
+      "/ip4/0.0.0.0/udp/4001/quic-v1"
+    ],
+    "authority": null,
+    "archive": {
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": false
+    },
+    "admin_api": {
+      "supported_actions": [
+        "ExportDiagnostics"
+      ],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": false
+    }
+  },
+  "http_bind_addr": "0.0.0.0:8787",
+  "optional_services": {
+    "browser_edge_enabled": false,
+    "browser_mode": "Disabled",
+    "social_mode": "Disabled",
+    "profile_mode": "Disabled"
+  },
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-operator",
+  "bootstrap_peer": {
+    "node": {
+      "identity": "Persistent",
+      "storage": {
+        "root": "/var/lib/burn-p2p/bootstrap-peer"
+      },
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": [
+        "/ip4/0.0.0.0/tcp/4001",
+        "/ip4/0.0.0.0/udp/4001/quic-v1"
+      ]
+    }
+  }
+}

@@ -4,8 +4,8 @@ use burn_p2p_checkpoint::FsArtifactStore;
 use burn_p2p_core::{
     ArtifactAlias, ArtifactAliasId, ArtifactAliasScope, ArtifactAliasSourceReason,
     ArtifactLiveEvent, ArtifactLiveEventKind, ArtifactProfile, ContentId, EvalProtocolManifest,
-    ExperimentId, ExportJob, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId,
-    PublicationMode, PublishedArtifactStatus, RevisionId, RunId,
+    ExperimentId, ExportJob, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId, Page,
+    PageRequest, PublicationMode, PublishedArtifactStatus, RevisionId, RunId,
 };
 use chrono::{DateTime, Utc};
 
@@ -16,10 +16,11 @@ use crate::{
 
 impl PublicationStore {
     /// Returns the current alias statuses ordered by experiment, scope, and alias name.
-    pub fn alias_statuses(&self) -> Vec<ArtifactAliasStatus> {
-        let latest_jobs_by_alias = self
-            .state
-            .export_jobs
+    pub fn alias_statuses(&self) -> Result<Vec<ArtifactAliasStatus>, PublishError> {
+        let export_jobs = self.load_export_jobs()?;
+        let alias_history = self.load_alias_history()?;
+        let published_artifacts = self.load_published_artifacts()?;
+        let latest_jobs_by_alias = export_jobs
             .iter()
             .filter_map(|job| {
                 self.state
@@ -51,17 +52,19 @@ impl PublicationStore {
             .cloned()
             .map(|alias| {
                 let alias_id = alias.artifact_alias_id.clone();
-                let alias_history = self.alias_history_for_alias(&alias_id);
-                let previous_head_id = alias_history
+                let alias_history_for_alias = alias_history
+                    .iter()
+                    .filter(|entry| entry.artifact_alias_id == alias_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let previous_head_id = alias_history_for_alias
                     .iter()
                     .rev()
                     .find(|entry| entry.head_id != alias.head_id)
                     .map(|entry| entry.head_id.clone());
                 ArtifactAliasStatus {
                     alias,
-                    published_artifact: self
-                        .state
-                        .published_artifacts
+                    published_artifact: published_artifacts
                         .iter()
                         .filter(|record| {
                             record.artifact_alias_id.as_ref() == Some(&alias_id)
@@ -70,7 +73,7 @@ impl PublicationStore {
                         .max_by_key(|record| record.created_at)
                         .cloned(),
                     latest_job: latest_jobs_by_alias.get(&alias_id).cloned(),
-                    history_count: alias_history.len(),
+                    history_count: alias_history_for_alias.len(),
                     previous_head_id,
                 }
             })
@@ -83,18 +86,19 @@ impl PublicationStore {
                 .then_with(|| left.alias.alias_name.cmp(&right.alias.alias_name))
                 .then_with(|| left.alias.head_id.cmp(&right.alias.head_id))
         });
-        rows
+        Ok(rows)
     }
 
     /// Returns alias statuses filtered to one experiment.
     pub fn alias_statuses_for_experiment(
         &self,
         experiment_id: &ExperimentId,
-    ) -> Vec<ArtifactAliasStatus> {
-        self.alias_statuses()
+    ) -> Result<Vec<ArtifactAliasStatus>, PublishError> {
+        Ok(self
+            .alias_statuses()?
             .into_iter()
             .filter(|row| &row.alias.experiment_id == experiment_id)
-            .collect()
+            .collect())
     }
 
     /// Returns run summaries for one experiment.
@@ -103,6 +107,7 @@ impl PublicationStore {
         heads: &[HeadDescriptor],
         experiment_id: &ExperimentId,
     ) -> Result<Vec<ArtifactRunSummary>, PublishError> {
+        let published_artifacts = self.load_published_artifacts()?;
         let mut by_run = BTreeMap::<RunId, Vec<HeadDescriptor>>::new();
         for head in heads
             .iter()
@@ -113,31 +118,30 @@ impl PublicationStore {
                 .or_default()
                 .push(head.clone());
         }
-        Ok(by_run
-            .into_iter()
-            .filter_map(|(run_id, run_heads)| {
-                let latest_head_id = latest_head(&run_heads)?.head_id;
-                let aliases = self.alias_statuses_for_run(heads, experiment_id, &run_id);
-                let alias_history = self.alias_history_for_run(heads, experiment_id, &run_id);
-                let published_artifact_count = self
-                    .state
-                    .published_artifacts
-                    .iter()
-                    .filter(|record| {
-                        &record.experiment_id == experiment_id
-                            && record.run_id.as_ref() == Some(&run_id)
-                    })
-                    .count();
-                Some(ArtifactRunSummary {
-                    experiment_id: experiment_id.clone(),
-                    run_id,
-                    latest_head_id,
-                    alias_count: aliases.len(),
-                    alias_history_count: alias_history.len(),
-                    published_artifact_count,
+        let mut summaries = Vec::new();
+        for (run_id, run_heads) in by_run {
+            let Some(latest_head_id) = latest_head(&run_heads).map(|head| head.head_id) else {
+                continue;
+            };
+            let aliases = self.alias_statuses_for_run(heads, experiment_id, &run_id)?;
+            let alias_history = self.alias_history_for_run(heads, experiment_id, &run_id)?;
+            let published_artifact_count = published_artifacts
+                .iter()
+                .filter(|record| {
+                    &record.experiment_id == experiment_id
+                        && record.run_id.as_ref() == Some(&run_id)
                 })
-            })
-            .collect())
+                .count();
+            summaries.push(ArtifactRunSummary {
+                experiment_id: experiment_id.clone(),
+                run_id,
+                latest_head_id,
+                alias_count: aliases.len(),
+                alias_history_count: alias_history.len(),
+                published_artifact_count,
+            });
+        }
+        Ok(summaries)
     }
 
     /// Returns one run-scoped publication view.
@@ -148,6 +152,7 @@ impl PublicationStore {
         experiment_id: &ExperimentId,
         run_id: &RunId,
     ) -> Result<ArtifactRunView, PublishError> {
+        let published_artifacts = self.load_published_artifacts()?;
         let run_heads = heads
             .iter()
             .filter(|head| &head.experiment_id == experiment_id)
@@ -161,8 +166,8 @@ impl PublicationStore {
         Ok(ArtifactRunView {
             experiment_id: experiment_id.clone(),
             run_id: run_id.clone(),
-            alias_history: self.alias_history_for_run(heads, experiment_id, run_id),
-            aliases: self.alias_statuses_for_run(heads, experiment_id, run_id),
+            alias_history: self.alias_history_for_run(heads, experiment_id, run_id)?,
+            aliases: self.alias_statuses_for_run(heads, experiment_id, run_id)?,
             eval_reports: reports
                 .iter()
                 .filter(|report| {
@@ -171,9 +176,7 @@ impl PublicationStore {
                 })
                 .cloned()
                 .collect(),
-            published_artifacts: self
-                .state
-                .published_artifacts
+            published_artifacts: published_artifacts
                 .iter()
                 .filter(|record| {
                     &record.experiment_id == experiment_id && record.run_id.as_ref() == Some(run_id)
@@ -198,8 +201,7 @@ impl PublicationStore {
             .ok_or_else(|| PublishError::UnknownHead(head_id.clone()))?;
         let run_id = run_id_for_head(&head)?;
         let alias_history = self
-            .state
-            .alias_history
+            .load_alias_history()?
             .iter()
             .filter(|alias| {
                 alias.experiment_id == head.experiment_id
@@ -227,8 +229,7 @@ impl PublicationStore {
                 .cloned()
                 .collect(),
             published_artifacts: self
-                .state
-                .published_artifacts
+                .load_published_artifacts()?
                 .iter()
                 .filter(|record| &record.head_id == head_id)
                 .cloned()
@@ -421,7 +422,7 @@ impl PublicationStore {
                 .get(&alias.artifact_alias_id)
                 .is_none_or(|existing| existing != alias)
             {
-                self.state.alias_history.push(alias.clone());
+                self.record_alias_history(alias)?;
                 self.push_live_event(ArtifactLiveEvent {
                     event_id: ContentId::derive(&(
                         "artifact-live",
@@ -498,7 +499,7 @@ impl PublicationStore {
         heads: &[HeadDescriptor],
         experiment_id: &ExperimentId,
         run_id: &RunId,
-    ) -> Vec<ArtifactAliasStatus> {
+    ) -> Result<Vec<ArtifactAliasStatus>, PublishError> {
         let run_head_ids = heads
             .iter()
             .filter(|head| &head.experiment_id == experiment_id)
@@ -509,7 +510,8 @@ impl PublicationStore {
                     .map(|_| head.head_id.clone())
             })
             .collect::<BTreeSet<_>>();
-        self.alias_statuses()
+        Ok(self
+            .alias_statuses()?
             .into_iter()
             .filter(|row| {
                 row.alias.experiment_id == *experiment_id
@@ -517,7 +519,7 @@ impl PublicationStore {
                         || (row.alias.run_id.is_none()
                             && run_head_ids.contains(&row.alias.head_id)))
             })
-            .collect()
+            .collect())
     }
 
     pub(crate) fn alias_history_for_run(
@@ -525,7 +527,7 @@ impl PublicationStore {
         heads: &[HeadDescriptor],
         experiment_id: &ExperimentId,
         run_id: &RunId,
-    ) -> Vec<ArtifactAlias> {
+    ) -> Result<Vec<ArtifactAlias>, PublishError> {
         let run_head_ids = heads
             .iter()
             .filter(|head| &head.experiment_id == experiment_id)
@@ -536,8 +538,8 @@ impl PublicationStore {
                     .map(|_| head.head_id.clone())
             })
             .collect::<BTreeSet<_>>();
-        self.state
-            .alias_history
+        Ok(self
+            .load_alias_history()?
             .iter()
             .filter(|alias| {
                 alias.experiment_id == *experiment_id
@@ -545,16 +547,32 @@ impl PublicationStore {
                         || (alias.run_id.is_none() && run_head_ids.contains(&alias.head_id)))
             })
             .cloned()
-            .collect()
+            .collect())
     }
 
-    fn alias_history_for_alias(&self, alias_id: &ArtifactAliasId) -> Vec<ArtifactAlias> {
-        self.state
-            .alias_history
+    /// Returns one bounded page of alias history for a single run.
+    pub fn run_alias_history_page(
+        &self,
+        heads: &[HeadDescriptor],
+        experiment_id: &ExperimentId,
+        run_id: &RunId,
+        page: PageRequest,
+    ) -> Result<Page<ArtifactAlias>, PublishError> {
+        let run_head_ids = heads
             .iter()
-            .filter(|alias| &alias.artifact_alias_id == alias_id)
-            .cloned()
-            .collect()
+            .filter(|head| &head.experiment_id == experiment_id)
+            .filter_map(|head| {
+                run_id_for_head(head)
+                    .ok()
+                    .filter(|candidate| candidate == run_id)
+                    .map(|_| head.head_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        self.load_alias_history_page_filtered(page, |alias| {
+            alias.experiment_id == *experiment_id
+                && (alias.run_id.as_ref() == Some(run_id)
+                    || (alias.run_id.is_none() && run_head_ids.contains(&alias.head_id)))
+        })
     }
 }
 

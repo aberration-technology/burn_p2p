@@ -19,6 +19,9 @@ use crate::{
     BrowserEnrollmentConfig, BrowserGpuSupport, BrowserRuntimeConfig, BrowserRuntimeRole,
     BrowserRuntimeState, BrowserSessionState, BrowserStorageSnapshot, BrowserTransportKind,
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerEvent, BrowserWorkerRuntime,
+    durability::{
+        clear_durable_receipt_outbox, load_durable_receipt_outbox, persist_durable_receipt_outbox,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,6 +497,9 @@ impl BrowserAppController {
                 last_error: None,
             },
         );
+        let mut runtime = runtime;
+        runtime.storage.pending_receipts = load_durable_receipt_outbox(&snapshot.network_id)
+            .map_err(BrowserAuthClientError::ArtifactTransport)?;
         let mut controller = Self {
             edge_client,
             model: BrowserAppModel::from_runtime(runtime),
@@ -517,7 +523,40 @@ impl BrowserAppController {
             model.apply_event(event);
         }
         self.model = model;
+        self.persist_receipt_outbox()?;
         Ok(self.view())
+    }
+
+    fn persist_receipt_outbox(&self) -> Result<(), BrowserAuthClientError> {
+        let network_id = self
+            .model
+            .runtime
+            .config
+            .as_ref()
+            .map(|config| config.network_id.clone())
+            .or_else(|| {
+                self.model
+                    .runtime
+                    .storage
+                    .last_signed_directory_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.payload.payload.network_id.clone())
+            })
+            .ok_or_else(|| {
+                BrowserAuthClientError::ArtifactTransport(
+                    "browser runtime is missing a network id for durable receipt outbox".into(),
+                )
+            })?;
+        if self.model.runtime.storage.pending_receipts.is_empty() {
+            clear_durable_receipt_outbox(&network_id)
+                .map_err(BrowserAuthClientError::ArtifactTransport)
+        } else {
+            persist_durable_receipt_outbox(
+                &network_id,
+                &self.model.runtime.storage.pending_receipts,
+            )
+            .map_err(BrowserAuthClientError::ArtifactTransport)
+        }
     }
 
     /// Returns the current browser-app client view derived from the local runtime.

@@ -7,31 +7,46 @@ x-trainer-build: &trainer-build
     APP_FEATURES: ${BURN_P2P_TRAINER_APP_FEATURES:-burn}
     APP_NO_DEFAULT_FEATURES: ${BURN_P2P_TRAINER_APP_NO_DEFAULT_FEATURES:-false}
 
+x-bootstrap-node: &bootstrap-node
+  build:
+    context: ../..
+    dockerfile: deploy/containers/bootstrap.Dockerfile
+  environment:
+    RUST_LOG: ${RUST_LOG:-info}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   bootstrap:
+    <<: *bootstrap-node
     build:
       context: ../..
       dockerfile: deploy/containers/bootstrap.Dockerfile
       args:
-        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,browser-edge,browser-join,auth-static}
-    command: ["/config/trusted-browser.json"]
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics}
+    command: ["/config/reference-bootstrap.json"]
     ports:
       - "8787:8787"
       - "4001:4001/tcp"
       - "4001:4001/udp"
     volumes:
-      - ../config/trusted-browser.json:/config/trusted-browser.json:ro
+      - ../config/reference-bootstrap.json:/config/reference-bootstrap.json:ro
       - burn-p2p-bootstrap-data:/var/lib/burn-p2p
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    restart: unless-stopped
 
   validator:
+    <<: *bootstrap-node
     build:
       context: ../..
       dockerfile: deploy/containers/bootstrap.Dockerfile
       args:
-        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_VALIDATOR_FEATURES:-admin-http,metrics,auth-static}
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_VALIDATOR_FEATURES:-admin-http,metrics}
     command: ["/config/reference-validator.json"]
     depends_on:
       - bootstrap
@@ -42,16 +57,14 @@ services:
     volumes:
       - ../config/reference-validator.json:/config/reference-validator.json:ro
       - burn-p2p-validator-data:/var/lib/burn-p2p
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    restart: unless-stopped
 
   reducer:
+    <<: *bootstrap-node
     build:
       context: ../..
       dockerfile: deploy/containers/bootstrap.Dockerfile
       args:
-        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_REDUCER_FEATURES:-admin-http,metrics,auth-static}
+        BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_REDUCER_FEATURES:-admin-http,metrics}
     command: ["/config/reference-reducer.json"]
     depends_on:
       - bootstrap
@@ -62,9 +75,6 @@ services:
     volumes:
       - ../config/reference-reducer.json:/config/reference-reducer.json:ro
       - burn-p2p-reducer-data:/var/lib/burn-p2p
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    restart: unless-stopped
 
   trainer-cpu:
     profiles: ["trainers"]

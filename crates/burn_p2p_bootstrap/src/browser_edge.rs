@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     deploy::BootstrapPlan,
+    operator_store::OperatorStore,
     state::{BootstrapAdminState, BootstrapDiagnostics},
 };
 use burn_p2p::{ContentId, HeadDescriptor};
@@ -93,13 +94,17 @@ impl BootstrapAdminState {
             .iter()
             .map(|(peer_id, report)| (peer_id.clone(), report.principal_id.clone()))
             .collect();
-        crate::social_services::leaderboard_snapshot(
-            &plan.genesis.network_id,
-            &self.contribution_receipts,
-            &self.merge_certificates,
-            &peer_principals,
-            captured_at,
-        )
+        self.operator_store()
+            .leaderboard_snapshot(&plan.genesis.network_id, &peer_principals, captured_at)
+            .unwrap_or_else(|_| {
+                crate::social_services::leaderboard_snapshot(
+                    &plan.genesis.network_id,
+                    &self.contribution_receipts,
+                    &self.merge_certificates,
+                    &peer_principals,
+                    captured_at,
+                )
+            })
     }
 
     /// Performs the browser app snapshot operation.

@@ -5,6 +5,7 @@ use burn_p2p_core::{
     WindowActivation,
 };
 use burn_p2p_experiment::ActivationTarget;
+use chrono::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -68,9 +69,16 @@ pub struct PeerStore {
 }
 
 impl PeerStore {
+    const MAX_TRACKED_DISCONNECTED_PEERS: usize = 256;
+    const MAX_ADDRESSES_PER_PEER: usize = 8;
+    const DISCONNECTED_RETENTION: Duration = Duration::hours(1);
+
     /// Performs the upsert operation.
-    pub fn upsert(&mut self, observation: PeerObservation) {
+    pub fn upsert(&mut self, mut observation: PeerObservation) {
+        clamp_peer_addresses(&mut observation.addresses, Self::MAX_ADDRESSES_PER_PEER);
+        let observed_at = observation.observed_at;
         self.peers.insert(observation.peer_id.clone(), observation);
+        self.prune(observed_at);
     }
 
     /// Performs the mark connection operation.
@@ -91,6 +99,7 @@ impl PeerStore {
                 observation.connected = connected;
                 observation
             });
+        self.prune(observed_at);
     }
 
     /// Performs the get operation.
@@ -213,6 +222,55 @@ impl PeerStore {
             },
         }
     }
+
+    fn prune(&mut self, now: DateTime<Utc>) {
+        let earliest_retained = now - Self::DISCONNECTED_RETENTION;
+        self.peers.retain(|_, observation| {
+            observation.connected || observation.observed_at >= earliest_retained
+        });
+
+        let disconnected_count = self
+            .peers
+            .values()
+            .filter(|observation| !observation.connected)
+            .count();
+        if disconnected_count <= Self::MAX_TRACKED_DISCONNECTED_PEERS {
+            return;
+        }
+
+        let retained_peer_ids = self
+            .peers
+            .values()
+            .filter(|observation| !observation.connected)
+            .map(|observation| (observation.peer_id.clone(), observation.observed_at))
+            .collect::<Vec<_>>();
+        let mut retained_peer_ids = retained_peer_ids;
+        retained_peer_ids
+            .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+        let retained_peer_ids = retained_peer_ids
+            .into_iter()
+            .take(Self::MAX_TRACKED_DISCONNECTED_PEERS)
+            .map(|(peer_id, _)| peer_id)
+            .collect::<BTreeSet<_>>();
+
+        self.peers.retain(|peer_id, observation| {
+            observation.connected || retained_peer_ids.contains(peer_id)
+        });
+    }
+}
+
+fn clamp_peer_addresses(addresses: &mut BTreeSet<crate::SwarmAddress>, max_entries: usize) {
+    if addresses.len() <= max_entries {
+        return;
+    }
+
+    let retained = addresses
+        .iter()
+        .rev()
+        .take(max_entries)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    *addresses = retained;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

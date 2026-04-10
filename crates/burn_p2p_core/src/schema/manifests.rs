@@ -165,6 +165,106 @@ pub struct NetworkManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes one validator-set member for an authority epoch.
+pub struct ValidatorSetMember {
+    /// The peer ID.
+    pub peer_id: PeerId,
+    /// The principal ID when the validator has an authenticated identity.
+    pub principal_id: Option<PrincipalId>,
+    /// The admitted runtime roles for this validator.
+    pub roles: PeerRoleSet,
+    /// The vote weight contributed by this validator.
+    pub vote_weight: u16,
+    /// The minimum attestation level expected from this validator.
+    pub attestation_level: AttestationLevel,
+    /// Freeform operator metadata.
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Declares the active validator set for one authority epoch.
+pub struct ValidatorSetManifest {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The validator set ID.
+    pub validator_set_id: ContentId,
+    /// The authority epoch this validator set belongs to.
+    pub authority_epoch: u64,
+    /// The total vote weight required for canonical promotion.
+    pub quorum_weight: u16,
+    /// The validator members.
+    pub members: Vec<ValidatorSetMember>,
+    /// The created at timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Freeform operator metadata.
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl ValidatorSetManifest {
+    /// Returns the total configured voting weight.
+    pub fn total_vote_weight(&self) -> u16 {
+        self.members.iter().map(|member| member.vote_weight).sum()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the supported authority evidence categories.
+pub enum AuthorityEvidenceCategory {
+    /// Uses the validator misbehavior variant.
+    ValidatorMisbehavior,
+    /// Uses the revocation rollout variant.
+    RevocationRollout,
+    /// Uses the policy rollout variant.
+    PolicyRollout,
+    /// Uses the availability incident variant.
+    AvailabilityIncident,
+    /// Uses the operator note variant.
+    OperatorNote,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Records one authority-plane evidence event.
+pub struct AuthorityEvidenceRecord {
+    /// The evidence ID.
+    pub evidence_id: ContentId,
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The authority epoch.
+    pub authority_epoch: u64,
+    /// The subject peer ID when the evidence is peer-scoped.
+    pub subject_peer_id: Option<PeerId>,
+    /// The subject principal ID when the evidence is identity-scoped.
+    pub subject_principal_id: Option<PrincipalId>,
+    /// The evidence category.
+    pub category: AuthorityEvidenceCategory,
+    /// Human-readable summary.
+    pub summary: String,
+    /// Supporting content-addressed references.
+    pub supporting_refs: Vec<ContentId>,
+    /// The recorded at timestamp.
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Declares one authority epoch transition.
+pub struct AuthorityEpochManifest {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The authority epoch number.
+    pub authority_epoch: u64,
+    /// The validator set ID active in this epoch.
+    pub validator_set_id: ContentId,
+    /// The minimum auth revocation epoch bundled with this authority epoch.
+    pub minimum_revocation_epoch: RevocationEpoch,
+    /// The previous authority epoch when this manifest rotates from an older set.
+    pub supersedes_authority_epoch: Option<u64>,
+    /// The created at timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Freeform operator metadata.
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Describes the experiment.
 pub struct ExperimentManifest {
     /// The study ID.

@@ -1025,6 +1025,7 @@ mod tests {
             platform: ClientPlatform::Native,
             roles: burn_p2p_core::PeerRoleSet::new([burn_p2p_core::PeerRole::TrainerGpu]),
             preferred_backends: vec!["cuda".into()],
+            browser_capabilities: BTreeSet::new(),
             recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
             device_memory_bytes: Some(24),
             system_memory_bytes: 64,

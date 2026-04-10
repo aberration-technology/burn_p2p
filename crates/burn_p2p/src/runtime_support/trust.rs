@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_TRACKED_PEER_SECURITY_RECORDS: usize = 256;
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(super) struct RemoteTrustedIssuerStatus {
     issuer_peer_id: PeerId,
@@ -210,6 +212,7 @@ pub(super) fn note_admitted_peer(
         .peer_reputation
         .entry(peer_id.clone())
         .or_insert_with(|| ReputationState::new(peer_id, now));
+    prune_tracked_peer_security_state(snapshot);
 }
 
 pub(super) fn note_rejected_peer(
@@ -237,6 +240,7 @@ pub(super) fn note_rejected_peer(
         },
         now,
     );
+    prune_tracked_peer_security_state(snapshot);
 }
 
 pub(super) fn admission_rejection_reason(report: &PeerAdmissionReport) -> String {
@@ -418,6 +422,72 @@ fn reverify_admitted_peers(
             }
         }
     }
+    prune_tracked_peer_security_state(snapshot);
+}
+
+pub(super) fn prune_tracked_peer_security_state(snapshot: &mut NodeTelemetrySnapshot) {
+    let tracked_peer_ids = snapshot
+        .admitted_peers
+        .keys()
+        .chain(snapshot.rejected_peers.keys())
+        .chain(snapshot.peer_reputation.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if tracked_peer_ids.len() <= MAX_TRACKED_PEER_SECURITY_RECORDS {
+        return;
+    }
+
+    let active_peer_ids = tracked_peer_ids
+        .iter()
+        .filter(|peer_id| {
+            snapshot.local_peer_id.as_ref() == Some(peer_id)
+                || snapshot.observed_peer_ids.contains(*peer_id)
+                || peer_has_runtime_presence(snapshot, peer_id)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    let inactive_budget = MAX_TRACKED_PEER_SECURITY_RECORDS.saturating_sub(active_peer_ids.len());
+    let mut inactive_peer_ids = tracked_peer_ids
+        .into_iter()
+        .filter(|peer_id| !active_peer_ids.contains(peer_id))
+        .collect::<Vec<_>>();
+    inactive_peer_ids.sort_by(|left, right| {
+        peer_security_recency(snapshot, right)
+            .cmp(&peer_security_recency(snapshot, left))
+            .then_with(|| right.cmp(left))
+    });
+
+    let retained_peer_ids = active_peer_ids
+        .into_iter()
+        .chain(inactive_peer_ids.into_iter().take(inactive_budget))
+        .collect::<BTreeSet<_>>();
+
+    snapshot
+        .admitted_peers
+        .retain(|peer_id, _| retained_peer_ids.contains(peer_id));
+    snapshot
+        .rejected_peers
+        .retain(|peer_id, _| retained_peer_ids.contains(peer_id));
+    snapshot
+        .peer_reputation
+        .retain(|peer_id, _| retained_peer_ids.contains(peer_id));
+}
+
+fn peer_security_recency(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> DateTime<Utc> {
+    snapshot
+        .admitted_peers
+        .get(peer_id)
+        .map(|report| report.verified_at)
+        .into_iter()
+        .chain(
+            snapshot
+                .peer_reputation
+                .get(peer_id)
+                .map(|state| state.last_updated_at),
+        )
+        .max()
+        .unwrap_or(snapshot.started_at)
 }
 
 pub(super) fn reconcile_live_revocation_policy(
@@ -704,4 +774,77 @@ pub(super) fn reconcile_remote_trust_bundle(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_snapshot() -> NodeTelemetrySnapshot {
+        NodeTelemetrySnapshot::starting(
+            &MainnetHandle {
+                genesis: GenesisSpec {
+                    network_id: NetworkId::new("trust-memory-test"),
+                    protocol_version: Version::new(1, 0, 0),
+                    display_name: String::from("trust-memory-test"),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                },
+                roles: PeerRoleSet::default_trainer(),
+            },
+            &NodeConfig::default(),
+        )
+    }
+
+    fn admitted_report(peer_id: &PeerId, verified_at: DateTime<Utc>) -> PeerAdmissionReport {
+        PeerAdmissionReport {
+            peer_id: peer_id.clone(),
+            principal_id: PrincipalId::new(format!("principal-{}", peer_id.as_str())),
+            requested_scopes: BTreeSet::new(),
+            trust_level: PeerTrustLevel::PolicyCompliant,
+            issuer_peer_id: PeerId::new("issuer-memory-test"),
+            findings: Vec::new(),
+            verified_at,
+        }
+    }
+
+    #[test]
+    fn tracked_peer_security_state_prunes_inactive_history_but_keeps_active_peers() {
+        let mut snapshot = test_snapshot();
+        let active_peer = PeerId::new("12D3KooWActiveMemoryPeer111111111111111111111111");
+        let active_verified_at = snapshot.started_at + chrono::Duration::hours(1);
+        snapshot.observed_peer_ids.insert(active_peer.clone());
+
+        for index in 0..400 {
+            let peer_id = PeerId::new(format!("12D3KooWInactiveMemoryPeer{index:03}"));
+            let observed_at = snapshot.started_at + chrono::Duration::seconds(index as i64);
+            snapshot
+                .admitted_peers
+                .insert(peer_id.clone(), admitted_report(&peer_id, observed_at));
+            snapshot
+                .rejected_peers
+                .insert(peer_id.clone(), "rejected".into());
+            snapshot
+                .peer_reputation
+                .insert(peer_id.clone(), ReputationState::new(peer_id, observed_at));
+        }
+
+        note_admitted_peer(
+            &mut snapshot,
+            admitted_report(&active_peer, active_verified_at),
+        );
+
+        let tracked_peer_count = snapshot
+            .admitted_peers
+            .keys()
+            .chain(snapshot.rejected_peers.keys())
+            .chain(snapshot.peer_reputation.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .len();
+
+        assert!(tracked_peer_count <= MAX_TRACKED_PEER_SECURITY_RECORDS + 1);
+        assert!(snapshot.admitted_peers.contains_key(&active_peer));
+        assert!(snapshot.peer_reputation.contains_key(&active_peer));
+    }
 }

@@ -1116,52 +1116,47 @@ impl<P> RunningNode<P> {
             });
         }
 
-        if let Some(aggregate) = self.wait_for_reducer_aggregate_proposal(
+        match self.wait_for_reducer_aggregate_proposal(
             experiment,
             prepared,
             &dedicated_reducers,
             expected_record,
             &local_aggregate_materialization.aggregate,
-        )? {
-            if aggregate.aggregate_artifact_id
-                == local_aggregate_materialization
-                    .aggregate_artifact
-                    .descriptor
-                    .artifact_id
-            {
-                prepared.store.store_prebuilt_artifact_bytes(
-                    &local_aggregate_materialization
+        ) {
+            Ok(Some(aggregate)) => {
+                if aggregate.aggregate_artifact_id
+                    == local_aggregate_materialization
                         .aggregate_artifact
-                        .descriptor,
-                    &local_aggregate_materialization.aggregate_artifact.bytes,
-                )?;
-            }
-            return Ok(ResolvedAggregateProposal {
-                aggregate,
-                local_aggregate_materialization: None,
-            });
-        }
-
-        if !dedicated_reducers.is_empty() || observed_remote_proposal {
-            let still_observed_remote_proposal = has_observed_remote_proposal(
-                &self.telemetry().snapshot(),
-                experiment,
-                prepared,
-                &local_aggregate_materialization.aggregate.aggregate_id,
-            );
-            if !still_observed_remote_proposal {
+                        .descriptor
+                        .artifact_id
+                {
+                    prepared.store.store_prebuilt_artifact_bytes(
+                        &local_aggregate_materialization
+                            .aggregate_artifact
+                            .descriptor,
+                        &local_aggregate_materialization.aggregate_artifact.bytes,
+                    )?;
+                }
                 return Ok(ResolvedAggregateProposal {
-                    aggregate: local_aggregate_materialization.aggregate.clone(),
-                    local_aggregate_materialization: Some(local_aggregate_materialization),
+                    aggregate,
+                    local_aggregate_materialization: None,
                 });
             }
-            anyhow::bail!(
-                "dedicated reducer proposal for aggregate {} was observed but could not be materialized locally",
-                local_aggregate_materialization
-                    .aggregate
-                    .aggregate_id
-                    .as_str()
-            );
+            Ok(None) => {}
+            Err(error) => {
+                let mut snapshot = self
+                    .telemetry
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                snapshot.last_error = Some(format!(
+                    "dedicated reducer proposal for aggregate {} failed verification/materialization; falling back to local reduction: {error}",
+                    local_aggregate_materialization
+                        .aggregate
+                        .aggregate_id
+                        .as_str()
+                ));
+            }
         }
 
         Ok(ResolvedAggregateProposal {
@@ -1640,6 +1635,7 @@ impl<P> RunningNode<P> {
             experiment,
             &prepared.robustness_state,
             &robustness.decisions,
+            &prepared.robustness_policy.reputation_policy,
             &prepared.robustness_policy.quarantine_policy,
             prepared.merge_window.window_id,
         )?;
@@ -2309,6 +2305,7 @@ mod tests {
                     quarantined: true,
                     last_rejection_reason: Some(RejectionReason::Replay),
                     updated_at: Some(Utc::now()),
+                    last_decision_window: Some(WindowId(4)),
                     quarantine_started_window: Some(WindowId(4)),
                     last_quarantine_window: Some(WindowId(4)),
                     ban_recommended: false,
@@ -2748,6 +2745,7 @@ mod tests {
                     quarantined: true,
                     last_rejection_reason: Some(RejectionReason::Replay),
                     updated_at: Some(Utc::now()),
+                    last_decision_window: Some(WindowId(1)),
                     quarantine_started_window: Some(WindowId(1)),
                     last_quarantine_window: Some(WindowId(1)),
                     ban_recommended: false,
@@ -2755,8 +2753,13 @@ mod tests {
             )]),
         };
 
-        let (next, trust_scores) =
-            project_robustness_state(&previous, &[], &QuarantinePolicy::default(), WindowId(5));
+        let (next, trust_scores) = project_robustness_state(
+            &previous,
+            &[],
+            &burn_p2p_core::ReputationPolicy::default(),
+            &QuarantinePolicy::default(),
+            WindowId(5),
+        );
         let peer = next.peers.get(&PeerId::new("peer-a")).expect("peer state");
 
         assert!(trust_scores.is_empty());
@@ -2785,6 +2788,7 @@ mod tests {
                     quarantined: true,
                     last_rejection_reason: Some(RejectionReason::Replay),
                     updated_at: Some(Utc::now()),
+                    last_decision_window: Some(WindowId(9)),
                     quarantine_started_window: Some(WindowId(1)),
                     last_quarantine_window: Some(WindowId(9)),
                     ban_recommended: false,
@@ -2820,6 +2824,62 @@ mod tests {
                 && alert.severity == RobustnessAlertSeverity::Critical
                 && alert.message.contains("recommend operator ban")
         }));
+    }
+
+    #[test]
+    fn projected_robustness_state_is_idempotent_within_one_window() {
+        let evaluated_at = Utc::now();
+        let previous = PersistedRobustnessState::default();
+        let decision = RobustnessDecision {
+            peer_id: PeerId::new("peer-a"),
+            accepted: false,
+            hard_rejected: true,
+            downweighted: false,
+            quarantined: false,
+            rejection_reason: Some(RejectionReason::Replay),
+            screen_score: 4.0,
+            effective_weight: 0.0,
+            effective_norm: 0.0,
+            trust_score: Some(TrustScore {
+                peer_id: PeerId::new("peer-a"),
+                score: -3.5,
+                reducer_eligible: false,
+                validator_eligible: false,
+                quarantined: false,
+                ban_recommended: false,
+                updated_at: evaluated_at,
+            }),
+        };
+
+        let (next, first_scores) = project_robustness_state(
+            &previous,
+            std::slice::from_ref(&decision),
+            &burn_p2p_core::ReputationPolicy::default(),
+            &QuarantinePolicy::default(),
+            WindowId(1),
+        );
+        let first_peer = next.peers.get(&PeerId::new("peer-a")).expect("peer state");
+        assert_eq!(first_peer.consecutive_rejections, 1);
+        assert_eq!(first_peer.last_decision_window, Some(WindowId(1)));
+        assert_eq!(first_scores.len(), 1);
+
+        let (replayed, second_scores) = project_robustness_state(
+            &next,
+            &[decision],
+            &burn_p2p_core::ReputationPolicy::default(),
+            &QuarantinePolicy::default(),
+            WindowId(1),
+        );
+        let replayed_peer = replayed
+            .peers
+            .get(&PeerId::new("peer-a"))
+            .expect("peer state");
+
+        assert_eq!(replayed_peer.consecutive_rejections, 1);
+        assert!(!replayed_peer.quarantined);
+        assert_eq!(second_scores.len(), 1);
+        assert_eq!(second_scores[0].score, first_peer.trust_score);
+        assert_eq!(second_scores[0].quarantined, first_peer.quarantined);
     }
 
     #[test]

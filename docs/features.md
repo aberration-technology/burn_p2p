@@ -1,11 +1,11 @@
-# Feature Flags
+# feature flags
 
 `burn_p2p` is a workspace, not one monolithic crate.
 
 feature flags are used where they meaningfully change compile graph or runtime
 surface. most crates intentionally have no public feature flags.
 
-## Short Answer
+## short answer
 
 yes, `burn_p2p` can use feature flags to gate optional sub-crate integration.
 
@@ -36,7 +36,7 @@ current design aims for:
 - separate composition crates for browser, app, and bootstrap/coherence-seed deployment
 - feature flags inside those composition crates where it helps
 
-## Design Notes
+## design notes
 
 - `burn_p2p` is the main downstream entrypoint
 - browser runtime, app ui, bootstrap/browser-edge services, publication backends, and
@@ -45,7 +45,7 @@ current design aims for:
 - optional features are used mainly inside composition crates such as
   `burn_p2p_bootstrap`, `burn_p2p_app`, and `burn_p2p_publish`
 
-## Facade Strategy
+## facade strategy
 
 closest current match to a bevy-style setup:
 
@@ -86,7 +86,7 @@ notes:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.8", features = ["burn"] }
 ```
 
 ## `burn_p2p_browser`
@@ -167,7 +167,7 @@ example:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.7", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.8", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",
@@ -198,7 +198,32 @@ optional profile/leaderboard/badge crate.
 | `badges` | yes | badge/achievement surfaces | lightweight gamification |
 | `team-rollups` | no | grouped/team score views | org or team deployments |
 
-## Crates With No Public Features
+## `burn_p2p_workload`
+
+backend-neutral workload seam crate.
+
+public features: none
+
+notes:
+
+- this is the shared `P2pWorkload` and `LeaseDataPipeline` layer used by both
+  burn and python adapters
+- use it directly only if you are building a custom backend integration rather
+  than depending on the higher-level adapters
+
+## `burn_p2p_python`
+
+python/torch workload adapter crate.
+
+public features: none
+
+notes:
+
+- keeps python out of process
+- uses small control rpc plus file-backed artifact exchange
+- depends on the backend-neutral workload seam, not on the burn adapter
+
+## crates with no public features
 
 current workspace crates with no public feature flags:
 
@@ -211,36 +236,38 @@ current workspace crates with no public feature flags:
 - `burn_p2p_swarm`
 - `burn_p2p_engine`
 - `burn_p2p_metrics`
+- `burn_p2p_python`
 - `burn_p2p_views`
 - `burn_p2p_browser`
+- `burn_p2p_workload`
 
 `burn_p2p_testkit` is intentionally not a downstream dependency surface. it is
 an internal qa/simulation harness used by `xtask`, browser/playwright capture,
 synthetic multiprocess runs, adversarial scenarios, and downstream example
 verification.
 
-## Practical Combinations
+## practical combinations
 
 smallest burn training app:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.8", features = ["burn"] }
 ```
 
 browser runtime app:
 
 ```toml
 [dependencies]
-burn_p2p_browser = "=0.21.0-pre.7"
-burn_p2p_views = "=0.21.0-pre.7"
+burn_p2p_browser = "=0.21.0-pre.8"
+burn_p2p_views = "=0.21.0-pre.8"
 ```
 
 browser or desktop reference ui:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.7", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.8", default-features = false, features = [
   "interactive",
   "browser-join",
   "web-client",
@@ -251,7 +278,7 @@ native desktop portal host:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.7", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.8", default-features = false, features = [
   "interactive",
   "desktop-client",
 ] }
@@ -261,7 +288,7 @@ reference bootstrap/browser-edge deployment:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.7", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.8", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",

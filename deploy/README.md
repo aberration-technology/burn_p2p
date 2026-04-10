@@ -1,36 +1,62 @@
 # deployment
 
-This directory holds the deployment source of truth:
+this directory is the deployment source of truth:
 
 - `containers/`: role-specific container build recipes
-- `config/`: container-friendly bootstrap, reducer, and validator configs
+- `config/`: bootstrap, reducer, and validator daemon configs
 - `compose/`: local and single-host reference stacks
-- `terraform/`: cloud reference stacks for AWS and GCP
+- `terraform/`: cloud reference stacks for aws and gcp
 
-The deployment split is intentional:
+the deployment model is intentionally split:
 
-- bootstrap/coherence seed nodes are cheap CPU/network boxes that provide relay, rendezvous, and Kademlia discovery for native peers
-- reducer nodes are separate and CPU-oriented
-- validator/authority nodes are separate and CPU-oriented
-- trainer nodes are separate again and can use CPU or GPU-specific images
+- bootstrap nodes are cheap coherence seeds
+- reducers are separate proposal builders
+- validators are separate authority nodes
+- trainers are separate workload-specific nodes
+- browser edge is optional and should only exist on stacks that actually need it
 
-Two boundaries matter:
+## reference regimes
 
-1. `burn-p2p-bootstrap` is a real publishable binary, so bootstrap, reducer, and validator
-   containers in this repo are concrete and ready to build.
-2. trainer binaries are downstream-application specific because the workload
-   code lives in the downstream app. The trainer container recipes here are
-   base images that compile and run a chosen downstream bin or example.
+use these as the main starting points:
+
+- `reference-bootstrap.json`: pure seed node, no browser edge, no inline admin secret
+- `reference-validator.json`: validator/authority node for the reference split fleet
+- `reference-reducer.json`: reducer node for the reference split fleet
+- `trusted-browser.json`: private browser edge behind trusted ingress
+- `enterprise-sso.json`: oidc-backed browser edge
+- `community-web.json`: public/community browser edge
+
+`trusted-minimal.json` is the smallest local native bootstrap profile. it is useful
+for local or tightly controlled deployments, but it is not the internet-scale
+reference shape.
+
+## secure defaults
+
+the reference assets now bias toward the safer shape:
+
+- split-fleet bootstrap is a pure seed, not a browser-edge node
+- validator and reducer configs do not ship with inline admin tokens
+- cloud reference stacks expose only bootstrap swarm ingress publicly by default
+- validator, reducer, and trainer nodes stay private by default in cloud stacks
+- browser/http ingress is only part of the browser-oriented profiles
+
+that means:
+
+- use the split fleet when you want a clean native p2p training baseline
+- use `trusted-browser`, `enterprise-sso`, or `community-web` only when you actually need browser ingress
+- treat admin mutation routes as private operator surfaces, not public internet surfaces
 
 ## local compose
 
-Bootstrap-only edge:
+bootstrap/browser-edge profiles:
 
 ```bash
-docker compose -f deploy/compose/bootstrap-edge.compose.yaml up --build
+docker compose -f deploy/compose/trusted-browser.compose.yaml up --build
+docker compose -f deploy/compose/enterprise-sso.compose.yaml up --build
+docker compose -f deploy/compose/community-web.compose.yaml up --build
 ```
 
-Split reference fleet:
+pure split fleet:
 
 ```bash
 cp deploy/compose/split-fleet.env.example deploy/compose/split-fleet.env
@@ -40,42 +66,45 @@ docker compose \
   up --build
 ```
 
-The split fleet starts:
+the split fleet starts:
 
-- one bootstrap/browser-edge node
-- one separate reducer node
-- one separate authority/validator node
+- one bootstrap/coherence seed
+- one separate reducer
+- one separate validator/authority
 - optional trainer containers under the `trainers` profile
 
-The enterprise SSO compose stack now also starts a dedicated Redis service for
-browser-edge auth session state. That is the expected HA shape for browser auth:
+the single-bootstrap compose files share one base service definition in
+`deploy/compose/bootstrap-base.compose.yaml` so the hardening and container
+shape stay aligned across profiles.
 
-- single-edge or tightly controlled local setups may still use `session_state_path`
-- multi-edge or load-balanced browser auth should point `session_state_backend`
-  at Redis or a managed equivalent instead of a shared file
-- the reference `enterprise-sso.compose.yaml` wires that Redis dependency in by
-  default
+the compose browser-edge stacks bind `8787` to `127.0.0.1` on the host by
+default. if you want internet or corp-lan browser ingress, put a real reverse
+proxy / tls terminator in front instead of publishing raw bootstrap http
+directly.
 
 ## cloud
 
-`terraform/` contains reference stacks for:
+`terraform/` contains split-fleet reference stacks for:
 
-- `terraform/aws`: EC2-based split fleet
-- `terraform/gcp`: Compute Engine-based split fleet
+- `terraform/aws`
+- `terraform/gcp`
 
-The intended operator flow is:
+the default cloud posture is:
 
-1. build and push the bootstrap image
-2. build and push the reducer/validator images, or reuse the same bootstrap image for them
-3. build and push the downstream trainer images
-4. provide the container image URIs plus the config JSON through terraform vars
-5. apply with one command through `cargo xtask deploy ...`
+- bootstrap nodes can be public
+- validators, reducers, and trainers are private by default
+- internal fleet ports are allowed only inside the fleet
+- public bootstrap ingress is limited to swarm ports unless you opt into more
 
-The cloud stacks deliberately keep bootstrap, reducer, validator, and trainer
-hardware separate so bootstrap nodes can stay cheap and reducers can scale
-independently from validators.
+if you want browser edge on the public internet, that is an explicit profile
+change. add the browser-edge config and widen only the bootstrap http ports you
+actually intend to expose.
 
-One important boundary remains: the reference terraform stacks do not provision
-managed Redis for browser-edge auth state. If you deploy the enterprise/browser
-auth surface in AWS or GCP, point `session_state_backend.url` at an external
-Redis service such as ElastiCache or Memorystore.
+for `auth-external`, do not expose bootstrap http directly. that mode trusts an
+upstream identity header, so the proxy / ingress layer is part of the security
+boundary.
+
+the cloud stacks do not provision managed redis for browser-edge auth session
+state. for multi-edge oidc/external auth deployments, point
+`session_state_backend.url` at an external redis service such as elasticache or
+memorystore.

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use burn_p2p::{BrowserCapability, ClientPlatform};
+use burn_p2p::{BrowserCapability, CapabilityProbe, PeerId, browser_probe_from_capabilities};
+use burn_p2p_core::{ClientPlatform, ContentId, PersistenceClass};
 use serde::{Deserialize, Serialize};
 
 use crate::BrowserRuntimeRole;
@@ -38,6 +39,12 @@ pub struct BrowserCapabilityReport {
     pub gpu_support: BrowserGpuSupport,
     /// The dedicated worker.
     pub dedicated_worker: BrowserWorkerSupport,
+    /// Whether persistent storage APIs are exposed.
+    pub persistent_storage_exposed: bool,
+    /// Whether WebTransport APIs are exposed.
+    pub web_transport_exposed: bool,
+    /// Whether WebRTC direct APIs are exposed.
+    pub web_rtc_exposed: bool,
     /// The recommended role.
     pub recommended_role: BrowserRuntimeRole,
     /// The max training window secs.
@@ -56,6 +63,9 @@ impl Default for BrowserCapabilityReport {
             worker_gpu_exposed: false,
             gpu_support: BrowserGpuSupport::Unknown,
             dedicated_worker: BrowserWorkerSupport::DedicatedWorker,
+            persistent_storage_exposed: false,
+            web_transport_exposed: false,
+            web_rtc_exposed: false,
             recommended_role: BrowserRuntimeRole::BrowserObserver,
             max_training_window_secs: 30,
             max_checkpoint_bytes: 16 * 1024 * 1024,
@@ -76,7 +86,33 @@ impl BrowserCapabilityReport {
         if matches!(self.gpu_support, BrowserGpuSupport::Available) {
             capabilities.insert(BrowserCapability::WebGpu);
         }
+        if self.persistent_storage_exposed {
+            capabilities.insert(BrowserCapability::PersistentStorage);
+        }
+        if self.web_transport_exposed {
+            capabilities.insert(BrowserCapability::WebTransport);
+        }
+        if self.web_rtc_exposed {
+            capabilities.insert(BrowserCapability::WebRtcDirect);
+        }
 
         capabilities
+    }
+
+    /// Converts the browser capability report into the shared limits probe format.
+    pub fn to_capability_probe(
+        &self,
+        peer_id: PeerId,
+        work_units_per_second: f64,
+        persistence: PersistenceClass,
+        benchmark_hash: Option<ContentId>,
+    ) -> CapabilityProbe {
+        browser_probe_from_capabilities(
+            peer_id,
+            self.capabilities(),
+            work_units_per_second,
+            persistence,
+            benchmark_hash,
+        )
     }
 }

@@ -15,6 +15,53 @@ pub(crate) fn handle_get_route(
         ..
     } = context;
 
+    if request.method == "GET"
+        && let Some(page) = page_request_from_path(&request.path, "/receipts/page")?
+    {
+        let query = ReceiptQuery {
+            study_id: None,
+            experiment_id: None,
+            revision_id: None,
+            peer_id: None,
+        };
+        let receipts = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_receipts_page(&query, page)?;
+        write_json(stream, &receipts)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(page) = page_request_from_path(&request.path, "/heads/page")?
+    {
+        let heads = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_heads_page(
+                &burn_p2p_bootstrap::HeadQuery {
+                    study_id: None,
+                    experiment_id: None,
+                    revision_id: None,
+                    head_id: None,
+                },
+                page,
+            )?;
+        write_json(stream, &heads)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(page) = page_request_from_path(&request.path, "/merges/page")?
+    {
+        let merges = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_merges_page(page)?;
+        write_json(stream, &merges)?;
+        return Ok(true);
+    }
+
     if handle_artifact_publish_get_route(stream, context, request)? {
         return Ok(true);
     }
@@ -226,6 +273,37 @@ pub(crate) fn handle_get_route(
     }
 
     Ok(true)
+}
+
+fn page_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<burn_p2p_core::PageRequest>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some(burn_p2p_core::PageRequest::default()));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut page = burn_p2p_core::PageRequest::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key {
+            "offset" => {
+                page.offset = value.parse::<usize>()?;
+            }
+            "limit" => {
+                page.limit = value.parse::<usize>()?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some(page.normalized()))
 }
 
 pub(crate) fn current_diagnostics(

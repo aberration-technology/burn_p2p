@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use crate::BootstrapError;
 use burn_p2p::ValidatorPolicy;
-use burn_p2p_core::{ArtifactId, GenesisSpec, HeadId, NetworkId, PeerRole, PeerRoleSet};
+use burn_p2p_core::{
+    ArtifactId, AuthorityEpochManifest, GenesisSpec, HeadId, NetworkId, PeerRole, PeerRoleSet,
+    ValidatorSetManifest,
+};
 use burn_p2p_security::ReleasePolicy;
 use burn_p2p_swarm::{RuntimeBoundary, SwarmAddress};
 use serde::{Deserialize, Serialize};
@@ -117,6 +120,60 @@ pub struct AuthorityPlan {
     pub release_policy: ReleasePolicy,
     /// The validator policy.
     pub validator_policy: ValidatorPolicy,
+    /// The optional validator-set governance manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_set_manifest: Option<ValidatorSetManifest>,
+    /// The optional authority-epoch transition manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_epoch_manifest: Option<AuthorityEpochManifest>,
+}
+
+impl AuthorityPlan {
+    fn validate_for_network(&self, network_id: &NetworkId) -> Result<(), BootstrapError> {
+        if let Some(validator_set) = self.validator_set_manifest.as_ref() {
+            if &validator_set.network_id != network_id {
+                return Err(BootstrapError::InvalidConfig(
+                    "authority validator_set_manifest network_id must match genesis network_id"
+                        .into(),
+                ));
+            }
+            if validator_set.members.is_empty() {
+                return Err(BootstrapError::InvalidConfig(
+                    "authority validator_set_manifest must contain at least one validator".into(),
+                ));
+            }
+            if validator_set.quorum_weight == 0
+                || validator_set.quorum_weight > validator_set.total_vote_weight()
+            {
+                return Err(BootstrapError::InvalidConfig(
+                    "authority validator_set_manifest quorum_weight must be between 1 and the total validator vote weight".into(),
+                ));
+            }
+        }
+
+        if let Some(epoch) = self.authority_epoch_manifest.as_ref() {
+            if &epoch.network_id != network_id {
+                return Err(BootstrapError::InvalidConfig(
+                    "authority authority_epoch_manifest network_id must match genesis network_id"
+                        .into(),
+                ));
+            }
+            if let Some(validator_set) = self.validator_set_manifest.as_ref() {
+                if epoch.validator_set_id != validator_set.validator_set_id {
+                    return Err(BootstrapError::InvalidConfig(
+                        "authority authority_epoch_manifest validator_set_id must match validator_set_manifest".into(),
+                    ));
+                }
+                if epoch.authority_epoch != validator_set.authority_epoch {
+                    return Err(BootstrapError::InvalidConfig(
+                        "authority authority_epoch_manifest must match validator_set_manifest authority_epoch".into(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +292,9 @@ impl BootstrapSpec {
 
         if services.contains(&BootstrapService::Authority) && self.authority.is_none() {
             return Err(BootstrapError::MissingAuthorityPolicy);
+        }
+        if let Some(authority) = self.authority.as_ref() {
+            authority.validate_for_network(&self.genesis.network_id)?;
         }
 
         Ok(BootstrapPlan {

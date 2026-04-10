@@ -66,8 +66,6 @@
     }
   },
   "http_bind_addr": "0.0.0.0:8788",
-  "admin_token": "validator-admin",
-  "allow_dev_admin_token": true,
   "remaining_work_units": 120,
   "admin_signer_peer_id": "validator-authority",
   "embedded_runtime": {

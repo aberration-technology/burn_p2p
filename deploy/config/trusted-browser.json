@@ -31,7 +31,7 @@
       "receipt_exports_enabled": true
     }
   },
-  "http_bind_addr": "0.0.0.0:8787",
+  "http_bind_addr": "127.0.0.1:8787",
   "optional_services": {
     "browser_edge_enabled": true,
     "browser_mode": "Verifier",

@@ -4,9 +4,11 @@ use std::sync::Mutex;
 use burn_p2p_core::{AuthProvider, ContentId, NetworkId, PrincipalId};
 use burn_p2p_security::{
     AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart, PrincipalClaims,
-    PrincipalSession, StaticPrincipalRecord, random_login_state_token,
+    PrincipalSession, StaticPrincipalRecord,
+    auth::{DEFAULT_PENDING_LOGIN_LIMIT, prune_expiring_entries, validate_principal_record_access},
+    random_login_state_token,
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use url::Url;
 
@@ -18,8 +20,10 @@ use crate::shared::{
     PendingLogin, ProviderConnectorState, ProviderExchangeOutcome, ProviderExchangeRequest,
     ProviderExchangeResponse, ProviderRefreshRequest, ProviderRefreshResponse,
     ProviderRevokeRequest, ProviderSessionMaterial, ProviderUserInfoRequest,
-    ProviderUserInfoResponse, StandardTokenResponse, validate_record_access,
+    ProviderUserInfoResponse, StandardTokenResponse, StoredProviderSession,
 };
+
+const MAX_PROVIDER_SESSIONS: usize = 256;
 
 /// Authenticates principals through a provider-backed enrollment flow.
 ///
@@ -32,7 +36,7 @@ pub struct ProviderMappedIdentityConnector {
     provider: AuthProvider,
     session_ttl: Duration,
     pending: Mutex<BTreeMap<ContentId, PendingLogin>>,
-    provider_sessions: Mutex<BTreeMap<ContentId, ProviderSessionMaterial>>,
+    provider_sessions: Mutex<BTreeMap<ContentId, StoredProviderSession>>,
     persist_remote_tokens: bool,
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
     authorize_base_url: Option<String>,
@@ -688,8 +692,15 @@ impl ProviderMappedIdentityConnector {
             .provider_sessions
             .lock()
             .expect("provider identity session lock should not be poisoned");
+        prune_provider_sessions(&mut provider_sessions, issued_at);
         if let Some(provider_session) = provider_session.filter(|state| !state.is_empty()) {
-            provider_sessions.insert(session_id, provider_session);
+            provider_sessions.insert(
+                session_id,
+                StoredProviderSession {
+                    material: provider_session,
+                    local_expires_at: expires_at,
+                },
+            );
         } else {
             provider_sessions.remove(&session.session_id);
         }
@@ -698,26 +709,38 @@ impl ProviderMappedIdentityConnector {
     }
 
     fn provider_session(&self, session_id: &ContentId) -> Option<ProviderSessionMaterial> {
-        self.provider_sessions
+        let now = Utc::now();
+        let mut provider_sessions = self
+            .provider_sessions
             .lock()
-            .expect("provider identity session lock should not be poisoned")
+            .expect("provider identity session lock should not be poisoned");
+        prune_provider_sessions(&mut provider_sessions, now);
+        provider_sessions
             .get(session_id)
-            .cloned()
+            .map(|stored| stored.material.clone())
     }
 
     fn carry_provider_session(
         &self,
         prior_session_id: &ContentId,
         refreshed_session_id: &ContentId,
+        refreshed_expires_at: DateTime<Utc>,
         provider_session: Option<ProviderSessionMaterial>,
     ) {
         let mut sessions = self
             .provider_sessions
             .lock()
             .expect("provider identity session lock should not be poisoned");
+        prune_provider_sessions(&mut sessions, Utc::now());
         sessions.remove(prior_session_id);
         if let Some(provider_session) = provider_session.filter(|state| !state.is_empty()) {
-            sessions.insert(refreshed_session_id.clone(), provider_session);
+            sessions.insert(
+                refreshed_session_id.clone(),
+                StoredProviderSession {
+                    material: provider_session,
+                    local_expires_at: refreshed_expires_at,
+                },
+            );
         }
     }
 
@@ -1047,10 +1070,13 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
             oidc_nonce,
             pkce_verifier,
         };
-        self.pending
+        let mut pending_logins = self
+            .pending
             .lock()
-            .expect("provider identity pending-login lock should not be poisoned")
-            .insert(login_id.clone(), pending.clone());
+            .expect("provider identity pending-login lock should not be poisoned");
+        prune_pending_logins(&mut pending_logins, Utc::now());
+        pending_logins.insert(login_id.clone(), pending.clone());
+        prune_pending_logins(&mut pending_logins, Utc::now());
 
         Ok(LoginStart {
             login_id: login_id.clone(),
@@ -1062,12 +1088,16 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
     }
 
     fn complete_login(&self, callback: CallbackPayload) -> Result<PrincipalSession, AuthError> {
-        let pending = self
-            .pending
-            .lock()
-            .expect("provider identity pending-login lock should not be poisoned")
-            .remove(&callback.login_id)
-            .ok_or_else(|| AuthError::UnknownLogin(callback.login_id.clone()))?;
+        let pending = {
+            let mut pending_logins = self
+                .pending
+                .lock()
+                .expect("provider identity pending-login lock should not be poisoned");
+            prune_pending_logins(&mut pending_logins, Utc::now());
+            pending_logins
+                .remove(&callback.login_id)
+                .ok_or_else(|| AuthError::UnknownLogin(callback.login_id.clone()))?
+        };
 
         if callback.state != pending.state {
             return Err(AuthError::StateMismatch);
@@ -1113,7 +1143,7 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
             .principals
             .get(&principal_id)
             .ok_or_else(|| AuthError::UnknownPrincipal(principal_id.clone()))?;
-        validate_record_access(record, &pending.network_id, &pending.requested_scopes)?;
+        validate_principal_record_access(record, &pending.network_id, &pending.requested_scopes)?;
         self.issue_session(pending.network_id, principal_id, record, provider_session)
     }
 
@@ -1125,6 +1155,11 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
             .principals
             .get(&session.claims.principal_id)
             .ok_or_else(|| AuthError::UnknownPrincipal(session.claims.principal_id.clone()))?;
+        validate_principal_record_access(
+            record,
+            &session.network_id,
+            &session.claims.granted_scopes,
+        )?;
         let provider_session =
             self.refresh_provider_session(session, self.provider_session(&session.session_id))?;
         let refreshed = self.issue_session(
@@ -1133,7 +1168,12 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
             record,
             provider_session.clone(),
         )?;
-        self.carry_provider_session(&session.session_id, &refreshed.session_id, provider_session);
+        self.carry_provider_session(
+            &session.session_id,
+            &refreshed.session_id,
+            refreshed.expires_at,
+            provider_session,
+        );
         Ok(refreshed)
     }
 
@@ -1149,34 +1189,52 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
     fn revoke(&self, session: &PrincipalSession) -> Result<(), AuthError> {
         let provider_session = self.provider_session(&session.session_id);
         self.revoke_provider_session(session, provider_session)?;
-        self.provider_sessions
+        let mut provider_sessions = self
+            .provider_sessions
             .lock()
-            .expect("provider identity session lock should not be poisoned")
-            .remove(&session.session_id);
+            .expect("provider identity session lock should not be poisoned");
+        prune_provider_sessions(&mut provider_sessions, Utc::now());
+        provider_sessions.remove(&session.session_id);
         Ok(())
     }
 
     fn export_persistent_state(&self) -> Result<Option<Vec<u8>>, AuthError> {
-        let state = ProviderConnectorState {
-            pending: self
+        let now = Utc::now();
+        let pending = {
+            let mut pending = self
                 .pending
                 .lock()
-                .expect("provider identity pending-login lock should not be poisoned")
-                .clone(),
-            provider_sessions: self
+                .expect("provider identity pending-login lock should not be poisoned");
+            prune_pending_logins(&mut pending, now);
+            pending.clone()
+        };
+        let provider_sessions = {
+            let mut provider_sessions = self
                 .provider_sessions
                 .lock()
-                .expect("provider identity session lock should not be poisoned")
+                .expect("provider identity session lock should not be poisoned");
+            prune_provider_sessions(&mut provider_sessions, now);
+            provider_sessions
                 .iter()
                 .map(|(session_id, session)| {
                     let persisted = if self.persist_remote_tokens {
-                        session.clone()
+                        session.material.clone()
                     } else {
-                        session.redact_remote_secrets()
+                        session.material.redact_remote_secrets()
                     };
-                    (session_id.clone(), persisted)
+                    (
+                        session_id.clone(),
+                        StoredProviderSession {
+                            material: persisted,
+                            local_expires_at: session.local_expires_at,
+                        },
+                    )
                 })
-                .collect(),
+                .collect()
+        };
+        let state = ProviderConnectorState {
+            pending,
+            provider_sessions,
         };
         Ok(Some(burn_p2p_core::deterministic_cbor(&state)?))
     }
@@ -1201,6 +1259,7 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
                     .collect()
             })
             .unwrap_or_default();
+        prune_pending_logins(&mut pending, now);
         let mut provider_sessions = self
             .provider_sessions
             .lock()
@@ -1208,6 +1267,7 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
         *provider_sessions = restored
             .map(|restored| restored.provider_sessions)
             .unwrap_or_default();
+        prune_provider_sessions(&mut provider_sessions, now);
         Ok(())
     }
 }
@@ -1248,7 +1308,34 @@ impl ProviderMappedIdentityConnector {
             .principals
             .get(&principal_id)
             .ok_or_else(|| AuthError::UnknownPrincipal(principal_id.clone()))?;
-        validate_record_access(record, &pending.network_id, &pending.requested_scopes)?;
+        validate_principal_record_access(record, &pending.network_id, &pending.requested_scopes)?;
         self.issue_session(pending.network_id, principal_id, record, provider_session)
     }
+}
+
+fn prune_pending_logins(pending: &mut BTreeMap<ContentId, PendingLogin>, now: DateTime<Utc>) {
+    prune_expiring_entries(pending, now, DEFAULT_PENDING_LOGIN_LIMIT, |login| {
+        login.expires_at
+    });
+}
+
+fn prune_provider_sessions(
+    provider_sessions: &mut BTreeMap<ContentId, StoredProviderSession>,
+    now: DateTime<Utc>,
+) {
+    provider_sessions.retain(|_, session| !session.is_expired(now));
+    if provider_sessions.len() <= MAX_PROVIDER_SESSIONS {
+        return;
+    }
+    let mut retained = provider_sessions
+        .iter()
+        .map(|(session_id, session)| (session_id.clone(), session.local_expires_at))
+        .collect::<Vec<_>>();
+    retained.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+    let retained_ids = retained
+        .into_iter()
+        .take(MAX_PROVIDER_SESSIONS)
+        .map(|(session_id, _)| session_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    provider_sessions.retain(|session_id, _| retained_ids.contains(session_id));
 }

@@ -453,7 +453,9 @@ fn run_deploy_cloud(
     if let Some(image) = args.trainer_image.as_ref() {
         envs.insert("TF_VAR_trainer_image".into(), image.clone());
     }
-    let default_bootstrap_config = workspace.root.join("deploy/config/trusted-browser.json");
+    let default_bootstrap_config = workspace
+        .root
+        .join("deploy/config/reference-bootstrap.json");
     let default_validator_config = workspace
         .root
         .join("deploy/config/reference-validator.json");
@@ -3108,11 +3110,11 @@ fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<(
         trainer_count,
         trainer_window_count,
         persistent_trainers: true,
-        continuous_training: true,
-        startup_timeout_secs: 30,
+        continuous_training: false,
+        startup_timeout_secs: 45,
         poll_interval_ms: 50,
-        sync_timeout_secs: 30,
-        merge_wait_timeout_secs: 30,
+        sync_timeout_secs: 45,
+        merge_wait_timeout_secs: 45,
     };
     artifacts.write_json("configs/network-soak-config.json", &soak_config)?;
 
@@ -3203,7 +3205,7 @@ fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<(
             "trainer_count": trainer_count,
             "trainer_window_count": trainer_window_count,
             "persistent_trainers": true,
-            "continuous_training": true,
+            "continuous_training": false,
             "workload_kind": "burn-linear",
             "trainer_backend": trainer_backend,
             "validator_backend": soak_summary.validator_backend,

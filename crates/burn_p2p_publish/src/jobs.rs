@@ -43,15 +43,15 @@ impl PublicationStore {
         request: ExportRequest,
     ) -> Result<ExportJob, PublishError> {
         self.prune_expired_records()?;
+        let mut published_artifacts = self.load_published_artifacts()?;
+        let mut export_jobs = self.load_export_jobs()?;
         let target = self
             .target(&request.publication_target_id)?
             .ok_or(PublishError::MissingFilesystemTarget)?
             .clone();
         ensure_profile_allowed(&target, &request.artifact_profile)?;
 
-        if let Some(existing) = self
-            .state
-            .published_artifacts
+        if let Some(existing) = published_artifacts
             .iter()
             .find(|record| {
                 record.head_id == request.head_id
@@ -60,9 +60,7 @@ impl PublicationStore {
                     && record.status == PublishedArtifactStatus::Ready
             })
             .cloned()
-            && let Some(job) = self
-                .state
-                .export_jobs
+            && let Some(job) = export_jobs
                 .iter()
                 .filter(|job| {
                     job.head_id == existing.head_id
@@ -104,9 +102,7 @@ impl PublicationStore {
             failure_reason: None,
         };
 
-        if let Some(existing_job) = self
-            .state
-            .export_jobs
+        if let Some(existing_job) = export_jobs
             .iter()
             .find(|existing| {
                 existing.head_id == job.head_id
@@ -127,7 +123,8 @@ impl PublicationStore {
 
         job.status = ExportJobStatus::Materializing;
         job.started_at = Some(Utc::now());
-        self.state.export_jobs.push(job.clone());
+        export_jobs.push(job.clone());
+        self.replace_export_jobs(&export_jobs)?;
         self.push_live_event(ArtifactLiveEvent {
             event_id: ContentId::derive(&(
                 "artifact-live",
@@ -162,7 +159,8 @@ impl PublicationStore {
             Ok(publication) => {
                 job.status = ExportJobStatus::Ready;
                 job.finished_at = Some(Utc::now());
-                update_job(&mut self.state.export_jobs, &job);
+                update_job(&mut export_jobs, &job);
+                self.replace_export_jobs(&export_jobs)?;
                 self.push_live_event(ArtifactLiveEvent {
                     event_id: ContentId::derive(&(
                         "artifact-live",
@@ -191,7 +189,8 @@ impl PublicationStore {
                     detail: Some("ready".into()),
                     generated_at: Utc::now(),
                 });
-                self.state.published_artifacts.push(publication);
+                published_artifacts.push(publication);
+                self.replace_published_artifacts(&published_artifacts)?;
                 self.persist_state()?;
                 Ok(job)
             }
@@ -199,7 +198,8 @@ impl PublicationStore {
                 job.status = ExportJobStatus::Failed;
                 job.finished_at = Some(Utc::now());
                 job.failure_reason = Some(error.to_string());
-                update_job(&mut self.state.export_jobs, &job);
+                update_job(&mut export_jobs, &job);
+                self.replace_export_jobs(&export_jobs)?;
                 self.push_live_event(ArtifactLiveEvent {
                     event_id: ContentId::derive(&(
                         "artifact-live",
@@ -243,9 +243,8 @@ impl PublicationStore {
         request: DownloadTicketRequest,
     ) -> Result<DownloadTicketResponse, PublishError> {
         self.prune_expired_records()?;
-        let published = if let Some(existing) = self
-            .state
-            .published_artifacts
+        let published_artifacts = self.load_published_artifacts()?;
+        let published = if let Some(existing) = published_artifacts
             .iter()
             .find(|record| {
                 record.head_id == request.head_id
@@ -267,8 +266,7 @@ impl PublicationStore {
                 artifact_alias_id: request.artifact_alias_id.clone(),
             };
             self.request_export(artifact_store, heads, reports, export_request)?;
-            self.state
-                .published_artifacts
+            self.load_published_artifacts()?
                 .iter()
                 .find(|record| {
                     record.head_id == request.head_id
@@ -300,7 +298,7 @@ impl PublicationStore {
             expires_at: now + Duration::seconds(DEFAULT_DOWNLOAD_TICKET_TTL_SECS),
             delivery_mode: delivery_mode_for_target(&target),
         };
-        self.state.download_tickets.push(ticket.clone());
+        self.state.active_download_tickets.push(ticket.clone());
         self.persist_state()?;
         Ok(DownloadTicketResponse {
             download_path: format!("/artifacts/download/{}", ticket.download_ticket_id.as_str()),
@@ -317,14 +315,13 @@ impl PublicationStore {
         self.prune_expired_records()?;
         let ticket = self
             .state
-            .download_tickets
+            .active_download_tickets
             .iter()
             .find(|ticket| &ticket.download_ticket_id == ticket_id)
             .cloned()
             .ok_or_else(|| PublishError::UnknownDownloadTicket(ticket_id.clone()))?;
         let published = self
-            .state
-            .published_artifacts
+            .load_published_artifacts()?
             .iter()
             .find(|record| record.published_artifact_id == ticket.published_artifact_id)
             .cloned()

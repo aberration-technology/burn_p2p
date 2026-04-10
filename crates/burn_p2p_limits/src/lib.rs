@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 
 use burn_p2p_core::{
-    AttestationLevel, CapabilityCard, CapabilityCardId, CapabilityClass, CapabilityEstimate,
-    ClientPlatform, ContentId, PeerId, PeerRole, PeerRoleSet, PersistenceClass,
+    AttestationLevel, BrowserCapability, CapabilityCard, CapabilityCardId, CapabilityClass,
+    CapabilityEstimate, ClientPlatform, ContentId, PeerId, PeerRole, PeerRoleSet, PersistenceClass,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,9 @@ pub enum LimitsError {
     #[error("work units per second must be non-negative")]
     /// Uses the invalid work rate variant.
     InvalidWorkRate,
+    #[error("transfer rates must be finite and non-negative")]
+    /// Uses the invalid transfer rate variant.
+    InvalidTransferRate,
     #[error("observed throughput smoothing must be within 0.0..=1.0")]
     /// Uses the invalid observed smoothing variant.
     InvalidObservedSmoothing,
@@ -77,6 +80,9 @@ pub struct CapabilityProbe {
     pub platform: ClientPlatform,
     /// The available backends.
     pub available_backends: Vec<LocalBackend>,
+    #[serde(default)]
+    /// The detected browser capabilities, when the peer is browser-based.
+    pub browser_capabilities: BTreeSet<BrowserCapability>,
     /// The device memory bytes.
     pub device_memory_bytes: Option<u64>,
     /// The system memory bytes.
@@ -95,6 +101,21 @@ pub struct CapabilityProbe {
     pub work_units_per_second: f64,
     /// The benchmark hash.
     pub benchmark_hash: Option<ContentId>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Optional host resource evidence gathered alongside a benchmark.
+pub struct CapabilityResourceProbe {
+    /// The measured device memory bytes, when available.
+    pub device_memory_bytes: Option<u64>,
+    /// The measured system memory bytes, when available.
+    pub system_memory_bytes: Option<u64>,
+    /// The measured available disk bytes, when available.
+    pub disk_bytes: Option<u64>,
+    /// The measured upload bandwidth in Mbps, when available.
+    pub upload_mbps: Option<f32>,
+    /// The measured download bandwidth in Mbps, when available.
+    pub download_mbps: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,9 +212,7 @@ impl CapabilityCalibrator {
         probe: CapabilityProbe,
         reported_at: DateTime<Utc>,
     ) -> Result<LimitProfile, LimitsError> {
-        if probe.work_units_per_second < 0.0 {
-            return Err(LimitsError::InvalidWorkRate);
-        }
+        let probe = normalize_probe(probe)?;
 
         let preferred_backends = backend_preference_order(probe.available_backends.iter());
         let recommended_classes = recommended_capability_classes(&probe, &self.policy);
@@ -204,6 +223,7 @@ impl CapabilityCalibrator {
             probe.peer_id.as_str(),
             &probe.platform,
             &preferred_backends,
+            &probe.browser_capabilities,
             probe.device_memory_bytes,
             probe.system_memory_bytes,
             probe.disk_bytes,
@@ -227,6 +247,7 @@ impl CapabilityCalibrator {
             platform: probe.platform,
             roles: recommended_roles.clone(),
             preferred_backends,
+            browser_capabilities: probe.browser_capabilities,
             recommended_classes,
             device_memory_bytes: probe.device_memory_bytes,
             system_memory_bytes: probe.system_memory_bytes,
@@ -284,6 +305,73 @@ pub fn probe_from_profile(profile: &LimitProfile) -> CapabilityProbe {
     probe_from_card(&profile.card, profile.card.work_units_per_second)
 }
 
+/// Builds a native capability probe from a benchmark estimate and host-resource evidence.
+pub fn native_probe_from_estimate(
+    peer_id: PeerId,
+    estimate: &CapabilityEstimate,
+    resources: CapabilityResourceProbe,
+    persistence: PersistenceClass,
+    attestation_level: AttestationLevel,
+    benchmark_hash: Option<ContentId>,
+) -> CapabilityProbe {
+    let available_backends = if estimate.preferred_backends.is_empty() {
+        vec![LocalBackend::Cpu]
+    } else {
+        estimate
+            .preferred_backends
+            .iter()
+            .map(|backend| backend_from_name(backend))
+            .collect()
+    };
+
+    CapabilityProbe {
+        peer_id,
+        platform: ClientPlatform::Native,
+        available_backends,
+        browser_capabilities: BTreeSet::new(),
+        device_memory_bytes: resources.device_memory_bytes,
+        system_memory_bytes: resources.system_memory_bytes.unwrap_or_default(),
+        disk_bytes: resources.disk_bytes.unwrap_or_default(),
+        upload_mbps: resources.upload_mbps.unwrap_or_default(),
+        download_mbps: resources.download_mbps.unwrap_or_default(),
+        persistence,
+        attestation_level,
+        work_units_per_second: estimate.work_units_per_second,
+        benchmark_hash,
+    }
+}
+
+/// Builds a browser capability probe from measured browser capabilities.
+pub fn browser_probe_from_capabilities(
+    peer_id: PeerId,
+    browser_capabilities: impl IntoIterator<Item = BrowserCapability>,
+    work_units_per_second: f64,
+    persistence: PersistenceClass,
+    benchmark_hash: Option<ContentId>,
+) -> CapabilityProbe {
+    let browser_capabilities = browser_capabilities.into_iter().collect::<BTreeSet<_>>();
+    let mut available_backends = Vec::new();
+    if browser_capabilities.contains(&BrowserCapability::WebGpu) {
+        available_backends.push(LocalBackend::Wgpu);
+    }
+
+    CapabilityProbe {
+        peer_id,
+        platform: ClientPlatform::Browser,
+        available_backends,
+        browser_capabilities,
+        device_memory_bytes: None,
+        system_memory_bytes: 0,
+        disk_bytes: 0,
+        upload_mbps: 0.0,
+        download_mbps: 0.0,
+        persistence,
+        attestation_level: AttestationLevel::None,
+        work_units_per_second,
+        benchmark_hash,
+    }
+}
+
 fn probe_from_card(card: &CapabilityCard, work_units_per_second: f64) -> CapabilityProbe {
     CapabilityProbe {
         peer_id: card.peer_id.clone(),
@@ -293,6 +381,7 @@ fn probe_from_card(card: &CapabilityCard, work_units_per_second: f64) -> Capabil
             .iter()
             .map(|backend| backend_from_name(backend))
             .collect(),
+        browser_capabilities: card.browser_capabilities.clone(),
         device_memory_bytes: card.device_memory_bytes,
         system_memory_bytes: card.system_memory_bytes,
         disk_bytes: card.disk_bytes,
@@ -313,6 +402,56 @@ fn backend_from_name(name: &str) -> LocalBackend {
         "cpu" => LocalBackend::Cpu,
         other => LocalBackend::Custom(other.to_owned()),
     }
+}
+
+fn normalize_probe(mut probe: CapabilityProbe) -> Result<CapabilityProbe, LimitsError> {
+    if !probe.work_units_per_second.is_finite() || probe.work_units_per_second < 0.0 {
+        return Err(LimitsError::InvalidWorkRate);
+    }
+    if !probe.upload_mbps.is_finite()
+        || probe.upload_mbps < 0.0
+        || !probe.download_mbps.is_finite()
+        || probe.download_mbps < 0.0
+    {
+        return Err(LimitsError::InvalidTransferRate);
+    }
+
+    if probe.device_memory_bytes == Some(0) {
+        probe.device_memory_bytes = None;
+    }
+
+    let backend_names = backend_preference_order(probe.available_backends.iter());
+    probe.available_backends = backend_names
+        .iter()
+        .map(|backend| backend_from_name(backend))
+        .collect();
+
+    if probe.platform == ClientPlatform::Browser {
+        probe
+            .browser_capabilities
+            .insert(BrowserCapability::WssFallback);
+        if probe
+            .available_backends
+            .iter()
+            .any(|backend| matches!(backend, LocalBackend::Wgpu))
+        {
+            probe.browser_capabilities.insert(BrowserCapability::WebGpu);
+        }
+        if probe
+            .browser_capabilities
+            .contains(&BrowserCapability::WebGpu)
+            && !probe
+                .available_backends
+                .iter()
+                .any(|backend| matches!(backend, LocalBackend::Wgpu))
+        {
+            probe.available_backends.push(LocalBackend::Wgpu);
+        }
+    } else {
+        probe.browser_capabilities.clear();
+    }
+
+    Ok(probe)
 }
 
 /// Performs the corrected work units per second operation.
@@ -373,6 +512,23 @@ pub fn recommended_capability_classes(
 
     if probe.platform == ClientPlatform::Browser {
         classes.insert(CapabilityClass::BrowserOpportunistic);
+        let has_dedicated_worker = probe
+            .browser_capabilities
+            .contains(&BrowserCapability::DedicatedWorker);
+        let has_browser_webgpu = probe
+            .browser_capabilities
+            .contains(&BrowserCapability::WebGpu);
+
+        if has_dedicated_worker {
+            classes.insert(CapabilityClass::BrowserObserver);
+            classes.insert(CapabilityClass::BrowserVerifier);
+        }
+        if has_dedicated_worker && has_browser_webgpu {
+            classes.insert(CapabilityClass::BrowserTrainerWgpu);
+        }
+        if !has_browser_webgpu {
+            classes.insert(CapabilityClass::BrowserFallback);
+        }
     } else if has_cuda || (has_wgpu && probe.device_memory_bytes.unwrap_or_default() > 0) {
         classes.insert(CapabilityClass::TrainerGpu);
     } else {
@@ -422,9 +578,23 @@ pub fn recommended_roles(
     if classes.contains(&CapabilityClass::RelayHelper) {
         roles.insert(PeerRole::RelayHelper);
     }
-    if classes.contains(&CapabilityClass::BrowserOpportunistic) {
+    if classes.contains(&CapabilityClass::BrowserObserver) {
+        roles.insert(PeerRole::BrowserObserver);
+    }
+    if classes.contains(&CapabilityClass::BrowserVerifier) {
+        roles.insert(PeerRole::BrowserVerifier);
+        roles.insert(PeerRole::Evaluator);
+    }
+    if classes.contains(&CapabilityClass::BrowserTrainerWgpu) {
+        roles.insert(PeerRole::BrowserTrainerWgpu);
         roles.insert(PeerRole::BrowserTrainer);
         roles.insert(PeerRole::Evaluator);
+    }
+    if classes.contains(&CapabilityClass::BrowserFallback) {
+        roles.insert(PeerRole::BrowserFallback);
+    }
+    if classes.contains(&CapabilityClass::BrowserOpportunistic) {
+        roles.insert(PeerRole::Viewer);
     }
 
     if probe.platform == ClientPlatform::Native
@@ -471,11 +641,13 @@ pub fn recommended_budget(probe: &CapabilityProbe, policy: &LimitPolicy) -> Work
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use chrono::Utc;
 
     use crate::{
         CapabilityCalibrator, CapabilityProbe, LimitPolicy, LocalBackend, ObservedThroughputUpdate,
-        backend_preference_order,
+        backend_preference_order, browser_probe_from_capabilities,
     };
 
     fn native_gpu_probe() -> CapabilityProbe {
@@ -487,6 +659,7 @@ mod tests {
                 LocalBackend::Cuda,
                 LocalBackend::Wgpu,
             ],
+            browser_capabilities: BTreeSet::new(),
             device_memory_bytes: Some(24 * 1024 * 1024 * 1024),
             system_memory_bytes: 64 * 1024 * 1024 * 1024,
             disk_bytes: 500 * 1024 * 1024 * 1024,
@@ -546,20 +719,21 @@ mod tests {
 
     #[test]
     fn browser_probe_prefers_short_opportunistic_windows() {
-        let probe = CapabilityProbe {
-            peer_id: burn_p2p_core::PeerId::new("peer-browser"),
-            platform: burn_p2p_core::ClientPlatform::Browser,
-            available_backends: vec![LocalBackend::Wgpu],
-            device_memory_bytes: Some(2 * 1024 * 1024 * 1024),
-            system_memory_bytes: 8 * 1024 * 1024 * 1024,
-            disk_bytes: 8 * 1024 * 1024 * 1024,
-            upload_mbps: 10.0,
-            download_mbps: 50.0,
-            persistence: burn_p2p_core::PersistenceClass::Ephemeral,
-            attestation_level: burn_p2p_core::AttestationLevel::None,
-            work_units_per_second: 120.0,
-            benchmark_hash: None,
-        };
+        let mut probe = browser_probe_from_capabilities(
+            burn_p2p_core::PeerId::new("peer-browser"),
+            [
+                burn_p2p_core::BrowserCapability::DedicatedWorker,
+                burn_p2p_core::BrowserCapability::WebGpu,
+            ],
+            120.0,
+            burn_p2p_core::PersistenceClass::Ephemeral,
+            None,
+        );
+        probe.device_memory_bytes = Some(2 * 1024 * 1024 * 1024);
+        probe.system_memory_bytes = 8 * 1024 * 1024 * 1024;
+        probe.disk_bytes = 8 * 1024 * 1024 * 1024;
+        probe.upload_mbps = 10.0;
+        probe.download_mbps = 50.0;
 
         let profile = CapabilityCalibrator::new(LimitPolicy::default())
             .expect("calibrator")
@@ -569,14 +743,51 @@ mod tests {
         assert!(
             profile
                 .recommended_roles
-                .contains(&burn_p2p_core::PeerRole::BrowserTrainer)
+                .contains(&burn_p2p_core::PeerRole::BrowserTrainerWgpu)
         );
         assert!(
             profile
                 .recommended_roles
                 .contains(&burn_p2p_core::PeerRole::Evaluator)
         );
+        assert!(
+            profile
+                .recommended_roles
+                .contains(&burn_p2p_core::PeerRole::BrowserObserver)
+        );
         assert_eq!(profile.recommended_budget.target_window_seconds, 45);
+    }
+
+    #[test]
+    fn browser_probe_without_worker_is_not_promoted_into_validation_roles() {
+        let profile = CapabilityCalibrator::default()
+            .calibrate(
+                browser_probe_from_capabilities(
+                    burn_p2p_core::PeerId::new("peer-browser-fallback"),
+                    [burn_p2p_core::BrowserCapability::WssFallback],
+                    40.0,
+                    burn_p2p_core::PersistenceClass::Ephemeral,
+                    None,
+                ),
+                Utc::now(),
+            )
+            .expect("profile");
+
+        assert!(
+            profile
+                .recommended_roles
+                .contains(&burn_p2p_core::PeerRole::BrowserFallback)
+        );
+        assert!(
+            !profile
+                .recommended_roles
+                .contains(&burn_p2p_core::PeerRole::BrowserVerifier)
+        );
+        assert!(
+            !profile
+                .recommended_roles
+                .contains(&burn_p2p_core::PeerRole::BrowserTrainerWgpu)
+        );
     }
 
     #[test]

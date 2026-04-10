@@ -11,7 +11,8 @@ use std::{
 
 use burn_p2p::{
     ArtifactId, AuthProvider, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
-    ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
+    ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
+    ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadId, NetworkId,
     PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId,
     StudyId, WindowActivation, WindowId, WorkloadId,
@@ -238,6 +239,121 @@ fn browser_storage_bounds_and_dedupes_metrics_catchup_bundles() {
             .snapshot_seq,
         99
     );
+}
+
+#[test]
+fn browser_storage_bounds_receipt_membership_history() {
+    let mut storage = BrowserStorageSnapshot::default();
+
+    for index in 0..600 {
+        storage.remember_receipt(burn_p2p::ContributionReceiptId::new(format!(
+            "stored-{index:03}"
+        )));
+    }
+    assert_eq!(storage.stored_receipts.len(), 512);
+    assert!(
+        !storage
+            .stored_receipts
+            .contains(&burn_p2p::ContributionReceiptId::new("stored-000"))
+    );
+    assert!(
+        storage
+            .stored_receipts
+            .contains(&burn_p2p::ContributionReceiptId::new("stored-599"))
+    );
+
+    let acknowledged = (0..600)
+        .map(|index| burn_p2p::ContributionReceiptId::new(format!("submitted-{index:03}")))
+        .collect::<Vec<_>>();
+    storage.acknowledge_receipts(&acknowledged);
+    assert_eq!(storage.submitted_receipts.len(), 512);
+    assert!(
+        !storage
+            .submitted_receipts
+            .contains(&burn_p2p::ContributionReceiptId::new("submitted-000"))
+    );
+    assert!(
+        storage
+            .submitted_receipts
+            .contains(&burn_p2p::ContributionReceiptId::new("submitted-599"))
+    );
+}
+
+#[test]
+fn browser_storage_deserializes_legacy_pending_receipt_arrays() {
+    let snapshot = serde_json::json!({
+        "metadata_version": 1,
+        "session": BrowserSessionState::default(),
+        "cached_chunk_artifacts": [],
+        "cached_head_artifact_heads": [],
+        "cached_microshards": [],
+        "stored_receipts": [],
+        "pending_receipts": [{
+            "receipt_id": "receipt-browser",
+            "peer_id": "peer-browser",
+            "study_id": "study-browser",
+            "experiment_id": "exp-browser",
+            "revision_id": "rev-browser",
+            "base_head_id": "head-browser",
+            "artifact_id": "artifact-browser",
+            "accepted_at": Utc::now(),
+            "accepted_weight": 1.0,
+            "metrics": {},
+            "merge_cert_id": null
+        }],
+        "submitted_receipts": [],
+        "metrics_catchup_bundles": [],
+        "last_metrics_live_event": null,
+        "last_metrics_sync_at": null,
+        "last_head_id": null,
+        "stored_certificate_peer_id": null,
+        "active_assignment": null,
+        "updated_at": Utc::now()
+    });
+
+    let storage: BrowserStorageSnapshot =
+        serde_json::from_value(snapshot).expect("deserialize legacy browser storage");
+    assert_eq!(
+        storage.pending_receipts.backend,
+        BrowserReceiptOutboxBackend::Snapshot
+    );
+    assert_eq!(storage.pending_receipts.len(), 1);
+}
+
+#[test]
+fn browser_receipt_outbox_supports_structured_durable_backend() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage
+        .pending_receipts
+        .configure_backend(BrowserReceiptOutboxBackend::IndexedDb);
+    storage.queue_receipt(ContributionReceipt {
+        receipt_id: ContributionReceiptId::new("receipt-browser"),
+        peer_id: PeerId::new("peer-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        base_head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        accepted_at: Utc::now(),
+        accepted_weight: 1.0,
+        metrics: BTreeMap::new(),
+        merge_cert_id: None,
+    });
+
+    let encoded = serde_json::to_value(&storage).expect("serialize storage");
+    assert_eq!(encoded["pending_receipts"]["backend"], "IndexedDb");
+    let receipts = encoded["pending_receipts"]["receipts"]
+        .as_array()
+        .expect("pending_receipts.receipts should serialize as an array");
+    assert_eq!(receipts.len(), 1);
+
+    let decoded: BrowserStorageSnapshot =
+        serde_json::from_value(encoded).expect("deserialize structured storage");
+    assert_eq!(
+        decoded.pending_receipts.backend,
+        BrowserReceiptOutboxBackend::IndexedDb
+    );
+    assert_eq!(decoded.pending_receipts.len(), 1);
 }
 
 #[test]
@@ -1653,6 +1769,54 @@ fn worker_runtime_flushes_and_acknowledges_receipt_outbox() {
     )));
     assert_eq!(runtime.storage.pending_receipts.len(), 0);
     assert_eq!(runtime.storage.submitted_receipts.len(), 2);
+}
+
+#[test]
+fn worker_runtime_flushes_receipt_outbox_in_bounded_batches() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime.remember_session(sample_browser_session_state("principal-browser"));
+
+    for offset in 0..80 {
+        runtime.storage.queue_receipt(ContributionReceipt {
+            receipt_id: ContributionReceiptId::new(format!("receipt-{offset}")),
+            peer_id: PeerId::new("peer-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            base_head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new(format!("artifact-{offset}")),
+            accepted_at: Utc::now(),
+            accepted_weight: 1.0,
+            metrics: BTreeMap::new(),
+            merge_cert_id: None,
+        });
+    }
+
+    let flush_events = runtime.apply_command(BrowserWorkerCommand::FlushReceiptOutbox, None, None);
+    let flushed_receipts = flush_events
+        .iter()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::ReceiptOutboxReady { receipts, .. } => Some(receipts.clone()),
+            _ => None,
+        })
+        .expect("receipt batch");
+
+    assert_eq!(flushed_receipts.len(), 64);
+    assert_eq!(runtime.storage.pending_receipts.len(), 80);
 }
 
 #[test]

@@ -14,7 +14,7 @@ use burn_p2p_publish::{
 };
 
 #[cfg(feature = "artifact-publish")]
-use crate::BootstrapAdminState;
+use crate::{BootstrapAdminState, operator_store::OperatorStore};
 
 #[cfg(feature = "artifact-publish")]
 impl BootstrapAdminState {
@@ -23,6 +23,7 @@ impl BootstrapAdminState {
         Ok(self
             .publication_store()?
             .map(|store| store.alias_statuses())
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -34,6 +35,7 @@ impl BootstrapAdminState {
         Ok(self
             .publication_store()?
             .map(|store| store.alias_statuses_for_experiment(experiment_id))
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -42,9 +44,10 @@ impl BootstrapAdminState {
         &self,
         experiment_id: &ExperimentId,
     ) -> anyhow::Result<Vec<ArtifactRunSummary>> {
+        let heads = self.stored_heads()?;
         Ok(self
             .publication_store()?
-            .map(|store| store.run_summaries(&self.head_descriptors, experiment_id))
+            .map(|store| store.run_summaries(&heads, experiment_id))
             .transpose()?
             .unwrap_or_default())
     }
@@ -58,9 +61,11 @@ impl BootstrapAdminState {
         let Some(store) = self.publication_store()? else {
             return Ok(None);
         };
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
         Ok(Some(store.run_view(
-            &self.head_descriptors,
-            &self.head_eval_reports,
+            &heads,
+            &head_eval_reports,
             experiment_id,
             run_id,
         )?))
@@ -74,7 +79,9 @@ impl BootstrapAdminState {
         let Some(store) = self.publication_store()? else {
             return Ok(None);
         };
-        let mut view = store.head_view(&self.head_descriptors, &self.head_eval_reports, head_id)?;
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
+        let mut view = store.head_view(&heads, &head_eval_reports, head_id)?;
         view.provider_peer_ids = self.provider_peer_ids_for_head(head_id);
         Ok(Some(view))
     }
@@ -87,12 +94,9 @@ impl BootstrapAdminState {
         let Some(mut store) = self.publication_store()? else {
             anyhow::bail!("artifact publication is disabled for this bootstrap");
         };
-        Ok(store.request_export(
-            &artifact_store,
-            &self.head_descriptors,
-            &self.head_eval_reports,
-            request,
-        )?)
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
+        Ok(store.request_export(&artifact_store, &heads, &head_eval_reports, request)?)
     }
 
     /// Backfills matching aliases into publication targets.
@@ -106,11 +110,14 @@ impl BootstrapAdminState {
         let Some(mut store) = self.publication_store()? else {
             anyhow::bail!("artifact publication is disabled for this bootstrap");
         };
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
+        let protocols = self.publication_protocols()?;
         Ok(store.backfill_aliases(
             &artifact_store,
-            &self.head_descriptors,
-            &self.head_eval_reports,
-            &self.publication_protocols(),
+            &heads,
+            &head_eval_reports,
+            &protocols,
             request,
         )?)
     }
@@ -131,20 +138,21 @@ impl BootstrapAdminState {
         &self,
         export_job_id: &ExportJobId,
     ) -> anyhow::Result<Option<ExportJob>> {
-        Ok(self.publication_store()?.and_then(|store| {
-            store
-                .export_jobs()
-                .iter()
-                .find(|job| &job.export_job_id == export_job_id)
-                .cloned()
-        }))
+        let Some(store) = self.publication_store()? else {
+            return Ok(None);
+        };
+        Ok(store
+            .export_jobs()?
+            .into_iter()
+            .find(|job| &job.export_job_id == export_job_id))
     }
 
     /// Exports publication records across the current store.
     pub fn export_published_artifacts(&self) -> anyhow::Result<Vec<PublishedArtifactRecord>> {
         Ok(self
             .publication_store()?
-            .map(|store| store.published_artifacts().to_vec())
+            .map(|store| store.published_artifacts())
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -152,7 +160,8 @@ impl BootstrapAdminState {
     pub fn export_artifact_jobs(&self) -> anyhow::Result<Vec<ExportJob>> {
         Ok(self
             .publication_store()?
-            .map(|store| store.export_jobs().to_vec())
+            .map(|store| store.export_jobs())
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -182,12 +191,9 @@ impl BootstrapAdminState {
         let Some(mut store) = self.publication_store()? else {
             anyhow::bail!("artifact publication is disabled for this bootstrap");
         };
-        Ok(store.issue_download_ticket(
-            &artifact_store,
-            &self.head_descriptors,
-            &self.head_eval_reports,
-            request,
-        )?)
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
+        Ok(store.issue_download_ticket(&artifact_store, &heads, &head_eval_reports, request)?)
     }
 
     /// Resolves a short-lived download ticket to a streamable artifact payload.
@@ -207,40 +213,11 @@ impl BootstrapAdminState {
     }
 
     fn artifact_store(&self) -> anyhow::Result<Option<FsArtifactStore>> {
-        self.artifact_store_root
-            .as_ref()
-            .map(|root| {
-                let store = FsArtifactStore::new(root.clone());
-                store.ensure_layout().map_err(anyhow::Error::from)?;
-                Ok(store)
-            })
-            .transpose()
+        self.operator_store().artifact_store()
     }
 
     fn publication_store(&self) -> anyhow::Result<Option<PublicationStore>> {
-        self.publication_store_root
-            .as_ref()
-            .map(|root| {
-                let mut store = PublicationStore::open(root)?;
-                store.configure_targets(self.publication_targets.clone())?;
-                let protocols = self.publication_protocols();
-                if let Some(artifact_store) = self.artifact_store()? {
-                    store.sync_aliases_and_eager_publications(
-                        &artifact_store,
-                        &self.head_descriptors,
-                        &self.head_eval_reports,
-                        &protocols,
-                    )?;
-                } else {
-                    store.sync_aliases(
-                        &self.head_descriptors,
-                        &self.head_eval_reports,
-                        &protocols,
-                    )?;
-                }
-                Ok(store)
-            })
-            .transpose()
+        self.operator_store().publication_store()
     }
 
     pub(crate) fn sync_publication_store(&self) -> anyhow::Result<()> {
@@ -249,25 +226,28 @@ impl BootstrapAdminState {
         };
         let mut store = PublicationStore::open(root)?;
         store.configure_targets(self.publication_targets.clone())?;
-        let protocols = self.publication_protocols();
+        let heads = self.stored_heads()?;
+        let head_eval_reports = self.stored_head_eval_reports()?;
+        let protocols = self.publication_protocols()?;
         if let Some(artifact_store) = self.artifact_store()? {
             store.sync_aliases_and_eager_publications(
                 &artifact_store,
-                &self.head_descriptors,
-                &self.head_eval_reports,
+                &heads,
+                &head_eval_reports,
                 &protocols,
             )?;
         } else {
-            store.sync_aliases(&self.head_descriptors, &self.head_eval_reports, &protocols)?;
+            store.sync_aliases(&heads, &head_eval_reports, &protocols)?;
         }
         store.prune_expired_records()?;
         Ok(())
     }
 
-    fn publication_protocols(&self) -> Vec<EvalProtocolManifest> {
-        self.eval_protocol_manifests
+    fn publication_protocols(&self) -> anyhow::Result<Vec<EvalProtocolManifest>> {
+        Ok(self
+            .stored_eval_protocol_manifests()?
             .iter()
             .map(|record| record.manifest.clone())
-            .collect()
+            .collect())
     }
 }

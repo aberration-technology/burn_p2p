@@ -22,6 +22,7 @@ mod deploy;
 mod history;
 #[cfg(feature = "metrics-indexer")]
 mod metrics;
+mod operator_store;
 #[cfg(feature = "artifact-publish")]
 mod publication;
 mod state;
@@ -140,6 +141,9 @@ pub enum BootstrapError {
     #[error("this admin action requires a signer")]
     /// Uses the missing signer variant.
     MissingSigner,
+    #[error("invalid bootstrap configuration: {0}")]
+    /// Uses the invalid configuration variant.
+    InvalidConfig(String),
 }
 
 #[cfg(test)]
@@ -166,9 +170,12 @@ mod tests {
     #[cfg(feature = "social")]
     use burn_p2p_core::BadgeKind;
     use burn_p2p_core::{
-        ArtifactId, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform, ContentId,
-        ContributionReceipt, ExperimentId, HeadId, MergeCertificate, PeerId, PersistenceClass,
-        PrincipalId, RevisionId, StudyId, TelemetrySummary, WindowActivation, WindowId,
+        ArtifactId, AttestationLevel, AuthorityEpochManifest, BackendClass, CapabilityCard,
+        CapabilityCardId, CapabilityClass, ClientPlatform, ContentId, ContributionReceipt,
+        ExperimentId, HeadEvalReport, HeadEvalStatus, HeadId, MergeCertificate, MetricTrustClass,
+        NetworkId, PeerId, PeerWindowMetrics, PeerWindowStatus, PersistenceClass, PrincipalId,
+        ReducerCohortMetrics, ReducerCohortStatus, RevisionId, StudyId, TelemetrySummary,
+        ValidatorSetManifest, ValidatorSetMember, WindowActivation, WindowId,
     };
     use burn_p2p_experiment::{ActivationTarget, ExperimentControlCommand};
     use burn_p2p_security::{
@@ -213,6 +220,8 @@ mod tests {
         super::AuthorityPlan {
             release_policy,
             validator_policy,
+            validator_set_manifest: None,
+            authority_epoch_manifest: None,
         }
     }
 
@@ -238,6 +247,35 @@ mod tests {
         }
         .plan()
         .expect("plan")
+    }
+
+    fn validator_set_manifest() -> ValidatorSetManifest {
+        ValidatorSetManifest {
+            network_id: NetworkId::new("mainnet"),
+            validator_set_id: ContentId::new("validator-set-mainnet"),
+            authority_epoch: 7,
+            quorum_weight: 2,
+            members: vec![
+                ValidatorSetMember {
+                    peer_id: PeerId::new("validator-a"),
+                    principal_id: Some(PrincipalId::new("principal-a")),
+                    roles: burn_p2p_core::PeerRoleSet::new([burn_p2p_core::PeerRole::Validator]),
+                    vote_weight: 1,
+                    attestation_level: AttestationLevel::Challenge,
+                    metadata: BTreeMap::new(),
+                },
+                ValidatorSetMember {
+                    peer_id: PeerId::new("validator-b"),
+                    principal_id: Some(PrincipalId::new("principal-b")),
+                    roles: burn_p2p_core::PeerRoleSet::new([burn_p2p_core::PeerRole::Validator]),
+                    vote_weight: 1,
+                    attestation_level: AttestationLevel::Challenge,
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            created_at: Utc::now(),
+            metadata: BTreeMap::new(),
+        }
     }
 
     #[derive(Clone, Debug)]
@@ -566,6 +604,64 @@ mod tests {
     }
 
     #[test]
+    fn authority_plan_rejects_invalid_validator_set_manifest() {
+        let mut invalid_set = validator_set_manifest();
+        invalid_set.quorum_weight = 3;
+
+        let error = BootstrapSpec {
+            preset: BootstrapPreset::AuthorityValidator,
+            genesis: genesis(),
+            platform: ClientPlatform::Native,
+            bootstrap_addresses: vec![],
+            listen_addresses: vec![],
+            authority: Some(super::AuthorityPlan {
+                release_policy: authority_plan().release_policy,
+                validator_policy: authority_plan().validator_policy,
+                validator_set_manifest: Some(invalid_set),
+                authority_epoch_manifest: None,
+            }),
+            archive: super::ArchivePlan::default(),
+            admin_api: super::AdminApiPlan::default(),
+        }
+        .plan()
+        .expect_err("invalid validator quorum");
+
+        assert!(matches!(error, super::BootstrapError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn authority_plan_rejects_mismatched_epoch_manifest() {
+        let validator_set = validator_set_manifest();
+        let error = BootstrapSpec {
+            preset: BootstrapPreset::AuthorityValidator,
+            genesis: genesis(),
+            platform: ClientPlatform::Native,
+            bootstrap_addresses: vec![],
+            listen_addresses: vec![],
+            authority: Some(super::AuthorityPlan {
+                release_policy: authority_plan().release_policy,
+                validator_policy: authority_plan().validator_policy,
+                validator_set_manifest: Some(validator_set.clone()),
+                authority_epoch_manifest: Some(AuthorityEpochManifest {
+                    network_id: NetworkId::new("mainnet"),
+                    authority_epoch: validator_set.authority_epoch,
+                    validator_set_id: ContentId::new("other-validator-set"),
+                    minimum_revocation_epoch: burn_p2p_core::RevocationEpoch(0),
+                    supersedes_authority_epoch: Some(6),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                }),
+            }),
+            archive: super::ArchivePlan::default(),
+            admin_api: super::AdminApiPlan::default(),
+        }
+        .plan()
+        .expect_err("mismatched validator set reference");
+
+        assert!(matches!(error, super::BootstrapError::InvalidConfig(_)));
+    }
+
+    #[test]
     fn control_action_issues_signed_control_certificate() {
         let plan = plan(BootstrapPreset::AuthorityValidator);
         let mut state = BootstrapAdminState::default();
@@ -621,6 +717,7 @@ mod tests {
                     platform: ClientPlatform::Native,
                     roles: burn_p2p_core::PeerRoleSet::default_trainer(),
                     preferred_backends: vec!["cuda".into()],
+                    browser_capabilities: BTreeSet::new(),
                     recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
                     device_memory_bytes: Some(8 * 1024 * 1024 * 1024),
                     system_memory_bytes: 32 * 1024 * 1024 * 1024,
@@ -1535,6 +1632,455 @@ mod tests {
         assert_eq!(leaderboard.score_version, "leaderboard_score_v1");
     }
 
+    #[test]
+    fn operator_history_preview_stays_bounded_while_store_backed_exports_remain_complete() {
+        fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) {
+            fs::create_dir_all(path.parent().expect("history parent"))
+                .expect("create history parent");
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(value).expect("encode history record"),
+            )
+            .expect("write history record");
+        }
+
+        let tempdir = TempDir::new().expect("history tempdir");
+        let storage = StorageConfig::new(tempdir.path());
+        let now = Utc::now();
+
+        for index in 0..20 {
+            let receipt = ContributionReceipt {
+                receipt_id: burn_p2p_core::ContributionReceiptId::new(format!(
+                    "receipt-{index:03}"
+                )),
+                peer_id: PeerId::new(format!("peer-{}", index % 3)),
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                base_head_id: HeadId::new("base-head"),
+                artifact_id: ArtifactId::new(format!("artifact-{index:03}")),
+                accepted_at: now + chrono::Duration::seconds(index as i64),
+                accepted_weight: 1.0 + index as f64,
+                metrics: BTreeMap::from([("loss".into(), MetricValue::Float(index as f64))]),
+                merge_cert_id: Some(burn_p2p_core::MergeCertId::new(format!("merge-{index:03}"))),
+            };
+            write_json(
+                storage
+                    .receipts_dir()
+                    .join(format!("{}.json", receipt.receipt_id.as_str())),
+                &receipt,
+            );
+        }
+
+        for index in 0..12 {
+            let merge = MergeCertificate {
+                merge_cert_id: burn_p2p_core::MergeCertId::new(format!("merge-{index:03}")),
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                base_head_id: HeadId::new("base-head"),
+                merged_head_id: HeadId::new(format!("merged-head-{index:03}")),
+                merged_artifact_id: ArtifactId::new(format!("merged-artifact-{index:03}")),
+                policy: burn_p2p::MergePolicy::WeightedMean,
+                issued_at: now + chrono::Duration::seconds(index as i64),
+                validator: PeerId::new("validator"),
+                contribution_receipts: vec![burn_p2p_core::ContributionReceiptId::new(format!(
+                    "receipt-{index:03}"
+                ))],
+            };
+            write_json(
+                storage
+                    .receipts_dir()
+                    .join(format!("merge-{}.json", merge.merge_cert_id.as_str())),
+                &merge,
+            );
+        }
+
+        for index in 0..14 {
+            let head = HeadDescriptor {
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                head_id: HeadId::new(format!("head-{index:03}")),
+                artifact_id: ArtifactId::new(format!("head-artifact-{index:03}")),
+                parent_head_id: (index > 0).then(|| HeadId::new(format!("head-{:03}", index - 1))),
+                global_step: index as u64,
+                created_at: now + chrono::Duration::seconds(index as i64),
+                metrics: BTreeMap::new(),
+            };
+            write_json(
+                storage.heads_dir().join(format!("head-{index:03}.json")),
+                &head,
+            );
+        }
+
+        for index in 0..7 {
+            let metrics = PeerWindowMetrics {
+                network_id: burn_p2p_core::NetworkId::new("network"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                workload_id: WorkloadId::new("workload"),
+                dataset_view_id: burn_p2p::DatasetViewId::new("dataset"),
+                peer_id: PeerId::new(format!("trainer-{}", index % 2)),
+                principal_id: None,
+                lease_id: burn_p2p::LeaseId::new(format!("lease-{index:03}")),
+                base_head_id: HeadId::new("base-head"),
+                window_started_at: now + chrono::Duration::seconds(index as i64),
+                window_finished_at: now + chrono::Duration::seconds(index as i64 + 1),
+                attempted_tokens_or_samples: 64,
+                accepted_tokens_or_samples: Some(64),
+                local_train_loss_mean: Some(0.1),
+                local_train_loss_last: Some(0.1),
+                grad_or_delta_norm: Some(1.0),
+                optimizer_step_count: 1,
+                compute_time_ms: 10,
+                data_fetch_time_ms: 5,
+                publish_latency_ms: 2,
+                head_lag_at_start: 0,
+                head_lag_at_finish: 0,
+                backend_class: BackendClass::Ndarray,
+                role: burn_p2p::PeerRole::TrainerCpu,
+                status: PeerWindowStatus::Completed,
+                status_reason: None,
+            };
+            write_json(
+                storage
+                    .metrics_dir()
+                    .join(format!("peer-window-{index:03}.json")),
+                &metrics,
+            );
+        }
+
+        for index in 0..6 {
+            let metrics = ReducerCohortMetrics {
+                network_id: burn_p2p_core::NetworkId::new("network"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                workload_id: WorkloadId::new("workload"),
+                dataset_view_id: burn_p2p::DatasetViewId::new("dataset"),
+                merge_window_id: ContentId::new(format!("merge-window-{index:03}")),
+                reducer_group_id: ContentId::new(format!("reducers-{index:03}")),
+                captured_at: now + chrono::Duration::seconds(index as i64),
+                base_head_id: HeadId::new("base-head"),
+                candidate_head_id: Some(HeadId::new(format!("candidate-{index:03}"))),
+                received_updates: 4,
+                accepted_updates: 4,
+                rejected_updates: 0,
+                sum_weight: 4.0,
+                accepted_tokens_or_samples: 256,
+                staleness_mean: 0.0,
+                staleness_max: 0.0,
+                window_close_delay_ms: 10,
+                cohort_duration_ms: 20,
+                aggregate_norm: 0.5,
+                reducer_load: 0.2,
+                ingress_bytes: 128,
+                egress_bytes: 64,
+                replica_agreement: Some(1.0),
+                late_arrival_count: Some(0),
+                missing_peer_count: Some(0),
+                rejection_reasons: BTreeMap::new(),
+                status: ReducerCohortStatus::Closed,
+            };
+            write_json(
+                storage
+                    .metrics_dir()
+                    .join(format!("reducer-cohort-{index:03}.json")),
+                &metrics,
+            );
+        }
+
+        for index in 0..9 {
+            let report = HeadEvalReport {
+                network_id: burn_p2p_core::NetworkId::new("network"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                workload_id: WorkloadId::new("workload"),
+                head_id: HeadId::new("head-eval-target"),
+                base_head_id: Some(HeadId::new("base-head")),
+                eval_protocol_id: ContentId::new(format!("eval-protocol-{index:03}")),
+                evaluator_set_id: ContentId::new("validators"),
+                metric_values: BTreeMap::from([("loss".into(), MetricValue::Float(0.1))]),
+                sample_count: 64,
+                dataset_view_id: burn_p2p::DatasetViewId::new("dataset"),
+                started_at: now + chrono::Duration::seconds(index as i64),
+                finished_at: now + chrono::Duration::seconds(index as i64 + 1),
+                trust_class: MetricTrustClass::Canonical,
+                status: HeadEvalStatus::Completed,
+                signature_bundle: Vec::new(),
+            };
+            write_json(
+                storage
+                    .metrics_dir()
+                    .join(format!("head-eval-{index:03}.json")),
+                &report,
+            );
+        }
+
+        for index in 0..8 {
+            let record = super::StoredEvalProtocolManifestRecord {
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                captured_at: now + chrono::Duration::seconds(index as i64),
+                manifest: burn_p2p_core::EvalProtocolManifest::new(
+                    format!("validation-{index:03}"),
+                    burn_p2p::DatasetViewId::new("dataset"),
+                    "validation",
+                    vec![burn_p2p_core::EvalMetricDef {
+                        metric_key: "loss".into(),
+                        display_name: "Loss".into(),
+                        unit: None,
+                        higher_is_better: false,
+                    }],
+                    burn_p2p_core::EvalProtocolOptions::new(
+                        burn_p2p_core::EvalAggregationRule::Mean,
+                        32,
+                        1,
+                        "v1",
+                    ),
+                )
+                .expect("eval protocol"),
+            };
+            write_json(
+                storage
+                    .metrics_dir()
+                    .join(format!("eval-protocol-{index:03}.json")),
+                &record,
+            );
+        }
+
+        let metrics_budget = burn_p2p::MetricsRetentionBudget {
+            max_peer_window_entries_per_revision: 3,
+            max_reducer_cohort_entries_per_revision: 2,
+            max_head_eval_reports_per_revision: 4,
+            max_metric_revisions_per_experiment: 1,
+            max_peer_window_detail_windows: 2,
+        };
+        let memory_budget = super::history::OperatorHistoryMemoryBudget {
+            max_receipts_in_memory: 5,
+            max_merges_in_memory: 4,
+            max_heads_in_memory: 3,
+            max_eval_protocol_manifests_in_memory: 2,
+        };
+
+        let history = super::load_operator_history(Some(&storage), metrics_budget, memory_budget)
+            .expect("load bounded operator history");
+
+        assert_eq!(history.receipts.len(), 5);
+        assert_eq!(history.merges.len(), 4);
+        assert_eq!(history.heads.len(), 3);
+        assert_eq!(history.eval_protocol_manifests.len(), 2);
+        assert_eq!(history.peer_window_metrics.len(), 3);
+        assert_eq!(history.reducer_cohort_metrics.len(), 2);
+        assert_eq!(history.head_eval_reports.len(), 4);
+        assert_eq!(history.totals.receipt_count, 20);
+        assert_eq!(history.totals.merge_count, 12);
+        assert_eq!(history.totals.head_count, 14);
+        assert_eq!(history.totals.eval_protocol_manifest_count, 8);
+
+        let state = BootstrapAdminState {
+            head_descriptors: history.heads.clone(),
+            contribution_receipts: history.receipts.clone(),
+            persisted_receipt_count: history.totals.receipt_count,
+            merge_certificates: history.merges.clone(),
+            persisted_merge_count: history.totals.merge_count,
+            persisted_head_count: history.totals.head_count,
+            peer_window_metrics: history.peer_window_metrics.clone(),
+            reducer_cohort_metrics: history.reducer_cohort_metrics.clone(),
+            head_eval_reports: history.head_eval_reports.clone(),
+            eval_protocol_manifests: history.eval_protocol_manifests.clone(),
+            history_root: Some(storage.root.clone()),
+            metrics_retention: metrics_budget,
+            ..BootstrapAdminState::default()
+        };
+
+        assert_eq!(
+            state
+                .export_receipts(&ReceiptQuery {
+                    study_id: None,
+                    experiment_id: None,
+                    revision_id: None,
+                    peer_id: None,
+                })
+                .len(),
+            20
+        );
+        assert_eq!(
+            state
+                .export_heads(&HeadQuery {
+                    study_id: None,
+                    experiment_id: None,
+                    revision_id: None,
+                    head_id: None,
+                })
+                .len(),
+            14
+        );
+        assert_eq!(
+            state
+                .export_head_eval_reports(&HeadId::new("head-eval-target"))
+                .len(),
+            9
+        );
+
+        let diagnostics = state.diagnostics(&plan(BootstrapPreset::BootstrapOnly), now, None);
+        assert_eq!(diagnostics.accepted_receipts, 20);
+        assert_eq!(diagnostics.certified_merges, 12);
+    }
+
+    #[test]
+    fn contribution_receipt_ingest_keeps_a_bounded_preview_tail() {
+        let now = Utc::now();
+        let preview_limit =
+            super::history::OperatorHistoryMemoryBudget::default().max_receipts_in_memory;
+        let mut state = BootstrapAdminState::default();
+
+        let receipts = (0..(preview_limit + 32))
+            .map(|index| ContributionReceipt {
+                receipt_id: burn_p2p_core::ContributionReceiptId::new(format!(
+                    "receipt-{index:03}"
+                )),
+                peer_id: PeerId::new(format!("peer-{}", index % 3)),
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                base_head_id: HeadId::new("base-head"),
+                artifact_id: ArtifactId::new(format!("artifact-{index:03}")),
+                accepted_at: now + chrono::Duration::seconds(index as i64),
+                accepted_weight: 1.0,
+                metrics: BTreeMap::new(),
+                merge_cert_id: None,
+            })
+            .collect::<Vec<_>>();
+
+        let accepted = state.ingest_contribution_receipts(receipts);
+
+        assert_eq!(accepted.len(), preview_limit + 32);
+        assert_eq!(state.contribution_receipts.len(), preview_limit);
+        assert_eq!(
+            state
+                .contribution_receipts
+                .first()
+                .map(|receipt| receipt.receipt_id.clone()),
+            Some(burn_p2p_core::ContributionReceiptId::new(format!(
+                "receipt-{:03}",
+                32
+            )))
+        );
+    }
+
+    #[cfg(feature = "social")]
+    #[test]
+    fn leaderboard_snapshot_reads_from_durable_history_not_preview_vectors() {
+        fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) {
+            fs::create_dir_all(path.parent().expect("history parent"))
+                .expect("create history parent");
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(value).expect("encode history record"),
+            )
+            .expect("write history record");
+        }
+
+        let tempdir = TempDir::new().expect("leaderboard tempdir");
+        let storage = StorageConfig::new(tempdir.path());
+        let now = Utc::now();
+        let peer_one = PeerId::new("peer-1");
+        let peer_two = PeerId::new("peer-2");
+        let principal = PrincipalId::new("alice");
+
+        let first_receipt = ContributionReceipt {
+            receipt_id: burn_p2p_core::ContributionReceiptId::new("receipt-a"),
+            peer_id: peer_one.clone(),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            base_head_id: HeadId::new("base-head"),
+            artifact_id: ArtifactId::new("artifact-a"),
+            accepted_at: now,
+            accepted_weight: 3.0,
+            metrics: BTreeMap::new(),
+            merge_cert_id: Some(burn_p2p_core::MergeCertId::new("merge-a")),
+        };
+        let second_receipt = ContributionReceipt {
+            receipt_id: burn_p2p_core::ContributionReceiptId::new("receipt-b"),
+            peer_id: peer_two.clone(),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            base_head_id: HeadId::new("base-head"),
+            artifact_id: ArtifactId::new("artifact-b"),
+            accepted_at: now + chrono::Duration::seconds(1),
+            accepted_weight: 2.0,
+            metrics: BTreeMap::new(),
+            merge_cert_id: Some(burn_p2p_core::MergeCertId::new("merge-a")),
+        };
+        let merge = MergeCertificate {
+            merge_cert_id: burn_p2p_core::MergeCertId::new("merge-a"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            base_head_id: HeadId::new("base-head"),
+            merged_head_id: HeadId::new("merged-head"),
+            merged_artifact_id: ArtifactId::new("merged-artifact"),
+            policy: burn_p2p::MergePolicy::WeightedMean,
+            issued_at: now + chrono::Duration::seconds(2),
+            validator: PeerId::new("validator"),
+            contribution_receipts: vec![
+                first_receipt.receipt_id.clone(),
+                second_receipt.receipt_id.clone(),
+            ],
+        };
+
+        write_json(
+            storage
+                .receipts_dir()
+                .join(format!("{}.json", first_receipt.receipt_id.as_str())),
+            &first_receipt,
+        );
+        write_json(
+            storage
+                .receipts_dir()
+                .join(format!("{}.json", second_receipt.receipt_id.as_str())),
+            &second_receipt,
+        );
+        write_json(
+            storage
+                .receipts_dir()
+                .join(format!("merge-{}.json", merge.merge_cert_id.as_str())),
+            &merge,
+        );
+
+        let report = |peer_id: &PeerId| PeerAdmissionReport {
+            peer_id: peer_id.clone(),
+            principal_id: principal.clone(),
+            requested_scopes: BTreeSet::new(),
+            trust_level: PeerTrustLevel::ScopeAuthorized,
+            issuer_peer_id: PeerId::new("authority"),
+            findings: Vec::new(),
+            verified_at: now,
+        };
+        let state = BootstrapAdminState {
+            history_root: Some(storage.root.clone()),
+            peer_admission_reports: BTreeMap::from([
+                (peer_one.clone(), report(&peer_one)),
+                (peer_two.clone(), report(&peer_two)),
+            ]),
+            ..BootstrapAdminState::default()
+        };
+
+        let leaderboard = state.leaderboard_snapshot(
+            &plan(BootstrapPreset::BootstrapOnly),
+            now + chrono::Duration::seconds(5),
+        );
+        assert_eq!(leaderboard.entries.len(), 1);
+        assert_eq!(leaderboard.entries[0].accepted_receipt_count, 2);
+        assert_eq!(
+            leaderboard.entries[0].identity.principal_id,
+            Some(principal)
+        );
+    }
+
     #[cfg(feature = "metrics-indexer")]
     #[test]
     fn load_operator_history_recovers_metrics_from_durable_store() {
@@ -1635,6 +2181,7 @@ mod tests {
         let history = super::load_operator_history(
             Some(&storage),
             burn_p2p::MetricsRetentionBudget::operator(),
+            super::history::OperatorHistoryMemoryBudget::default(),
         )
         .expect("load operator history");
         assert_eq!(history.peer_window_metrics, vec![peer_window_metrics]);

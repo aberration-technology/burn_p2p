@@ -1,0 +1,20 @@
+services:
+  burn-p2p-bootstrap-base:
+    build:
+      context: ../..
+      dockerfile: deploy/containers/bootstrap.Dockerfile
+    ports:
+      - "127.0.0.1:8787:8787"
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

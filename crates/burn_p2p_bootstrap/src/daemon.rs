@@ -488,6 +488,7 @@ where
                 .config()
                 .metrics_retention
                 .resolve_for_roles(&running.mainnet().roles),
+            crate::history::OperatorHistoryMemoryBudget::default(),
         )?
         .receipts
         .is_empty()
@@ -577,6 +578,7 @@ fn refresh_admin_state_from_runtime(
     state.metrics_retention = config
         .metrics_retention
         .resolve_for_roles(&telemetry.configured_roles);
+    state.history_root = config.storage.as_ref().map(|storage| storage.root.clone());
     state.artifact_store_root = config.storage.as_ref().map(|storage| storage.root.clone());
     state.publication_store_root = config.storage.as_ref().map(StorageConfig::publication_dir);
     state.metrics_store_root = config
@@ -585,10 +587,17 @@ fn refresh_admin_state_from_runtime(
         .map(StorageConfig::metrics_indexer_dir);
 
     if let Some(storage) = config.storage.as_ref() {
-        let history = crate::load_operator_history(Some(storage), state.metrics_retention)?;
+        let history = crate::load_operator_history(
+            Some(storage),
+            state.metrics_retention,
+            crate::history::OperatorHistoryMemoryBudget::default(),
+        )?;
         state.head_descriptors = history.heads;
         state.contribution_receipts = history.receipts;
         state.merge_certificates = history.merges;
+        state.persisted_head_count = history.totals.head_count;
+        state.persisted_receipt_count = history.totals.receipt_count;
+        state.persisted_merge_count = history.totals.merge_count;
         state.peer_window_metrics = history.peer_window_metrics;
         state.reducer_cohort_metrics = history.reducer_cohort_metrics;
         state.head_eval_reports = history.head_eval_reports;

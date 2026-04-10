@@ -1397,6 +1397,60 @@ mod tests {
     }
 
     #[test]
+    fn metrics_store_reopen_compacts_loaded_entries_to_retention_budget() {
+        let started_at = Utc::now();
+        let temp = tempdir().expect("temp dir");
+        let config = MetricsIndexerConfig {
+            max_peer_window_entries_per_revision: 2,
+            ..MetricsIndexerConfig::default()
+        };
+        let mut store =
+            MetricsStore::open(temp.path(), config.clone()).expect("open metrics store");
+        let entries = (0..4)
+            .map(|offset| {
+                MetricEnvelope::PeerWindow(PeerWindowMetrics {
+                    network_id: NetworkId::new("network-a"),
+                    experiment_id: ExperimentId::new("exp-a"),
+                    revision_id: RevisionId::new("rev-a"),
+                    workload_id: WorkloadId::new("workload-a"),
+                    dataset_view_id: DatasetViewId::new("view-a"),
+                    peer_id: burn_p2p_core::PeerId::new(format!("peer-{offset}")),
+                    principal_id: None,
+                    lease_id: LeaseId::new(format!("lease-{offset}")),
+                    base_head_id: HeadId::new("head-a"),
+                    window_started_at: started_at + Duration::seconds(offset),
+                    window_finished_at: started_at + Duration::seconds(offset + 1),
+                    attempted_tokens_or_samples: 100,
+                    accepted_tokens_or_samples: Some(100),
+                    local_train_loss_mean: Some(0.5),
+                    local_train_loss_last: Some(0.5),
+                    grad_or_delta_norm: Some(1.0),
+                    optimizer_step_count: 1,
+                    compute_time_ms: 100,
+                    data_fetch_time_ms: 10,
+                    publish_latency_ms: 5,
+                    head_lag_at_start: 0,
+                    head_lag_at_finish: offset as u64,
+                    backend_class: BackendClass::Cpu,
+                    role: PeerRole::TrainerCpu,
+                    status: PeerWindowStatus::Completed,
+                    status_reason: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        store.replace_entries(entries).expect("replace entries");
+
+        let reopened = MetricsStore::open(temp.path(), config).expect("reopen metrics store");
+        let retained = reopened.load_entries();
+        assert_eq!(retained.len(), 2);
+        assert!(
+            retained
+                .iter()
+                .all(|entry| matches!(entry, MetricEnvelope::PeerWindow(_)))
+        );
+    }
+
+    #[test]
     fn network_performance_rollup_tracks_wait_idle_and_validation_throughput() {
         let started_at = Utc::now();
         let peer_windows = vec![

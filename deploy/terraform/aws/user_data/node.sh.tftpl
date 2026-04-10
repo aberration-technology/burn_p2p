@@ -22,10 +22,10 @@ systemctl enable --now docker
 if [ "${gpu_enabled}" = "true" ]; then
   apt-get install -y ubuntu-drivers-common || true
   ubuntu-drivers install || true
-  distribution=$(. /etc/os-release; echo ${ID}${VERSION_ID})
+  distribution=$(. /etc/os-release; echo $${ID}$${VERSION_ID})
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
     | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true
-  curl -fsSL "https://nvidia.github.io/libnvidia-container/${distribution}/libnvidia-container.list" \
+  curl -fsSL "https://nvidia.github.io/libnvidia-container/$${distribution}/libnvidia-container.list" \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     > /etc/apt/sources.list.d/nvidia-container-toolkit.list || true
   apt-get update || true
@@ -56,6 +56,6 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v /var/lib/burn-p2p:/var/lib/burn-p2p \
-  ${GPU_ARGS} \
-  ${CONFIG_MOUNT} \
+  $${GPU_ARGS} \
+  $${CONFIG_MOUNT} \
   ${image} ${command}

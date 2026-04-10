@@ -8,6 +8,8 @@ pub(super) struct PeerRobustnessState {
     pub last_rejection_reason: Option<RejectionReason>,
     pub updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub last_decision_window: Option<WindowId>,
+    #[serde(default)]
     pub quarantine_started_window: Option<WindowId>,
     #[serde(default)]
     pub last_quarantine_window: Option<WindowId>,
@@ -369,6 +371,7 @@ pub(super) fn append_quarantine_escalation_alerts(
     let (next_state, _) = project_robustness_state(
         &prepared.robustness_state,
         &robustness.decisions,
+        &prepared.robustness_policy.reputation_policy,
         &prepared.robustness_policy.quarantine_policy,
         prepared.merge_window.window_id,
     );
@@ -609,11 +612,17 @@ pub(super) fn persist_validation_robustness_state(
     experiment: &ExperimentHandle,
     previous: &PersistedRobustnessState,
     decisions: &[RobustnessDecision],
+    reputation_policy: &burn_p2p_core::ReputationPolicy,
     policy: &QuarantinePolicy,
     current_window: WindowId,
 ) -> anyhow::Result<Vec<TrustScore>> {
-    let (next, trust_scores) =
-        project_robustness_state(previous, decisions, policy, current_window);
+    let (next, trust_scores) = project_robustness_state(
+        previous,
+        decisions,
+        reputation_policy,
+        policy,
+        current_window,
+    );
     persist_json(storage.scoped_robustness_state_path(experiment), &next)?;
     Ok(trust_scores)
 }
@@ -621,6 +630,7 @@ pub(super) fn persist_validation_robustness_state(
 pub(super) fn project_robustness_state(
     previous: &PersistedRobustnessState,
     decisions: &[RobustnessDecision],
+    reputation_policy: &burn_p2p_core::ReputationPolicy,
     policy: &QuarantinePolicy,
     current_window: WindowId,
 ) -> (PersistedRobustnessState, Vec<TrustScore>) {
@@ -632,6 +642,19 @@ pub(super) fn project_robustness_state(
 
     for decision in decisions {
         let peer_state = next.peers.entry(decision.peer_id.clone()).or_default();
+        if peer_state.last_decision_window == Some(current_window) {
+            trust_scores.push(materialize_peer_trust_score(
+                reputation_policy,
+                &decision.peer_id,
+                peer_state,
+                decision
+                    .trust_score
+                    .as_ref()
+                    .map(|trust| trust.updated_at)
+                    .unwrap_or_else(Utc::now),
+            ));
+            continue;
+        }
         let was_quarantined = peer_state.quarantined;
         if decision.accepted {
             peer_state.consecutive_rejections = 0;
@@ -661,6 +684,7 @@ pub(super) fn project_robustness_state(
             trust.ban_recommended = peer_state.ban_recommended;
             trust_scores.push(trust);
         }
+        peer_state.last_decision_window = Some(current_window);
         peer_state.last_rejection_reason = decision.rejection_reason.clone();
     }
 
@@ -707,6 +731,23 @@ fn resolved_peer_robustness_state(
     resolved.ban_recommended =
         quarantine_ban_due(policy, current_window, quarantine_started_window);
     resolved
+}
+
+fn materialize_peer_trust_score(
+    policy: &burn_p2p_core::ReputationPolicy,
+    peer_id: &PeerId,
+    state: &PeerRobustnessState,
+    updated_at: DateTime<Utc>,
+) -> TrustScore {
+    TrustScore {
+        peer_id: peer_id.clone(),
+        score: state.trust_score,
+        reducer_eligible: state.trust_score >= policy.reducer_demote_threshold,
+        validator_eligible: state.trust_score >= policy.validator_demote_threshold,
+        quarantined: state.quarantined,
+        ban_recommended: state.ban_recommended,
+        updated_at: state.updated_at.unwrap_or(updated_at),
+    }
 }
 
 fn quarantine_expired(

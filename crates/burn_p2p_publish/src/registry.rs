@@ -1,12 +1,12 @@
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
 use burn_p2p_core::{
-    ArtifactAlias, ArtifactLiveEvent, DownloadTicket, PublicationTarget, PublicationTargetId,
-    PublicationTargetKind, PublishedArtifactRecord,
+    ArtifactAlias, ArtifactLiveEvent, DownloadTicket, Page, PageRequest, PublicationTarget,
+    PublicationTargetId, PublicationTargetKind, PublishedArtifactRecord,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -20,25 +20,107 @@ use crate::{
 pub(crate) struct PublicationRegistryState {
     pub(crate) targets: Vec<PublicationTarget>,
     pub(crate) aliases: Vec<ArtifactAlias>,
-    pub(crate) alias_history: Vec<ArtifactAlias>,
-    pub(crate) published_artifacts: Vec<PublishedArtifactRecord>,
-    pub(crate) export_jobs: Vec<ExportJob>,
-    pub(crate) download_tickets: Vec<DownloadTicket>,
+    #[serde(default)]
+    pub(crate) recent_published_artifacts: Vec<PublishedArtifactRecord>,
+    #[serde(default)]
+    pub(crate) recent_export_jobs: Vec<ExportJob>,
+    #[serde(default)]
+    pub(crate) active_download_tickets: Vec<DownloadTicket>,
     #[serde(default)]
     pub(crate) publication_events: Vec<ArtifactLiveEvent>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct PublicationRegistryStateDisk {
+    #[serde(default)]
+    targets: Vec<PublicationTarget>,
+    #[serde(default)]
+    aliases: Vec<ArtifactAlias>,
+    #[serde(default)]
+    alias_history: Vec<ArtifactAlias>,
+    #[serde(default)]
+    published_artifacts: Vec<PublishedArtifactRecord>,
+    #[serde(default)]
+    recent_published_artifacts: Vec<PublishedArtifactRecord>,
+    #[serde(default)]
+    export_jobs: Vec<ExportJob>,
+    #[serde(default)]
+    recent_export_jobs: Vec<ExportJob>,
+    #[serde(default)]
+    download_tickets: Vec<DownloadTicket>,
+    #[serde(default)]
+    active_download_tickets: Vec<DownloadTicket>,
+    #[serde(default)]
+    publication_events: Vec<ArtifactLiveEvent>,
+}
+
 impl PublicationRegistryState {
+    pub(crate) const MAX_RECENT_PUBLISHED_ARTIFACTS: usize = 256;
+    pub(crate) const MAX_RECENT_EXPORT_JOBS: usize = 256;
+    pub(crate) const MAX_ACTIVE_DOWNLOAD_TICKETS: usize = 512;
+
     pub(crate) fn new(root_dir: &Path) -> Self {
         Self {
             targets: vec![default_filesystem_target(root_dir)],
             aliases: Vec::new(),
-            alias_history: Vec::new(),
-            published_artifacts: Vec::new(),
-            export_jobs: Vec::new(),
-            download_tickets: Vec::new(),
+            recent_published_artifacts: Vec::new(),
+            recent_export_jobs: Vec::new(),
+            active_download_tickets: Vec::new(),
             publication_events: Vec::new(),
         }
+    }
+
+    fn clamp_previews(&mut self) {
+        clamp_recent(
+            &mut self.recent_published_artifacts,
+            Self::MAX_RECENT_PUBLISHED_ARTIFACTS,
+            |record| record.created_at,
+        );
+        clamp_recent(
+            &mut self.recent_export_jobs,
+            Self::MAX_RECENT_EXPORT_JOBS,
+            |job| job.queued_at,
+        );
+        clamp_recent(
+            &mut self.active_download_tickets,
+            Self::MAX_ACTIVE_DOWNLOAD_TICKETS,
+            |ticket| ticket.issued_at,
+        );
+        if self.publication_events.len() > DEFAULT_PUBLICATION_EVENT_HISTORY {
+            let drop_count = self.publication_events.len() - DEFAULT_PUBLICATION_EVENT_HISTORY;
+            self.publication_events.drain(..drop_count);
+        }
+    }
+}
+
+impl PublicationRegistryStateDisk {
+    fn into_state(self, root_dir: &Path) -> PublicationRegistryState {
+        let mut state = PublicationRegistryState {
+            targets: if self.targets.is_empty() {
+                vec![default_filesystem_target(root_dir)]
+            } else {
+                self.targets
+            },
+            aliases: self.aliases,
+            recent_published_artifacts: if self.recent_published_artifacts.is_empty() {
+                self.published_artifacts
+            } else {
+                self.recent_published_artifacts
+            },
+            recent_export_jobs: if self.recent_export_jobs.is_empty() {
+                self.export_jobs
+            } else {
+                self.recent_export_jobs
+            },
+            active_download_tickets: if self.active_download_tickets.is_empty() {
+                self.download_tickets
+            } else {
+                self.active_download_tickets
+            },
+            publication_events: self.publication_events,
+        };
+        state.clamp_previews();
+        state
     }
 }
 
@@ -49,13 +131,36 @@ impl PublicationStore {
         fs::create_dir_all(root_dir.join("mirror"))?;
         let state_path = state_path(&root_dir);
         let mut state = if state_path.exists() {
-            serde_json::from_slice::<PublicationRegistryState>(&fs::read(&state_path)?)?
+            let legacy =
+                serde_json::from_slice::<PublicationRegistryStateDisk>(&fs::read(&state_path)?)?;
+            let legacy_alias_history = legacy.alias_history.clone();
+            let legacy_published = legacy.published_artifacts.clone();
+            let legacy_jobs = legacy.export_jobs.clone();
+            let mut state = legacy.into_state(&root_dir);
+            let mut store = Self {
+                root_dir: root_dir.clone(),
+                state: state.clone(),
+            };
+            if !legacy_alias_history.is_empty() && !alias_history_path(&root_dir).exists() {
+                store.replace_alias_history(&legacy_alias_history)?;
+            }
+            if !legacy_published.is_empty() && !published_artifact_history_path(&root_dir).exists()
+            {
+                store.replace_published_artifacts(&legacy_published)?;
+                state = store.state.clone();
+            }
+            if !legacy_jobs.is_empty() && !export_job_history_path(&root_dir).exists() {
+                store.replace_export_jobs(&legacy_jobs)?;
+                state = store.state.clone();
+            }
+            state
         } else {
             PublicationRegistryState::new(&root_dir)
         };
         if state.targets.is_empty() {
             state.targets.push(default_filesystem_target(&root_dir));
         }
+        state.clamp_previews();
         let mut store = Self { root_dir, state };
         store.prune_expired_records()?;
         Ok(store)
@@ -98,22 +203,22 @@ impl PublicationStore {
     }
 
     /// Returns publication records across all experiments.
-    pub fn published_artifacts(&self) -> &[PublishedArtifactRecord] {
-        &self.state.published_artifacts
+    pub fn published_artifacts(&self) -> Result<Vec<PublishedArtifactRecord>, PublishError> {
+        self.load_published_artifacts()
     }
 
     /// Returns export jobs across all experiments.
-    pub fn export_jobs(&self) -> &[ExportJob] {
-        &self.state.export_jobs
+    pub fn export_jobs(&self) -> Result<Vec<ExportJob>, PublishError> {
+        self.load_export_jobs()
     }
 
     /// Removes expired published artifacts and download tickets from the registry.
     pub fn prune_expired_records(&mut self) -> Result<(), PublishError> {
         let now = Utc::now();
         self.state
-            .download_tickets
+            .active_download_tickets
             .retain(|ticket| ticket.expires_at > now);
-        let existing_records = std::mem::take(&mut self.state.published_artifacts);
+        let existing_records = self.load_published_artifacts()?;
         let mut retained = Vec::<PublishedArtifactRecord>::new();
         for record in existing_records {
             if record
@@ -125,7 +230,7 @@ impl PublicationStore {
             }
             retained.push(record);
         }
-        self.state.published_artifacts = retained;
+        self.replace_published_artifacts(&retained)?;
         self.persist_state()?;
         Ok(())
     }
@@ -194,7 +299,9 @@ impl PublicationStore {
 
     pub(crate) fn persist_state(&self) -> Result<(), PublishError> {
         fs::create_dir_all(self.root_dir.join("mirror"))?;
-        let bytes = serde_json::to_vec_pretty(&self.state)?;
+        let mut state = self.state.clone();
+        state.clamp_previews();
+        let bytes = serde_json::to_vec_pretty(&state)?;
         let mut file = fs::File::create(state_path(&self.root_dir))?;
         file.write_all(&bytes)?;
         file.flush()?;
@@ -203,14 +310,237 @@ impl PublicationStore {
 
     pub(crate) fn push_live_event(&mut self, event: ArtifactLiveEvent) {
         self.state.publication_events.push(event);
-        if self.state.publication_events.len() > DEFAULT_PUBLICATION_EVENT_HISTORY {
-            let drop_count =
-                self.state.publication_events.len() - DEFAULT_PUBLICATION_EVENT_HISTORY;
-            self.state.publication_events.drain(..drop_count);
+        self.state.clamp_previews();
+    }
+
+    pub(crate) fn load_alias_history(&self) -> Result<Vec<ArtifactAlias>, PublishError> {
+        load_jsonl(alias_history_path(&self.root_dir))
+    }
+
+    pub(crate) fn load_alias_history_page(
+        &self,
+        page: PageRequest,
+    ) -> Result<Page<ArtifactAlias>, PublishError> {
+        self.load_alias_history_page_filtered(page, |_| true)
+    }
+
+    pub(crate) fn load_alias_history_page_filtered<F>(
+        &self,
+        page: PageRequest,
+        matches: F,
+    ) -> Result<Page<ArtifactAlias>, PublishError>
+    where
+        F: Fn(&ArtifactAlias) -> bool,
+    {
+        load_jsonl_page(alias_history_path(&self.root_dir), page, matches)
+    }
+
+    pub(crate) fn record_alias_history(
+        &mut self,
+        alias: &ArtifactAlias,
+    ) -> Result<(), PublishError> {
+        append_jsonl(alias_history_path(&self.root_dir), alias)
+    }
+
+    pub(crate) fn replace_alias_history(
+        &mut self,
+        aliases: &[ArtifactAlias],
+    ) -> Result<(), PublishError> {
+        write_jsonl(alias_history_path(&self.root_dir), aliases)
+    }
+
+    pub(crate) fn load_published_artifacts(
+        &self,
+    ) -> Result<Vec<PublishedArtifactRecord>, PublishError> {
+        let path = published_artifact_history_path(&self.root_dir);
+        if path.exists() {
+            return load_jsonl(path);
         }
+        Ok(self.state.recent_published_artifacts.clone())
+    }
+
+    pub(crate) fn load_published_artifacts_page(
+        &self,
+        page: PageRequest,
+    ) -> Result<Page<PublishedArtifactRecord>, PublishError> {
+        let path = published_artifact_history_path(&self.root_dir);
+        if path.exists() {
+            return load_jsonl_page(path, page, |_| true);
+        }
+        Ok(page_from_slice(
+            self.state.recent_published_artifacts.clone(),
+            page,
+        ))
+    }
+
+    pub(crate) fn replace_published_artifacts(
+        &mut self,
+        records: &[PublishedArtifactRecord],
+    ) -> Result<(), PublishError> {
+        write_jsonl(published_artifact_history_path(&self.root_dir), records)?;
+        self.state.recent_published_artifacts = recent_preview(
+            records,
+            PublicationRegistryState::MAX_RECENT_PUBLISHED_ARTIFACTS,
+            |record| record.created_at,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn load_export_jobs(&self) -> Result<Vec<ExportJob>, PublishError> {
+        let path = export_job_history_path(&self.root_dir);
+        if path.exists() {
+            return load_jsonl(path);
+        }
+        Ok(self.state.recent_export_jobs.clone())
+    }
+
+    pub(crate) fn load_export_jobs_page(
+        &self,
+        page: PageRequest,
+    ) -> Result<Page<ExportJob>, PublishError> {
+        let path = export_job_history_path(&self.root_dir);
+        if path.exists() {
+            return load_jsonl_page(path, page, |_| true);
+        }
+        Ok(page_from_slice(self.state.recent_export_jobs.clone(), page))
+    }
+
+    pub(crate) fn replace_export_jobs(&mut self, jobs: &[ExportJob]) -> Result<(), PublishError> {
+        write_jsonl(export_job_history_path(&self.root_dir), jobs)?;
+        self.state.recent_export_jobs = recent_preview(
+            jobs,
+            PublicationRegistryState::MAX_RECENT_EXPORT_JOBS,
+            |job| job.queued_at,
+        );
+        Ok(())
     }
 }
 
 pub(crate) fn state_path(root_dir: &Path) -> PathBuf {
     root_dir.join("registry.json")
+}
+
+pub(crate) fn alias_history_path(root_dir: &Path) -> PathBuf {
+    root_dir.join("alias-history.jsonl")
+}
+
+pub(crate) fn published_artifact_history_path(root_dir: &Path) -> PathBuf {
+    root_dir.join("published-artifacts.jsonl")
+}
+
+pub(crate) fn export_job_history_path(root_dir: &Path) -> PathBuf {
+    root_dir.join("export-jobs.jsonl")
+}
+
+fn load_jsonl<T>(path: PathBuf) -> Result<Vec<T>, PublishError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let reader = BufReader::new(fs::File::open(path)?);
+    let mut entries = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        entries.push(serde_json::from_str(&line)?);
+    }
+    Ok(entries)
+}
+
+fn load_jsonl_page<T, F>(
+    path: PathBuf,
+    page: PageRequest,
+    matches: F,
+) -> Result<Page<T>, PublishError>
+where
+    T: for<'de> Deserialize<'de>,
+    F: Fn(&T) -> bool,
+{
+    let page = page.normalized();
+    if !path.exists() {
+        return Ok(Page::new(Vec::new(), page, 0));
+    }
+    let reader = BufReader::new(fs::File::open(path)?);
+    let mut items = Vec::new();
+    let mut total = 0usize;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<T>(&line)?;
+        if !matches(&entry) {
+            continue;
+        }
+        if total >= page.offset && items.len() < page.limit {
+            items.push(entry);
+        }
+        total += 1;
+    }
+    Ok(Page::new(items, page, total))
+}
+
+fn page_from_slice<T>(items: Vec<T>, page: PageRequest) -> Page<T> {
+    let page = page.normalized();
+    let total = items.len();
+    let items = items
+        .into_iter()
+        .skip(page.offset)
+        .take(page.limit)
+        .collect();
+    Page::new(items, page, total)
+}
+
+fn append_jsonl<T>(path: PathBuf, entry: &T) -> Result<(), PublishError>
+where
+    T: Serialize,
+{
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, entry)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+fn write_jsonl<T>(path: PathBuf, entries: &[T]) -> Result<(), PublishError>
+where
+    T: Serialize,
+{
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    for entry in entries {
+        serde_json::to_writer(&mut writer, entry)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn recent_preview<T, F>(entries: &[T], max_entries: usize, key: F) -> Vec<T>
+where
+    T: Clone,
+    F: Fn(&T) -> chrono::DateTime<Utc>,
+{
+    let mut retained = entries.to_vec();
+    retained.sort_by_key(|left| key(left));
+    if retained.len() > max_entries {
+        retained.drain(0..retained.len() - max_entries);
+    }
+    retained
+}
+
+fn clamp_recent<T, F>(entries: &mut Vec<T>, max_entries: usize, key: F)
+where
+    F: Fn(&T) -> chrono::DateTime<Utc>,
+{
+    entries.sort_by_key(|left| key(left));
+    if entries.len() > max_entries {
+        entries.drain(0..entries.len() - max_entries);
+    }
 }

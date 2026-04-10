@@ -1,21 +1,15 @@
 services:
   burn-p2p-bootstrap:
+    extends:
+      file: ./bootstrap-base.compose.yaml
+      service: burn-p2p-bootstrap-base
     build:
-      context: ../..
-      dockerfile: deploy/containers/bootstrap.Dockerfile
       args:
         BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,auth-static}
     command: ["/config/trusted-minimal.json"]
-    ports:
-      - "8787:8787"
-      - "4001:4001/tcp"
-      - "4001:4001/udp"
     volumes:
       - ../config/trusted-minimal.json:/config/trusted-minimal.json:ro
       - burn-p2p-bootstrap-data:/var/lib/burn-p2p
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    restart: unless-stopped
 
 volumes:
   burn-p2p-bootstrap-data: {}

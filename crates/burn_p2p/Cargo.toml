@@ -20,6 +20,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+sysinfo = "0.38.4"
 burn_p2p_checkpoint.workspace = true
 burn_p2p_engine = { workspace = true, optional = true }
 burn_p2p_core.workspace = true

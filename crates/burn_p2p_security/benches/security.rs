@@ -133,6 +133,7 @@ fn capability_card() -> CapabilityCard {
         platform: ClientPlatform::Native,
         roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
         preferred_backends: vec!["cuda".into()],
+        browser_capabilities: BTreeSet::new(),
         recommended_classes: BTreeSet::from([CapabilityClass::TrainerGpu]),
         device_memory_bytes: Some(24 * 1024 * 1024 * 1024),
         system_memory_bytes: 64 * 1024 * 1024 * 1024,

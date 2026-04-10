@@ -152,6 +152,88 @@ fn startup_validation_rejects_untrusted_external_auth_config() {
     let error = validate_compiled_feature_support_with(&compiled, &config)
         .expect_err("external auth should require a trusted principal header");
     assert!(error.to_string().contains("trusted_principal_header"));
+
+    config.http_bind_addr = Some("0.0.0.0:8787".into());
+    config.auth = Some(sample_auth_config_with_connector(
+        temp.path(),
+        BootstrapAuthConnectorConfig::External {
+            authority: "corp-sso".into(),
+            trusted_principal_header: "x-corp-principal".into(),
+            trusted_internal_only: true,
+        },
+    ));
+    let error = validate_compiled_feature_support_with(&compiled, &config)
+        .expect_err("external auth should reject wildcard browser-edge http bind");
+    assert!(error.to_string().contains("wildcard"));
+}
+
+#[test]
+fn startup_validation_rejects_non_tls_provider_auth_urls_except_localhost_dev() {
+    let temp = tempdir().expect("temp dir");
+    let compiled = CompiledFeatureSet {
+        features: BTreeSet::from([
+            EdgeFeature::AdminHttp,
+            EdgeFeature::Metrics,
+            EdgeFeature::App,
+            EdgeFeature::BrowserEdge,
+            EdgeFeature::Rbac,
+            EdgeFeature::AuthOidc,
+        ]),
+    };
+    let mut config = BootstrapDaemonConfig {
+        spec: sample_spec(),
+        http_bind_addr: Some("127.0.0.1:8787".into()),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        optional_services: BootstrapOptionalServicesConfig {
+            browser_edge_enabled: true,
+            browser_mode: BrowserMode::Disabled,
+            social_mode: SocialMode::Disabled,
+            profile_mode: ProfileMode::Disabled,
+        },
+        remaining_work_units: None,
+        admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+        bootstrap_peer: None,
+        embedded_runtime: None,
+        auth: Some(sample_auth_config_with_connector(
+            temp.path(),
+            BootstrapAuthConnectorConfig::Oidc {
+                issuer: "https://issuer.example".into(),
+                authorize_base_url: Some("http://issuer.example/authorize".into()),
+                exchange_url: None,
+                token_url: Some("http://issuer.example/token".into()),
+                client_id: Some("client-id".into()),
+                client_secret: None,
+                redirect_uri: Some("http://edge.example/callback/oidc".into()),
+                userinfo_url: None,
+                refresh_url: None,
+                revoke_url: None,
+                jwks_url: Some("http://issuer.example/jwks".into()),
+            },
+        )),
+        artifact_publication: None,
+    };
+    validate_compiled_feature_support_with(&compiled, &config)
+        .expect_err("public/provider urls should require tls");
+
+    config.auth = Some(sample_auth_config_with_connector(
+        temp.path(),
+        BootstrapAuthConnectorConfig::Oidc {
+            issuer: "https://issuer.example".into(),
+            authorize_base_url: Some("http://localhost:9999/authorize".into()),
+            exchange_url: None,
+            token_url: Some("http://127.0.0.1:9999/token".into()),
+            client_id: Some("client-id".into()),
+            client_secret: None,
+            redirect_uri: Some("http://localhost:8787/callback/oidc".into()),
+            userinfo_url: None,
+            refresh_url: None,
+            revoke_url: None,
+            jwks_url: Some("http://localhost:9999/jwks".into()),
+        },
+    ));
+    validate_compiled_feature_support_with(&compiled, &config)
+        .expect("localhost dev urls should remain allowed");
 }
 
 #[test]

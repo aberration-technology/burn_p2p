@@ -369,6 +369,31 @@ fn runtime_detail(snapshot: &NodeTelemetrySnapshot) -> String {
 }
 
 fn capability_summary(snapshot: &NodeTelemetrySnapshot) -> String {
+    if let Some(profile) = snapshot.effective_limit_profile.as_ref() {
+        let backends = if profile.card.preferred_backends.is_empty() {
+            "cpu".to_owned()
+        } else {
+            profile.card.preferred_backends.join("/")
+        };
+        let roles = profile
+            .recommended_roles
+            .roles
+            .iter()
+            .take(3)
+            .map(|role| format!("{role:?}").to_lowercase())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if roles.is_empty() {
+            return format!(
+                "{backends} · {:.0} wu/s",
+                profile.estimate.work_units_per_second
+            );
+        }
+        return format!(
+            "{backends} · {roles} · {:.0} wu/s",
+            profile.estimate.work_units_per_second
+        );
+    }
     match snapshot.runtime_boundary.as_ref() {
         Some(boundary) => format!("{:?} native", boundary.environment),
         None => "native runtime".into(),

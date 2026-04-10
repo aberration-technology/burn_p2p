@@ -40,7 +40,7 @@ burn_p2p_app = { workspace = true, optional = true, default-features = false }
 burn_p2p_core.workspace = true
 burn_p2p_experiment.workspace = true
 burn_p2p_metrics = { workspace = true, optional = true }
-burn_p2p_publish = { version = "=0.21.0-pre.7", path = "../burn_p2p_publish", optional = true, default-features = false }
+burn_p2p_publish = { version = "=0.21.0-pre.8", path = "../burn_p2p_publish", optional = true, default-features = false }
 burn_p2p_security.workspace = true
 burn_p2p_social = { workspace = true, optional = true, default-features = false, features = ["profiles", "leaderboards", "badges"] }
 burn_p2p_swarm.workspace = true
@@ -56,6 +56,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking"], optional = true }
 redis = "0.27"
+url = "2"
 
 [dev-dependencies]
 burn_p2p_browser.workspace = true

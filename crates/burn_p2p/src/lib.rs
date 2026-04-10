@@ -91,8 +91,10 @@ pub use burn_p2p_experiment::{
     RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
 };
 pub use burn_p2p_limits::{
-    CapabilityCalibrator, CapabilityProbe, LimitPolicy, LimitProfile, LimitsError, LocalBackend,
-    ObservedThroughputUpdate, WorkBudget, corrected_work_units_per_second, probe_from_profile,
+    CapabilityCalibrator, CapabilityProbe, CapabilityResourceProbe, LimitPolicy, LimitProfile,
+    LimitsError, LocalBackend, ObservedThroughputUpdate, WorkBudget,
+    browser_probe_from_capabilities, corrected_work_units_per_second, native_probe_from_estimate,
+    probe_from_profile,
 };
 pub use burn_p2p_security::{
     AdmissionDecision, AdmissionPolicy, AuditFinding, AuthError, CallbackPayload,

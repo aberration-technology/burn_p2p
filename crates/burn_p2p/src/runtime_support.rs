@@ -3,6 +3,8 @@ use crate::config::{
     ClientReenrollmentStatus, RuntimeCommand, TrustBundleState, default_node_runtime_state,
 };
 use crate::handles::dedupe_peer_ids;
+use std::path::{Path, PathBuf};
+use sysinfo::{Disks, System};
 mod control_plane;
 mod persistence;
 mod trust;
@@ -28,8 +30,8 @@ use persistence::{
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{
     admission_rejection_reason, note_admitted_peer, note_rejected_peer, peer_is_reducer_eligible,
-    peer_is_trainer_eligible, peer_is_validator_eligible, reconcile_live_revocation_policy,
-    reconcile_remote_trust_bundle,
+    peer_is_trainer_eligible, peer_is_validator_eligible, prune_tracked_peer_security_state,
+    reconcile_live_revocation_policy, reconcile_remote_trust_bundle,
 };
 
 pub(crate) fn runtime_limit_policy(estimate: &CapabilityEstimate) -> LimitPolicy {
@@ -37,6 +39,39 @@ pub(crate) fn runtime_limit_policy(estimate: &CapabilityEstimate) -> LimitPolicy
         target_window_seconds: estimate.target_window_seconds.max(1),
         browser_target_window_seconds: estimate.target_window_seconds.max(1),
         ..LimitPolicy::default()
+    }
+}
+
+fn storage_probe_root(config: &NodeConfig) -> Option<PathBuf> {
+    config
+        .storage
+        .as_ref()
+        .map(|storage| storage.root.clone())
+        .or_else(|| std::env::current_dir().ok())
+}
+
+fn available_disk_bytes_for_path(path: &Path) -> Option<u64> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let disks = Disks::new_with_refreshed_list();
+    disks
+        .iter()
+        .filter(|disk| canonical.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .map(|disk| disk.available_space())
+}
+
+fn runtime_resource_probe(config: &NodeConfig) -> CapabilityResourceProbe {
+    let mut system = System::new();
+    system.refresh_memory();
+
+    CapabilityResourceProbe {
+        device_memory_bytes: None,
+        system_memory_bytes: Some(system.total_memory()),
+        disk_bytes: storage_probe_root(config)
+            .as_deref()
+            .and_then(available_disk_bytes_for_path),
+        upload_mbps: None,
+        download_mbps: None,
     }
 }
 
@@ -51,35 +86,14 @@ fn runtime_limit_profile_from_benchmark(
     } else {
         burn_p2p_core::PersistenceClass::Session
     };
-    let available_backends = if estimate.preferred_backends.is_empty() {
-        vec![LocalBackend::Cpu]
-    } else {
-        estimate
-            .preferred_backends
-            .iter()
-            .map(|backend| match backend.as_str() {
-                "cuda" => LocalBackend::Cuda,
-                "wgpu" => LocalBackend::Wgpu,
-                "ndarray" => LocalBackend::Ndarray,
-                "cpu" => LocalBackend::Cpu,
-                other => LocalBackend::Custom(other.to_owned()),
-            })
-            .collect()
-    };
-    let probe = CapabilityProbe {
-        peer_id: peer_id.clone(),
-        platform: burn_p2p_core::ClientPlatform::Native,
-        available_backends,
-        device_memory_bytes: None,
-        system_memory_bytes: 0,
-        disk_bytes: 0,
-        upload_mbps: 0.0,
-        download_mbps: 0.0,
+    let probe = native_probe_from_estimate(
+        peer_id.clone(),
+        estimate,
+        runtime_resource_probe(config),
         persistence,
-        attestation_level: burn_p2p_core::AttestationLevel::None,
-        work_units_per_second: estimate.work_units_per_second,
-        benchmark_hash: None,
-    };
+        burn_p2p_core::AttestationLevel::None,
+        None,
+    );
 
     CapabilityCalibrator::new(runtime_limit_policy(estimate))?
         .calibrate(probe, reported_at)

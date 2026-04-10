@@ -23,8 +23,8 @@ use burn_p2p_checkpoint::{
     build_artifact_descriptor_from_bytes,
 };
 use burn_p2p_core::{
-    ArtifactDescriptor, ArtifactKind, AttestationLevel, ClientPlatform, ContentId,
-    ContributionReceipt, ContributionReceiptId, DatasetId, DatasetManifest, DatasetView,
+    ArtifactDescriptor, ArtifactKind, AttestationLevel, BrowserCapability, ClientPlatform,
+    ContentId, ContributionReceipt, ContributionReceiptId, DatasetId, DatasetManifest, DatasetView,
     ExperimentId, GenesisSpec, HeadDescriptor, HeadId, MergeCertId, MergeCertificate, MergePolicy,
     MetricValue, NetworkId, PeerId, PeerRoleSet, Precision, ProjectFamilyId, RevisionId,
     SignatureAlgorithm, SignatureMetadata, StudyId, WindowActivation, WindowId,
@@ -738,6 +738,8 @@ impl SimulationRunner {
         let authority = AuthorityPlan {
             release_policy: self.validator_policy.release_policy.clone(),
             validator_policy: self.validator_policy.clone(),
+            validator_set_manifest: None,
+            authority_epoch_manifest: None,
         };
 
         Ok(BootstrapSpec {
@@ -820,6 +822,11 @@ impl SimulationRunner {
                     vec![LocalBackend::Cuda, LocalBackend::Wgpu]
                 } else {
                     vec![LocalBackend::Cpu, LocalBackend::Ndarray]
+                },
+                browser_capabilities: if browser {
+                    BTreeSet::from([BrowserCapability::WebGpu])
+                } else {
+                    BTreeSet::new()
                 },
                 device_memory_bytes: (!browser).then_some(8 * 1024 * 1024 * 1024),
                 system_memory_bytes: 32 * 1024 * 1024 * 1024,

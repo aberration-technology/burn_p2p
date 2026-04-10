@@ -261,6 +261,9 @@ pub struct CapabilityCard {
     pub roles: PeerRoleSet,
     /// The preferred backends.
     pub preferred_backends: Vec<String>,
+    #[serde(default)]
+    /// The browser capabilities detected when this card was measured.
+    pub browser_capabilities: BTreeSet<BrowserCapability>,
     /// The recommended classes.
     pub recommended_classes: BTreeSet<CapabilityClass>,
     /// The device memory bytes.

@@ -32,8 +32,6 @@
     }
   },
   "http_bind_addr": "0.0.0.0:8787",
-  "admin_token": "local-admin",
-  "allow_dev_admin_token": true,
   "optional_services": {
     "browser_edge_enabled": false,
     "browser_mode": "Disabled",

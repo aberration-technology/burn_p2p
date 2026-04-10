@@ -2,4 +2,5 @@ target/
 /artifacts
 /.burn_p2p*/
 examples/torch_mnist_p2p_demo/.burn_p2p-python-mnist/
+deploy/terraform/**/.terraform/
 __pycache__/

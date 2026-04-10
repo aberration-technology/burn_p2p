@@ -19,7 +19,8 @@ use burn_p2p_checkpoint::FsArtifactStore;
 use burn_p2p_core::{
     ArtifactAliasId, ArtifactId, ArtifactLiveEvent, ArtifactLiveEventKind, ArtifactProfile,
     ContentId, DownloadTicketId, EvalProtocolManifest, ExportJob, ExportJobId, HeadDescriptor,
-    HeadEvalReport, HeadId, PublicationMode, PublicationTargetId, PublishedArtifactId,
+    HeadEvalReport, HeadId, Page, PageRequest, PublicationMode, PublicationTargetId,
+    PublishedArtifactId, PublishedArtifactRecord,
 };
 use chrono::Utc;
 use thiserror::Error;
@@ -122,6 +123,27 @@ pub struct PublicationStore {
 }
 
 impl PublicationStore {
+    /// Returns one bounded page of durable alias-history records across all experiments.
+    pub fn alias_history_page(
+        &self,
+        page: PageRequest,
+    ) -> Result<Page<burn_p2p_core::ArtifactAlias>, PublishError> {
+        self.load_alias_history_page(page)
+    }
+
+    /// Returns one bounded page of durable publication records across all experiments.
+    pub fn published_artifacts_page(
+        &self,
+        page: PageRequest,
+    ) -> Result<Page<PublishedArtifactRecord>, PublishError> {
+        self.load_published_artifacts_page(page)
+    }
+
+    /// Returns one bounded page of durable export jobs across all experiments.
+    pub fn export_jobs_page(&self, page: PageRequest) -> Result<Page<ExportJob>, PublishError> {
+        self.load_export_jobs_page(page)
+    }
+
     /// Re-materializes aliases that match the provided admin filter.
     pub fn backfill_aliases(
         &mut self,
@@ -181,8 +203,8 @@ impl PublicationStore {
     ) -> Result<ArtifactPruneResult, PublishError> {
         let filter = request.filter;
         let mut pruned_publications = 0usize;
-        let published = std::mem::take(&mut self.state.published_artifacts);
-        self.state.published_artifacts = published
+        let published = self.load_published_artifacts()?;
+        let retained_publications = published
             .into_iter()
             .filter(|record| {
                 let matches =
@@ -220,12 +242,13 @@ impl PublicationStore {
                 }
                 !matches
             })
-            .collect();
+            .collect::<Vec<_>>();
+        self.replace_published_artifacts(&retained_publications)?;
 
         let mut pruned_jobs = 0usize;
         if request.prune_jobs {
-            let jobs = std::mem::take(&mut self.state.export_jobs);
-            self.state.export_jobs = jobs
+            let jobs = self.load_export_jobs()?;
+            let retained_jobs = jobs
                 .into_iter()
                 .filter(|job| {
                     let matches = publication_filter_matches_job(&filter, job, &self.state.aliases);
@@ -234,19 +257,18 @@ impl PublicationStore {
                     }
                     !matches
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.replace_export_jobs(&retained_jobs)?;
         }
 
         let mut pruned_tickets = 0usize;
         if request.prune_tickets {
-            let published_ids = self
-                .state
-                .published_artifacts
+            let published_ids = retained_publications
                 .iter()
                 .map(|record| record.published_artifact_id.clone())
                 .collect::<BTreeSet<_>>();
-            let tickets = std::mem::take(&mut self.state.download_tickets);
-            self.state.download_tickets = tickets
+            let tickets = std::mem::take(&mut self.state.active_download_tickets);
+            self.state.active_download_tickets = tickets
                 .into_iter()
                 .filter(|ticket| {
                     let keep = published_ids.contains(&ticket.published_artifact_id);
@@ -278,7 +300,8 @@ mod tests {
         DatasetViewId, EvalAggregationRule, EvalMetricDef, EvalProtocolOptions, ExperimentId,
         ExportJobStatus, HeadEvalStatus, MetricTrustClass, MetricValue, NetworkId, Precision,
         PrincipalId, PublicationAccessMode, PublicationMode, PublicationTarget,
-        PublicationTargetKind, RevisionId, WorkloadId,
+        PublicationTargetKind, PublishedArtifactRecord, PublishedArtifactStatus, RevisionId, RunId,
+        WorkloadId,
     };
     use chrono::Duration;
     use std::collections::BTreeSet;
@@ -546,6 +569,7 @@ mod tests {
 
         let alias_names = store
             .alias_statuses()
+            .expect("alias statuses")
             .into_iter()
             .map(|row| (row.alias.alias_name, row.alias.head_id))
             .collect::<BTreeMap<_, _>>();
@@ -600,11 +624,101 @@ mod tests {
             )
             .expect("second export");
         assert_eq!(first_job.export_job_id, second_job.export_job_id);
-        assert_eq!(store.published_artifacts().len(), 1);
+        assert_eq!(
+            store
+                .published_artifacts()
+                .expect("published artifacts")
+                .len(),
+            1
+        );
 
         let reopened = PublicationStore::open(root.path()).expect("reopen");
-        assert_eq!(reopened.published_artifacts().len(), 1);
-        assert_eq!(reopened.export_jobs().len(), 1);
+        assert_eq!(
+            reopened
+                .published_artifacts()
+                .expect("reopened published artifacts")
+                .len(),
+            1
+        );
+        assert_eq!(
+            reopened.export_jobs().expect("reopened export jobs").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn publication_store_keeps_bounded_recent_previews_while_full_history_remains_durable() {
+        let root = tempdir().expect("tempdir");
+        let mut store = PublicationStore::open(root.path()).expect("open store");
+        let now = Utc::now();
+
+        let jobs = (0..320)
+            .map(|offset| ExportJob {
+                export_job_id: ExportJobId::new(format!("job-{offset}")),
+                requested_by_principal_id: None,
+                experiment_id: ExperimentId::new("exp-a"),
+                run_id: Some(RunId::new("run-a")),
+                head_id: HeadId::new(format!("head-{offset}")),
+                artifact_profile: ArtifactProfile::ServeCheckpoint,
+                publication_target_id: PublicationTargetId::new(DEFAULT_PUBLICATION_TARGET_ID),
+                status: ExportJobStatus::Ready,
+                queued_at: now + Duration::seconds(offset),
+                started_at: Some(now + Duration::seconds(offset)),
+                finished_at: Some(now + Duration::seconds(offset + 1)),
+                failure_reason: None,
+            })
+            .collect::<Vec<_>>();
+        let published = (0..320)
+            .map(|offset| PublishedArtifactRecord {
+                published_artifact_id: PublishedArtifactId::new(format!("published-{offset}")),
+                artifact_alias_id: None,
+                experiment_id: ExperimentId::new("exp-a"),
+                run_id: Some(RunId::new("run-a")),
+                head_id: HeadId::new(format!("head-{offset}")),
+                artifact_profile: ArtifactProfile::ServeCheckpoint,
+                publication_target_id: PublicationTargetId::new(DEFAULT_PUBLICATION_TARGET_ID),
+                object_key: format!("object-{offset}.bin"),
+                content_hash: ContentId::new(format!("hash-{offset}")),
+                content_length: 16,
+                created_at: now + Duration::seconds(offset),
+                expires_at: None,
+                status: PublishedArtifactStatus::Ready,
+            })
+            .collect::<Vec<_>>();
+
+        store
+            .replace_export_jobs(&jobs)
+            .expect("replace export jobs");
+        store
+            .replace_published_artifacts(&published)
+            .expect("replace published artifacts");
+        store.persist_state().expect("persist state");
+
+        assert_eq!(store.state.recent_export_jobs.len(), 256);
+        assert_eq!(store.state.recent_published_artifacts.len(), 256);
+        assert_eq!(store.export_jobs().expect("export jobs").len(), 320);
+        assert_eq!(
+            store
+                .published_artifacts()
+                .expect("published artifacts")
+                .len(),
+            320
+        );
+
+        let reopened = PublicationStore::open(root.path()).expect("reopen");
+        assert_eq!(reopened.state.recent_export_jobs.len(), 256);
+        assert_eq!(reopened.state.recent_published_artifacts.len(), 256);
+        assert_eq!(
+            reopened.export_jobs().expect("reopened export jobs").len(),
+            320
+        );
+        assert_eq!(
+            reopened
+                .published_artifacts()
+                .expect("reopened published artifacts")
+                .len(),
+            320
+        );
     }
 
     #[test]
@@ -694,6 +808,7 @@ mod tests {
 
         let latest_serve = store
             .alias_statuses()
+            .expect("alias statuses")
             .into_iter()
             .find(|row| {
                 row.alias.alias_name == "latest/serve" && row.alias.scope == ArtifactAliasScope::Run
@@ -783,12 +898,14 @@ mod tests {
         assert!(
             store
                 .published_artifacts()
+                .expect("published artifacts")
                 .iter()
                 .any(|record| record.artifact_profile == ArtifactProfile::ServeCheckpoint)
         );
         assert!(
             store
                 .published_artifacts()
+                .expect("published artifacts")
                 .iter()
                 .all(|record| record.artifact_profile != ArtifactProfile::FullTrainingCheckpoint)
         );
@@ -823,6 +940,7 @@ mod tests {
         assert!(
             store
                 .published_artifacts()
+                .expect("published artifacts")
                 .iter()
                 .all(|record| record.artifact_profile != ArtifactProfile::ServeCheckpoint)
         );
@@ -860,8 +978,8 @@ mod tests {
             )
             .expect("export browser snapshot");
         assert_eq!(job.status, ExportJobStatus::Ready);
-        let record = store
-            .published_artifacts()
+        let published_artifacts = store.published_artifacts().expect("published artifacts");
+        let record = published_artifacts
             .iter()
             .find(|record| record.artifact_profile == ArtifactProfile::BrowserSnapshot)
             .expect("browser snapshot record");
@@ -929,6 +1047,7 @@ mod tests {
             .expect("sync aliases");
         let alias = store
             .alias_statuses()
+            .expect("alias statuses")
             .into_iter()
             .find(|row| row.alias.alias_name == "latest/serve")
             .expect("latest serve alias");

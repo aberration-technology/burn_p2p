@@ -514,6 +514,45 @@ fn burn_native_process_soak_runner_reports_persistent_multi_window_progress() ->
     Ok(())
 }
 
+#[cfg(feature = "native-gpu-probe")]
+#[test]
+fn burn_native_process_soak_runner_supports_persistent_multi_trainer_rounds() -> anyhow::Result<()>
+{
+    let _guard = multiprocess_test_guard();
+    let root = tempdir()?;
+    let summary = run_synthetic_process_soak(
+        &SyntheticSoakConfig {
+            root: root.path().join("soak-burn-persistent-multi-trainer"),
+            workload_kind: SyntheticWorkloadKind::BurnLinear,
+            trainer_backend: SyntheticNativeBackend::NdArray,
+            validator_backend: SyntheticNativeBackend::NdArray,
+            trainer_count: 3,
+            trainer_window_count: 2,
+            persistent_trainers: true,
+            continuous_training: false,
+            startup_timeout_secs: 30,
+            poll_interval_ms: 50,
+            sync_timeout_secs: 45,
+            merge_wait_timeout_secs: 45,
+        },
+        Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
+    )?;
+
+    assert_eq!(summary.workload_kind, SyntheticWorkloadKind::BurnLinear);
+    assert_eq!(summary.trainer_count, 3);
+    assert_eq!(summary.trainer_window_count, 2);
+    assert_eq!(summary.completed_rounds, 2);
+    assert_eq!(summary.trainer_process_count, 3);
+    assert!(summary.total_receipts >= 2);
+    assert!(summary.total_merges >= 2);
+    let performance = summary
+        .performance_summary
+        .as_ref()
+        .context("expected burn persistent multi-trainer soak performance summary")?;
+    assert!(performance.training.window_count >= 2);
+    Ok(())
+}
+
 #[test]
 fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Result<()> {
     let _guard = multiprocess_test_guard();

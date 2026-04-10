@@ -24,6 +24,33 @@ the runtime currently does this:
 that is much closer to local sgd / fedavg style periodic averaging than to
 global all-reduce-per-step training.
 
+## authority and safety boundary
+
+the runtime deliberately separates:
+
+- candidate production
+- aggregate proposal
+- canonical promotion
+
+trainers only produce candidates.
+
+reducers only build aggregate proposals.
+
+validators are the authority boundary. they rescreen the candidate cohort
+locally, rebuild the expected merge inputs locally, and only a validator quorum
+can promote a merged head.
+
+that has two consequences:
+
+- reducer-first execution is a latency optimization, not a trust assumption
+- the real safety assumption is the validator set and its quorum, not the
+  reducer tier
+
+in the current protocol, a bad reducer should be able to waste time or
+bandwidth, but not silently advance a wrong canonical checkpoint by itself.
+validators now fall back to local reduction if dedicated reducer output is
+missing or fails semantic verification.
+
 ## how updates are weighted
 
 the short answer is: no, contributions are not always weighted equally.
@@ -124,6 +151,9 @@ the current `burn_p2p` design instead:
 that makes it cheaper on communication and much easier to operate in a mixed,
 partially connected, or browser-inclusive network, but it also introduces real
 limitations.
+
+it also means `burn_p2p` is not trying to be a full bft ledger. if validator
+quorum is compromised, canonical safety is compromised too.
 
 ## main limitations
 

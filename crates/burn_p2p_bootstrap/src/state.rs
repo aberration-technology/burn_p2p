@@ -3,15 +3,21 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{StoredEvalProtocolManifestRecord, deploy::BootstrapPlan};
+use crate::{
+    StoredEvalProtocolManifestRecord,
+    deploy::BootstrapPlan,
+    operator_store::{
+        FileOperatorStore, FileOperatorStoreConfig, FileOperatorStorePreview, OperatorStore,
+    },
+};
 use burn_p2p::{
     ArtifactTransferState, ContributionReceipt, ContributionReceiptId, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
     RevocationEpoch, SlotRuntimeState,
 };
 use burn_p2p_core::{
-    ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, PeerId, PeerWindowMetrics,
-    ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport,
+    ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
+    PeerWindowMetrics, ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport,
 };
 #[cfg(feature = "metrics-indexer")]
 use burn_p2p_metrics::{RobustnessRollup, derive_robustness_rollup};
@@ -28,7 +34,7 @@ type BootstrapRobustnessRollup = RobustnessRollup;
 #[cfg(not(feature = "metrics-indexer"))]
 type BootstrapRobustnessRollup = serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a receipt query.
 pub struct ReceiptQuery {
     /// The study ID.
@@ -62,7 +68,7 @@ impl ReceiptQuery {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a head query.
 pub struct HeadQuery {
     /// The study ID.
@@ -132,8 +138,14 @@ pub struct BootstrapAdminState {
     pub peer_store: PeerStore,
     /// The contribution receipts.
     pub contribution_receipts: Vec<ContributionReceipt>,
+    /// Total persisted contribution receipts available from the durable history store.
+    pub persisted_receipt_count: usize,
     /// The merge certificates.
     pub merge_certificates: Vec<MergeCertificate>,
+    /// Total persisted merge certificates available from the durable history store.
+    pub persisted_merge_count: usize,
+    /// Total persisted heads available from the durable history store.
+    pub persisted_head_count: usize,
     /// The peer-window metrics loaded from runtime storage.
     pub peer_window_metrics: Vec<PeerWindowMetrics>,
     /// The reducer cohort metrics loaded from runtime storage.
@@ -144,6 +156,8 @@ pub struct BootstrapAdminState {
     pub eval_protocol_manifests: Vec<StoredEvalProtocolManifestRecord>,
     /// The runtime storage root used to materialize canonical artifacts.
     pub artifact_store_root: Option<PathBuf>,
+    /// The durable operator history root used for on-demand receipts, heads, and merge queries.
+    pub history_root: Option<PathBuf>,
     /// The durable publication store root, when artifact publication is enabled.
     pub publication_store_root: Option<PathBuf>,
     /// Explicit artifact publication targets configured by the operator.
@@ -239,6 +253,12 @@ impl BootstrapAdminState {
 
         self.contribution_receipts
             .sort_by_key(|receipt| receipt.accepted_at);
+        let max_receipts_in_memory =
+            crate::history::OperatorHistoryMemoryBudget::default().max_receipts_in_memory;
+        if self.contribution_receipts.len() > max_receipts_in_memory {
+            let trimmed = self.contribution_receipts.len() - max_receipts_in_memory;
+            self.contribution_receipts.drain(0..trimmed);
+        }
         accepted_receipt_ids
     }
 
@@ -281,20 +301,49 @@ impl BootstrapAdminState {
 
     /// Exports the receipts.
     pub fn export_receipts(&self, query: &ReceiptQuery) -> Vec<ContributionReceipt> {
-        self.contribution_receipts
-            .iter()
-            .filter(|receipt| query.matches(receipt))
-            .cloned()
-            .collect()
+        self.operator_store().receipts(query).unwrap_or_else(|_| {
+            self.contribution_receipts
+                .iter()
+                .filter(|receipt| query.matches(receipt))
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Exports one durable page of receipts without retaining the full filtered
+    /// result set in memory.
+    pub fn export_receipts_page(
+        &self,
+        query: &ReceiptQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<ContributionReceipt>> {
+        self.operator_store().receipts_page(query, page)
     }
 
     /// Exports the heads.
     pub fn export_heads(&self, query: &HeadQuery) -> Vec<HeadDescriptor> {
-        self.head_descriptors
-            .iter()
-            .filter(|head| query.matches(head))
-            .cloned()
-            .collect()
+        self.operator_store().heads(query).unwrap_or_else(|_| {
+            self.head_descriptors
+                .iter()
+                .filter(|head| query.matches(head))
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Exports one durable page of heads without retaining the full filtered
+    /// result set in memory.
+    pub fn export_heads_page(
+        &self,
+        query: &HeadQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<HeadDescriptor>> {
+        self.operator_store().heads_page(query, page)
+    }
+
+    /// Exports one durable page of merge certificates.
+    pub fn export_merges_page(&self, page: PageRequest) -> anyhow::Result<Page<MergeCertificate>> {
+        self.operator_store().merges_page(page)
     }
 
     /// Exports the reducer load.
@@ -308,11 +357,15 @@ impl BootstrapAdminState {
 
     /// Exports the head evaluation reports for one head.
     pub fn export_head_eval_reports(&self, head_id: &HeadId) -> Vec<HeadEvalReport> {
-        self.head_eval_reports
-            .iter()
-            .filter(|report| &report.head_id == head_id)
-            .cloned()
-            .collect()
+        self.operator_store()
+            .head_eval_reports(head_id)
+            .unwrap_or_else(|_| {
+                self.head_eval_reports
+                    .iter()
+                    .filter(|report| &report.head_id == head_id)
+                    .cloned()
+                    .collect()
+            })
     }
 
     /// Performs the diagnostics operation.
@@ -331,8 +384,12 @@ impl BootstrapAdminState {
             swarm: self.peer_store.stats(remaining_work_units),
             pinned_heads: plan.archive.pinned_heads.clone(),
             pinned_artifacts: plan.archive.pinned_artifacts.clone(),
-            accepted_receipts: self.contribution_receipts.len() as u64,
-            certified_merges: self.merge_certificates.len() as u64,
+            accepted_receipts: self
+                .persisted_receipt_count
+                .max(self.contribution_receipts.len()) as u64,
+            certified_merges: self
+                .persisted_merge_count
+                .max(self.merge_certificates.len()) as u64,
             in_flight_transfers: self.in_flight_transfers.clone(),
             admitted_peers: self.admitted_peers.clone(),
             peer_diagnostics: self.peer_diagnostics(),
@@ -406,6 +463,45 @@ impl BootstrapAdminState {
         _captured_at: DateTime<Utc>,
     ) -> Option<BootstrapRobustnessRollup> {
         None
+    }
+}
+
+impl BootstrapAdminState {
+    pub(crate) fn operator_store(&self) -> FileOperatorStore {
+        FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: self.history_root.clone(),
+                metrics_store_root: self.metrics_store_root.clone(),
+                metrics_retention: self.metrics_retention,
+                publication_store_root: self.publication_store_root.clone(),
+                publication_targets: self.publication_targets.clone(),
+                artifact_store_root: self.artifact_store_root.clone(),
+            },
+            FileOperatorStorePreview {
+                receipts: self.contribution_receipts.clone(),
+                heads: self.head_descriptors.clone(),
+                merges: self.merge_certificates.clone(),
+                head_eval_reports: self.head_eval_reports.clone(),
+                eval_protocol_manifests: self.eval_protocol_manifests.clone(),
+            },
+        )
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    pub(crate) fn stored_heads(&self) -> anyhow::Result<Vec<HeadDescriptor>> {
+        self.operator_store().heads(&HeadQuery::default())
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    pub(crate) fn stored_eval_protocol_manifests(
+        &self,
+    ) -> anyhow::Result<Vec<StoredEvalProtocolManifestRecord>> {
+        self.operator_store().eval_protocol_manifests()
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    pub(crate) fn stored_head_eval_reports(&self) -> anyhow::Result<Vec<HeadEvalReport>> {
+        self.operator_store().all_head_eval_reports()
     }
 }
 
@@ -504,6 +600,26 @@ pub struct BootstrapDiagnosticsBundle {
     pub trust_bundle: Option<TrustBundleExport>,
     /// The captured at.
     pub captured_at: DateTime<Utc>,
+}
+
+pub(crate) fn page_from_filtered<T, I, F>(values: I, page: PageRequest, matches: F) -> Page<T>
+where
+    I: IntoIterator<Item = T>,
+    F: Fn(&T) -> bool,
+{
+    let page = page.normalized();
+    let mut items = Vec::new();
+    let mut total = 0usize;
+    for value in values {
+        if !matches(&value) {
+            continue;
+        }
+        if total >= page.offset && items.len() < page.limit {
+            items.push(value);
+        }
+        total += 1;
+    }
+    Page::new(items, page, total)
 }
 
 /// Performs the render openmetrics operation.

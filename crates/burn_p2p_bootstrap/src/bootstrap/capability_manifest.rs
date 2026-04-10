@@ -1,5 +1,45 @@
 use super::*;
 
+fn url_must_use_tls(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return true;
+    };
+    match parsed.scheme() {
+        "https" => false,
+        "http" => !matches!(
+            parsed.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("::1")
+        ),
+        _ => true,
+    }
+}
+
+fn validate_optional_tls_url(
+    label: &'static str,
+    url: Option<&String>,
+) -> Result<(), BootstrapCompositionError> {
+    let Some(url) = url else {
+        return Ok(());
+    };
+    if url_must_use_tls(url) {
+        return Err(BootstrapCompositionError::InvalidServiceConfig(label));
+    }
+    Ok(())
+}
+
+fn http_bind_is_wildcard(bind_addr: Option<&String>) -> bool {
+    bind_addr
+        .map(|addr| {
+            let addr = addr.trim();
+            addr.starts_with("0.0.0.0:")
+                || addr.starts_with("[::]:")
+                || addr == "0.0.0.0"
+                || addr == "::"
+                || addr == "[::]"
+        })
+        .unwrap_or(false)
+}
+
 pub(super) fn compiled_feature_set() -> CompiledFeatureSet {
     let mut features = BTreeSet::new();
     if cfg!(feature = "admin-http") {
@@ -207,6 +247,81 @@ pub(super) fn validate_compiled_feature_support_with(
                     "auth-external requires a non-empty trusted_principal_header",
                 ));
             }
+            if http_bind_is_wildcard(config.http_bind_addr.as_ref()) {
+                return Err(BootstrapCompositionError::InvalidServiceConfig(
+                    "auth-external should not bind browser-edge http to a wildcard address; place it behind trusted ingress and bind loopback or a private interface",
+                ));
+            }
+        }
+        match &auth.connector {
+            BootstrapAuthConnectorConfig::GitHub {
+                authorize_base_url,
+                exchange_url,
+                token_url,
+                redirect_uri,
+                userinfo_url,
+                refresh_url,
+                revoke_url,
+                jwks_url,
+                ..
+            }
+            | BootstrapAuthConnectorConfig::OAuth {
+                authorize_base_url,
+                exchange_url,
+                token_url,
+                redirect_uri,
+                userinfo_url,
+                refresh_url,
+                revoke_url,
+                jwks_url,
+                ..
+            }
+            | BootstrapAuthConnectorConfig::Oidc {
+                authorize_base_url,
+                exchange_url,
+                token_url,
+                redirect_uri,
+                userinfo_url,
+                refresh_url,
+                revoke_url,
+                jwks_url,
+                ..
+            } => {
+                validate_optional_tls_url(
+                    "authorize_base_url should use https except for localhost dev",
+                    authorize_base_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "exchange_url should use https except for localhost dev",
+                    exchange_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "token_url should use https except for localhost dev",
+                    token_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "redirect_uri should use https except for localhost dev",
+                    redirect_uri.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "userinfo_url should use https except for localhost dev",
+                    userinfo_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "refresh_url should use https except for localhost dev",
+                    refresh_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "revoke_url should use https except for localhost dev",
+                    revoke_url.as_ref(),
+                )?;
+                validate_optional_tls_url(
+                    "jwks_url should use https except for localhost dev",
+                    jwks_url.as_ref(),
+                )?;
+            }
+            BootstrapAuthConnectorConfig::Static
+            | BootstrapAuthConnectorConfig::External { .. } => {}
         }
     }
     Ok(())

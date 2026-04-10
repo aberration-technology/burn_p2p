@@ -93,22 +93,64 @@ variable "trainer_accelerator_count" {
   default     = 1
 }
 
-variable "allowed_source_ranges" {
+variable "bootstrap_public_ip_enabled" {
+  type        = bool
+  description = "Whether bootstrap nodes receive public IP addresses."
+  default     = true
+}
+
+variable "validator_public_ip_enabled" {
+  type        = bool
+  description = "Whether validator nodes receive public IP addresses."
+  default     = false
+}
+
+variable "reducer_public_ip_enabled" {
+  type        = bool
+  description = "Whether reducer nodes receive public IP addresses."
+  default     = false
+}
+
+variable "trainer_public_ip_enabled" {
+  type        = bool
+  description = "Whether trainer nodes receive public IP addresses."
+  default     = false
+}
+
+variable "internal_tcp_ports" {
   type        = list(string)
-  description = "Firewall ingress source ranges."
+  description = "TCP ports opened between fleet members."
+  default     = ["8787", "8788", "8789", "4001", "4002", "4003"]
+}
+
+variable "internal_udp_ports" {
+  type        = list(string)
+  description = "UDP ports opened between fleet members."
+  default     = ["4001", "4002", "4003"]
+}
+
+variable "bootstrap_public_source_ranges" {
+  type        = list(string)
+  description = "Public ingress source ranges for bootstrap swarm ports."
   default     = ["0.0.0.0/0"]
 }
 
-variable "allowed_tcp_ports" {
+variable "bootstrap_public_tcp_ports" {
   type        = list(string)
-  description = "TCP ports exposed on the instances."
-  default     = ["22", "8787", "8788", "8789", "4001", "4002", "4003"]
+  description = "Public TCP ports exposed only on bootstrap nodes."
+  default     = ["4001"]
 }
 
-variable "allowed_udp_ports" {
+variable "bootstrap_public_udp_ports" {
   type        = list(string)
-  description = "UDP ports exposed on the instances."
-  default     = ["4001", "4002", "4003"]
+  description = "Public UDP ports exposed only on bootstrap nodes."
+  default     = ["4001"]
+}
+
+variable "ssh_source_ranges" {
+  type        = list(string)
+  description = "Optional SSH ingress source ranges for hosts that have public IPs."
+  default     = []
 }
 
 variable "bootstrap_image" {

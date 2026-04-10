@@ -16,3 +16,12 @@ reducer_machine_type = "e2-standard-2"
 trainer_machine_type = "n1-standard-4"
 trainer_accelerator_type = "nvidia-tesla-t4"
 trainer_accelerator_count = 1
+bootstrap_public_ip_enabled = true
+validator_public_ip_enabled = false
+reducer_public_ip_enabled = false
+trainer_public_ip_enabled = false
+
+bootstrap_public_source_ranges = ["0.0.0.0/0"]
+bootstrap_public_tcp_ports = ["4001"]
+bootstrap_public_udp_ports = ["4001"]
+ssh_source_ranges = ["203.0.113.10/32"]

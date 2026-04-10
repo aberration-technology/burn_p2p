@@ -42,6 +42,8 @@ pub struct BrowserWorkerRuntime {
 }
 
 impl BrowserWorkerRuntime {
+    const MAX_RECEIPT_SUBMISSION_BATCH: usize = 64;
+
     fn is_duplicate_metrics_event(&self, event: &MetricsLiveEvent) -> bool {
         self.storage
             .last_metrics_live_event
@@ -319,7 +321,8 @@ impl BrowserWorkerRuntime {
         Ok((
             session_id,
             config.receipt_submit_path.clone(),
-            self.storage.pending_receipts.clone(),
+            self.storage
+                .receipt_submission_batch(Self::MAX_RECEIPT_SUBMISSION_BATCH),
         ))
     }
 

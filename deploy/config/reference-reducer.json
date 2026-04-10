@@ -34,8 +34,6 @@
     }
   },
   "http_bind_addr": "0.0.0.0:8789",
-  "admin_token": "reducer-admin",
-  "allow_dev_admin_token": true,
   "remaining_work_units": 120,
   "admin_signer_peer_id": "reducer-operator",
   "embedded_runtime": {

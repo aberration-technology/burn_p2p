@@ -19,7 +19,10 @@ use url::Url;
 
 use crate::{
     ExternalProxyIdentityConnector, ProviderMappedIdentityConnector,
-    shared::{ProviderConnectorState, StandardTokenResponse},
+    shared::{
+        PendingLogin, ProviderConnectorState, ProviderSessionMaterial, ProxyConnectorState,
+        StandardTokenResponse, StoredProviderSession,
+    },
 };
 
 fn required_live_oidc_env(name: &str) -> String {
@@ -107,6 +110,77 @@ fn external_proxy_connector_uses_external_provider_and_trusted_header() {
         AuthProvider::External {
             authority: "corp-proxy".into()
         }
+    );
+}
+
+#[test]
+fn external_proxy_connector_prunes_and_bounds_pending_logins() {
+    let now = Utc::now();
+    let connector = ExternalProxyIdentityConnector::new(
+        "corp-proxy",
+        "x-auth-principal",
+        Duration::minutes(10),
+        BTreeMap::from([(
+            PrincipalId::new("alice"),
+            StaticPrincipalRecord {
+                claims: PrincipalClaims {
+                    principal_id: PrincipalId::new("alice"),
+                    provider: AuthProvider::External {
+                        authority: "corp-proxy".into(),
+                    },
+                    display_name: "Alice".into(),
+                    org_memberships: BTreeSet::new(),
+                    group_memberships: BTreeSet::new(),
+                    granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+                    granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                    custom_claims: BTreeMap::new(),
+                    issued_at: now,
+                    expires_at: now + Duration::hours(1),
+                },
+                allowed_networks: BTreeSet::from([NetworkId::new("network-a")]),
+            },
+        )]),
+    );
+    let seeded = ProxyConnectorState {
+        pending: (0..300)
+            .map(|index| {
+                (
+                    burn_p2p_core::ContentId::new(format!("login-{index:03}")),
+                    PendingLogin {
+                        login_id: burn_p2p_core::ContentId::new(format!("login-{index:03}")),
+                        state: format!("state-{index:03}"),
+                        network_id: NetworkId::new("network-a"),
+                        requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                        expires_at: if index < 32 {
+                            now - Duration::minutes(1)
+                        } else {
+                            now + Duration::minutes(index as i64)
+                        },
+                        oidc_nonce: None,
+                        pkce_verifier: None,
+                    },
+                )
+            })
+            .collect(),
+    };
+    let bytes = burn_p2p_core::deterministic_cbor(&seeded).expect("encode proxy state");
+    connector
+        .import_persistent_state(Some(&bytes))
+        .expect("import proxy state");
+
+    let exported = connector
+        .export_persistent_state()
+        .expect("export proxy state")
+        .expect("proxy state bytes");
+    let persisted: ProxyConnectorState =
+        burn_p2p_core::from_cbor_slice(&exported).expect("decode proxy state");
+
+    assert!(persisted.pending.len() <= 256);
+    assert!(
+        persisted
+            .pending
+            .values()
+            .all(|login| login.expires_at >= now)
     );
 }
 
@@ -690,12 +764,12 @@ fn provider_persistent_state_redacts_remote_tokens_by_default() {
         .expect("persisted provider session");
 
     assert_eq!(
-        session_state.provider_subject.as_deref(),
+        session_state.material.provider_subject.as_deref(),
         Some("github-user-42")
     );
-    assert!(session_state.access_token.is_none());
-    assert!(session_state.refresh_token.is_none());
-    assert!(session_state.session_handle.is_none());
+    assert!(session_state.material.access_token.is_none());
+    assert!(session_state.material.refresh_token.is_none());
+    assert!(session_state.material.session_handle.is_none());
 
     exchange_server.join().expect("join exchange server");
 }
@@ -770,19 +844,100 @@ fn provider_persistent_state_can_opt_in_to_remote_token_persistence() {
         .expect("persisted provider session");
 
     assert_eq!(
-        session_state.access_token.as_deref(),
+        session_state.material.access_token.as_deref(),
         Some("access-token-1")
     );
     assert_eq!(
-        session_state.refresh_token.as_deref(),
+        session_state.material.refresh_token.as_deref(),
         Some("refresh-token-1")
     );
     assert_eq!(
-        session_state.session_handle.as_deref(),
+        session_state.material.session_handle.as_deref(),
         Some("session-handle-1")
     );
 
     exchange_server.join().expect("join exchange server");
+}
+
+#[test]
+fn provider_connector_prunes_expired_and_bounds_persisted_sessions() {
+    let now = Utc::now();
+    let connector = ProviderMappedIdentityConnector::new(
+        AuthProvider::GitHub,
+        Duration::minutes(10),
+        BTreeMap::new(),
+        Some("https://github.example/login/oauth/authorize".into()),
+    );
+    let seeded = ProviderConnectorState {
+        pending: (0..300)
+            .map(|index| {
+                (
+                    burn_p2p_core::ContentId::new(format!("login-{index:03}")),
+                    PendingLogin {
+                        login_id: burn_p2p_core::ContentId::new(format!("login-{index:03}")),
+                        state: format!("state-{index:03}"),
+                        network_id: NetworkId::new("network-a"),
+                        requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                        expires_at: if index < 24 {
+                            now - Duration::minutes(5)
+                        } else {
+                            now + Duration::minutes(index as i64)
+                        },
+                        oidc_nonce: None,
+                        pkce_verifier: None,
+                    },
+                )
+            })
+            .collect(),
+        provider_sessions: (0..300)
+            .map(|index| {
+                (
+                    burn_p2p_core::ContentId::new(format!("session-{index:03}")),
+                    StoredProviderSession {
+                        material: ProviderSessionMaterial {
+                            provider_subject: Some(format!("provider-user-{index:03}")),
+                            access_token: Some(format!("access-{index:03}")),
+                            refresh_token: None,
+                            session_handle: None,
+                            provider_expires_at: None,
+                            profile: Default::default(),
+                        },
+                        local_expires_at: if index < 24 {
+                            now - Duration::minutes(5)
+                        } else {
+                            now + Duration::minutes(index as i64)
+                        },
+                    },
+                )
+            })
+            .collect(),
+    };
+    let bytes = burn_p2p_core::deterministic_cbor(&seeded).expect("encode provider state");
+    connector
+        .import_persistent_state(Some(&bytes))
+        .expect("import provider state");
+
+    let exported = connector
+        .export_persistent_state()
+        .expect("export provider state")
+        .expect("provider state bytes");
+    let persisted: ProviderConnectorState =
+        burn_p2p_core::from_cbor_slice(&exported).expect("decode provider state");
+
+    assert!(persisted.pending.len() <= 256);
+    assert!(
+        persisted
+            .pending
+            .values()
+            .all(|login| login.expires_at >= now)
+    );
+    assert!(persisted.provider_sessions.len() <= 256);
+    assert!(
+        persisted
+            .provider_sessions
+            .values()
+            .all(|session| session.local_expires_at >= now)
+    );
 }
 
 #[test]

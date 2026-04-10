@@ -78,6 +78,7 @@ pub(crate) fn run_control_plane(
         {
             snapshot.last_error = Some(format!("failed to restore security state: {error}"));
         }
+        prune_tracked_peer_security_state(&mut snapshot);
         if !matches!(
             snapshot.node_state,
             NodeRuntimeState::Quarantined | NodeRuntimeState::Revoked

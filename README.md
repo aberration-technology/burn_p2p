@@ -7,9 +7,10 @@
 
 core shape:
 
-- trainers lease shard slices, sync the current head, run one train window, then publish update artifacts
-- reducers combine eligible updates into aggregate proposals
-- validators attest accepted proposals and promote merged heads
+- trainers lease shard slices, sync the latest visible canonical head, run one train window, then publish candidate updates
+- reducers are non-authoritative proposal builders; they can reduce early, but validators independently rescreen the cohort and can locally re-reduce if reducer output is missing or wrong
+- only validator quorum can attest a reduction, issue merge/quorum certificates, and advance the canonical head
+- quarantined or revoked peers are filtered out of future trainer, reducer, and validator pools
 - cheap bootstrap/coherence seeds handle ingress, discovery, relay fallback, and browser-edge http state
 - the same network can include native peers, browser peers, viewers, reducers, validators, and trainer pools on different hardware classes
 
@@ -17,7 +18,7 @@ core shape:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.7", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.8", features = ["burn"] }
 ```
 
 ## happy path
@@ -65,12 +66,43 @@ orchestrated training window with no retained session state.
 - validator attestation and promotion
 - peer discovery, relay fallback, and control-plane sync
 
+## safety boundary
+
+the important trust split is:
+
+- trainer updates are candidate inputs, not canonical state
+- reducer output is a proposal, not canonical state
+- validator quorum is the authority boundary for canonical promotion
+
+that means:
+
+- a bad trainer can be rejected, downweighted, quarantined, or left out of the merge
+- a bad reducer can waste time or bandwidth, but validators still recompute the expected accepted cohort locally before promotion
+- if a dedicated reducer is silent or serves a mismatched aggregate, validators fall back to local reduction instead of letting the reducer stall the window
+- a canonical head only moves after validator attestation and merge promotion
+
+the main operating guidance for adversarial or semi-trusted deployments is:
+
+- keep reducers and validators as separate roles
+- run more than one validator; `validator_quorum = 1` is a lab mode, not a safe default
+- use admission/auth for untrusted membership
+- treat reducers as optional acceleration, not as authorities
+
+this is a decentralized training protocol, not a full bft ledger. if validator
+quorum is compromised, canonical safety is compromised too.
+
 most deployments should separate:
 
 - cheap bootstrap/coherence seeds
 - reducer nodes
 - validator / authority nodes
 - trainer pools
+
+the reference deploy shape follows that split directly:
+
+- bootstrap seeds are public ingress/discovery nodes
+- validators and reducers stay private by default
+- browser edge is an explicit opt-in profile, not the baseline split-fleet role
 
 for trainer nodes, `from_loaders(...)` is still the main public entrypoint. use
 `from_learner(...)` for reducer, validator, viewer, and helper-style runtime
@@ -115,10 +147,14 @@ leased slice to the browser.
 ## what the repo includes
 
 - `burn_p2p`: core runtime, burn-facing facade, training, validation, and promotion flow
+- `burn_p2p_workload`: backend-neutral workload and lease-data-pipeline seam
+- `burn_p2p_python`: subprocess-backed python/torch workload adapter
+- `burn_p2p_limits`: capability probing and role/budget heuristics for native and browser peers
 - `burn_p2p_swarm`: native transport, discovery, relay/rendezvous integration, and control-plane event model
 - `burn_p2p_bootstrap`: coherence-seed, reducer/validator deployment surface, and browser-edge http/admin surface
 - `burn_p2p_browser`: browser runtime bridge and wasm-facing transport glue
 - `burn_p2p_app`: reference dioxus app and browser-edge product surface
+- `burn_p2p_publish`: artifact export and publication surfaces
 - `examples/mnist_p2p_demo`: real downstream-style mixed-fleet demo used by `cargo xtask e2e mnist`
 - `examples/torch_mnist_p2p_demo`: python/torch subprocess-backed mnist demo using the same p2p runtime
 
@@ -138,6 +174,10 @@ best follow-up docs:
 - [docs/examples/mnist.md](docs/examples/mnist.md)
 - [docs/downstream-burn-guide.md](docs/downstream-burn-guide.md)
 - [docs/learning-dynamics.md](docs/learning-dynamics.md)
+- [docs/protocol-shape.md](docs/protocol-shape.md)
+- [docs/production-roadmap.md](docs/production-roadmap.md)
+- [deploy/README.md](deploy/README.md)
+- [docs/operator-runbook.md](docs/operator-runbook.md)
 - [docs/features.md](docs/features.md)
 
 non-burn runtime? implement `P2pWorkload` directly.

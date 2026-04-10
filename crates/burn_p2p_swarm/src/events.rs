@@ -428,6 +428,14 @@ impl ControlPlaneSnapshot {
 
     /// Trims bounded control-plane announcement histories kept in memory.
     pub fn clamp_announcement_histories(&mut self) {
+        cap_control_announcements(&mut self.control_announcements);
+        cap_head_announcements(&mut self.head_announcements);
+        cap_lease_announcements(&mut self.lease_announcements);
+        cap_merge_window_announcements(&mut self.merge_window_announcements);
+        cap_reducer_assignment_announcements(&mut self.reducer_assignment_announcements);
+        cap_update_announcements(&mut self.update_announcements);
+        cap_reducer_load_announcements(&mut self.reducer_load_announcements);
+        cap_auth_announcements(&mut self.auth_announcements);
         cap_directory_announcements(&mut self.directory_announcements);
         cap_peer_directory_announcements(&mut self.peer_directory_announcements);
         cap_aggregate_proposal_announcements(&mut self.aggregate_proposal_announcements);
@@ -439,14 +447,17 @@ impl ControlPlaneSnapshot {
 
     pub(crate) fn insert_control_announcement(&mut self, announcement: ControlAnnouncement) {
         push_unique(&mut self.control_announcements, announcement);
+        cap_control_announcements(&mut self.control_announcements);
     }
 
     pub(crate) fn insert_head_announcement(&mut self, announcement: HeadAnnouncement) {
         push_unique(&mut self.head_announcements, announcement);
+        cap_head_announcements(&mut self.head_announcements);
     }
 
     pub(crate) fn insert_lease_announcement(&mut self, announcement: LeaseAnnouncement) {
         push_unique(&mut self.lease_announcements, announcement);
+        cap_lease_announcements(&mut self.lease_announcements);
     }
 
     pub(crate) fn insert_merge_window_announcement(
@@ -454,6 +465,7 @@ impl ControlPlaneSnapshot {
         announcement: MergeWindowAnnouncement,
     ) {
         push_unique(&mut self.merge_window_announcements, announcement);
+        cap_merge_window_announcements(&mut self.merge_window_announcements);
     }
 
     pub(crate) fn insert_reducer_assignment_announcement(
@@ -461,10 +473,12 @@ impl ControlPlaneSnapshot {
         announcement: ReducerAssignmentAnnouncement,
     ) {
         push_unique(&mut self.reducer_assignment_announcements, announcement);
+        cap_reducer_assignment_announcements(&mut self.reducer_assignment_announcements);
     }
 
     pub(crate) fn insert_update_announcement(&mut self, announcement: UpdateEnvelopeAnnouncement) {
         push_unique(&mut self.update_announcements, announcement);
+        cap_update_announcements(&mut self.update_announcements);
     }
 
     pub(crate) fn insert_reducer_load_announcement(
@@ -472,10 +486,12 @@ impl ControlPlaneSnapshot {
         announcement: ReducerLoadAnnouncement,
     ) {
         push_unique(&mut self.reducer_load_announcements, announcement);
+        cap_reducer_load_announcements(&mut self.reducer_load_announcements);
     }
 
     pub(crate) fn insert_auth_announcement(&mut self, announcement: PeerAuthAnnouncement) {
         push_unique(&mut self.auth_announcements, announcement);
+        cap_auth_announcements(&mut self.auth_announcements);
     }
 
     pub(crate) fn insert_directory_announcement(
@@ -846,6 +862,14 @@ pub(crate) fn cap_tail<T>(values: &mut Vec<T>, max_len: usize) {
 }
 
 const MAX_METRICS_ANNOUNCEMENTS: usize = 64;
+const MAX_CONTROL_ANNOUNCEMENTS: usize = 64;
+const MAX_HEAD_ANNOUNCEMENTS: usize = 256;
+const MAX_LEASE_ANNOUNCEMENTS: usize = 128;
+const MAX_MERGE_WINDOW_ANNOUNCEMENTS: usize = 128;
+const MAX_REDUCER_ASSIGNMENT_ANNOUNCEMENTS: usize = 128;
+const MAX_UPDATE_ANNOUNCEMENTS: usize = 256;
+const MAX_REDUCER_LOAD_ANNOUNCEMENTS: usize = 128;
+const MAX_AUTH_ANNOUNCEMENTS: usize = 128;
 const MAX_DIRECTORY_ANNOUNCEMENTS: usize = 16;
 const MAX_PEER_DIRECTORY_ANNOUNCEMENTS: usize = 256;
 const MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS: usize = 256;
@@ -856,6 +880,76 @@ const MAX_DISTINCT_WINDOWS_PER_OVERLAY: usize = 8;
 
 pub(crate) fn cap_metrics_announcements(values: &mut Vec<MetricsAnnouncement>) {
     cap_tail(values, MAX_METRICS_ANNOUNCEMENTS);
+}
+
+fn cap_control_announcements(values: &mut Vec<ControlAnnouncement>) {
+    values.sort_by_key(|announcement| announcement.announced_at);
+    cap_tail(values, MAX_CONTROL_ANNOUNCEMENTS);
+}
+
+fn cap_head_announcements(values: &mut Vec<HeadAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.head
+            .global_step
+            .cmp(&right.head.global_step)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_HEAD_ANNOUNCEMENTS);
+}
+
+fn cap_lease_announcements(values: &mut Vec<LeaseAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.lease
+            .window_id
+            .cmp(&right.lease.window_id)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_LEASE_ANNOUNCEMENTS);
+}
+
+fn cap_merge_window_announcements(values: &mut Vec<MergeWindowAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.merge_window
+            .window_id
+            .cmp(&right.merge_window.window_id)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_MERGE_WINDOW_ANNOUNCEMENTS);
+}
+
+fn cap_reducer_assignment_announcements(values: &mut Vec<ReducerAssignmentAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.assignment
+            .window_id
+            .cmp(&right.assignment.window_id)
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_REDUCER_ASSIGNMENT_ANNOUNCEMENTS);
+}
+
+fn cap_update_announcements(values: &mut Vec<UpdateEnvelopeAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.update
+            .window_id
+            .cmp(&right.update.window_id)
+            .then(left.update.announced_at.cmp(&right.update.announced_at))
+    });
+    cap_tail(values, MAX_UPDATE_ANNOUNCEMENTS);
+}
+
+fn cap_reducer_load_announcements(values: &mut Vec<ReducerLoadAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.report
+            .reported_at
+            .cmp(&right.report.reported_at)
+            .then(left.report.peer_id.cmp(&right.report.peer_id))
+    });
+    cap_tail(values, MAX_REDUCER_LOAD_ANNOUNCEMENTS);
+}
+
+fn cap_auth_announcements(values: &mut Vec<PeerAuthAnnouncement>) {
+    values.sort_by_key(|announcement| announcement.announced_at);
+    cap_tail(values, MAX_AUTH_ANNOUNCEMENTS);
 }
 
 fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {

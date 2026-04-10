@@ -22,6 +22,121 @@ pub struct BrowserStoredAssignment {
     pub revision_id: RevisionId,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Declares how the browser receipt outbox is persisted.
+pub enum BrowserReceiptOutboxBackend {
+    /// Uses the snapshot-backed variant.
+    #[default]
+    Snapshot,
+    /// Uses the local-storage-backed durable variant.
+    LocalStorage,
+    /// Uses the indexeddb-backed durable variant.
+    IndexedDb,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Holds the browser receipt submission outbox.
+pub struct BrowserReceiptOutbox {
+    /// The configured persistence backend.
+    pub backend: BrowserReceiptOutboxBackend,
+    receipts: Vec<ContributionReceipt>,
+}
+
+impl Default for BrowserReceiptOutbox {
+    fn default() -> Self {
+        Self {
+            backend: BrowserReceiptOutboxBackend::Snapshot,
+            receipts: Vec::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BrowserReceiptOutboxWire {
+    Legacy(Vec<ContributionReceipt>),
+    Structured {
+        #[serde(default)]
+        backend: BrowserReceiptOutboxBackend,
+        #[serde(default)]
+        receipts: Vec<ContributionReceipt>,
+    },
+}
+
+impl<'de> Deserialize<'de> for BrowserReceiptOutbox {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match BrowserReceiptOutboxWire::deserialize(deserializer)? {
+            BrowserReceiptOutboxWire::Legacy(receipts) => Ok(Self {
+                backend: BrowserReceiptOutboxBackend::Snapshot,
+                receipts,
+            }),
+            BrowserReceiptOutboxWire::Structured { backend, receipts } => {
+                Ok(Self { backend, receipts })
+            }
+        }
+    }
+}
+
+impl BrowserReceiptOutbox {
+    /// Configures the preferred outbox backend.
+    pub fn configure_backend(&mut self, backend: BrowserReceiptOutboxBackend) {
+        self.backend = backend;
+    }
+
+    /// Returns whether the backend is durable across browser reloads.
+    pub fn is_durable(&self) -> bool {
+        matches!(
+            self.backend,
+            BrowserReceiptOutboxBackend::LocalStorage | BrowserReceiptOutboxBackend::IndexedDb
+        )
+    }
+
+    /// Returns the number of receipts currently queued.
+    pub fn len(&self) -> usize {
+        self.receipts.len()
+    }
+
+    /// Returns whether the outbox is empty.
+    pub fn is_empty(&self) -> bool {
+        self.receipts.is_empty()
+    }
+
+    /// Returns an iterator over queued receipts.
+    pub fn iter(&self) -> impl Iterator<Item = &ContributionReceipt> {
+        self.receipts.iter()
+    }
+
+    /// Queues one new receipt.
+    pub fn enqueue(&mut self, receipt: ContributionReceipt) {
+        self.receipts.push(receipt);
+    }
+
+    /// Returns whether the outbox already contains the given receipt.
+    pub fn contains(&self, receipt_id: &ContributionReceiptId) -> bool {
+        self.receipts
+            .iter()
+            .any(|pending| &pending.receipt_id == receipt_id)
+    }
+
+    /// Returns one bounded submission batch.
+    pub fn submission_batch(&self, limit: usize) -> Vec<ContributionReceipt> {
+        self.receipts.iter().take(limit).cloned().collect()
+    }
+
+    /// Acknowledges receipt IDs and returns the remaining queue length.
+    pub fn acknowledge(&mut self, receipt_ids: &BTreeSet<ContributionReceiptId>) -> usize {
+        if receipt_ids.is_empty() {
+            return self.receipts.len();
+        }
+        self.receipts
+            .retain(|receipt| !receipt_ids.contains(&receipt.receipt_id));
+        self.receipts.len()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Captures a snapshot of browser storage.
 pub struct BrowserStorageSnapshot {
@@ -41,10 +156,14 @@ pub struct BrowserStorageSnapshot {
     pub cached_microshards: BTreeSet<MicroShardId>,
     /// The stored receipts.
     pub stored_receipts: BTreeSet<ContributionReceiptId>,
-    /// The pending receipts.
-    pub pending_receipts: Vec<ContributionReceipt>,
+    /// The pending receipt outbox.
+    pub pending_receipts: BrowserReceiptOutbox,
     /// The submitted receipts.
     pub submitted_receipts: BTreeSet<ContributionReceiptId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stored_receipt_order: Vec<ContributionReceiptId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    submitted_receipt_order: Vec<ContributionReceiptId>,
     /// The last directory sync at.
     pub last_directory_sync_at: Option<DateTime<Utc>>,
     /// The last signed directory snapshot.
@@ -80,8 +199,10 @@ impl Default for BrowserStorageSnapshot {
             last_head_artifact_transport: None,
             cached_microshards: BTreeSet::new(),
             stored_receipts: BTreeSet::new(),
-            pending_receipts: Vec::new(),
+            pending_receipts: BrowserReceiptOutbox::default(),
             submitted_receipts: BTreeSet::new(),
+            stored_receipt_order: Vec::new(),
+            submitted_receipt_order: Vec::new(),
             last_directory_sync_at: None,
             last_signed_directory_snapshot: None,
             last_signed_leaderboard_snapshot: None,
@@ -98,6 +219,8 @@ impl Default for BrowserStorageSnapshot {
 
 impl BrowserStorageSnapshot {
     const MAX_METRICS_CATCHUP_BUNDLES: usize = 8;
+    const MAX_STORED_RECEIPT_IDS: usize = 512;
+    const MAX_SUBMITTED_RECEIPT_IDS: usize = 512;
 
     /// Performs the remember session operation.
     pub fn remember_session(&mut self, session: BrowserSessionState) {
@@ -211,22 +334,39 @@ impl BrowserStorageSnapshot {
 
     /// Performs the remember receipt operation.
     pub fn remember_receipt(&mut self, receipt_id: ContributionReceiptId) {
-        self.stored_receipts.insert(receipt_id);
+        remember_recent_receipt_id(
+            &mut self.stored_receipts,
+            &mut self.stored_receipt_order,
+            receipt_id,
+            Self::MAX_STORED_RECEIPT_IDS,
+        );
         self.updated_at = Utc::now();
     }
 
     /// Performs the queue receipt operation.
     pub fn queue_receipt(&mut self, receipt: ContributionReceipt) {
+        clamp_recent_receipt_ids(
+            &mut self.stored_receipts,
+            &mut self.stored_receipt_order,
+            Self::MAX_STORED_RECEIPT_IDS,
+        );
+        clamp_recent_receipt_ids(
+            &mut self.submitted_receipts,
+            &mut self.submitted_receipt_order,
+            Self::MAX_SUBMITTED_RECEIPT_IDS,
+        );
         if self.submitted_receipts.contains(&receipt.receipt_id)
-            || self
-                .pending_receipts
-                .iter()
-                .any(|pending| pending.receipt_id == receipt.receipt_id)
+            || self.pending_receipts.contains(&receipt.receipt_id)
         {
             return;
         }
-        self.stored_receipts.insert(receipt.receipt_id.clone());
-        self.pending_receipts.push(receipt);
+        remember_recent_receipt_id(
+            &mut self.stored_receipts,
+            &mut self.stored_receipt_order,
+            receipt.receipt_id.clone(),
+            Self::MAX_STORED_RECEIPT_IDS,
+        );
+        self.pending_receipts.enqueue(receipt);
         self.updated_at = Utc::now();
     }
 
@@ -236,11 +376,22 @@ impl BrowserStorageSnapshot {
         if acknowledged.is_empty() {
             return self.pending_receipts.len();
         }
-        self.pending_receipts
-            .retain(|receipt| !acknowledged.contains(&receipt.receipt_id));
-        self.submitted_receipts.extend(acknowledged);
+        let pending_receipts = self.pending_receipts.acknowledge(&acknowledged);
+        for receipt_id in acknowledged {
+            remember_recent_receipt_id(
+                &mut self.submitted_receipts,
+                &mut self.submitted_receipt_order,
+                receipt_id,
+                Self::MAX_SUBMITTED_RECEIPT_IDS,
+            );
+        }
         self.updated_at = Utc::now();
-        self.pending_receipts.len()
+        pending_receipts
+    }
+
+    /// Returns one bounded receipt submission batch.
+    pub fn receipt_submission_batch(&self, limit: usize) -> Vec<ContributionReceipt> {
+        self.pending_receipts.submission_batch(limit)
     }
 
     /// Performs the clear cached data operation.
@@ -251,4 +402,52 @@ impl BrowserStorageSnapshot {
         self.cached_microshards.clear();
         self.updated_at = Utc::now();
     }
+}
+
+fn remember_recent_receipt_id(
+    ids: &mut BTreeSet<ContributionReceiptId>,
+    order: &mut Vec<ContributionReceiptId>,
+    receipt_id: ContributionReceiptId,
+    max_entries: usize,
+) {
+    ids.insert(receipt_id.clone());
+    if let Some(position) = order.iter().position(|candidate| candidate == &receipt_id) {
+        order.remove(position);
+    }
+    order.push(receipt_id);
+    clamp_recent_receipt_ids(ids, order, max_entries);
+}
+
+fn clamp_recent_receipt_ids(
+    ids: &mut BTreeSet<ContributionReceiptId>,
+    order: &mut Vec<ContributionReceiptId>,
+    max_entries: usize,
+) {
+    if ids.len() <= max_entries && order.len() <= max_entries {
+        return;
+    }
+
+    let mut retained = Vec::<ContributionReceiptId>::new();
+    let mut seen = BTreeSet::<ContributionReceiptId>::new();
+    for receipt_id in order.iter().rev() {
+        if ids.contains(receipt_id) && seen.insert(receipt_id.clone()) {
+            retained.push(receipt_id.clone());
+            if retained.len() == max_entries {
+                break;
+            }
+        }
+    }
+    if retained.len() < max_entries {
+        for receipt_id in ids.iter().rev() {
+            if seen.insert(receipt_id.clone()) {
+                retained.push(receipt_id.clone());
+                if retained.len() == max_entries {
+                    break;
+                }
+            }
+        }
+    }
+    retained.reverse();
+    *ids = retained.iter().cloned().collect();
+    *order = retained;
 }

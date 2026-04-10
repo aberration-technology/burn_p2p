@@ -1,6 +1,10 @@
 //! Capability and budget evaluation helpers for runtime placement decisions.
 #![allow(missing_docs)]
-use burn_p2p_core::{AttestationLevel, ClientPlatform, PeerId, PersistenceClass};
+use std::collections::BTreeSet;
+
+use burn_p2p_core::{
+    AttestationLevel, BrowserCapability, ClientPlatform, PeerId, PersistenceClass,
+};
 use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, LimitPolicy, LocalBackend, ObservedThroughputUpdate,
     backend_preference_order,
@@ -17,6 +21,7 @@ fn native_gpu_probe() -> CapabilityProbe {
             LocalBackend::Cuda,
             LocalBackend::Wgpu,
         ],
+        browser_capabilities: BTreeSet::new(),
         device_memory_bytes: Some(24 * 1024 * 1024 * 1024),
         system_memory_bytes: 64 * 1024 * 1024 * 1024,
         disk_bytes: 500 * 1024 * 1024 * 1024,
@@ -34,6 +39,7 @@ fn browser_probe() -> CapabilityProbe {
         peer_id: PeerId::new("bench-peer-browser"),
         platform: ClientPlatform::Browser,
         available_backends: vec![LocalBackend::Wgpu],
+        browser_capabilities: BTreeSet::from([BrowserCapability::WebGpu]),
         device_memory_bytes: Some(2 * 1024 * 1024 * 1024),
         system_memory_bytes: 8 * 1024 * 1024 * 1024,
         disk_bytes: 8 * 1024 * 1024 * 1024,
@@ -51,6 +57,7 @@ fn cpu_probe() -> CapabilityProbe {
         peer_id: PeerId::new("bench-peer-cpu"),
         platform: ClientPlatform::Native,
         available_backends: vec![LocalBackend::Cpu, LocalBackend::Ndarray],
+        browser_capabilities: BTreeSet::new(),
         device_memory_bytes: None,
         system_memory_bytes: 16 * 1024 * 1024 * 1024,
         disk_bytes: 200 * 1024 * 1024 * 1024,
