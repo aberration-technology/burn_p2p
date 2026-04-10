@@ -8,6 +8,7 @@ use std::{
     env, fs,
     net::TcpListener,
     path::PathBuf,
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -3768,7 +3769,14 @@ fn run_ci_lane(
             .iter()
             .map(|value| (*value).to_owned())
             .collect::<Vec<_>>();
-        let step = workspace.run(&artifacts, label, &xtask_program, &command_args, &envs)?;
+        let step = run_ci_subcommand_with_retry(
+            workspace,
+            &artifacts,
+            label,
+            &xtask_program,
+            &command_args,
+            &envs,
+        )?;
         if let Some(nested_artifact_dir) =
             extract_nested_artifact_dir(&artifacts, &step.stdout_path)?
         {
@@ -3795,6 +3803,46 @@ fn run_ci_lane(
         }),
         keep_artifacts,
     )
+}
+
+fn run_ci_subcommand_with_retry(
+    workspace: &Workspace,
+    artifacts: &ArtifactLayout,
+    label: &str,
+    program: &str,
+    args: &[String],
+    envs: &BTreeMap<String, String>,
+) -> anyhow::Result<StepRecord> {
+    match workspace.run(artifacts, label, program, args, envs) {
+        Ok(step) => Ok(step),
+        Err(first_error) if ci_step_is_retryable(label) => {
+            eprintln!(
+                "retrying ci step `{label}` once after failure; first attempt error:\n{first_error}"
+            );
+            thread::sleep(Duration::from_secs(5));
+            let retry_label = format!("{label}-retry");
+            workspace
+                .run(artifacts, &retry_label, program, args, envs)
+                .map(|mut step| {
+                    step.label = label.into();
+                    step
+                })
+                .map_err(|retry_error| {
+                    anyhow::anyhow!(
+                        "ci step `{label}` failed on the first attempt and again on retry.\n\nfirst attempt:\n{first_error}\n\nretry attempt:\n{retry_error}"
+                    )
+                })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn ci_step_is_retryable(label: &str) -> bool {
+    label == "setup-browser"
+        || label.starts_with("browser-")
+        || label.starts_with("e2e-")
+        || label.starts_with("adversarial-")
+        || label.starts_with("stress-")
 }
 
 fn extract_nested_artifact_dir(
