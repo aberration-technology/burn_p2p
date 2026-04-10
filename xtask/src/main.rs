@@ -756,11 +756,32 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
                 "burn_p2p",
                 "--exclude",
                 "burn_p2p_testkit",
+                "--exclude",
+                "burn_p2p_swarm",
+            ],
+        ),
+        (
+            "test-swarm",
+            vec![
+                "test",
+                "-p",
+                "burn_p2p_swarm",
+                "--lib",
+                "--",
+                "--test-threads=1",
             ],
         ),
         (
             "test-burn",
-            vec!["test", "-p", "burn_p2p", "--features", "burn"],
+            vec![
+                "test",
+                "-p",
+                "burn_p2p",
+                "--features",
+                "burn",
+                "--",
+                "--test-threads=1",
+            ],
         ),
         (
             "test-publish",
