@@ -31,6 +31,12 @@ pub enum LimitsError {
     #[error("observed throughput smoothing must be within 0.0..=1.0")]
     /// Uses the invalid observed smoothing variant.
     InvalidObservedSmoothing,
+    #[error("max rebudget growth per window must be finite and at least 1.0")]
+    /// Uses the invalid rebudget growth variant.
+    InvalidRebudgetGrowth,
+    #[error("min rebudget retention per window must be finite and within 0.0..=1.0")]
+    /// Uses the invalid rebudget retention variant.
+    InvalidRebudgetRetention,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -135,6 +141,10 @@ pub struct LimitPolicy {
     pub validator_min_attestation: AttestationLevel,
     /// The observed throughput smoothing.
     pub observed_throughput_smoothing: f64,
+    /// Maximum multiplicative budget growth allowed from a single observed window.
+    pub max_rebudget_growth_per_window: f64,
+    /// Minimum retained fraction of the previous budget after one observed window.
+    pub min_rebudget_retention_per_window: f64,
 }
 
 impl Default for LimitPolicy {
@@ -147,6 +157,8 @@ impl Default for LimitPolicy {
             reducer_min_work_units_per_second: 2_500.0,
             validator_min_attestation: AttestationLevel::Challenge,
             observed_throughput_smoothing: 0.25,
+            max_rebudget_growth_per_window: 1.5,
+            min_rebudget_retention_per_window: 0.5,
         }
     }
 }
@@ -201,6 +213,16 @@ impl CapabilityCalibrator {
         }
         if !(0.0..=1.0).contains(&policy.observed_throughput_smoothing) {
             return Err(LimitsError::InvalidObservedSmoothing);
+        }
+        if !policy.max_rebudget_growth_per_window.is_finite()
+            || policy.max_rebudget_growth_per_window < 1.0
+        {
+            return Err(LimitsError::InvalidRebudgetGrowth);
+        }
+        if !policy.min_rebudget_retention_per_window.is_finite()
+            || !(0.0..=1.0).contains(&policy.min_rebudget_retention_per_window)
+        {
+            return Err(LimitsError::InvalidRebudgetRetention);
         }
 
         Ok(Self { policy })
@@ -283,6 +305,8 @@ impl CapabilityCalibrator {
             profile.estimate.work_units_per_second,
             &observed,
             self.policy.observed_throughput_smoothing,
+            self.policy.max_rebudget_growth_per_window,
+            self.policy.min_rebudget_retention_per_window,
         )?;
 
         let probe = probe_from_card(&profile.card, effective_work_units_per_second);
@@ -459,6 +483,8 @@ pub fn corrected_work_units_per_second(
     baseline_work_units_per_second: f64,
     observed: &ObservedThroughputUpdate,
     smoothing: f64,
+    max_rebudget_growth_per_window: f64,
+    min_rebudget_retention_per_window: f64,
 ) -> Result<f64, LimitsError> {
     if baseline_work_units_per_second < 0.0 {
         return Err(LimitsError::InvalidWorkRate);
@@ -469,9 +495,22 @@ pub fn corrected_work_units_per_second(
     if !(0.0..=1.0).contains(&smoothing) {
         return Err(LimitsError::InvalidObservedSmoothing);
     }
+    if !max_rebudget_growth_per_window.is_finite() || max_rebudget_growth_per_window < 1.0 {
+        return Err(LimitsError::InvalidRebudgetGrowth);
+    }
+    if !min_rebudget_retention_per_window.is_finite()
+        || !(0.0..=1.0).contains(&min_rebudget_retention_per_window)
+    {
+        return Err(LimitsError::InvalidRebudgetRetention);
+    }
 
     let observed_rate = observed.measured_work_units as f64 / observed.elapsed_seconds as f64;
-    Ok(((1.0 - smoothing) * baseline_work_units_per_second) + (smoothing * observed_rate))
+    let smoothed_rate =
+        ((1.0 - smoothing) * baseline_work_units_per_second) + (smoothing * observed_rate);
+    let min_rate = baseline_work_units_per_second * min_rebudget_retention_per_window;
+    let max_rate = baseline_work_units_per_second * max_rebudget_growth_per_window;
+
+    Ok(smoothed_rate.clamp(min_rate, max_rate))
 }
 
 /// Performs the backend preference order operation.
@@ -834,6 +873,66 @@ mod tests {
                 < profile.recommended_budget.budget_work_units
         );
         assert_ne!(rebudgeted.card.card_id, profile.card.card_id);
+    }
+
+    #[test]
+    fn observed_throughput_growth_is_clamped_per_window() {
+        let calibrator = CapabilityCalibrator::new(LimitPolicy {
+            observed_throughput_smoothing: 1.0,
+            max_rebudget_growth_per_window: 1.5,
+            ..LimitPolicy::default()
+        })
+        .expect("calibrator");
+        let profile = calibrator
+            .calibrate(native_gpu_probe(), Utc::now())
+            .expect("profile");
+
+        let rebudgeted = calibrator
+            .rebudget(
+                &profile,
+                ObservedThroughputUpdate {
+                    measured_work_units: 2_000_000,
+                    elapsed_seconds: 100,
+                    completed_windows: 1,
+                    sampled_at: Utc::now(),
+                },
+            )
+            .expect("rebudgeted");
+
+        assert_eq!(
+            rebudgeted.estimate.work_units_per_second,
+            profile.estimate.work_units_per_second * 1.5
+        );
+    }
+
+    #[test]
+    fn observed_throughput_slowdown_is_clamped_per_window() {
+        let calibrator = CapabilityCalibrator::new(LimitPolicy {
+            observed_throughput_smoothing: 1.0,
+            min_rebudget_retention_per_window: 0.5,
+            ..LimitPolicy::default()
+        })
+        .expect("calibrator");
+        let profile = calibrator
+            .calibrate(native_gpu_probe(), Utc::now())
+            .expect("profile");
+
+        let rebudgeted = calibrator
+            .rebudget(
+                &profile,
+                ObservedThroughputUpdate {
+                    measured_work_units: 10,
+                    elapsed_seconds: 100,
+                    completed_windows: 1,
+                    sampled_at: Utc::now(),
+                },
+            )
+            .expect("rebudgeted");
+
+        assert_eq!(
+            rebudgeted.estimate.work_units_per_second,
+            profile.estimate.work_units_per_second * 0.5
+        );
     }
 
     #[test]

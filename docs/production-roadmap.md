@@ -142,7 +142,7 @@ partially present:
 
 - native and browser capability probes
 - role/budget heuristics
-- observed-throughput rebudgeting
+- damped observed-throughput rebudgeting
 
 still missing:
 
