@@ -558,6 +558,358 @@ fn family_runtime_continuous_trainer_applies_authoritative_lifecycle_activation(
 }
 
 #[test]
+fn family_runtime_reassigns_primary_slot_across_experiments_via_authoritative_lifecycle() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("cross-experiment lifecycle storage");
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(storage.path().to_path_buf()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(vec![
+            switching_directory_entry(
+                "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
+            ),
+        ]))
+        .spawn()
+        .expect("spawn cross-experiment lifecycle runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "cross-experiment lifecycle runtime did not start",
+    );
+
+    let initial = running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+    let target_entry = switching_directory_entry(
+        "exp-b",
+        "rev-b",
+        "alternate",
+        "schema-b",
+        "view-b",
+        "Switch B",
+    );
+    let control = running.control_handle();
+    control
+        .publish_directory(ExperimentDirectoryAnnouncement {
+            network_id: mainnet().genesis.network_id.clone(),
+            entries: vec![target_entry.clone()],
+            announced_at: Utc::now(),
+        })
+        .expect("publish reassignment directory entry");
+    control
+        .publish_lifecycle(lifecycle_announcement(
+            burn_p2p_experiment::ExperimentLifecyclePlan {
+                study_id: initial.study_id.clone(),
+                experiment_id: initial.experiment_id.clone(),
+                base_revision_id: Some(initial.revision_id.clone()),
+                target_entry,
+                phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(2),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                plan_epoch: 1,
+                reason: Some("reassign primary slot to exp-b".into()),
+            },
+        ))
+        .expect("publish cross-experiment lifecycle plan");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = telemetry.snapshot();
+            snapshot.control_plane.directory_announcements.len() >= 2
+                && !snapshot.control_plane.lifecycle_announcements.is_empty()
+        },
+        "cross-experiment lifecycle control plane state was not reflected in telemetry",
+    );
+
+    let before_activation = running
+        .follow_control_plane_once(crate::WindowId(1))
+        .expect("follow control plane before cross-experiment activation")
+        .expect("active experiment before cross-experiment activation");
+    assert_eq!(
+        before_activation.experiment_id,
+        crate::ExperimentId::new("exp-a")
+    );
+    assert_eq!(
+        before_activation.revision_id,
+        crate::RevisionId::new("rev-a")
+    );
+
+    let after_activation = running
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow control plane at cross-experiment activation")
+        .expect("active experiment after cross-experiment activation");
+    assert_eq!(
+        after_activation.experiment_id,
+        crate::ExperimentId::new("exp-b")
+    );
+    assert_eq!(
+        after_activation.revision_id,
+        crate::RevisionId::new("rev-b")
+    );
+    assert_eq!(
+        running.config().selected_workload_id,
+        Some(crate::WorkloadId::new("alternate"))
+    );
+    assert_eq!(
+        telemetry.snapshot().slot_states.first(),
+        Some(&crate::SlotRuntimeState::Assigned(
+            crate::SlotAssignmentState::new(
+                crate::StudyId::new("study-switch"),
+                crate::ExperimentId::new("exp-b"),
+                crate::RevisionId::new("rev-b"),
+            )
+        ))
+    );
+
+    running
+        .shutdown()
+        .expect("shutdown cross-experiment lifecycle runtime");
+    let _ = running
+        .await_termination()
+        .expect("await cross-experiment lifecycle runtime");
+}
+
+#[test]
+fn family_runtime_multi_node_lifecycle_rollout_prewarms_before_activation() {
+    let _guard = native_swarm_test_guard();
+    let initial_directory = vec![switching_directory_entry(
+        "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
+    )];
+    let provider_storage = tempdir().expect("provider lifecycle storage");
+    let mut provider = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(provider_storage.path().to_path_buf()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(initial_directory.clone()))
+        .spawn()
+        .expect("spawn provider lifecycle runtime");
+    let provider_telemetry = provider.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = provider_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "provider lifecycle runtime did not start",
+    );
+    let provider_addr = provider_telemetry.snapshot().listen_addresses[0].clone();
+    let provider_peer_id = provider_telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("provider peer id");
+
+    let follower_storage = tempdir().expect("follower lifecycle storage");
+    let mut follower = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(follower_storage.path().to_path_buf()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(initial_directory.clone()))
+        .with_bootstrap_peer(provider_addr)
+        .spawn()
+        .expect("spawn follower lifecycle runtime");
+    let follower_telemetry = follower.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || provider_telemetry.snapshot().connected_peers >= 1,
+        "provider lifecycle runtime did not connect to follower",
+    );
+    wait_for(
+        Duration::from_secs(5),
+        || follower_telemetry.snapshot().connected_peers >= 1,
+        "follower lifecycle runtime did not connect to provider",
+    );
+
+    let initial = follower
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial follower experiment selection");
+    let target_experiment = mainnet().experiment(
+        crate::StudyId::new("study-switch"),
+        crate::ExperimentId::new("exp-a"),
+        crate::RevisionId::new("rev-b"),
+    );
+    let target_head = provider
+        .initialize_local_head(&target_experiment)
+        .expect("initialize provider target head");
+    provider
+        .publish_head_provider(&target_experiment, &target_head)
+        .expect("publish provider target head");
+    follower
+        .ingest_peer_snapshot(&provider_peer_id, Duration::from_secs(5))
+        .expect("ingest provider snapshot");
+
+    let target_entry = switching_directory_entry(
+        "exp-a",
+        "rev-b",
+        "alternate",
+        "schema-b",
+        "view-b",
+        "Switch A Rev B",
+    );
+    let control = provider.control_handle();
+    control
+        .publish_directory(ExperimentDirectoryAnnouncement {
+            network_id: mainnet().genesis.network_id.clone(),
+            entries: vec![target_entry.clone()],
+            announced_at: Utc::now(),
+        })
+        .expect("publish rollout directory entry");
+
+    for (plan_epoch, phase) in [
+        (1_u64, burn_p2p_experiment::ExperimentLifecyclePhase::Staged),
+        (
+            2_u64,
+            burn_p2p_experiment::ExperimentLifecyclePhase::Prewarming,
+        ),
+        (3_u64, burn_p2p_experiment::ExperimentLifecyclePhase::Ready),
+    ] {
+        let reason = format!("rollout phase {phase:?}");
+        control
+            .publish_lifecycle(lifecycle_announcement(
+                burn_p2p_experiment::ExperimentLifecyclePlan {
+                    study_id: initial.study_id.clone(),
+                    experiment_id: initial.experiment_id.clone(),
+                    base_revision_id: Some(initial.revision_id.clone()),
+                    target_entry: target_entry.clone(),
+                    phase,
+                    target: burn_p2p_experiment::ActivationTarget {
+                        activation: crate::WindowActivation {
+                            activation_window: crate::WindowId(3),
+                            grace_windows: 0,
+                        },
+                        required_client_capabilities: BTreeSet::new(),
+                    },
+                    plan_epoch,
+                    reason: Some(reason),
+                },
+            ))
+            .expect("publish lifecycle phase");
+        follower
+            .ingest_peer_snapshot(&provider_peer_id, Duration::from_secs(5))
+            .expect("refresh follower snapshot");
+    }
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = follower_telemetry.snapshot();
+            snapshot.control_plane.directory_announcements.len() >= 2
+                && snapshot.control_plane.lifecycle_announcements.len() >= 3
+        },
+        "follower did not observe staged lifecycle phases",
+    );
+
+    let before_activation = follower
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow control plane before activation")
+        .expect("active experiment before activation");
+    assert_eq!(
+        before_activation.revision_id,
+        crate::RevisionId::new("rev-a")
+    );
+    assert_eq!(
+        follower.config().selected_workload_id,
+        Some(crate::WorkloadId::new("compiled"))
+    );
+
+    follower
+        .wait_for_artifact_from_peers(
+            std::slice::from_ref(&provider_peer_id),
+            &target_head.artifact_id,
+            Duration::from_secs(10),
+        )
+        .expect("prewarm target artifact from provider");
+    assert!(
+        follower
+            .artifact_store()
+            .expect("follower artifact store")
+            .has_manifest(&target_head.artifact_id)
+    );
+    assert!(
+        follower
+            .adopt_known_head_if_present(&target_experiment, &target_head)
+            .expect("adopt prewarmed target head"),
+        "prewarmed target head should be adoptable before activation"
+    );
+
+    control
+        .publish_lifecycle(lifecycle_announcement(
+            burn_p2p_experiment::ExperimentLifecyclePlan {
+                study_id: initial.study_id.clone(),
+                experiment_id: initial.experiment_id.clone(),
+                base_revision_id: Some(initial.revision_id.clone()),
+                target_entry,
+                phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(3),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                plan_epoch: 4,
+                reason: Some("activate prewarmed rev-b".into()),
+            },
+        ))
+        .expect("publish activating lifecycle phase");
+    follower
+        .ingest_peer_snapshot(&provider_peer_id, Duration::from_secs(5))
+        .expect("refresh follower activating snapshot");
+
+    let after_activation = follower
+        .follow_control_plane_once(crate::WindowId(3))
+        .expect("follow control plane at activation")
+        .expect("active experiment after activation");
+    assert_eq!(
+        after_activation.revision_id,
+        crate::RevisionId::new("rev-b")
+    );
+    assert_eq!(
+        follower.config().selected_workload_id,
+        Some(crate::WorkloadId::new("alternate"))
+    );
+    let adopted = follower
+        .sync_experiment_head(&after_activation)
+        .expect("sync active rev-b head")
+        .expect("active rev-b head");
+    assert_eq!(adopted.head_id, target_head.head_id);
+
+    follower
+        .shutdown()
+        .expect("shutdown follower lifecycle runtime");
+    let _ = follower
+        .await_termination()
+        .expect("await follower lifecycle runtime");
+    provider
+        .shutdown()
+        .expect("shutdown provider lifecycle runtime");
+    let _ = provider
+        .await_termination()
+        .expect("await provider lifecycle runtime");
+}
+
+#[test]
 fn family_runtime_applies_control_plane_pause_and_resume_at_window_boundaries() {
     let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("control switching storage");

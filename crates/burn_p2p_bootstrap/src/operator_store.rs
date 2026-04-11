@@ -959,7 +959,7 @@ fn insert_postgres_operator_audit_records(
             &format!(
                 "INSERT INTO {table_name} \
                  (snapshot_key, dedupe_key, kind, record_id, study_id, experiment_id, revision_id, peer_id, head_id, captured_at, summary_json, summary_text) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CAST($11 AS text)::jsonb, $12) \
                  ON CONFLICT (snapshot_key, dedupe_key) DO NOTHING"
             ),
             &[
@@ -1748,7 +1748,7 @@ pub(crate) fn persist_operator_state_snapshot(
                 &format!(
                     "INSERT INTO {table_name} \
                      (snapshot_key, captured_at, preview_json, summary_json, summary_text, study_ids, experiment_ids, revision_ids, head_ids, receipt_count, head_count, merge_count, peer_window_metric_count, reducer_cohort_metric_count, head_eval_report_count) \
-                     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+                     VALUES ($1, $2, CAST($3 AS text)::jsonb, CAST($4 AS text)::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
                 ),
                 &[
                     &snapshot_key,
@@ -2223,6 +2223,11 @@ mod tests {
         state: TempDir,
     }
 
+    struct PostgresTestServer {
+        url: String,
+        container_name: String,
+    }
+
     impl RedisTestServer {
         fn spawn() -> Option<Self> {
             let status = Command::new("redis-server")
@@ -2302,6 +2307,235 @@ mod tests {
     impl Drop for RedisTestServer {
         fn drop(&mut self) {
             self.stop();
+        }
+    }
+
+    impl PostgresTestServer {
+        fn spawn() -> Option<Self> {
+            let has_docker = Command::new("docker")
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()
+                .is_some_and(|status| status.success());
+            if !has_docker {
+                return None;
+            }
+            let daemon_ready = Command::new("docker")
+                .arg("info")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()
+                .is_some_and(|status| status.success());
+            if !daemon_ready {
+                return None;
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind postgres test port");
+            let port = listener.local_addr().expect("postgres local addr").port();
+            drop(listener);
+
+            let container_name = format!(
+                "burn-p2p-operator-store-postgres-{}-{}",
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            );
+            let port_mapping = format!("127.0.0.1:{port}:5432");
+            let output = Command::new("docker")
+                .args([
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--name",
+                    &container_name,
+                    "-e",
+                    "POSTGRES_USER=burn_p2p",
+                    "-e",
+                    "POSTGRES_PASSWORD=burn-p2p-dev",
+                    "-e",
+                    "POSTGRES_DB=burn_p2p",
+                    "-p",
+                    &port_mapping,
+                    "postgres:16-alpine",
+                ])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+
+            let url = format!("postgres://burn_p2p:burn-p2p-dev@127.0.0.1:{port}/burn_p2p");
+            let deadline = std::time::Instant::now() + StdDuration::from_secs(20);
+            loop {
+                if let Ok(mut client) = postgres::Client::connect(url.as_str(), postgres::NoTls)
+                    && client.simple_query("SELECT 1").is_ok()
+                {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = Command::new("docker")
+                        .args(["rm", "-f", &container_name])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    return None;
+                }
+                thread::sleep(StdDuration::from_millis(100));
+            }
+
+            Some(Self {
+                url,
+                container_name,
+            })
+        }
+    }
+
+    impl Drop for PostgresTestServer {
+        fn drop(&mut self) {
+            let _ = Command::new("docker")
+                .args(["rm", "-f", &self.container_name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+
+    fn sample_replay_preview(index: usize, captured_at: DateTime<Utc>) -> FileOperatorStorePreview {
+        let study_id = StudyId::new(if index.is_multiple_of(2) {
+            "study-a"
+        } else {
+            "study-b"
+        });
+        let experiment_id = ExperimentId::new(if index.is_multiple_of(2) {
+            "exp-a"
+        } else {
+            "exp-b"
+        });
+        let revision_id = RevisionId::new(format!("rev-{}", index % 5));
+        let head = HeadDescriptor {
+            head_id: burn_p2p_core::HeadId::new(format!("head-{index}")),
+            study_id: study_id.clone(),
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            artifact_id: ArtifactId::new(format!("artifact-{index}")),
+            parent_head_id: Some(burn_p2p_core::HeadId::new(format!("base-{}", index % 11))),
+            global_step: u64::try_from(index).expect("global step"),
+            created_at: captured_at,
+            metrics: BTreeMap::from([("loss".into(), MetricValue::Float(index as f64 / 100.0))]),
+        };
+        let receipt = ContributionReceipt {
+            receipt_id: burn_p2p::ContributionReceiptId::new(format!("receipt-{index}")),
+            peer_id: PeerId::new(format!("trainer-{}", index % 7)),
+            study_id: study_id.clone(),
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            base_head_id: burn_p2p_core::HeadId::new(format!("base-{}", index % 11)),
+            artifact_id: ArtifactId::new(format!("artifact-input-{index}")),
+            accepted_at: captured_at - chrono::Duration::seconds(4),
+            accepted_weight: 1.0 + (index as f64 / 1000.0),
+            metrics: BTreeMap::from([("loss".into(), MetricValue::Float(0.25))]),
+            merge_cert_id: None,
+        };
+        let merge = MergeCertificate {
+            merge_cert_id: burn_p2p::MergeCertId::new(format!("merge-{index}")),
+            study_id,
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            base_head_id: burn_p2p_core::HeadId::new(format!("base-{}", index % 11)),
+            merged_head_id: head.head_id.clone(),
+            merged_artifact_id: head.artifact_id.clone(),
+            policy: burn_p2p::MergePolicy::WeightedMean,
+            issued_at: captured_at - chrono::Duration::seconds(3),
+            validator: PeerId::new(format!("validator-{}", index % 5)),
+            contribution_receipts: vec![receipt.receipt_id.clone()],
+        };
+        let peer_window_metrics = PeerWindowMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            peer_id: PeerId::new(format!("trainer-{}", index % 7)),
+            principal_id: None,
+            lease_id: burn_p2p::LeaseId::new(format!("lease-{index}")),
+            base_head_id: burn_p2p_core::HeadId::new(format!("base-{}", index % 11)),
+            window_started_at: captured_at - chrono::Duration::seconds(5),
+            window_finished_at: captured_at - chrono::Duration::seconds(1),
+            attempted_tokens_or_samples: 128,
+            accepted_tokens_or_samples: Some(120),
+            local_train_loss_mean: Some(0.25),
+            local_train_loss_last: Some(0.2),
+            grad_or_delta_norm: Some(0.9),
+            optimizer_step_count: 8,
+            compute_time_ms: 1_200,
+            data_fetch_time_ms: 200,
+            publish_latency_ms: 80,
+            head_lag_at_start: 0,
+            head_lag_at_finish: 1,
+            backend_class: burn_p2p_core::BackendClass::Ndarray,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        };
+        let reducer_cohort_metrics = ReducerCohortMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: experiment_id.clone(),
+            revision_id: revision_id.clone(),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            merge_window_id: ContentId::new(format!("merge-window-{index}")),
+            reducer_group_id: ContentId::new(format!("reducers-{}", index % 3)),
+            captured_at: captured_at - chrono::Duration::milliseconds(500),
+            base_head_id: burn_p2p_core::HeadId::new(format!("base-{}", index % 11)),
+            candidate_head_id: Some(head.head_id.clone()),
+            received_updates: 2,
+            accepted_updates: 2,
+            rejected_updates: 0,
+            sum_weight: 2.0,
+            accepted_tokens_or_samples: 128,
+            staleness_mean: 0.1,
+            staleness_max: 0.5,
+            window_close_delay_ms: 40,
+            cohort_duration_ms: 500,
+            aggregate_norm: 0.7,
+            reducer_load: 0.25,
+            ingress_bytes: 1024,
+            egress_bytes: 512,
+            replica_agreement: Some(1.0),
+            late_arrival_count: Some(0),
+            missing_peer_count: Some(0),
+            rejection_reasons: BTreeMap::new(),
+            status: burn_p2p_core::ReducerCohortStatus::Closed,
+        };
+        let report = HeadEvalReport {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id,
+            revision_id,
+            workload_id: WorkloadId::new("workload"),
+            head_id: head.head_id.clone(),
+            base_head_id: head.parent_head_id.clone(),
+            eval_protocol_id: ContentId::new(format!("protocol-{index}")),
+            evaluator_set_id: ContentId::new("validators"),
+            metric_values: BTreeMap::from([("accuracy".into(), MetricValue::Float(0.91))]),
+            sample_count: 128,
+            dataset_view_id: DatasetViewId::new("validation"),
+            started_at: captured_at - chrono::Duration::seconds(2),
+            finished_at: captured_at - chrono::Duration::seconds(1),
+            trust_class: MetricTrustClass::Canonical,
+            status: HeadEvalStatus::Completed,
+            signature_bundle: Vec::new(),
+        };
+
+        FileOperatorStorePreview {
+            receipts: vec![receipt],
+            heads: vec![head],
+            merges: vec![merge],
+            peer_window_metrics: vec![peer_window_metrics],
+            reducer_cohort_metrics: vec![reducer_cohort_metrics],
+            head_eval_reports: vec![report],
+            eval_protocol_manifests: Vec::new(),
         }
     }
 
@@ -2593,6 +2827,140 @@ mod tests {
         assert!(
             operator_audit_retention_limit(expanded_budget)
                 > operator_audit_retention_limit(default_budget)
+        );
+    }
+
+    #[test]
+    fn postgres_operator_replay_retention_supports_long_horizon_search_and_admin_prune() {
+        let Some(postgres) = PostgresTestServer::spawn() else {
+            eprintln!(
+                "skipping postgres-backed operator replay test because docker or postgres container startup is unavailable"
+            );
+            return;
+        };
+
+        let backend = OperatorStateBackendConfig::Postgres {
+            url: postgres.url.clone(),
+            table_name: format!("operator_state_{}", std::process::id()),
+            snapshot_key: "replay-history".into(),
+        };
+        let retained_budget = MetricsRetentionBudget {
+            max_metric_revisions_per_experiment: 16,
+            ..MetricsRetentionBudget::operator()
+        };
+        for index in 0..400 {
+            persist_operator_state_snapshot(
+                Some(&backend),
+                retained_budget,
+                &sample_replay_preview(
+                    index,
+                    Utc::now() - chrono::Duration::seconds((400 - index) as i64),
+                ),
+            )
+            .expect("persist postgres-backed operator snapshot");
+        }
+
+        let store = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::peer_lean(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: Some(backend.clone()),
+            },
+            FileOperatorStorePreview::default(),
+        );
+
+        let initial_retention = store.retention_summary().expect("retention summary");
+        assert_eq!(initial_retention.backend, "postgres");
+        assert_eq!(initial_retention.persisted_snapshot_count, 400);
+        assert!(initial_retention.persisted_audit_record_count >= 2_800);
+
+        let replay_page = store
+            .replay_page(
+                &OperatorReplayQuery {
+                    experiment_id: Some(ExperimentId::new("exp-a")),
+                    ..OperatorReplayQuery::default()
+                },
+                PageRequest::new(0, 25),
+            )
+            .expect("replay page");
+        assert_eq!(replay_page.limit, 25);
+        assert_eq!(replay_page.total, 200);
+        assert_eq!(replay_page.items.len(), 25);
+        assert!(replay_page.items.iter().all(|item| {
+            item.experiment_ids
+                .iter()
+                .any(|experiment_id| experiment_id == &ExperimentId::new("exp-a"))
+        }));
+
+        let replay_snapshot = store
+            .replay_snapshot(Some(replay_page.items[10].captured_at))
+            .expect("replay snapshot")
+            .expect("retained replay snapshot");
+        assert_eq!(replay_snapshot.heads.len(), 1);
+        assert_eq!(replay_snapshot.receipts.len(), 1);
+        assert_eq!(replay_snapshot.merges.len(), 1);
+
+        let plan = crate::BootstrapSpec {
+            preset: crate::BootstrapPreset::BootstrapOnly,
+            genesis: burn_p2p::GenesisSpec {
+                network_id: NetworkId::new("mainnet"),
+                protocol_version: semver::Version::new(0, 1, 0),
+                display_name: "Operator Replay".into(),
+                created_at: Utc::now(),
+                metadata: BTreeMap::new(),
+            },
+            platform: burn_p2p_core::ClientPlatform::Native,
+            bootstrap_addresses: Vec::new(),
+            listen_addresses: Vec::new(),
+            authority: None,
+            archive: crate::ArchivePlan::default(),
+            admin_api: crate::AdminApiPlan::default(),
+        }
+        .plan()
+        .expect("bootstrap plan");
+        let mut state = crate::BootstrapAdminState {
+            operator_state_backend: Some(backend),
+            metrics_retention: MetricsRetentionBudget::peer_lean(),
+            ..crate::BootstrapAdminState::default()
+        };
+        let prune = plan
+            .execute_admin_action(
+                crate::AdminAction::PruneOperatorRetention,
+                &mut state,
+                None,
+                Utc::now(),
+                None,
+            )
+            .expect("prune operator retention");
+        let crate::AdminResult::OperatorRetentionPruned(prune) = prune else {
+            panic!("expected operator retention prune result");
+        };
+        assert_eq!(prune.backend, "postgres");
+        assert_eq!(prune.remaining_snapshot_count, 128);
+        assert!(prune.pruned_snapshot_count >= 272);
+
+        let post_prune = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::peer_lean(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: state.operator_state_backend.clone(),
+            },
+            FileOperatorStorePreview::default(),
+        )
+        .retention_summary()
+        .expect("post-prune retention summary");
+        assert_eq!(post_prune.persisted_snapshot_count, 128);
+        assert!(
+            post_prune.persisted_audit_record_count
+                <= initial_retention.persisted_audit_record_count
         );
     }
 
