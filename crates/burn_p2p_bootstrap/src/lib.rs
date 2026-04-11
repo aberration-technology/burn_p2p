@@ -47,6 +47,8 @@ pub use crate::deploy::{
     BootstrapService, BootstrapSpec, TelemetryExportPlan,
 };
 pub use crate::history::StoredEvalProtocolManifestRecord;
+#[doc(hidden)]
+pub use crate::operator_store::OperatorStateBackendConfig;
 pub use crate::state::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPeerDiagnostic,
     HeadQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,

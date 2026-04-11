@@ -610,6 +610,10 @@ fn refresh_admin_state_from_runtime(
         }
     }
 
+    if let Err(error) = state.persist_operator_state_snapshot() {
+        state.last_error = Some(format!("operator state snapshot sync failed: {error}"));
+    }
+
     Ok(())
 }
 

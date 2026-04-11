@@ -70,6 +70,18 @@ use key_material::*;
 use routes::*;
 use synthetic_dataset::*;
 
+fn resolve_operator_state_backend(
+    network_id: &burn_p2p_core::NetworkId,
+) -> Option<(String, String)> {
+    let url = std::env::var("BURN_P2P_OPERATOR_STATE_REDIS_URL").ok()?;
+    let key_prefix = std::env::var("BURN_P2P_OPERATOR_STATE_KEY_PREFIX")
+        .unwrap_or_else(|_| "burn-p2p:operator-state".into());
+    Some((
+        url,
+        format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+    ))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = std::env::args_os()
         .nth(1)
@@ -156,6 +168,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut state_lock = state
             .lock()
             .expect("bootstrap daemon state should not be poisoned");
+        if let Some((url, snapshot_key)) =
+            resolve_operator_state_backend(&config.spec.genesis.network_id)
+        {
+            state_lock.configure_operator_state_redis_snapshot(url, snapshot_key);
+        }
         state_lock.publication_targets = config
             .artifact_publication
             .as_ref()

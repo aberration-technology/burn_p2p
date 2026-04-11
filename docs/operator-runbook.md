@@ -20,6 +20,15 @@ they now act as relay-capable, rendezvous-capable, and kademlia-capable
 coherence seeds for native peers. browser peers still join through the browser
 edge rather than as direct libp2p peers.
 
+for multi-edge admin/browser surfaces, bootstrap can also mirror operator read
+state into redis by setting:
+
+- `BURN_P2P_OPERATOR_STATE_REDIS_URL`
+- optional `BURN_P2P_OPERATOR_STATE_KEY_PREFIX`
+
+that mirror is intentionally a read-coherence aid for heads, receipts, merges,
+and head-eval reports. it is not yet the final audited operator backend.
+
 profiles:
 
 - `reference split fleet`
@@ -46,6 +55,8 @@ before starting a deployment:
 4. verify that requested services are both compiled and enabled in config.
 5. verify storage paths exist and have enough space for heads, receipts, and artifact chunks.
 6. keep admin mutation routes private; the reference deploy assets no longer ship with inline admin secrets.
+7. if more than one edge/admin surface should show the same operator state, point
+   them at the same `BURN_P2P_OPERATOR_STATE_REDIS_URL`.
 
 for bootstrap-only deployments also confirm:
 

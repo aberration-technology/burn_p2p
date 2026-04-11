@@ -108,13 +108,16 @@ partially present:
 - file-backed durable history
 - bounded in-memory previews
 - paged history reads in bootstrap
-- publication/leaderboard/export paths reading through an operator-store seam
+- publication/leaderboard/export paths reading through a shared `OperatorStore`
+  seam
+- optional redis-mirrored operator snapshots for multi-edge read coherence
+  across heads, receipts, merges, and head-eval reports
 
 still missing:
 
-- a shared cross-crate `OperatorStore` abstraction used by bootstrap, metrics,
-  publish, and social
 - a real external backend, with postgres first
+- stronger search, retention, audit, and replay semantics than point-in-time
+  mirrored snapshots
 - streaming export paths for very large operator histories
 
 ### browser durability

@@ -7,7 +7,8 @@ use crate::{
     StoredEvalProtocolManifestRecord,
     deploy::BootstrapPlan,
     operator_store::{
-        FileOperatorStore, FileOperatorStoreConfig, FileOperatorStorePreview, OperatorStore,
+        FileOperatorStore, FileOperatorStoreConfig, FileOperatorStorePreview,
+        OperatorStateBackendConfig, OperatorStore, persist_operator_state_snapshot,
     },
 };
 use burn_p2p::{
@@ -156,6 +157,9 @@ pub struct BootstrapAdminState {
     pub eval_protocol_manifests: Vec<StoredEvalProtocolManifestRecord>,
     /// The runtime storage root used to materialize canonical artifacts.
     pub artifact_store_root: Option<PathBuf>,
+    /// Optional externalized operator-state backend for multi-edge read coherence.
+    #[doc(hidden)]
+    pub operator_state_backend: Option<OperatorStateBackendConfig>,
     /// The durable operator history root used for on-demand receipts, heads, and merge queries.
     pub history_root: Option<PathBuf>,
     /// The durable publication store root, when artifact publication is enabled.
@@ -467,6 +471,28 @@ impl BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    #[doc(hidden)]
+    pub fn configure_operator_state_redis_snapshot(&mut self, url: String, snapshot_key: String) {
+        self.operator_state_backend = Some(OperatorStateBackendConfig::Redis { url, snapshot_key });
+    }
+
+    pub(crate) fn operator_store_preview(&self) -> FileOperatorStorePreview {
+        FileOperatorStorePreview {
+            receipts: self.contribution_receipts.clone(),
+            heads: self.head_descriptors.clone(),
+            merges: self.merge_certificates.clone(),
+            head_eval_reports: self.head_eval_reports.clone(),
+            eval_protocol_manifests: self.eval_protocol_manifests.clone(),
+        }
+    }
+
+    pub(crate) fn persist_operator_state_snapshot(&self) -> anyhow::Result<()> {
+        persist_operator_state_snapshot(
+            self.operator_state_backend.as_ref(),
+            &self.operator_store_preview(),
+        )
+    }
+
     pub(crate) fn operator_store(&self) -> FileOperatorStore {
         FileOperatorStore::new(
             FileOperatorStoreConfig {
@@ -476,14 +502,9 @@ impl BootstrapAdminState {
                 publication_store_root: self.publication_store_root.clone(),
                 publication_targets: self.publication_targets.clone(),
                 artifact_store_root: self.artifact_store_root.clone(),
+                operator_state_backend: self.operator_state_backend.clone(),
             },
-            FileOperatorStorePreview {
-                receipts: self.contribution_receipts.clone(),
-                heads: self.head_descriptors.clone(),
-                merges: self.merge_certificates.clone(),
-                head_eval_reports: self.head_eval_reports.clone(),
-                eval_protocol_manifests: self.eval_protocol_manifests.clone(),
-            },
+            self.operator_store_preview(),
         )
     }
 
