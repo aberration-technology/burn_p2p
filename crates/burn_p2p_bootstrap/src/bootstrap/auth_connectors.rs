@@ -5,6 +5,7 @@ pub(super) struct EdgeConnectorEndpoints {
     pub(super) authorize_base_url: Option<String>,
     pub(super) exchange_url: Option<String>,
     pub(super) token_url: Option<String>,
+    pub(super) api_base_url: Option<String>,
     pub(super) client_id: Option<String>,
     pub(super) client_secret: Option<String>,
     pub(super) redirect_uri: Option<String>,
@@ -31,6 +32,7 @@ pub(super) fn build_github_portal_connector(
         None,
         Box::new(
             GitHubIdentityConnector::new(session_ttl, principals, endpoints.authorize_base_url)
+                .with_api_base_url(endpoints.api_base_url)
                 .with_exchange_url(endpoints.exchange_url)
                 .with_token_url(endpoints.token_url)
                 .with_client_credentials(endpoints.client_id, endpoints.client_secret)
@@ -54,6 +56,7 @@ pub(super) fn build_github_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,
@@ -67,6 +70,7 @@ pub(super) fn build_github_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,
@@ -125,6 +129,7 @@ pub(super) fn build_oidc_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,
@@ -138,6 +143,7 @@ pub(super) fn build_oidc_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,
@@ -196,6 +202,7 @@ pub(super) fn build_oauth_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,
@@ -209,6 +216,7 @@ pub(super) fn build_oauth_portal_connector(
         authorize_base_url,
         exchange_url,
         token_url,
+        api_base_url,
         client_id,
         client_secret,
         redirect_uri,

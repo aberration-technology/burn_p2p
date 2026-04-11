@@ -3,6 +3,7 @@ use std::{
     env,
     io::{Read, Write},
     net::TcpListener,
+    sync::Arc,
     thread,
     time::Duration as StdDuration,
 };
@@ -56,6 +57,39 @@ fn spawn_provider_response_server(
             .write_all(response.as_bytes())
             .expect("write provider response");
         stream.flush().expect("flush provider response");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+fn spawn_provider_response_sequence_server(
+    assert_request: impl Fn(&str) + Send + Sync + 'static,
+    responses: Vec<(&'static str, String)>,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider response listener");
+    let addr = listener.local_addr().expect("local addr");
+    let assert_request = Arc::new(assert_request);
+    let handle = thread::spawn(move || {
+        for (response_status, response_body) in responses {
+            let (mut stream, _) = listener.accept().expect("accept provider response");
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(2)))
+                .expect("set provider response read timeout");
+            let mut buffer = [0_u8; 8192];
+            let bytes_read = stream
+                .read(&mut buffer)
+                .expect("read provider response request");
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            assert_request(&request);
+            let response = format!(
+                "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+            stream.flush().expect("flush provider response");
+        }
     });
     (format!("http://{addr}"), handle)
 }
@@ -243,6 +277,43 @@ fn provider_mapped_connector_refreshes_and_revokes_remote_sessions() {
         })
         .to_string(),
     );
+    let (userinfo_url, userinfo_server) = spawn_provider_response_sequence_server(
+        |request| {
+            assert!(
+                request.contains("\"access_token\":\"access-token-1\"")
+                    || request.contains("\"access_token\":\"access-token-2\"")
+            );
+            assert!(
+                request.contains("\"session_handle\":\"session-handle-1\"")
+                    || request.contains("\"session_handle\":\"session-handle-2\"")
+            );
+        },
+        vec![
+            (
+                "200 OK",
+                serde_json::json!({
+                    "display_name": "Alice GitHub",
+                    "org_memberships": ["oss"],
+                    "group_memberships": ["maintainers"],
+                    "custom_claims": {
+                        "avatar_url": "https://avatars.example/alice.png"
+                    }
+                })
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                serde_json::json!({
+                    "display_name": "Alice Refreshed",
+                    "group_memberships": ["operators"],
+                    "custom_claims": {
+                        "avatar_url": "https://avatars.example/alice-2.png"
+                    }
+                })
+                .to_string(),
+            ),
+        ],
+    );
     let (revoke_url, revoke_server) = spawn_provider_response_server(
         |request| {
             assert!(request.contains("\"refresh_token\":\"refresh-token-2\""));
@@ -259,6 +330,7 @@ fn provider_mapped_connector_refreshes_and_revokes_remote_sessions() {
         Some("https://github.example/login/oauth/authorize".into()),
     )
     .with_exchange_url(Some(exchange_url))
+    .with_userinfo_url(Some(userinfo_url))
     .with_refresh_url(Some(refresh_url))
     .with_revoke_url(Some(revoke_url));
 
@@ -301,6 +373,7 @@ fn provider_mapped_connector_refreshes_and_revokes_remote_sessions() {
         .expect("revoke provider session");
 
     exchange_server.join().expect("join exchange server");
+    userinfo_server.join().expect("join userinfo server");
     refresh_server.join().expect("join refresh server");
     revoke_server.join().expect("join revoke server");
 }
@@ -448,6 +521,53 @@ fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mappi
         })
         .to_string(),
     );
+    let (orgs_url, orgs_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer access-token-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            {
+                "login": "oss"
+            }
+        ])
+        .to_string(),
+    );
+    let (teams_url, teams_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer access-token-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            {
+                "slug": "maintainers",
+                "organization": {
+                    "login": "oss"
+                }
+            }
+        ])
+        .to_string(),
+    );
+    let (repo_access_url, repo_access_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer access-token-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            {
+                "full_name": "aberration-technology/burn_p2p",
+                "permissions": {
+                    "admin": true,
+                    "push": true,
+                    "pull": true
+                }
+            }
+        ])
+        .to_string(),
+    );
     let connector = ProviderMappedIdentityConnector::new(
         AuthProvider::GitHub,
         Duration::minutes(10),
@@ -456,7 +576,10 @@ fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mappi
     )
     .with_token_url(Some(token_url))
     .with_client_credentials(Some("github-client".into()), Some("github-secret".into()))
-    .with_userinfo_url(Some(userinfo_url));
+    .with_userinfo_url(Some(userinfo_url))
+    .with_github_orgs_url(Some(orgs_url))
+    .with_github_teams_url(Some(teams_url))
+    .with_github_repo_access_url(Some(repo_access_url));
 
     let login = connector
         .begin_login(LoginRequest {
@@ -477,7 +600,7 @@ fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mappi
     assert_eq!(session.claims.principal_id.as_str(), "alice");
     assert_eq!(session.claims.display_name, "Alice Upstream");
     assert!(session.claims.org_memberships.contains("oss"));
-    assert!(session.claims.group_memberships.contains("maintainers"));
+    assert!(session.claims.group_memberships.contains("oss/maintainers"));
     assert_eq!(
         session.claims.custom_claims.get("provider_login"),
         Some(&"alice-gh".to_owned())
@@ -490,9 +613,16 @@ fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mappi
         session.claims.custom_claims.get("avatar_url"),
         Some(&"https://avatars.example/alice-upstream.png".to_owned())
     );
+    assert_eq!(
+        session.claims.custom_claims.get("provider_repo_access"),
+        Some(&"aberration-technology/burn_p2p,aberration-technology/burn_p2p:admin".to_owned())
+    );
 
     token_server.join().expect("join token server");
     userinfo_server.join().expect("join userinfo server");
+    orgs_server.join().expect("join orgs server");
+    teams_server.join().expect("join teams server");
+    repo_access_server.join().expect("join repo access server");
 }
 
 #[test]
@@ -594,6 +724,20 @@ fn provider_mapped_connector_surfaces_partial_refresh_failures() {
         "503 Service Unavailable",
         serde_json::json!({ "error": "refresh unavailable" }).to_string(),
     );
+    let (userinfo_url, userinfo_server) = spawn_provider_response_server(
+        |request| {
+            assert!(request.contains("\"access_token\":\"access-token-1\""));
+            assert!(request.contains("\"session_handle\":\"session-handle-1\""));
+        },
+        "200 OK",
+        serde_json::json!({
+            "display_name": "Alice GitHub",
+            "custom_claims": {
+                "avatar_url": "https://avatars.example/alice.png"
+            }
+        })
+        .to_string(),
+    );
     let connector = ProviderMappedIdentityConnector::new(
         AuthProvider::GitHub,
         Duration::minutes(10),
@@ -601,6 +745,7 @@ fn provider_mapped_connector_surfaces_partial_refresh_failures() {
         Some("https://github.example/login/oauth/authorize".into()),
     )
     .with_exchange_url(Some(exchange_url))
+    .with_userinfo_url(Some(userinfo_url))
     .with_refresh_url(Some(refresh_url));
 
     let login = connector
@@ -624,6 +769,7 @@ fn provider_mapped_connector_surfaces_partial_refresh_failures() {
     assert!(matches!(error, AuthError::ProviderRefresh(message) if message.contains("503")));
 
     exchange_server.join().expect("join exchange server");
+    userinfo_server.join().expect("join userinfo server");
     refresh_server.join().expect("join refresh server");
 }
 
@@ -730,13 +876,25 @@ fn provider_persistent_state_redacts_remote_tokens_by_default() {
         })
         .to_string(),
     );
+    let (userinfo_url, userinfo_server) = spawn_provider_response_server(
+        |request| {
+            assert!(request.contains("\"access_token\":\"access-token-1\""));
+            assert!(request.contains("\"session_handle\":\"session-handle-1\""));
+        },
+        "200 OK",
+        serde_json::json!({
+            "display_name": "Alice GitHub"
+        })
+        .to_string(),
+    );
     let connector = ProviderMappedIdentityConnector::new(
         AuthProvider::GitHub,
         Duration::minutes(10),
         principals,
         Some("https://github.example/login/oauth/authorize".into()),
     )
-    .with_exchange_url(Some(exchange_url));
+    .with_exchange_url(Some(exchange_url))
+    .with_userinfo_url(Some(userinfo_url));
     let login = connector
         .begin_login(LoginRequest {
             network_id: NetworkId::new("network-a"),
@@ -772,6 +930,7 @@ fn provider_persistent_state_redacts_remote_tokens_by_default() {
     assert!(session_state.material.session_handle.is_none());
 
     exchange_server.join().expect("join exchange server");
+    userinfo_server.join().expect("join userinfo server");
 }
 
 #[test]
@@ -809,6 +968,17 @@ fn provider_persistent_state_can_opt_in_to_remote_token_persistence() {
         })
         .to_string(),
     );
+    let (userinfo_url, userinfo_server) = spawn_provider_response_server(
+        |request| {
+            assert!(request.contains("\"access_token\":\"access-token-1\""));
+            assert!(request.contains("\"session_handle\":\"session-handle-1\""));
+        },
+        "200 OK",
+        serde_json::json!({
+            "display_name": "Alice GitHub"
+        })
+        .to_string(),
+    );
     let connector = ProviderMappedIdentityConnector::new(
         AuthProvider::GitHub,
         Duration::minutes(10),
@@ -816,6 +986,7 @@ fn provider_persistent_state_can_opt_in_to_remote_token_persistence() {
         Some("https://github.example/login/oauth/authorize".into()),
     )
     .with_exchange_url(Some(exchange_url))
+    .with_userinfo_url(Some(userinfo_url))
     .with_persist_remote_tokens(true);
     let login = connector
         .begin_login(LoginRequest {
@@ -857,6 +1028,7 @@ fn provider_persistent_state_can_opt_in_to_remote_token_persistence() {
     );
 
     exchange_server.join().expect("join exchange server");
+    userinfo_server.join().expect("join userinfo server");
 }
 
 #[test]
@@ -1209,6 +1381,316 @@ fn oidc_connector_discovers_standard_endpoints_for_token_and_userinfo() {
     discovery_server.join().expect("join discovery server");
     token_server.join().expect("join token server");
     userinfo_server.join().expect("join userinfo server");
+}
+
+#[test]
+fn provider_mapped_connector_hydrates_live_github_policy_claims() {
+    let now = Utc::now();
+    let principals = BTreeMap::from([(
+        PrincipalId::new("alice"),
+        StaticPrincipalRecord {
+            claims: PrincipalClaims {
+                principal_id: PrincipalId::new("alice"),
+                provider: AuthProvider::GitHub,
+                display_name: "Alice Community".into(),
+                org_memberships: BTreeSet::new(),
+                group_memberships: BTreeSet::new(),
+                granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu, PeerRole::Validator]),
+                granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                custom_claims: BTreeMap::from([
+                    ("provider_login".into(), "alice-gh".into()),
+                    ("provider_orgs".into(), "burn-community".into()),
+                    (
+                        "provider_groups".into(),
+                        "burn-community/maintainers".into(),
+                    ),
+                    (
+                        "provider_repo_access".into(),
+                        "aberration-technology/burn_p2p:admin".into(),
+                    ),
+                ]),
+                issued_at: now,
+                expires_at: now + Duration::hours(1),
+            },
+            allowed_networks: BTreeSet::from([NetworkId::new("network-a")]),
+        },
+    )]);
+    let (userinfo_url, userinfo_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        "200 OK",
+        serde_json::json!({
+            "id": 42,
+            "login": "alice-gh",
+            "email": "alice@example.com",
+            "name": "Alice GitHub",
+            "avatar_url": "https://avatars.example/alice.png"
+        })
+        .to_string(),
+    );
+    let (orgs_url, orgs_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            { "login": "burn-community" },
+            { "login": "oss-friends" }
+        ])
+        .to_string(),
+    );
+    let (teams_url, teams_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            {
+                "organization": { "login": "burn-community" },
+                "slug": "maintainers"
+            }
+        ])
+        .to_string(),
+    );
+    let (repos_url, repos_server) = spawn_provider_response_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        "200 OK",
+        serde_json::json!([
+            {
+                "full_name": "aberration-technology/burn_p2p",
+                "permissions": { "admin": true, "push": true, "pull": true }
+            },
+            {
+                "full_name": "aberration-technology/website",
+                "permissions": { "admin": false, "push": false, "pull": true }
+            }
+        ])
+        .to_string(),
+    );
+
+    let connector = ProviderMappedIdentityConnector::new(
+        AuthProvider::GitHub,
+        Duration::minutes(10),
+        principals,
+        Some("https://github.com/login/oauth/authorize".into()),
+    )
+    .with_token_url(Some("https://github.com/login/oauth/access_token".into()))
+    .with_userinfo_url(Some(format!("{userinfo_url}/user")))
+    .with_github_orgs_url(Some(format!("{orgs_url}/user/orgs?per_page=100")))
+    .with_github_teams_url(Some(format!("{teams_url}/user/teams?per_page=100")))
+    .with_github_repo_access_url(Some(format!(
+        "{repos_url}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+    )));
+
+    let login = connector
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("network-a"),
+            principal_hint: None,
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin github login");
+    let session = connector
+        .complete_login_with_standard_token_response_for_test(
+            login.login_id,
+            login.state,
+            StandardTokenResponse {
+                access_token: Some("github-access-1".into()),
+                refresh_token: Some("github-refresh-1".into()),
+                token_type: Some("bearer".into()),
+                expires_in: Some(3600),
+                scope: None,
+                id_token: None,
+            },
+        )
+        .expect("complete github login");
+
+    assert_eq!(session.claims.principal_id.as_str(), "alice");
+    assert_eq!(session.claims.display_name, "Alice GitHub");
+    assert!(session.claims.org_memberships.contains("burn-community"));
+    assert!(
+        session
+            .claims
+            .group_memberships
+            .contains("burn-community/maintainers")
+    );
+    assert_eq!(
+        session.claims.custom_claims.get("provider_login"),
+        Some(&"alice-gh".to_owned())
+    );
+    assert_eq!(
+        session.claims.custom_claims.get("provider_email"),
+        Some(&"alice@example.com".to_owned())
+    );
+    assert_eq!(
+        session.claims.custom_claims.get("auth_policy_source"),
+        Some(&"github-live".to_owned())
+    );
+    assert_eq!(
+        session
+            .claims
+            .custom_claims
+            .get("auth_policy_match:provider_groups"),
+        Some(&"burn-community/maintainers".to_owned())
+    );
+    let repo_access = session
+        .claims
+        .custom_claims
+        .get("provider_repo_access")
+        .expect("provider repo access");
+    assert!(
+        repo_access
+            .split(',')
+            .any(|entry| entry == "aberration-technology/burn_p2p:admin")
+    );
+
+    userinfo_server.join().expect("join github userinfo server");
+    orgs_server.join().expect("join github orgs server");
+    teams_server.join().expect("join github teams server");
+    repos_server.join().expect("join github repos server");
+}
+
+#[test]
+fn provider_mapped_connector_fetch_claims_rejects_revoked_github_membership() {
+    let now = Utc::now();
+    let principals = BTreeMap::from([(
+        PrincipalId::new("alice"),
+        StaticPrincipalRecord {
+            claims: PrincipalClaims {
+                principal_id: PrincipalId::new("alice"),
+                provider: AuthProvider::GitHub,
+                display_name: "Alice Community".into(),
+                org_memberships: BTreeSet::new(),
+                group_memberships: BTreeSet::new(),
+                granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+                granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                custom_claims: BTreeMap::from([
+                    ("provider_login".into(), "alice-gh".into()),
+                    ("provider_orgs".into(), "burn-community".into()),
+                ]),
+                issued_at: now,
+                expires_at: now + Duration::hours(1),
+            },
+            allowed_networks: BTreeSet::from([NetworkId::new("network-a")]),
+        },
+    )]);
+    let (userinfo_url, userinfo_server) = spawn_provider_response_sequence_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        vec![
+            (
+                "200 OK",
+                serde_json::json!({
+                    "id": 42,
+                    "login": "alice-gh",
+                    "email": "alice@example.com",
+                    "name": "Alice GitHub"
+                })
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                serde_json::json!({
+                    "id": 42,
+                    "login": "alice-gh",
+                    "email": "alice@example.com",
+                    "name": "Alice GitHub"
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    let (orgs_url, orgs_server) = spawn_provider_response_sequence_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        vec![
+            (
+                "200 OK",
+                serde_json::json!([{ "login": "burn-community" }]).to_string(),
+            ),
+            ("200 OK", serde_json::json!([]).to_string()),
+        ],
+    );
+    let (teams_url, teams_server) = spawn_provider_response_sequence_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        vec![
+            ("200 OK", serde_json::json!([]).to_string()),
+            ("200 OK", serde_json::json!([]).to_string()),
+        ],
+    );
+    let (repos_url, repos_server) = spawn_provider_response_sequence_server(
+        |request| {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer github-access-1"));
+        },
+        vec![
+            ("200 OK", serde_json::json!([]).to_string()),
+            ("200 OK", serde_json::json!([]).to_string()),
+        ],
+    );
+
+    let connector = ProviderMappedIdentityConnector::new(
+        AuthProvider::GitHub,
+        Duration::minutes(10),
+        principals,
+        Some("https://github.com/login/oauth/authorize".into()),
+    )
+    .with_token_url(Some("https://github.com/login/oauth/access_token".into()))
+    .with_userinfo_url(Some(format!("{userinfo_url}/user")))
+    .with_github_orgs_url(Some(format!("{orgs_url}/user/orgs?per_page=100")))
+    .with_github_teams_url(Some(format!("{teams_url}/user/teams?per_page=100")))
+    .with_github_repo_access_url(Some(format!(
+        "{repos_url}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+    )));
+
+    let login = connector
+        .begin_login(LoginRequest {
+            network_id: NetworkId::new("network-a"),
+            principal_hint: None,
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        })
+        .expect("begin github login");
+    let session = connector
+        .complete_login_with_standard_token_response_for_test(
+            login.login_id,
+            login.state,
+            StandardTokenResponse {
+                access_token: Some("github-access-1".into()),
+                refresh_token: Some("github-refresh-1".into()),
+                token_type: Some("bearer".into()),
+                expires_in: Some(3600),
+                scope: None,
+                id_token: None,
+            },
+        )
+        .expect("complete github login");
+
+    let error = connector
+        .fetch_claims(&session)
+        .expect_err("revoked github org membership should be rejected");
+    assert!(matches!(
+        error,
+        AuthError::ProviderUserInfo(message)
+            if message.contains("no longer matches the enrolled principal")
+    ));
+
+    userinfo_server.join().expect("join github userinfo server");
+    orgs_server.join().expect("join github orgs server");
+    teams_server.join().expect("join github teams server");
+    repos_server.join().expect("join github repos server");
 }
 
 #[test]

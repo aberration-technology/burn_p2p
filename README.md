@@ -144,19 +144,41 @@ edge. today that path is peer-backed (`p2p-artifact-via-edge`): native peers
 sync the prepared shard bundle over the overlay, and the edge serves only the
 leased slice to the browser.
 
-## what the repo includes
+## workspace map
 
-- `burn_p2p`: core runtime, burn-facing facade, training, validation, and promotion flow
-- `burn_p2p_workload`: backend-neutral workload and lease-data-pipeline seam
-- `burn_p2p_python`: subprocess-backed python/torch workload adapter
-- `burn_p2p_limits`: capability probing and role/budget heuristics for native and browser peers
-- `burn_p2p_swarm`: native transport, discovery, relay/rendezvous integration, and control-plane event model
-- `burn_p2p_bootstrap`: coherence-seed, reducer/validator deployment surface, and browser-edge http/admin surface
-- `burn_p2p_browser`: browser runtime bridge and wasm-facing transport glue
+crates:
+
+- `burn_p2p`: public runtime facade, trainer/reducer/validator orchestration, validation, and promotion flow
 - `burn_p2p_app`: reference dioxus app and browser-edge product surface
-- `burn_p2p_publish`: artifact export and publication surfaces
-- `examples/mnist_p2p_demo`: real downstream-style mixed-fleet demo used by `cargo xtask e2e mnist`
-- `examples/torch_mnist_p2p_demo`: python/torch subprocess-backed mnist demo using the same p2p runtime
+- `burn_p2p_auth_external`: trusted-ingress and provider-mapped external auth connectors
+- `burn_p2p_auth_github`: github-focused auth connector wrapper with github api defaults
+- `burn_p2p_auth_oauth`: generic oauth connector wrapper
+- `burn_p2p_auth_oidc`: oidc connector wrapper
+- `burn_p2p_bootstrap`: coherence seed, browser-edge http surface, auth issuance, and deployment-facing daemon
+- `burn_p2p_browser`: browser runtime bridge and wasm transport glue
+- `burn_p2p_checkpoint`: checkpoint encoding, replay, and import/export surfaces
+- `burn_p2p_core`: shared ids, schema, manifests, signatures, and protocol wire types
+- `burn_p2p_dataloader`: prepared-shard and lease-data-loader support
+- `burn_p2p_engine`: execution/runtime engine glue used by higher-level roles
+- `burn_p2p_experiment`: experiment/revision/head metadata and experiment-local helpers
+- `burn_p2p_limits`: capability probing, budgets, and placement heuristics
+- `burn_p2p_metrics`: runtime metrics and reporting surface
+- `burn_p2p_publish`: artifact export, publication targets, and download tickets
+- `burn_p2p_python`: subprocess-backed python/torch workload adapter
+- `burn_p2p_security`: auth connectors, admission policy, certificate issuance, and peer auth verification
+- `burn_p2p_social`: social/profile/feed-facing data surface
+- `burn_p2p_swarm`: native libp2p transport, discovery, relay/rendezvous, and control-plane sync
+- `burn_p2p_testkit`: deterministic harnesses, multiprocess soak tools, and integration support
+- `burn_p2p_views`: query/view models used by app/bootstrap/social surfaces
+- `burn_p2p_workload`: backend-neutral workload and lease-data-pipeline seam
+
+top-level support:
+
+- `examples/mnist_p2p_demo`: mixed-fleet burn demo used by `cargo xtask e2e mnist`
+- `examples/torch_mnist_p2p_demo`: python/torch subprocess-backed mnist demo on the same runtime
+- `deploy/`: reference configs, compose stacks, and cloud deployment assets
+- `docs/`: protocol, operator, deployment, and roadmap docs
+- `xtask/`: repo automation for ci, demos, deploy flows, and release/publish checks
 
 same experiment layout works across native and browser peers. browser-facing
 runtime and ui live in the companion crates above.

@@ -1,6 +1,35 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Captures the signed auth-policy evidence attached to certificate issuance.
+pub struct AuthPolicySnapshot {
+    /// Where the policy decision was sourced from.
+    pub source: String,
+    /// The principal selected by the policy engine.
+    pub principal_id: PrincipalId,
+    /// The observed provider subject, when present.
+    pub provider_subject: Option<String>,
+    /// The observed provider login, when present.
+    pub provider_login: Option<String>,
+    /// The observed provider email, when present.
+    pub provider_email: Option<String>,
+    /// The observed organization memberships.
+    pub org_memberships: BTreeSet<String>,
+    /// The observed group or team memberships.
+    pub group_memberships: BTreeSet<String>,
+    /// The observed provider claims kept with the issuance record.
+    pub custom_claims: BTreeMap<String, String>,
+    /// The rule inputs that matched this principal.
+    pub matched_policy_claims: BTreeMap<String, String>,
+    /// The granted roles issued under this policy decision.
+    pub granted_roles: PeerRoleSet,
+    /// The granted scopes issued under this policy decision.
+    pub granted_scopes: BTreeSet<ExperimentScope>,
+    /// When the policy evidence was captured.
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a node certificate claims.
 pub struct NodeCertificateClaims {
     /// The network ID.
@@ -25,6 +54,9 @@ pub struct NodeCertificateClaims {
     pub experiment_scopes: BTreeSet<ExperimentScope>,
     /// The client policy hash.
     pub client_policy_hash: Option<ContentId>,
+    /// The signed auth-policy snapshot used for this issuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_policy_snapshot: Option<AuthPolicySnapshot>,
     /// The not before.
     pub not_before: DateTime<Utc>,
     /// The not after.

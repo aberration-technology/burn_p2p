@@ -4,9 +4,9 @@ mod static_connector;
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{
-    AuthProvider, ContentId, ExperimentScope, NetworkId, NodeCertificate, NodeCertificateClaims,
-    PeerAuthEnvelope, PeerId, PeerRoleSet, PrincipalId, ProjectFamilyId, RevocationEpoch,
-    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata,
+    AuthPolicySnapshot, AuthProvider, ContentId, ExperimentScope, NetworkId, NodeCertificate,
+    NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRoleSet, PrincipalId, ProjectFamilyId,
+    RevocationEpoch, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata,
 };
 use chrono::{DateTime, Utc};
 use libp2p_identity::{Keypair, PublicKey};
@@ -304,6 +304,52 @@ pub struct NodeCertificateAuthority {
     issuer_public_key_hex: String,
 }
 
+fn auth_policy_snapshot_for_session(
+    session: &PrincipalSession,
+    granted_roles: &PeerRoleSet,
+    granted_scopes: &BTreeSet<ExperimentScope>,
+    captured_at: DateTime<Utc>,
+) -> AuthPolicySnapshot {
+    let mut custom_claims = BTreeMap::new();
+    let mut matched_policy_claims = BTreeMap::new();
+    let mut source = None;
+
+    for (key, value) in &session.claims.custom_claims {
+        if key == "auth_policy_source" {
+            source = Some(value.clone());
+            continue;
+        }
+        if let Some(matched_key) = key.strip_prefix("auth_policy_match:") {
+            matched_policy_claims.insert(matched_key.to_owned(), value.clone());
+            continue;
+        }
+        custom_claims.insert(key.clone(), value.clone());
+    }
+
+    let session_source = match &session.claims.provider {
+        AuthProvider::GitHub => "session:github".to_owned(),
+        AuthProvider::Oidc { issuer } => format!("session:oidc:{issuer}"),
+        AuthProvider::OAuth { provider } => format!("session:oauth:{provider}"),
+        AuthProvider::External { authority } => format!("session:external:{authority}"),
+        AuthProvider::Static { authority } => format!("session:static:{authority}"),
+    };
+
+    AuthPolicySnapshot {
+        source: source.unwrap_or(session_source),
+        principal_id: session.claims.principal_id.clone(),
+        provider_subject: custom_claims.get("provider_subject").cloned(),
+        provider_login: custom_claims.get("provider_login").cloned(),
+        provider_email: custom_claims.get("provider_email").cloned(),
+        org_memberships: session.claims.org_memberships.clone(),
+        group_memberships: session.claims.group_memberships.clone(),
+        custom_claims,
+        matched_policy_claims,
+        granted_roles: granted_roles.clone(),
+        granted_scopes: granted_scopes.clone(),
+        captured_at,
+    }
+}
+
 impl NodeCertificateAuthority {
     /// Creates a new value.
     pub fn new(
@@ -357,6 +403,12 @@ impl NodeCertificateAuthority {
             });
         }
 
+        let auth_policy_snapshot = auth_policy_snapshot_for_session(
+            &request.session,
+            &request.granted_roles,
+            &request.requested_scopes,
+            request.not_before,
+        );
         let claims = NodeCertificateClaims {
             network_id: self.network_id.clone(),
             project_family_id: request.project_family_id,
@@ -369,6 +421,7 @@ impl NodeCertificateAuthority {
             granted_roles: request.granted_roles,
             experiment_scopes: request.requested_scopes,
             client_policy_hash: request.client_policy_hash,
+            auth_policy_snapshot: Some(auth_policy_snapshot),
             not_before: request.not_before,
             not_after: request.not_after,
             serial: request.serial,

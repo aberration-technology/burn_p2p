@@ -155,6 +155,21 @@ oidc guidance:
   callback completion and refresh/logout can survive restart and can be shared
   across multiple edges that point at the same session backend
 
+github community guidance:
+
+- prefer the standard github oauth token flow with `token_url =
+  "https://github.com/login/oauth/access_token"` and `api_base_url =
+  "https://api.github.com"`
+- use dynamic principal rules such as `provider_orgs`,
+  `provider_groups`, and `provider_repo_access` instead of hand-maintained
+  principal allowlists
+- enrollment now rehydrates upstream github claims before certificate issuance,
+  so org/team/collaborator changes can revoke browser admission on the next
+  enroll/refresh cycle
+- issued node certificates now carry an `AuthPolicySnapshot`, which preserves
+  the matched github claims, granted roles/scopes, and observed provider
+  identity inside the signed certificate claims
+
 external trusted-ingress guidance:
 
 - use `auth-external` when corporate sso is already terminated by a trusted internal gateway

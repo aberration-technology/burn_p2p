@@ -26,6 +26,16 @@ use these as the main starting points:
 - `enterprise-sso.json`: oidc-backed browser edge
 - `community-web.json`: public/community browser edge
 
+`community-web.json` now models live github-governed admission rather than a
+hand-authored user allowlist:
+
+- github oauth authorize/token endpoints point at the public github surface
+- `api_base_url` points at `https://api.github.com`
+- principal admission is expressed with `provider_orgs`,
+  `provider_groups`, and `provider_repo_access`
+- bootstrap rehydrates provider claims before certificate issuance, so github
+  membership changes can revoke future enrollments
+
 `trusted-minimal.json` is the smallest local native bootstrap profile. it is useful
 for local or tightly controlled deployments, but it is not the internet-scale
 reference shape.

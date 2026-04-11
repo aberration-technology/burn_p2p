@@ -10,6 +10,31 @@ the short version:
 
 ## implemented now
 
+### provider-backed github policy
+
+github auth is no longer only a branded callback surface.
+
+the connector now:
+
+- hydrates live provider identity from `github.com` / `api.github.com`
+- rehydrates org membership from `/user/orgs`
+- rehydrates team membership from `/user/teams`
+- rehydrates collaborator/ownership access from `/user/repos`
+
+principal records can now match:
+
+- `provider_subject`
+- `provider_login`
+- `provider_email`
+- `provider_orgs`
+- `provider_groups`
+- `provider_repo_access`
+- `provider_claim:<name>`
+
+bootstrap enrollment now revalidates provider-backed sessions before issuing
+node certificates, and issued certificates now capture an `AuthPolicySnapshot`
+inside the signed claims so the admission decision is auditable after the fact.
+
 ### authority config surface
 
 the repo now has first-class authority governance manifest types:

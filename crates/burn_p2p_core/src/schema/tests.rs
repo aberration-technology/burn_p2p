@@ -105,6 +105,7 @@ fn node_certificate_round_trips_and_exposes_claims() {
             },
         ]),
         client_policy_hash: Some(ContentId::new("policy-a")),
+        auth_policy_snapshot: None,
         not_before: Utc::now(),
         not_after: Utc::now(),
         serial: 7,

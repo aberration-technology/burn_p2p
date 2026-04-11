@@ -97,6 +97,7 @@ fn control_handle_updates_auth_and_directory_announcements() {
                             },
                         ]),
                         client_policy_hash: Some(crate::ContentId::new("policy-auth")),
+                        auth_policy_snapshot: None,
                         not_before: Utc::now(),
                         not_after: Utc::now(),
                         serial: 5,

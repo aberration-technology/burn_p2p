@@ -403,6 +403,7 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
                     refresh_url: None,
                     revoke_url: None,
                     jwks_url: None,
+                    api_base_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),

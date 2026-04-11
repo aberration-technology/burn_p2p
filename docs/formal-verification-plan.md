@@ -43,9 +43,9 @@ current code and docs:
 
 - [docs/protocol-shape.md](protocol-shape.md)
 - [docs/learning-dynamics.md](learning-dynamics.md)
-- [crates/burn_p2p/src/validation.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/src/validation.rs)
-- [crates/burn_p2p/src/validation/robustness.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p/src/validation/robustness.rs)
-- [crates/burn_p2p_core/src/schema/manifests.rs](/home/mosure/repos/burn_p2p/crates/burn_p2p_core/src/schema/manifests.rs)
+- [crates/burn_p2p/src/validation.rs](../crates/burn_p2p/src/validation.rs)
+- [crates/burn_p2p/src/validation/robustness.rs](../crates/burn_p2p/src/validation/robustness.rs)
+- [crates/burn_p2p_core/src/schema/manifests.rs](../crates/burn_p2p_core/src/schema/manifests.rs)
 
 the important trust split is:
 

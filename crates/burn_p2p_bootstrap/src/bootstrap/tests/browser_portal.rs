@@ -427,6 +427,7 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
                     refresh_url: None,
                     revoke_url: None,
                     jwks_url: None,
+                    api_base_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),
@@ -565,6 +566,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             refresh_url: None,
             revoke_url: None,
             jwks_url: None,
+            api_base_url: None,
         },
     );
     auth_config.principals[0]
@@ -732,6 +734,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
                     refresh_url: Some(refresh_url),
                     revoke_url: Some(revoke_url),
                     jwks_url: None,
+                    api_base_url: None,
                 },
             ),
             NetworkId::new("secure-demo"),

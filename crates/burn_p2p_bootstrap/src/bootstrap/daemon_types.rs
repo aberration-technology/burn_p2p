@@ -135,6 +135,8 @@ pub(super) enum BootstrapAuthConnectorConfig {
         #[serde(default)]
         token_url: Option<String>,
         #[serde(default)]
+        api_base_url: Option<String>,
+        #[serde(default)]
         client_id: Option<String>,
         #[serde(default)]
         client_secret: Option<String>,

@@ -22,12 +22,39 @@ impl GitHubIdentityConnector {
         principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
         authorize_base_url: Option<String>,
     ) -> Self {
-        Self(ProviderMappedIdentityConnector::new(
+        Self(
+            ProviderMappedIdentityConnector::new(
             AuthProvider::GitHub,
             session_ttl,
             principals,
             authorize_base_url.or_else(|| Some("https://github.com/login/oauth/authorize".into())),
-        ))
+        )
+        .with_token_url(Some("https://github.com/login/oauth/access_token".into()))
+        .with_userinfo_url(Some("https://api.github.com/user".into()))
+        .with_github_orgs_url(Some("https://api.github.com/user/orgs?per_page=100".into()))
+        .with_github_teams_url(Some("https://api.github.com/user/teams?per_page=100".into()))
+        .with_github_repo_access_url(Some(
+            "https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+                .into(),
+        )),
+        )
+    }
+
+    /// Returns a copy configured with the GitHub API base URL used for live
+    /// user, org, team, and repository-access enrichment.
+    pub fn with_api_base_url(mut self, api_base_url: Option<String>) -> Self {
+        if let Some(api_base_url) = api_base_url {
+            let api_base_url = api_base_url.trim_end_matches('/').to_owned();
+            self.0 = self
+                .0
+                .with_userinfo_url(Some(format!("{api_base_url}/user")))
+                .with_github_orgs_url(Some(format!("{api_base_url}/user/orgs?per_page=100")))
+                .with_github_teams_url(Some(format!("{api_base_url}/user/teams?per_page=100")))
+                .with_github_repo_access_url(Some(format!(
+                    "{api_base_url}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+                )));
+        }
+        self
     }
 
     /// Returns a copy configured with the exchange URL.

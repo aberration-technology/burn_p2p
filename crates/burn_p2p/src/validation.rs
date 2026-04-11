@@ -2575,6 +2575,7 @@ mod tests {
                                     },
                                 ]),
                                 client_policy_hash: None,
+                                auth_policy_snapshot: None,
                                 not_before: Utc::now(),
                                 not_after: Utc::now() + chrono::Duration::minutes(10),
                                 serial: 1,

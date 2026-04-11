@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use burn_p2p_core::{AuthProvider, ContentId, NetworkId, PrincipalId};
@@ -25,6 +25,19 @@ use crate::shared::{
 
 const MAX_PROVIDER_SESSIONS: usize = 256;
 
+fn parse_github_next_link(link_header: &str) -> Option<String> {
+    link_header.split(',').find_map(|segment| {
+        let segment = segment.trim();
+        let (url, rel) = segment.split_once(';')?;
+        if !rel.contains("rel=\"next\"") {
+            return None;
+        }
+        url.strip_prefix('<')
+            .and_then(|value| value.strip_suffix('>'))
+            .map(ToOwned::to_owned)
+    })
+}
+
 /// Authenticates principals through a provider-backed enrollment flow.
 ///
 /// This connector supports either a custom exchange endpoint or a more standard
@@ -46,6 +59,9 @@ pub struct ProviderMappedIdentityConnector {
     client_secret: Option<String>,
     redirect_uri: Option<String>,
     userinfo_url: Option<String>,
+    github_orgs_url: Option<String>,
+    github_teams_url: Option<String>,
+    github_repo_access_url: Option<String>,
     refresh_url: Option<String>,
     revoke_url: Option<String>,
     jwks_url: Option<String>,
@@ -75,6 +91,9 @@ impl ProviderMappedIdentityConnector {
             client_secret: None,
             redirect_uri: None,
             userinfo_url: None,
+            github_orgs_url: None,
+            github_teams_url: None,
+            github_repo_access_url: None,
             refresh_url: None,
             revoke_url: None,
             jwks_url: None,
@@ -119,6 +138,27 @@ impl ProviderMappedIdentityConnector {
     /// endpoint after login or refresh.
     pub fn with_userinfo_url(mut self, userinfo_url: Option<String>) -> Self {
         self.userinfo_url = userinfo_url;
+        self
+    }
+
+    /// Returns a copy configured with the GitHub organization membership
+    /// endpoint used to enrich provider claims after login or refresh.
+    pub fn with_github_orgs_url(mut self, github_orgs_url: Option<String>) -> Self {
+        self.github_orgs_url = github_orgs_url;
+        self
+    }
+
+    /// Returns a copy configured with the GitHub team membership endpoint used
+    /// to enrich provider claims after login or refresh.
+    pub fn with_github_teams_url(mut self, github_teams_url: Option<String>) -> Self {
+        self.github_teams_url = github_teams_url;
+        self
+    }
+
+    /// Returns a copy configured with the GitHub repository-access endpoint
+    /// used to enrich provider claims after login or refresh.
+    pub fn with_github_repo_access_url(mut self, github_repo_access_url: Option<String>) -> Self {
+        self.github_repo_access_url = github_repo_access_url;
         self
     }
 
@@ -487,9 +527,42 @@ impl ProviderMappedIdentityConnector {
         if let Some(userinfo_url) = self.userinfo_url.clone() {
             return Ok(Some(userinfo_url));
         }
+        if matches!(self.provider, AuthProvider::GitHub) {
+            return Ok(Some("https://api.github.com/user".into()));
+        }
         Ok(self
             .oidc_discovery_document()?
             .and_then(|document| document.userinfo_endpoint))
+    }
+
+    fn resolved_github_orgs_url(&self) -> Option<String> {
+        if !matches!(self.provider, AuthProvider::GitHub) {
+            return None;
+        }
+        self.github_orgs_url
+            .clone()
+            .or_else(|| Some("https://api.github.com/user/orgs?per_page=100".into()))
+    }
+
+    fn resolved_github_teams_url(&self) -> Option<String> {
+        if !matches!(self.provider, AuthProvider::GitHub) {
+            return None;
+        }
+        self.github_teams_url
+            .clone()
+            .or_else(|| Some("https://api.github.com/user/teams?per_page=100".into()))
+    }
+
+    fn resolved_github_repo_access_url(&self) -> Option<String> {
+        if !matches!(self.provider, AuthProvider::GitHub) {
+            return None;
+        }
+        self.github_repo_access_url.clone().or_else(|| {
+            Some(
+                "https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+                    .into(),
+            )
+        })
     }
 
     fn resolved_revoke_url(&self) -> Result<Option<String>, AuthError> {
@@ -574,6 +647,20 @@ impl ProviderMappedIdentityConnector {
             .unwrap_or_default()
     }
 
+    fn record_has_provider_match_requirements(record: &StaticPrincipalRecord) -> bool {
+        record.claims.custom_claims.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "provider_subject"
+                    | "provider_login"
+                    | "provider_email"
+                    | "provider_orgs"
+                    | "provider_groups"
+                    | "provider_repo_access"
+            ) || key.starts_with("provider_claim:")
+        })
+    }
+
     fn principal_matches_provider_session(
         record: &StaticPrincipalRecord,
         session: &ProviderSessionMaterial,
@@ -609,6 +696,20 @@ impl ProviderMappedIdentityConnector {
             matches &= required_groups
                 .iter()
                 .all(|group| session.profile.group_memberships.contains(group));
+        }
+
+        let required_repo_access =
+            Self::split_provider_claim_list(claims.get("provider_repo_access"));
+        if !required_repo_access.is_empty() {
+            has_match_requirements = true;
+            let available_repo_access = Self::split_provider_claim_list(
+                session.profile.custom_claims.get("provider_repo_access"),
+            );
+            matches &= required_repo_access.iter().all(|repo| {
+                available_repo_access
+                    .iter()
+                    .any(|candidate| candidate == repo)
+            });
         }
 
         for (claim_key, expected_value) in claims.iter().filter_map(|(key, value)| {
@@ -661,24 +762,7 @@ impl ProviderMappedIdentityConnector {
             issued_at.timestamp_millis(),
             self.provider(),
         ))?;
-        let mut claims: PrincipalClaims = record.claims.clone();
-        claims.provider = self.provider();
-        if let Some(provider_session) = provider_session.as_ref() {
-            if let Some(display_name) = provider_session.profile.display_name.as_ref() {
-                claims.display_name = display_name.clone();
-            }
-            claims
-                .org_memberships
-                .extend(provider_session.profile.org_memberships.iter().cloned());
-            claims
-                .group_memberships
-                .extend(provider_session.profile.group_memberships.iter().cloned());
-            claims
-                .custom_claims
-                .extend(provider_session.profile.custom_claims.clone());
-        }
-        claims.issued_at = issued_at;
-        claims.expires_at = expires_at;
+        let claims = self.compose_claims(record, provider_session.as_ref(), issued_at, expires_at);
 
         let session = PrincipalSession {
             session_id: session_id.clone(),
@@ -706,6 +790,59 @@ impl ProviderMappedIdentityConnector {
         }
 
         Ok(session)
+    }
+
+    fn compose_claims(
+        &self,
+        record: &StaticPrincipalRecord,
+        provider_session: Option<&ProviderSessionMaterial>,
+        issued_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> PrincipalClaims {
+        let mut claims: PrincipalClaims = record.claims.clone();
+        claims.provider = self.provider();
+        if let Some(provider_session) = provider_session {
+            if let Some(display_name) = provider_session.profile.display_name.as_ref() {
+                claims.display_name = display_name.clone();
+            }
+            claims
+                .org_memberships
+                .extend(provider_session.profile.org_memberships.iter().cloned());
+            claims
+                .group_memberships
+                .extend(provider_session.profile.group_memberships.iter().cloned());
+            claims
+                .custom_claims
+                .extend(provider_session.profile.custom_claims.clone());
+            if let Some(provider_subject) = provider_session.provider_subject.as_ref() {
+                claims
+                    .custom_claims
+                    .insert("provider_subject".into(), provider_subject.clone());
+            }
+            claims
+                .custom_claims
+                .insert("auth_policy_source".into(), self.auth_policy_source_label());
+            for (key, value) in record.claims.custom_claims.iter().filter(|(key, _)| {
+                key.starts_with("provider_") || key.starts_with("provider_claim:")
+            }) {
+                claims
+                    .custom_claims
+                    .insert(format!("auth_policy_match:{key}"), value.clone());
+            }
+        }
+        claims.issued_at = issued_at;
+        claims.expires_at = expires_at;
+        claims
+    }
+
+    fn auth_policy_source_label(&self) -> String {
+        match &self.provider {
+            AuthProvider::GitHub => "github-live".into(),
+            AuthProvider::Oidc { issuer } => format!("oidc:{issuer}"),
+            AuthProvider::OAuth { provider } => format!("oauth:{provider}"),
+            AuthProvider::External { authority } => format!("external:{authority}"),
+            AuthProvider::Static { authority } => format!("static:{authority}"),
+        }
     }
 
     fn provider_session(&self, session_id: &ContentId) -> Option<ProviderSessionMaterial> {
@@ -877,6 +1014,149 @@ impl ProviderMappedIdentityConnector {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fetch_github_paginated_array(
+        &self,
+        url: &str,
+        access_token: &str,
+    ) -> Result<Vec<Value>, AuthError> {
+        let client = reqwest::blocking::Client::new();
+        let mut next_url = Some(url.to_owned());
+        let mut pages = 0_u8;
+        let mut values = Vec::new();
+
+        while let Some(current_url) = next_url.take() {
+            pages = pages.saturating_add(1);
+            if pages > 32 {
+                return Err(AuthError::ProviderUserInfo(
+                    "github api pagination exceeded 32 pages".into(),
+                ));
+            }
+            let response = client
+                .get(&current_url)
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Bearer {access_token}"),
+                )
+                .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                .header(reqwest::header::USER_AGENT, "burn_p2p-auth")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .send()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?;
+            let next = response
+                .headers()
+                .get(reqwest::header::LINK)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_github_next_link);
+            let payload = response
+                .json::<Value>()
+                .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?;
+            let items = payload.as_array().ok_or_else(|| {
+                AuthError::ProviderUserInfo(
+                    "github api returned a non-array response for a paginated endpoint".into(),
+                )
+            })?;
+            values.extend(items.iter().cloned());
+            next_url = next;
+        }
+
+        Ok(values)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn hydrate_github_profile(
+        &self,
+        prior: ProviderSessionMaterial,
+    ) -> Result<ProviderSessionMaterial, AuthError> {
+        if !matches!(self.provider, AuthProvider::GitHub) {
+            return Ok(prior);
+        }
+        let Some(access_token) = prior.access_token.clone() else {
+            return Ok(prior);
+        };
+
+        let mut hydrated = prior;
+
+        if let Some(orgs_url) = self.resolved_github_orgs_url() {
+            hydrated.profile.org_memberships = self
+                .fetch_github_paginated_array(&orgs_url, &access_token)?
+                .into_iter()
+                .filter_map(|value| {
+                    value
+                        .get("login")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .collect();
+        }
+
+        if let Some(teams_url) = self.resolved_github_teams_url() {
+            hydrated.profile.group_memberships = self
+                .fetch_github_paginated_array(&teams_url, &access_token)?
+                .into_iter()
+                .filter_map(|value| {
+                    let slug = value.get("slug").and_then(Value::as_str)?;
+                    let org = value
+                        .get("organization")
+                        .and_then(Value::as_object)
+                        .and_then(|org| org.get("login"))
+                        .and_then(Value::as_str)?;
+                    Some(format!("{org}/{slug}"))
+                })
+                .collect();
+        }
+
+        if let Some(repo_access_url) = self.resolved_github_repo_access_url() {
+            let repo_access = self
+                .fetch_github_paginated_array(&repo_access_url, &access_token)?
+                .into_iter()
+                .flat_map(|value| {
+                    let Some(full_name) = value
+                        .get("full_name")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                    else {
+                        return Vec::new();
+                    };
+
+                    let mut entries = vec![full_name.clone()];
+                    if let Some(permissions) = value.get("permissions").and_then(Value::as_object) {
+                        let access_level = if permissions.get("admin").and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            Some("admin")
+                        } else if permissions.get("push").and_then(Value::as_bool) == Some(true) {
+                            Some("write")
+                        } else if permissions.get("pull").and_then(Value::as_bool) == Some(true) {
+                            Some("read")
+                        } else {
+                            None
+                        };
+                        if let Some(access_level) = access_level {
+                            entries.push(format!("{full_name}:{access_level}"));
+                        }
+                    }
+                    entries
+                })
+                .collect::<BTreeSet<_>>();
+            if repo_access.is_empty() {
+                hydrated
+                    .profile
+                    .custom_claims
+                    .remove("provider_repo_access");
+            } else {
+                hydrated.profile.custom_claims.insert(
+                    "provider_repo_access".into(),
+                    repo_access.into_iter().collect::<Vec<_>>().join(","),
+                );
+            }
+        }
+
+        Ok(hydrated)
+    }
+
     #[cfg(target_arch = "wasm32")]
     fn refresh_provider_session(
         &self,
@@ -983,9 +1263,9 @@ impl ProviderMappedIdentityConnector {
                 .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?
                 .json::<Value>()
                 .map_err(|error| AuthError::ProviderUserInfo(error.to_string()))?;
-            return Ok(Some(prior.merge_update(
+            return Ok(Some(self.hydrate_github_profile(prior.merge_update(
                 self.provider_session_from_userinfo_value(response),
-            )));
+            ))?));
         }
 
         let network_id = network_id.ok_or_else(|| {
@@ -1155,16 +1435,37 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
             .principals
             .get(&session.claims.principal_id)
             .ok_or_else(|| AuthError::UnknownPrincipal(session.claims.principal_id.clone()))?;
+        let provider_session =
+            self.refresh_provider_session(session, self.provider_session(&session.session_id))?;
+        let principal_id = if let Some(provider_session) = provider_session.as_ref() {
+            if provider_session.has_remote_material()
+                && Self::record_has_provider_match_requirements(record)
+            {
+                let resolved = self
+                    .resolve_principal_from_provider_session(provider_session)
+                    .map_err(|_| {
+                        AuthError::ProviderRefresh(
+                            "provider profile no longer matches the enrolled principal".into(),
+                        )
+                    })?;
+                if resolved != session.claims.principal_id {
+                    return Err(AuthError::ProviderRefresh(
+                        "provider profile no longer matches the enrolled principal".into(),
+                    ));
+                }
+            }
+            session.claims.principal_id.clone()
+        } else {
+            session.claims.principal_id.clone()
+        };
         validate_principal_record_access(
             record,
             &session.network_id,
             &session.claims.granted_scopes,
         )?;
-        let provider_session =
-            self.refresh_provider_session(session, self.provider_session(&session.session_id))?;
         let refreshed = self.issue_session(
             session.network_id.clone(),
-            session.claims.principal_id.clone(),
+            principal_id,
             record,
             provider_session.clone(),
         )?;
@@ -1181,9 +1482,52 @@ impl IdentityConnector for ProviderMappedIdentityConnector {
         if session.expires_at < Utc::now() {
             return Err(AuthError::SessionExpired(session.session_id.clone()));
         }
-        let mut claims = session.claims.clone();
-        claims.provider = self.provider();
-        Ok(claims)
+        let record = self
+            .principals
+            .get(&session.claims.principal_id)
+            .ok_or_else(|| AuthError::UnknownPrincipal(session.claims.principal_id.clone()))?;
+        let Some(provider_session) = self.provider_session(&session.session_id) else {
+            let mut claims = session.claims.clone();
+            claims.provider = self.provider();
+            return Ok(claims);
+        };
+        let Some(provider_session) = self.hydrate_provider_profile(
+            Some(&session.network_id),
+            Some(&session.claims.principal_id),
+            Some(provider_session),
+        )?
+        else {
+            let mut claims = session.claims.clone();
+            claims.provider = self.provider();
+            return Ok(claims);
+        };
+        if provider_session.has_remote_material()
+            && Self::record_has_provider_match_requirements(record)
+        {
+            let resolved = self
+                .resolve_principal_from_provider_session(&provider_session)
+                .map_err(|_| {
+                    AuthError::ProviderUserInfo(
+                        "provider profile no longer matches the enrolled principal".into(),
+                    )
+                })?;
+            if resolved != session.claims.principal_id {
+                return Err(AuthError::ProviderUserInfo(
+                    "provider profile no longer matches the enrolled principal".into(),
+                ));
+            }
+        }
+        validate_principal_record_access(
+            record,
+            &session.network_id,
+            &session.claims.granted_scopes,
+        )?;
+        Ok(self.compose_claims(
+            record,
+            Some(&provider_session),
+            session.issued_at,
+            session.expires_at,
+        ))
     }
 
     fn revoke(&self, session: &PrincipalSession) -> Result<(), AuthError> {

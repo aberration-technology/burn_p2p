@@ -290,6 +290,41 @@ impl AuthPortalState {
         })
     }
 
+    pub(super) fn get_enrollment_session(
+        &self,
+        session_id: &ContentId,
+    ) -> Result<Option<PrincipalSession>, Box<dyn std::error::Error>> {
+        self.with_shared_state(true, |auth| {
+            let existing = auth
+                .sessions
+                .lock()
+                .expect("auth session state should not be poisoned")
+                .get(session_id)
+                .cloned();
+            let Some(mut session) = existing else {
+                return Ok(None);
+            };
+
+            match auth.connector.fetch_claims(&session) {
+                Ok(claims) => {
+                    session.claims = claims;
+                    auth.sessions
+                        .lock()
+                        .expect("auth session state should not be poisoned")
+                        .insert(session_id.clone(), session.clone());
+                    Ok(Some(session))
+                }
+                Err(error) => {
+                    auth.sessions
+                        .lock()
+                        .expect("auth session state should not be poisoned")
+                        .remove(session_id);
+                    Err(Box::new(error) as Box<dyn std::error::Error>)
+                }
+            }
+        })
+    }
+
     pub(super) fn begin_login(
         &self,
         request: LoginRequest,
@@ -436,6 +471,7 @@ pub(super) fn build_auth_portal(
             authorize_base_url,
             exchange_url,
             token_url,
+            api_base_url,
             client_id,
             client_secret,
             redirect_uri,
@@ -450,6 +486,7 @@ pub(super) fn build_auth_portal(
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),
+                api_base_url: api_base_url.clone(),
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
                 redirect_uri: redirect_uri.clone(),
@@ -480,6 +517,7 @@ pub(super) fn build_auth_portal(
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),
+                api_base_url: None,
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
                 redirect_uri: redirect_uri.clone(),
@@ -510,6 +548,7 @@ pub(super) fn build_auth_portal(
                 authorize_base_url: authorize_base_url.clone(),
                 exchange_url: exchange_url.clone(),
                 token_url: token_url.clone(),
+                api_base_url: None,
                 client_id: client_id.clone(),
                 client_secret: client_secret.clone(),
                 redirect_uri: redirect_uri.clone(),

@@ -106,8 +106,9 @@ pub(crate) fn handle_auth_post_route(
                 .into());
             }
             let session = auth
-                .get_session(&enroll.session_id)?
+                .get_enrollment_session(&enroll.session_id)?
                 .ok_or("unknown session id")?;
+            let granted_roles = session.claims.granted_roles.clone();
             let certificate = auth
                 .authority
                 .lock()
@@ -119,10 +120,7 @@ pub(crate) fn handle_auth_post_route(
                     target_artifact_hash: enroll.target_artifact_hash.clone(),
                     peer_id: enroll.peer_id,
                     peer_public_key_hex: enroll.peer_public_key_hex,
-                    granted_roles: auth
-                        .get_session(&enroll.session_id)?
-                        .map(|session| session.claims.granted_roles.clone())
-                        .ok_or("unknown session id")?,
+                    granted_roles,
                     requested_scopes: enroll.requested_scopes,
                     client_policy_hash: enroll.client_policy_hash,
                     serial: enroll.serial,
