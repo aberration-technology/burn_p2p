@@ -12,9 +12,11 @@ use std::time::{Duration, Instant};
 use burn_p2p_core::{
     AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
     CapabilityCard, CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform,
-    ContentId, HeadDescriptor, HeadId, MetricValue, MetricsLiveEvent, MetricsLiveEventKind,
-    NetworkId, PeerId, PeerRoleSet, PersistenceClass, Precision, ReductionCertificate, RevisionId,
-    StudyId, TelemetrySummary, ValidationQuorumCertificate, WindowActivation, WindowId,
+    ContentId, DatasetViewId, ExperimentDirectoryEntry, ExperimentOptInPolicy,
+    ExperimentResourceRequirements, ExperimentVisibility, HeadDescriptor, HeadId, MetricValue,
+    MetricsLiveEvent, MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet,
+    PersistenceClass, Precision, ReductionCertificate, RevisionId, StudyId, TelemetrySummary,
+    ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
 };
 use chrono::Utc;
 use futures::{executor::block_on, future};
@@ -22,14 +24,17 @@ use semver::Version;
 
 use super::{
     AggregateProposalAnnouncement, ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot,
-    ExperimentControlEnvelope, ExperimentOverlaySet, HeadAnnouncement, LiveControlPlaneEvent,
-    LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator,
-    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerDirectoryAnnouncement,
-    PeerObservation, PeerStore, ProtocolSet, PubsubEnvelope, PubsubPayload,
-    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress,
-    SwarmError, TransportKind, ValidationQuorumAnnouncement,
+    ExperimentControlEnvelope, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
+    HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell,
+    MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
+    PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolSet, PubsubEnvelope,
+    PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy,
+    SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
 };
-use burn_p2p_experiment::ActivationTarget;
+use burn_p2p_experiment::{
+    ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
+    ExperimentLifecyclePlan,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_browser_edge_server(
@@ -2378,6 +2383,179 @@ fn native_control_plane_shell_propagates_control_announcements_over_pubsub() {
         dialer
             .snapshot()
             .control_announcements
+            .contains(&announcement)
+    );
+}
+
+#[test]
+fn native_control_plane_shell_propagates_lifecycle_announcements_over_pubsub() {
+    let network_id = NetworkId::new("network");
+    let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
+    let control_overlay = OverlayTopic::control(network_id.clone());
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
+
+    let now = Utc::now();
+    let announcement = ExperimentLifecycleAnnouncement {
+        overlay: control_overlay.clone(),
+        certificate: ExperimentLifecycleEnvelope {
+            network_id: network_id.clone(),
+            plan: ExperimentLifecyclePlan {
+                study_id: StudyId::new("study"),
+                experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                base_revision_id: Some(RevisionId::new("rev-a")),
+                target_entry: ExperimentDirectoryEntry {
+                    network_id: network_id.clone(),
+                    study_id: StudyId::new("study"),
+                    experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                    workload_id: WorkloadId::new("alternate"),
+                    display_name: "exp rev-b".into(),
+                    model_schema_hash: ContentId::new("schema"),
+                    dataset_view_id: DatasetViewId::new("view"),
+                    resource_requirements: ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::from([PeerRole::TrainerCpu]),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 0,
+                        estimated_window_seconds: 60,
+                    },
+                    visibility: ExperimentVisibility::Public,
+                    opt_in_policy: ExperimentOptInPolicy::Open,
+                    current_revision_id: RevisionId::new("rev-b"),
+                    current_head_id: None,
+                    allowed_roles: PeerRoleSet::default_trainer(),
+                    allowed_scopes: BTreeSet::new(),
+                    metadata: BTreeMap::new(),
+                },
+                phase: ExperimentLifecyclePhase::Activating,
+                target: ActivationTarget {
+                    activation: WindowActivation {
+                        activation_window: WindowId(2),
+                        grace_windows: 1,
+                    },
+                    required_client_capabilities: BTreeSet::from(["cuda".into()]),
+                },
+                plan_epoch: 4,
+                reason: Some("roll rev-b".into()),
+            },
+        }
+        .into_signed_cert(
+            burn_p2p_core::SignatureMetadata {
+                signer: PeerId::new("authority"),
+                key_id: "authority-key".into(),
+                algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                signed_at: now,
+                signature_hex: "ddeeff".into(),
+            },
+            Version::new(0, 1, 0),
+        )
+        .expect("lifecycle cert"),
+        announced_at: now,
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("tcp addr"))
+        .expect("listen");
+
+    let listen_addr = loop {
+        match listener.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("listener did not produce a listen address"),
+        }
+    };
+
+    dialer.dial(listen_addr).expect("dial");
+
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < connect_deadline,
+            "native shells did not connect"
+        );
+
+        if let Some(event) = listener.wait_event(Duration::from_millis(100))
+            && let LiveControlPlaneEvent::ConnectionEstablished { .. } = event
+        {
+            listener_connected = true;
+        }
+
+        if let Some(event) = dialer.wait_event(Duration::from_millis(100))
+            && let LiveControlPlaneEvent::ConnectionEstablished { .. } = event
+        {
+            dialer_connected = true;
+        }
+    }
+
+    listener
+        .subscribe_topic(control_overlay.clone())
+        .expect("listener subscribe");
+    dialer
+        .subscribe_topic(control_overlay.clone())
+        .expect("dialer subscribe");
+
+    let publish_deadline = Instant::now() + Duration::from_secs(10);
+    let mut listener_saw_remote_subscription = false;
+    let mut published = false;
+    let mut received_pubsub = false;
+    while !received_pubsub {
+        assert!(
+            Instant::now() < publish_deadline,
+            "dialer did not receive lifecycle announcement over pubsub"
+        );
+
+        let pump_until = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < pump_until {
+            if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+                match event {
+                    LiveControlPlaneEvent::TopicSubscribed { topic }
+                        if topic == control_overlay.as_str() =>
+                    {
+                        listener_saw_remote_subscription = true;
+                    }
+                    LiveControlPlaneEvent::PubsubMessage { kind, .. } if kind == "lifecycle" => {}
+                    _ => {}
+                }
+            }
+
+            if let Some(event) = dialer.wait_event(Duration::from_millis(25))
+                && let LiveControlPlaneEvent::PubsubMessage { kind, topic, .. } = event
+                && kind == "lifecycle"
+                && topic == control_overlay.as_str()
+            {
+                received_pubsub = true;
+                break;
+            }
+        }
+
+        if !published && listener_saw_remote_subscription {
+            listener.publish_lifecycle(announcement.clone());
+            match listener.publish_pubsub(
+                control_overlay.clone(),
+                PubsubPayload::Lifecycle(Box::new(announcement.clone())),
+            ) {
+                Ok(()) => published = true,
+                Err(SwarmError::Pubsub(message))
+                    if message.contains("NoPeersSubscribedToTopic") => {}
+                Err(error) => panic!("publish lifecycle pubsub: {error}"),
+            }
+        }
+    }
+
+    assert!(
+        dialer
+            .snapshot()
+            .lifecycle_announcements
             .contains(&announcement)
     );
 }

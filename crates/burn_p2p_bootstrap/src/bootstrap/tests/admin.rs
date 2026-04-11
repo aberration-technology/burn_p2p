@@ -208,6 +208,160 @@ fn admin_token_is_dev_only_and_disabled_by_default() {
 }
 
 #[test]
+fn admin_route_publishes_lifecycle_certificate_to_runtime_control_plane() {
+    let temp = tempdir().expect("temp dir");
+    let genesis = burn_p2p::GenesisSpec {
+        network_id: NetworkId::new("secure-demo"),
+        protocol_version: Version::new(0, 1, 0),
+        display_name: "Secure Demo".into(),
+        created_at: Utc::now(),
+        metadata: BTreeMap::new(),
+    };
+    let running = burn_p2p::NodeBuilder::new(())
+        .with_mainnet(genesis)
+        .with_listen_address(burn_p2p::SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn runtime");
+    let telemetry = running.telemetry();
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while telemetry.snapshot().status != burn_p2p::RuntimeStatus::Running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "runtime did not start"
+        );
+        thread::sleep(StdDuration::from_millis(25));
+    }
+
+    let release_policy = burn_p2p::ReleasePolicy::new(
+        Version::new(0, 1, 0),
+        vec![semver::VersionReq::parse("^0.1").expect("version req")],
+    )
+    .expect("release policy");
+    let spec = BootstrapSpec {
+        preset: BootstrapPreset::AuthorityValidator,
+        authority: Some(burn_p2p_bootstrap::AuthorityPlan {
+            release_policy: release_policy.clone(),
+            validator_policy: burn_p2p::ValidatorPolicy {
+                release_policy,
+                evidence_requirement: burn_p2p::MergeEvidenceRequirement::default(),
+            },
+            validator_set_manifest: None,
+            authority_epoch_manifest: None,
+        }),
+        ..sample_spec()
+    };
+    let context = HttpServerContext {
+        plan: Arc::new(spec.clone().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec,
+            http_bind_addr: None,
+            admin_token: Some("secret-token".into()),
+            allow_dev_admin_token: true,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("admin-lifecycle.json")),
+        admin_token: Some("secret-token".into()),
+        allow_dev_admin_token: true,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: Some(running.control_handle()),
+    };
+
+    let response = issue_request(
+        context,
+        IssueRequestSpec {
+            method: "POST",
+            path: "/admin",
+            body: Some(
+                serde_json::to_value(burn_p2p_bootstrap::AdminAction::Lifecycle(Box::new(
+                    burn_p2p_experiment::ExperimentLifecyclePlan {
+                        study_id: burn_p2p::StudyId::new("study"),
+                        experiment_id: burn_p2p::ExperimentId::new("exp"),
+                        base_revision_id: Some(burn_p2p::RevisionId::new("rev-a")),
+                        target_entry: ExperimentDirectoryEntry {
+                            network_id: NetworkId::new("secure-demo"),
+                            study_id: burn_p2p::StudyId::new("study"),
+                            experiment_id: burn_p2p::ExperimentId::new("exp"),
+                            workload_id: burn_p2p::WorkloadId::new("compiled"),
+                            display_name: "exp rev-b".into(),
+                            model_schema_hash: ContentId::new("schema"),
+                            dataset_view_id: burn_p2p::DatasetViewId::new("view"),
+                            resource_requirements: ExperimentResourceRequirements {
+                                minimum_roles: BTreeSet::from([PeerRole::TrainerCpu]),
+                                minimum_device_memory_bytes: None,
+                                minimum_system_memory_bytes: None,
+                                estimated_download_bytes: 0,
+                                estimated_window_seconds: 60,
+                            },
+                            visibility: ExperimentVisibility::Public,
+                            opt_in_policy: ExperimentOptInPolicy::Open,
+                            current_revision_id: burn_p2p::RevisionId::new("rev-b"),
+                            current_head_id: None,
+                            allowed_roles: PeerRoleSet::default_trainer(),
+                            allowed_scopes: BTreeSet::new(),
+                            metadata: BTreeMap::new(),
+                        },
+                        phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
+                        target: burn_p2p_experiment::ActivationTarget {
+                            activation: burn_p2p::WindowActivation {
+                                activation_window: burn_p2p::WindowId(9),
+                                grace_windows: 0,
+                            },
+                            required_client_capabilities: BTreeSet::new(),
+                        },
+                        plan_epoch: 7,
+                        reason: Some("publish lifecycle from admin route".into()),
+                    },
+                )))
+                .expect("serialize lifecycle action"),
+            ),
+            headers: &[],
+        },
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+
+    let lifecycle_deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while telemetry
+        .snapshot()
+        .control_plane
+        .lifecycle_announcements
+        .len()
+        != 1
+    {
+        assert!(
+            std::time::Instant::now() < lifecycle_deadline,
+            "lifecycle announcement was not published to the runtime control plane"
+        );
+        thread::sleep(StdDuration::from_millis(25));
+    }
+
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot.control_plane.lifecycle_announcements.len(), 1);
+    assert_eq!(
+        snapshot.control_plane.lifecycle_announcements[0]
+            .certificate
+            .body
+            .payload
+            .payload
+            .plan
+            .plan_epoch,
+        7
+    );
+
+    running.shutdown().expect("shutdown runtime");
+    let _ = running.await_termination().expect("await runtime");
+}
+
+#[test]
 fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
     let temp = tempdir().expect("temp dir");
     let auth_config = sample_auth_config(temp.path());

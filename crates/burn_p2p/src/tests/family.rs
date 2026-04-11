@@ -436,6 +436,128 @@ fn family_runtime_train_window_applies_authoritative_lifecycle_activation() {
 }
 
 #[test]
+fn family_runtime_continuous_trainer_applies_authoritative_lifecycle_activation() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("continuous lifecycle switching storage");
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(storage.path().to_path_buf()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(vec![
+            switching_directory_entry(
+                "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
+            ),
+        ]))
+        .spawn()
+        .expect("spawn continuous lifecycle runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "continuous lifecycle runtime did not start",
+    );
+
+    let initial = running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+
+    let rev_b_entry = switching_directory_entry(
+        "exp-a",
+        "rev-b",
+        "alternate",
+        "schema-b",
+        "switch-dataset-view",
+        "Switch A Rev B",
+    );
+    let control = running.control_handle();
+    control
+        .publish_directory(ExperimentDirectoryAnnouncement {
+            network_id: mainnet().genesis.network_id.clone(),
+            entries: vec![rev_b_entry.clone()],
+            announced_at: Utc::now(),
+        })
+        .expect("publish updated directory");
+    control
+        .publish_lifecycle(lifecycle_announcement(
+            burn_p2p_experiment::ExperimentLifecyclePlan {
+                study_id: initial.study_id.clone(),
+                experiment_id: initial.experiment_id.clone(),
+                base_revision_id: Some(initial.revision_id.clone()),
+                target_entry: rev_b_entry,
+                phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(2),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                plan_epoch: 1,
+                reason: Some("activate rev-b at window 2".into()),
+            },
+        ))
+        .expect("publish lifecycle plan");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = telemetry.snapshot();
+            snapshot.control_plane.directory_announcements.len() >= 2
+                && !snapshot.control_plane.lifecycle_announcements.is_empty()
+        },
+        "continuous lifecycle control plane state was not reflected in telemetry",
+    );
+
+    {
+        let mut trainer = running
+            .continuous_trainer(&initial)
+            .expect("continuous trainer session");
+
+        let first = trainer
+            .train_next_window()
+            .expect("first continuous training window");
+        assert_eq!(first.head.revision_id, crate::RevisionId::new("rev-a"));
+        assert_eq!(
+            trainer.experiment().revision_id,
+            crate::RevisionId::new("rev-a")
+        );
+
+        let second = trainer
+            .train_next_window()
+            .expect("second continuous training window");
+        assert_eq!(second.head.revision_id, crate::RevisionId::new("rev-b"));
+        assert_eq!(
+            trainer.experiment().revision_id,
+            crate::RevisionId::new("rev-b")
+        );
+    }
+
+    assert_eq!(
+        running
+            .active_experiment()
+            .expect("active experiment after continuous lifecycle training")
+            .revision_id,
+        crate::RevisionId::new("rev-b")
+    );
+    assert_eq!(
+        running.config().selected_workload_id,
+        Some(crate::WorkloadId::new("alternate"))
+    );
+
+    running
+        .shutdown()
+        .expect("shutdown continuous lifecycle runtime");
+    let _ = running
+        .await_termination()
+        .expect("await continuous lifecycle runtime");
+}
+
+#[test]
 fn family_runtime_applies_control_plane_pause_and_resume_at_window_boundaries() {
     let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("control switching storage");

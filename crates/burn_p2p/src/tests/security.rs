@@ -172,6 +172,97 @@ fn control_handle_updates_auth_and_directory_announcements() {
 }
 
 #[test]
+fn control_handle_updates_lifecycle_announcements() {
+    let running = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn");
+
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(2),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "runtime did not start",
+    );
+
+    let control = running.control_handle();
+    control
+        .publish_lifecycle(lifecycle_announcement(
+            burn_p2p_experiment::ExperimentLifecyclePlan {
+                study_id: crate::StudyId::new("study-1"),
+                experiment_id: crate::ExperimentId::new("exp-1"),
+                base_revision_id: Some(crate::RevisionId::new("rev-1")),
+                target_entry: ExperimentDirectoryEntry {
+                    network_id: mainnet().genesis.network_id.clone(),
+                    study_id: crate::StudyId::new("study-1"),
+                    experiment_id: crate::ExperimentId::new("exp-1"),
+                    workload_id: crate::WorkloadId::new("alternate"),
+                    display_name: "Lifecycle Switch".into(),
+                    model_schema_hash: crate::ContentId::new("schema-2"),
+                    dataset_view_id: crate::DatasetViewId::new("view-2"),
+                    resource_requirements: ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::from([crate::PeerRole::TrainerCpu]),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 1024,
+                        estimated_window_seconds: 30,
+                    },
+                    visibility: crate::ExperimentVisibility::OptIn,
+                    opt_in_policy: crate::ExperimentOptInPolicy::Scoped,
+                    current_revision_id: crate::RevisionId::new("rev-2"),
+                    current_head_id: Some(crate::HeadId::new("head-2")),
+                    allowed_roles: crate::PeerRoleSet::default_trainer(),
+                    allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train {
+                        experiment_id: crate::ExperimentId::new("exp-1"),
+                    }]),
+                    metadata: BTreeMap::from([("owner".into(), "lab-switch".into())]),
+                },
+                phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(4),
+                        grace_windows: 1,
+                    },
+                    required_client_capabilities: BTreeSet::from(["cpu".into()]),
+                },
+                plan_epoch: 2,
+                reason: Some("activate rev-2".into()),
+            },
+        ))
+        .expect("publish lifecycle");
+
+    wait_for(
+        Duration::from_secs(2),
+        || {
+            telemetry
+                .snapshot()
+                .control_plane
+                .lifecycle_announcements
+                .len()
+                == 1
+        },
+        "lifecycle announcement was not reflected in local telemetry",
+    );
+
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot.control_plane.lifecycle_announcements.len(), 1);
+    assert_eq!(
+        snapshot.control_plane.lifecycle_announcements[0]
+            .certificate
+            .body
+            .payload
+            .payload
+            .plan
+            .plan_epoch,
+        2
+    );
+
+    running.shutdown().expect("shutdown");
+    let _ = running.await_termination().expect("await termination");
+}
+
+#[test]
 fn persisted_local_auth_and_policy_survive_restart_without_with_auth() {
     let storage = tempdir().expect("persisted auth storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());
