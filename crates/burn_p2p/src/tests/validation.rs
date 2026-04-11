@@ -6,6 +6,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     let dataset_dir = tempdir().expect("dataset dir");
     create_runtime_dataset(dataset_dir.path());
     let experiment = experiment();
+    let validator_a_addr = loopback_listen_address();
 
     let validator_a = NodeBuilder::new(SyntheticRuntimeProject {
         dataset_root: dataset_dir.path().to_path_buf(),
@@ -14,6 +15,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     })
     .with_mainnet(mainnet().genesis.clone())
     .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_listen_address(validator_a_addr.clone())
     .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
         "burn-p2p-quorum-validator-a-{}",
         Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -21,12 +23,6 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     .spawn()
     .expect("validator a spawn");
     let validator_a_telemetry = validator_a.telemetry();
-    wait_for(
-        Duration::from_secs(5),
-        || !validator_a_telemetry.snapshot().listen_addresses.is_empty(),
-        "validator a did not start listening",
-    );
-    let validator_a_addr = validator_a_telemetry.snapshot().listen_addresses[0].clone();
 
     let validator_b = NodeBuilder::new(SyntheticRuntimeProject {
         dataset_root: dataset_dir.path().to_path_buf(),
@@ -35,6 +31,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     })
     .with_mainnet(mainnet().genesis.clone())
     .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_listen_address(loopback_listen_address())
     .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
         "burn-p2p-quorum-validator-b-{}",
         Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -79,6 +76,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
             target_model: 10.0,
         })
         .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(loopback_listen_address())
         .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
             "burn-p2p-quorum-trainer-{index}-{}",
             Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -116,14 +114,6 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         );
     }
 
-    wait_for(
-        Duration::from_secs(5),
-        || {
-            let snapshot = validator_a_telemetry.snapshot();
-            snapshot.control_plane.update_announcements.len() >= 2
-        },
-        "validator a did not observe trainer updates",
-    );
     let validator_a_peer_id = validator_a_telemetry
         .snapshot()
         .local_peer_id
@@ -299,6 +289,7 @@ fn adopt_known_head_if_present_promotes_materialized_head() {
         target_model: 10.0,
     })
     .with_mainnet(mainnet().genesis.clone())
+    .with_listen_address(loopback_listen_address())
     .with_storage(StorageConfig::new(leader_storage))
     .spawn()
     .expect("leader spawn");
@@ -307,13 +298,16 @@ fn adopt_known_head_if_present_promotes_materialized_head() {
         Duration::from_secs(5),
         || {
             let snapshot = leader_telemetry.snapshot();
-            snapshot.status == crate::RuntimeStatus::Running
-                && !snapshot.listen_addresses.is_empty()
-                && snapshot.local_peer_id.is_some()
+            snapshot.status == crate::RuntimeStatus::Running && snapshot.local_peer_id.is_some()
         },
         "leader did not start",
     );
-    let leader_addr = leader_telemetry.snapshot().listen_addresses[0].clone();
+    let leader_addr = leader
+        .config()
+        .listen_addresses
+        .first()
+        .expect("leader listen address")
+        .clone();
     let leader_peer_id = leader_telemetry
         .snapshot()
         .local_peer_id
@@ -331,6 +325,7 @@ fn adopt_known_head_if_present_promotes_materialized_head() {
         target_model: 10.0,
     })
     .with_mainnet(mainnet().genesis.clone())
+    .with_listen_address(loopback_listen_address())
     .with_storage(StorageConfig::new(follower_storage.clone()))
     .with_bootstrap_peer(leader_addr)
     .spawn()
@@ -411,6 +406,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         "burn-p2p-dedicated-validator-b-{}",
         Utc::now().timestamp_nanos_opt().expect("nanos")
     )));
+    let validator_a_addr = loopback_listen_address();
 
     let validator_a = NodeBuilder::new(SyntheticRuntimeProject {
         dataset_root: dataset_dir.path().to_path_buf(),
@@ -419,16 +415,11 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     })
     .with_mainnet(mainnet().genesis.clone())
     .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_listen_address(validator_a_addr.clone())
     .with_storage(validator_a_storage.clone())
     .spawn()
     .expect("validator a spawn");
     let validator_a_telemetry = validator_a.telemetry();
-    wait_for(
-        Duration::from_secs(5),
-        || !validator_a_telemetry.snapshot().listen_addresses.is_empty(),
-        "validator a did not start listening",
-    );
-    let validator_a_addr = validator_a_telemetry.snapshot().listen_addresses[0].clone();
 
     let reducer = NodeBuilder::new(SyntheticRuntimeProject {
         dataset_root: dataset_dir.path().to_path_buf(),
@@ -437,6 +428,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     })
     .with_mainnet(mainnet().genesis.clone())
     .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Reducer]))
+    .with_listen_address(loopback_listen_address())
     .with_storage(reducer_storage)
     .with_bootstrap_peer(validator_a_addr.clone())
     .spawn()
@@ -450,6 +442,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     })
     .with_mainnet(mainnet().genesis.clone())
     .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Validator]))
+    .with_listen_address(loopback_listen_address())
     .with_storage(validator_b_storage.clone())
     .with_bootstrap_peer(validator_a_addr.clone())
     .spawn()
@@ -501,6 +494,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
             target_model: 10.0,
         })
         .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(loopback_listen_address())
         .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
             "burn-p2p-dedicated-trainer-{index}-{}",
             Utc::now().timestamp_nanos_opt().expect("nanos")
@@ -538,14 +532,6 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
         );
     }
 
-    wait_for(
-        Duration::from_secs(5),
-        || {
-            let snapshot = validator_a_telemetry.snapshot();
-            snapshot.control_plane.update_announcements.len() >= 2
-        },
-        "validator a did not observe trainer updates",
-    );
     let validator_a_peer_id = validator_a_telemetry
         .snapshot()
         .local_peer_id

@@ -156,6 +156,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
         fs,
+        net::TcpListener,
         path::{Path, PathBuf},
         thread,
         time::{Duration, Instant},
@@ -212,6 +213,14 @@ mod tests {
             created_at: Utc::now(),
             metadata: BTreeMap::new(),
         }
+    }
+
+    fn loopback_listen_address() -> burn_p2p_swarm::SwarmAddress {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        drop(listener);
+        burn_p2p_swarm::SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/{port}"))
+            .expect("listen address")
     }
 
     fn authority_plan() -> super::AuthorityPlan {
@@ -1453,6 +1462,8 @@ mod tests {
             experiment_id: ExperimentId::new("exp"),
             revision_id: RevisionId::new("rev"),
         };
+        let bootstrap_addr = loopback_listen_address();
+        let trainer_addr = loopback_listen_address();
         let daemon = plan(BootstrapPreset::AuthorityValidator)
             .spawn_embedded_daemon(
                 SyntheticProject {
@@ -1473,10 +1484,7 @@ mod tests {
                         selected_workload_id: None,
                         metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
                         bootstrap_peers: Vec::new(),
-                        listen_addresses: vec![
-                            burn_p2p_swarm::SwarmAddress::new("/ip4/127.0.0.1/tcp/0")
-                                .expect("listen address"),
-                        ],
+                        listen_addresses: vec![bootstrap_addr.clone()],
                     },
                     active_experiment: active.clone(),
                     initialize_head_on_start: true,
@@ -1488,25 +1496,6 @@ mod tests {
             )
             .expect("spawn embedded daemon");
         let daemon_telemetry = daemon.telemetry();
-
-        wait_for(
-            Duration::from_secs(5),
-            || !daemon_telemetry.snapshot().listen_addresses.is_empty(),
-            "embedded daemon did not start listening",
-        );
-        wait_for(
-            Duration::from_secs(5),
-            || {
-                !daemon_telemetry
-                    .snapshot()
-                    .control_plane
-                    .head_announcements
-                    .is_empty()
-            },
-            "embedded daemon did not publish an initial head",
-        );
-        let bootstrap_addr = daemon_telemetry.snapshot().listen_addresses[0].clone();
-
         let mut trainer = NodeBuilder::new(SyntheticProject {
             dataset_root: dataset_dir.path().to_path_buf(),
             learning_rate: 1.0,
@@ -1517,6 +1506,7 @@ mod tests {
         .with_dataset(DatasetConfig::new(burn_p2p::UpstreamAdapter::Local {
             root: dataset_dir.path().display().to_string(),
         }))
+        .with_listen_address(trainer_addr)
         .with_bootstrap_peer(bootstrap_addr)
         .spawn()
         .expect("trainer spawn");
@@ -1530,6 +1520,16 @@ mod tests {
             Duration::from_secs(5),
             || daemon_telemetry.snapshot().connected_peers >= 1,
             "embedded daemon did not connect to trainer",
+        );
+        wait_for(
+            Duration::from_secs(10),
+            || {
+                trainer
+                    .sync_experiment_head(&experiment)
+                    .expect("trainer sync daemon head")
+                    .is_some()
+            },
+            "trainer did not sync the embedded daemon genesis head",
         );
 
         let outcome = trainer

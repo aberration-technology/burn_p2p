@@ -208,6 +208,8 @@ Checks and exported signals covered by `summary.json`, `correctness.json`, and
 the top-level xtask artifact summary:
 
 - hosted `ci-integration` on GitHub Actions runs the bounded core path
+- hosted `ci-integration` proves reducer/validator promotion and treats
+  trainer/viewer promoted-head fanout as best-effort on hosted runners
 - local runs and heavier runners keep the full resilience drills
 - `baseline_outperformed_low_lr`
 - `shard_assignments_are_distinct`

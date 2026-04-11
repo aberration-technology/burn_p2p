@@ -47,8 +47,9 @@ Integration CI adds broader product-shape coverage:
   captures, Playwright, live browser burn/webgpu execution, lease-scoped shard
   checks, and adversarial annex checks
 - the hosted `ci-integration` mnist lane is intentionally bounded: it keeps the
-  baseline/low-lr promotion path, but skips the restart and late-joiner
-  resilience drills that are too flaky on `ubuntu-latest`
+  baseline/low-lr promotion path on the reducer/validator tier, but skips the
+  restart and late-joiner resilience drills and does not require full
+  trainer/viewer promoted-head fanout on `ubuntu-latest`
 - bounded multiprocess stress
 
 Nightly absorbs heavier work:

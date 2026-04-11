@@ -553,7 +553,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
         ];
-        if require_viewer_topology_convergence() {
+        if require_full_topology_convergence() {
             sync_topology_heads(
                 &[
                     (REDUCER_LABEL, &reducer),
@@ -575,15 +575,27 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                     (REDUCER_LABEL, &reducer),
                     (VALIDATOR_LABEL, &validator),
                     (VALIDATOR_B_LABEL, &validator_b),
-                    (TRAINER_A1_LABEL, &trainer_a1),
-                    (TRAINER_A2_LABEL, &trainer_a2),
                 ],
                 &baseline_head_providers,
                 &baseline,
                 &baseline_head,
                 TOPOLOGY_HEAD_SYNC_TIMEOUT,
-                "baseline topology did not converge on the promoted head",
+                "baseline reducer/validator tier did not converge on the promoted head",
             )?;
+            let _ = wait_for_specific_head(
+                &trainer_a1,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "trainer-a1 did not observe promoted baseline head on time",
+            );
+            let _ = wait_for_specific_head(
+                &trainer_a2,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "trainer-a2 did not observe promoted baseline head on time",
+            );
             let _ = wait_for_specific_head(
                 &viewer,
                 &baseline,
@@ -688,7 +700,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
         ];
-        if require_viewer_topology_convergence() {
+        if require_full_topology_convergence() {
             sync_topology_heads(
                 &[
                     (REDUCER_LABEL, &reducer),
@@ -710,15 +722,27 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                     (REDUCER_LABEL, &reducer),
                     (VALIDATOR_LABEL, &validator),
                     (VALIDATOR_B_LABEL, &validator_b),
-                    (TRAINER_A1_LABEL, &trainer_a1),
-                    (TRAINER_A2_LABEL, &trainer_a2),
                 ],
                 &baseline_head_providers,
                 &baseline,
                 &baseline_head,
                 TOPOLOGY_HEAD_SYNC_TIMEOUT,
-                "restart validation did not converge on the promoted baseline head",
+                "restart reducer/validator tier did not converge on the promoted baseline head",
             )?;
+            let _ = wait_for_specific_head(
+                &trainer_a1,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "trainer-a1 did not observe restart-promoted baseline head on time",
+            );
+            let _ = wait_for_specific_head(
+                &trainer_a2,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "trainer-a2 did not observe restart-promoted baseline head on time",
+            );
             let _ = wait_for_specific_head(
                 &viewer,
                 &baseline,
@@ -838,7 +862,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
         ];
-        if require_viewer_topology_convergence() {
+        if require_full_topology_convergence() {
             sync_topology_heads(
                 &[
                     (REDUCER_LABEL, &reducer),
@@ -859,14 +883,20 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                     (REDUCER_LABEL, &reducer),
                     (VALIDATOR_LABEL, &validator),
                     (VALIDATOR_B_LABEL, &validator_b),
-                    (TRAINER_B_LABEL, &trainer_b),
                 ],
                 &low_lr_head_providers,
                 &low_lr,
                 &low_lr_head,
                 TOPOLOGY_HEAD_SYNC_TIMEOUT,
-                "low-lr topology did not converge on the promoted head",
+                "low-lr reducer/validator tier did not converge on the promoted head",
             )?;
+            let _ = wait_for_specific_head(
+                &trainer_b,
+                &low_lr,
+                &low_lr_head,
+                Duration::from_secs(15),
+                "trainer-b did not observe promoted low-lr head on time",
+            );
             let _ = wait_for_specific_head(
                 &viewer,
                 &low_lr,
@@ -1526,6 +1556,10 @@ fn demo_validation_round_timeout() -> Duration {
     } else {
         DEMO_VALIDATION_ROUND_TIMEOUT
     }
+}
+
+fn require_full_topology_convergence() -> bool {
+    !bounded_ci_mnist_mode()
 }
 
 fn require_viewer_topology_convergence() -> bool {

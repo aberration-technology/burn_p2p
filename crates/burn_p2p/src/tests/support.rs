@@ -41,6 +41,13 @@ pub(super) fn native_swarm_test_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+pub(super) fn loopback_listen_address() -> SwarmAddress {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+    let port = listener.local_addr().expect("listener addr").port();
+    drop(listener);
+    SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/{port}")).expect("listen")
+}
+
 pub(super) fn mainnet() -> MainnetHandle {
     MainnetHandle {
         genesis: GenesisSpec {
