@@ -984,11 +984,6 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             &low_lr_outcomes,
             &merge_certificates,
         );
-        let peer_dataset_root =
-            materialize_live_browser_dataset_bundle(&output, &browser_dataset.bundle)?;
-        let peer_head_artifact_root =
-            materialize_live_browser_head_artifact_bundle(&output, &browser_head_artifact)?;
-        write_demo_phase(&output, "browser-handoff-peer-dataset-ready")?;
         let browser_edge_config = LiveBrowserEdgeConfig {
             network_manifest: network_manifest.clone(),
             release_manifest: release_manifest.clone(),
@@ -1012,6 +1007,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         };
         write_demo_phase(&output, "browser-handoff-edge-config-ready")?;
         write_live_browser_edge_config(&output, &browser_edge_config)?;
+        let peer_dataset_root =
+            materialize_live_browser_dataset_bundle(&output, &browser_edge_config.browser_dataset.bundle)?;
+        let peer_head_artifact_root = materialize_live_browser_head_artifact_bundle(
+            &output,
+            &browser_edge_config.browser_head_artifact,
+        )?;
+        write_demo_phase(&output, "browser-handoff-peer-dataset-ready")?;
         fs::write(
             output.join("browser-peer-dataset-root.txt"),
             peer_dataset_root.display().to_string(),

@@ -1175,7 +1175,25 @@ fn wait_for_path_from_step(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    anyhow::bail!("timed out waiting for {}", path.display());
+    let phase_context = path
+        .parent()
+        .map(|parent| parent.join("phase.json"))
+        .filter(|phase_path| phase_path.exists())
+        .and_then(|phase_path| fs::read(&phase_path).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .map(|phase| {
+            let current = phase
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let elapsed_ms_since_start = phase
+                .get("elapsed_ms_since_start")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            format!("; last_demo_phase={current}; elapsed_ms_since_start={elapsed_ms_since_start}")
+        })
+        .unwrap_or_default();
+    anyhow::bail!("timed out waiting for {}{}", path.display(), phase_context);
 }
 
 fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
@@ -1205,7 +1223,11 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     // The live-browser handoff is written after the baseline, restart, and low-lr rounds.
     // Use a round-scaled timeout here so a slow but healthy demo does not get aborted
     // before it reaches the post-training browser handoff stage.
-    let browser_manifest_timeout = Duration::from_secs(150 + total_training_rounds * 90);
+    let browser_manifest_timeout = if bounded_hosted_ci_mnist {
+        Duration::from_secs(240 + total_training_rounds * 120)
+    } else {
+        Duration::from_secs(150 + total_training_rounds * 90)
+    };
     let mut steps = Vec::new();
     let browser_probe_root = artifacts.root.join("browser-wasm-probe");
     let browser_probe_assets = browser_probe_root.join("assets");
