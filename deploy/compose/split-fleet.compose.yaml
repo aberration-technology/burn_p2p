@@ -13,6 +13,27 @@ x-bootstrap-node: &bootstrap-node
     dockerfile: deploy/containers/bootstrap.Dockerfile
   environment:
     RUST_LOG: ${RUST_LOG:-info}
+    BURN_P2P_OPERATOR_STATE_POSTGRES_URL: ${BURN_P2P_OPERATOR_STATE_POSTGRES_URL:-}
+    BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE: ${BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE:-burn_p2p_operator_state_snapshots}
+    BURN_P2P_OPERATOR_STATE_REDIS_URL: ${BURN_P2P_OPERATOR_STATE_REDIS_URL:-}
+    BURN_P2P_OPERATOR_STATE_KEY_PREFIX: ${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}
+    BURN_P2P_AUTH_SESSION_REDIS_URL: ${BURN_P2P_AUTH_SESSION_REDIS_URL:-}
+    BURN_P2P_GITHUB_CLIENT_ID: ${BURN_P2P_GITHUB_CLIENT_ID:-}
+    BURN_P2P_GITHUB_CLIENT_SECRET: ${BURN_P2P_GITHUB_CLIENT_SECRET:-}
+    BURN_P2P_GITHUB_REDIRECT_URI: ${BURN_P2P_GITHUB_REDIRECT_URI:-}
+    BURN_P2P_OIDC_ISSUER: ${BURN_P2P_OIDC_ISSUER:-}
+    BURN_P2P_OIDC_AUTHORIZE_BASE_URL: ${BURN_P2P_OIDC_AUTHORIZE_BASE_URL:-}
+    BURN_P2P_OIDC_TOKEN_URL: ${BURN_P2P_OIDC_TOKEN_URL:-}
+    BURN_P2P_OIDC_CLIENT_ID: ${BURN_P2P_OIDC_CLIENT_ID:-}
+    BURN_P2P_OIDC_CLIENT_SECRET: ${BURN_P2P_OIDC_CLIENT_SECRET:-}
+    BURN_P2P_OIDC_REDIRECT_URI: ${BURN_P2P_OIDC_REDIRECT_URI:-}
+    BURN_P2P_ARTIFACT_S3_ENDPOINT: ${BURN_P2P_ARTIFACT_S3_ENDPOINT:-}
+    BURN_P2P_ARTIFACT_S3_BUCKET: ${BURN_P2P_ARTIFACT_S3_BUCKET:-}
+    BURN_P2P_ARTIFACT_S3_REGION: ${BURN_P2P_ARTIFACT_S3_REGION:-}
+    BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID: ${BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID:-}
+    BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY: ${BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY:-}
+    BURN_P2P_ARTIFACT_S3_PATH_PREFIX: ${BURN_P2P_ARTIFACT_S3_PATH_PREFIX:-}
+    BURN_P2P_ARTIFACT_S3_SERVER_SIDE_ENCRYPTION: ${BURN_P2P_ARTIFACT_S3_SERVER_SIDE_ENCRYPTION:-}
   restart: unless-stopped
   init: true
   read_only: true
@@ -31,6 +52,16 @@ services:
       - burn-p2p-redis-data:/data
     restart: unless-stopped
 
+  burn-p2p-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${BURN_P2P_OPERATOR_STATE_POSTGRES_DB:-burn_p2p}
+      POSTGRES_USER: ${BURN_P2P_OPERATOR_STATE_POSTGRES_USER:-burn_p2p}
+      POSTGRES_PASSWORD: ${BURN_P2P_OPERATOR_STATE_POSTGRES_PASSWORD:-burn-p2p-dev}
+    volumes:
+      - burn-p2p-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   bootstrap:
     <<: *bootstrap-node
     build:
@@ -41,6 +72,7 @@ services:
     command: ["/config/reference-bootstrap.json"]
     depends_on:
       - burn-p2p-redis
+      - burn-p2p-postgres
     ports:
       - "8787:8787"
       - "4001:4001/tcp"
@@ -60,6 +92,7 @@ services:
     depends_on:
       - bootstrap
       - burn-p2p-redis
+      - burn-p2p-postgres
     ports:
       - "8788:8788"
       - "4002:4002/tcp"
@@ -79,6 +112,7 @@ services:
     depends_on:
       - bootstrap
       - burn-p2p-redis
+      - burn-p2p-postgres
     ports:
       - "8789:8789"
       - "4003:4003/tcp"
@@ -126,6 +160,7 @@ services:
 
 volumes:
   burn-p2p-redis-data: {}
+  burn-p2p-postgres-data: {}
   burn-p2p-bootstrap-data: {}
   burn-p2p-validator-data: {}
   burn-p2p-reducer-data: {}

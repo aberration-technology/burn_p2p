@@ -25,3 +25,14 @@ bootstrap_public_source_ranges = ["0.0.0.0/0"]
 bootstrap_public_tcp_ports = ["4001"]
 bootstrap_public_udp_ports = ["4001"]
 ssh_source_ranges = ["203.0.113.10/32"]
+
+container_environment = {
+  BURN_P2P_OPERATOR_STATE_POSTGRES_URL   = "postgres://burn_p2p:burn-p2p-dev@operator-db.internal:5432/burn_p2p"
+  BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE = "burn_p2p_operator_state_snapshots"
+  BURN_P2P_ARTIFACT_S3_ENDPOINT          = "https://storage.googleapis.com"
+  BURN_P2P_ARTIFACT_S3_BUCKET            = "burn-p2p-artifacts"
+  BURN_P2P_ARTIFACT_S3_REGION            = "us-central1"
+  BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID     = "replace-me"
+  BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY = "replace-me"
+  BURN_P2P_ARTIFACT_S3_PATH_PREFIX       = "artifacts"
+}

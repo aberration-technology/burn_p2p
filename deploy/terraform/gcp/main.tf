@@ -11,6 +11,9 @@ locals {
 
   fleet_tag            = var.name_prefix
   bootstrap_public_tag = "${var.name_prefix}-bootstrap-public"
+  container_environment_file = join("\n", [
+    for key in sort(keys(var.container_environment)) : "${key}=${var.container_environment[key]}"
+  ])
 }
 
 resource "google_compute_firewall" "fleet_internal_tcp" {
@@ -106,11 +109,12 @@ resource "google_compute_instance" "bootstrap" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-bootstrap"
-    image        = var.bootstrap_image
-    command      = var.bootstrap_container_command
-    config_json  = var.bootstrap_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-bootstrap"
+    image             = var.bootstrap_image
+    command           = var.bootstrap_container_command
+    config_json       = var.bootstrap_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 }
 
@@ -139,11 +143,12 @@ resource "google_compute_instance" "validator" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-validator"
-    image        = var.validator_image
-    command      = var.validator_container_command
-    config_json  = var.validator_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-validator"
+    image             = var.validator_image
+    command           = var.validator_container_command
+    config_json       = var.validator_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 }
 
@@ -172,11 +177,12 @@ resource "google_compute_instance" "reducer" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-reducer"
-    image        = var.reducer_image
-    command      = var.reducer_container_command
-    config_json  = var.reducer_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-reducer"
+    image             = var.reducer_image
+    command           = var.reducer_container_command
+    config_json       = var.reducer_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 }
 
@@ -219,10 +225,11 @@ resource "google_compute_instance" "trainer" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-trainer"
-    image        = var.trainer_image
-    command      = var.trainer_container_command
-    config_json  = var.trainer_config_json
-    gpu_enabled  = true
+    service_name      = "${var.name_prefix}-trainer"
+    image             = var.trainer_image
+    command           = var.trainer_container_command
+    config_json       = var.trainer_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = true
   })
 }

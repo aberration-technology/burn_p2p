@@ -44,6 +44,15 @@ else
   CONFIG_MOUNT=""
 fi
 
+if [ -n "${env_file_contents}" ]; then
+  cat > /etc/burn-p2p/runtime.env <<'ENV'
+${env_file_contents}
+ENV
+  ENV_FILE_ARG="--env-file /etc/burn-p2p/runtime.env"
+else
+  ENV_FILE_ARG=""
+fi
+
 GPU_ARGS=""
 if [ "${gpu_enabled}" = "true" ]; then
   GPU_ARGS="--gpus all"
@@ -58,4 +67,5 @@ docker run -d \
   -v /var/lib/burn-p2p:/var/lib/burn-p2p \
   $${GPU_ARGS} \
   $${CONFIG_MOUNT} \
+  $${ENV_FILE_ARG} \
   ${image} ${command}

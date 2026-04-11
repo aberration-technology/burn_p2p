@@ -104,6 +104,8 @@ docker compose \
 
 the split fleet starts:
 
+- one local postgres operator-state backend
+- one local redis backing service for optional browser-edge/session flows
 - one bootstrap/coherence seed
 - one separate reducer
 - one separate validator/authority

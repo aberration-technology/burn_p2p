@@ -30,7 +30,8 @@ they do not:
 
 - build images in the cloud
 - provision a managed redis session backend
-- provision a managed database for long-lived operator analytics
+- provision a managed postgres operator-state backend
+- provision managed object storage for artifact publication
 
 ## default network posture
 
@@ -68,3 +69,15 @@ cargo xtask deploy aws \
 for browser-edge oidc/external auth in ha mode, point
 `session_state_backend.url` at a managed redis service such as elasticache or
 memorystore.
+
+the current deploy configs also expect container environment for:
+
+- `BURN_P2P_OPERATOR_STATE_POSTGRES_URL` and optional
+  `BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE`
+- browser-edge auth secrets such as `BURN_P2P_GITHUB_CLIENT_SECRET` or
+  `BURN_P2P_OIDC_CLIENT_SECRET`
+- artifact publication variables such as `BURN_P2P_ARTIFACT_S3_*`
+
+the terraform stacks now pass `container_environment` into every node container
+through an env file, so the config json placeholders used in `deploy/config/`
+can resolve correctly at runtime.

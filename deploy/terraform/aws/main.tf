@@ -24,36 +24,44 @@ locals {
     Stack     = var.name_prefix
   }
 
+  container_environment_file = join("\n", [
+    for key in sort(keys(var.container_environment)) : "${key}=${var.container_environment[key]}"
+  ])
+
   bootstrap_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-bootstrap"
-    image        = var.bootstrap_image
-    command      = var.bootstrap_container_command
-    config_json  = var.bootstrap_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-bootstrap"
+    image             = var.bootstrap_image
+    command           = var.bootstrap_container_command
+    config_json       = var.bootstrap_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 
   validator_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-validator"
-    image        = var.validator_image
-    command      = var.validator_container_command
-    config_json  = var.validator_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-validator"
+    image             = var.validator_image
+    command           = var.validator_container_command
+    config_json       = var.validator_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 
   reducer_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-reducer"
-    image        = var.reducer_image
-    command      = var.reducer_container_command
-    config_json  = var.reducer_config_json
-    gpu_enabled  = false
+    service_name      = "${var.name_prefix}-reducer"
+    image             = var.reducer_image
+    command           = var.reducer_container_command
+    config_json       = var.reducer_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = false
   })
 
   trainer_user_data = templatefile("${path.module}/user_data/node.sh.tftpl", {
-    service_name = "${var.name_prefix}-trainer"
-    image        = var.trainer_image
-    command      = var.trainer_container_command
-    config_json  = var.trainer_config_json
-    gpu_enabled  = true
+    service_name      = "${var.name_prefix}-trainer"
+    image             = var.trainer_image
+    command           = var.trainer_container_command
+    config_json       = var.trainer_config_json
+    env_file_contents = local.container_environment_file
+    gpu_enabled       = true
   })
 
   bootstrap_public_tcp_rules = {

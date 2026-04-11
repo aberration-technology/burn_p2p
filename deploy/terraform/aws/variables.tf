@@ -194,3 +194,9 @@ variable "trainer_config_json" {
   description = "Optional trainer config JSON written onto each trainer host."
   default     = ""
 }
+
+variable "container_environment" {
+  type        = map(string)
+  description = "Environment variables passed into every node container so config placeholders can resolve provider secrets, operator backends, and artifact publication targets."
+  default     = {}
+}
