@@ -84,18 +84,59 @@ where
         Ok(experiment)
     }
 
-    fn reconcile_directory_assignment(&mut self) -> anyhow::Result<Option<ExperimentHandle>> {
+    fn reconcile_directory_assignment(
+        &mut self,
+        activation_window: WindowId,
+    ) -> anyhow::Result<Option<ExperimentHandle>> {
         let Some(assignment) = self.current_primary_assignment() else {
             return Ok(None);
         };
-        let entry =
-            self.visible_current_experiment_entry(&assignment.study_id, &assignment.experiment_id)?;
+        let snapshot = self.telemetry().snapshot();
+        let lifecycle_plan = effective_experiment_lifecycle_plan(
+            &snapshot.control_plane,
+            self.mainnet().network_id(),
+            &assignment.study_id,
+            &assignment.experiment_id,
+            activation_window,
+        )
+        .filter(|plan| {
+            plan.base_revision_id
+                .as_ref()
+                .map(|base_revision_id| base_revision_id == &assignment.revision_id)
+                .unwrap_or(true)
+                || plan.target_entry.current_revision_id == assignment.revision_id
+        });
+        let lifecycle_exists = experiment_has_lifecycle_plan(
+            &snapshot.control_plane,
+            self.mainnet().network_id(),
+            &assignment.study_id,
+            &assignment.experiment_id,
+        );
         let selected_workload_id = self.config().selected_workload_id.clone();
 
-        if entry.current_revision_id != assignment.revision_id
-            || selected_workload_id.as_ref() != Some(&entry.workload_id)
-        {
-            return self.switch_experiment_entry(entry).map(Some);
+        if let Some(plan) = lifecycle_plan {
+            let entry = plan.target_entry;
+            if entry.current_revision_id != assignment.revision_id
+                || selected_workload_id.as_ref() != Some(&entry.workload_id)
+            {
+                return self.switch_experiment_entry(entry).map(Some);
+            }
+        } else if lifecycle_exists {
+            return Ok(Some(self.experiment(
+                assignment.study_id,
+                assignment.experiment_id,
+                assignment.revision_id,
+            )));
+        } else {
+            let entry = self.visible_current_experiment_entry(
+                &assignment.study_id,
+                &assignment.experiment_id,
+            )?;
+            if entry.current_revision_id != assignment.revision_id
+                || selected_workload_id.as_ref() != Some(&entry.workload_id)
+            {
+                return self.switch_experiment_entry(entry).map(Some);
+            }
         }
 
         Ok(Some(self.experiment(
@@ -260,7 +301,7 @@ where
         &mut self,
         activation_window: WindowId,
     ) -> anyhow::Result<Option<ExperimentHandle>> {
-        let experiment = self.reconcile_directory_assignment()?;
+        let experiment = self.reconcile_directory_assignment(activation_window)?;
         self.apply_control_announcements_for_window(activation_window)?;
         Ok(experiment.or_else(|| self.active_experiment()))
     }

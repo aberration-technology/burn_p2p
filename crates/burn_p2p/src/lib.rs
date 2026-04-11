@@ -88,8 +88,9 @@ pub use burn_p2p_dataloader::{
 };
 pub use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentDirectory, ExperimentDirectoryAccess,
-    ExperimentDirectoryPolicyExt, ExperimentSpec, PatchClass, PatchSupport, PatchValue,
-    RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
+    ExperimentDirectoryPolicyExt, ExperimentLifecyclePhase, ExperimentLifecyclePlan,
+    ExperimentSpec, PatchClass, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec,
+    RuntimePatch, StudySpec,
 };
 pub use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, CapabilityResourceProbe, LimitPolicy, LimitProfile,
@@ -111,16 +112,17 @@ pub use burn_p2p_swarm::{
     AggregateProposalAnnouncement, AlertNotice, AlertSeverity, ArtifactChunkPayload,
     ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, ChunkFetchRequest,
     ChunkFetchResponse, ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse,
-    ControlPlaneShell, ControlPlaneSnapshot, ExperimentDirectoryAnnouncement, ExperimentOverlaySet,
-    HeadAnnouncement, LeaseAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
-    MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement, MergeWindowAnnouncement,
-    MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse, MicroShardProviderRecord,
-    MigrationCoordinator, MigrationPlan, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
-    PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId,
-    ProtocolSet, ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement,
-    ReducerLoadAnnouncement, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment,
-    RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
-    TransportKind, UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
+    ControlPlaneShell, ControlPlaneSnapshot, ExperimentDirectoryAnnouncement,
+    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, HeadAnnouncement, LeaseAnnouncement,
+    LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell,
+    MergeAnnouncement, MergeWindowAnnouncement, MetricsAnnouncement, MicroShardFetchRequest,
+    MicroShardFetchResponse, MicroShardProviderRecord, MigrationCoordinator, MigrationPlan,
+    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerAuthAnnouncement,
+    PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId, ProtocolSet,
+    ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement, ReducerLoadAnnouncement,
+    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy,
+    SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement, TransportKind,
+    UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
 pub use burn_p2p_workload::{
     ContinuousTrainerPolicy, EvalSplit, LeaseDataPipeline, LeaseDataPipelineDescriptor,
@@ -150,7 +152,8 @@ pub use node::{Node, NodeBuilder, RunningNode};
 pub use project_family::{P2pProjectFamily, SelectedWorkloadProject, SingleWorkloadProjectFamily};
 use runtime_support::{
     LagAssessment, assess_head_lag, cached_connected_snapshots, connected_peer_ids,
-    effective_limit_profile, inferred_next_window_id, latest_head_from_snapshot,
+    effective_experiment_lifecycle_plan, effective_limit_profile, experiment_has_lifecycle_plan,
+    inferred_next_window_id, latest_head_from_snapshot,
     latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
     latest_reducer_assignment_from_snapshot, load_head_state, load_known_peers,
     load_latest_merge_certificate, load_primary_slot_assignment, lock_telemetry_state,

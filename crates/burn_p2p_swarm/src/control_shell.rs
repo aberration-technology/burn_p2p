@@ -75,6 +75,14 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Performs the publish lifecycle operation.
+    pub fn publish_lifecycle(&mut self, announcement: ExperimentLifecycleAnnouncement) {
+        match self {
+            Self::Memory(shell) => shell.publish_lifecycle(announcement),
+            Self::Native(shell) => shell.publish_lifecycle(announcement),
+        }
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
         match self {

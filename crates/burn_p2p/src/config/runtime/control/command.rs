@@ -4,6 +4,7 @@ use super::*;
 pub(crate) enum RuntimeCommand {
     SubscribeTopic(OverlayTopic),
     PublishControl(ControlAnnouncement),
+    PublishLifecycle(Box<ExperimentLifecycleAnnouncement>),
     PublishHead(HeadAnnouncement),
     PublishLease(LeaseAnnouncement),
     PublishMerge(MergeAnnouncement),

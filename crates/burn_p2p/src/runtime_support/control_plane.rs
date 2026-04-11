@@ -198,6 +198,19 @@ pub(crate) fn run_control_plane(
                         }
                     }
                 }
+                Ok(RuntimeCommand::PublishLifecycle(announcement)) => {
+                    let local_announcement = (*announcement).clone();
+                    shell.publish_lifecycle(local_announcement.clone());
+                    if let Err(error) = shell.publish_pubsub(
+                        boundary.control_overlay.clone(),
+                        PubsubPayload::Lifecycle(announcement),
+                    ) {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = lock_telemetry_state(&state);
+                    sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
+                }
                 Ok(RuntimeCommand::PublishHead(announcement)) => {
                     let overlay = announcement.overlay.clone();
                     let _ = shell.subscribe_topic(overlay.clone());

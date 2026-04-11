@@ -590,6 +590,33 @@ pub(super) fn control_announcement(
     }
 }
 
+pub(super) fn lifecycle_announcement(
+    plan: burn_p2p_experiment::ExperimentLifecyclePlan,
+) -> crate::ExperimentLifecycleAnnouncement {
+    let envelope = burn_p2p_experiment::ExperimentLifecycleEnvelope {
+        network_id: mainnet().genesis.network_id.clone(),
+        plan,
+    };
+    let certificate = envelope
+        .into_signed_cert(
+            burn_p2p_core::SignatureMetadata {
+                signer: crate::PeerId::new("authority-switch"),
+                key_id: "authority-key".into(),
+                algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                signed_at: Utc::now(),
+                signature_hex: "feedface".into(),
+            },
+            mainnet().genesis.protocol_version.clone(),
+        )
+        .expect("lifecycle certificate");
+
+    crate::ExperimentLifecycleAnnouncement {
+        overlay: mainnet().control_overlay(),
+        certificate,
+        announced_at: Utc::now(),
+    }
+}
+
 pub(super) fn auth_test_admission_policy(
     authority: &crate::NodeCertificateAuthority,
 ) -> crate::AdmissionPolicy {

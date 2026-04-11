@@ -1344,6 +1344,7 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
         snapshot,
         ControlPlaneSnapshot {
             control_announcements: listener.snapshot().control_announcements.clone(),
+            lifecycle_announcements: listener.snapshot().lifecycle_announcements.clone(),
             head_announcements: listener.snapshot().head_announcements.clone(),
             lease_announcements: listener.snapshot().lease_announcements.clone(),
             merge_announcements: listener.snapshot().merge_announcements.clone(),

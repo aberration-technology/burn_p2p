@@ -74,6 +74,16 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to send control announcement: {error}"))
     }
 
+    /// Performs the publish lifecycle operation.
+    pub fn publish_lifecycle(
+        &self,
+        announcement: ExperimentLifecycleAnnouncement,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishLifecycle(Box::new(announcement)))
+            .map_err(|error| anyhow::anyhow!("failed to send lifecycle announcement: {error}"))
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&self, announcement: HeadAnnouncement) -> anyhow::Result<()> {
         self.tx

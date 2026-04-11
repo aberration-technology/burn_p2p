@@ -182,7 +182,10 @@ mod tests {
         ReducerCohortMetrics, ReducerCohortStatus, RevisionId, StudyId, TelemetrySummary,
         ValidatorSetManifest, ValidatorSetMember, WindowActivation, WindowId,
     };
-    use burn_p2p_experiment::{ActivationTarget, ExperimentControlCommand};
+    use burn_p2p_experiment::{
+        ActivationTarget, ExperimentControlCommand, ExperimentLifecyclePhase,
+        ExperimentLifecyclePlan,
+    };
     use burn_p2p_security::{
         MergeEvidenceRequirement, PeerAdmissionReport, PeerTrustLevel, ReleasePolicy,
         ReputationDecision, ReputationEngine, ReputationState, ValidatorPolicy,
@@ -702,6 +705,74 @@ mod tests {
             AdminResult::Control(cert) => {
                 assert_eq!(cert.network_id.as_str(), "mainnet");
                 assert_eq!(cert.activation.activation_window, WindowId(5));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lifecycle_action_issues_signed_lifecycle_certificate() {
+        let plan = plan(BootstrapPreset::AuthorityValidator);
+        let mut state = BootstrapAdminState::default();
+
+        let result = plan
+            .execute_admin_action(
+                AdminAction::Lifecycle(Box::new(ExperimentLifecyclePlan {
+                    study_id: StudyId::new("study"),
+                    experiment_id: ExperimentId::new("exp"),
+                    base_revision_id: Some(RevisionId::new("rev-a")),
+                    target_entry: burn_p2p::ExperimentDirectoryEntry {
+                        network_id: NetworkId::new("mainnet"),
+                        study_id: StudyId::new("study"),
+                        experiment_id: ExperimentId::new("exp"),
+                        workload_id: WorkloadId::new("compiled"),
+                        display_name: "exp rev-b".into(),
+                        model_schema_hash: ContentId::new("schema"),
+                        dataset_view_id: burn_p2p::DatasetViewId::new("view"),
+                        resource_requirements: burn_p2p::ExperimentResourceRequirements {
+                            minimum_roles: BTreeSet::from([burn_p2p_core::PeerRole::TrainerCpu]),
+                            minimum_device_memory_bytes: None,
+                            minimum_system_memory_bytes: None,
+                            estimated_download_bytes: 0,
+                            estimated_window_seconds: 60,
+                        },
+                        visibility: burn_p2p::ExperimentVisibility::Public,
+                        opt_in_policy: burn_p2p::ExperimentOptInPolicy::Open,
+                        current_revision_id: RevisionId::new("rev-b"),
+                        current_head_id: None,
+                        allowed_roles: burn_p2p_core::PeerRoleSet::default_trainer(),
+                        allowed_scopes: BTreeSet::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                    phase: ExperimentLifecyclePhase::Activating,
+                    target: ActivationTarget {
+                        activation: WindowActivation {
+                            activation_window: WindowId(7),
+                            grace_windows: 0,
+                        },
+                        required_client_capabilities: BTreeSet::from(["cuda".into()]),
+                    },
+                    plan_epoch: 3,
+                    reason: Some("roll rev-b".into()),
+                })),
+                &mut state,
+                Some(burn_p2p_core::SignatureMetadata {
+                    signer: PeerId::new("authority"),
+                    key_id: "authority-key".into(),
+                    algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                    signed_at: Utc::now(),
+                    signature_hex: "abcd".into(),
+                }),
+                Utc::now(),
+                None,
+            )
+            .expect("result");
+
+        match result {
+            AdminResult::Lifecycle(cert) => {
+                assert_eq!(cert.network_id.as_str(), "mainnet");
+                assert_eq!(cert.activation.activation_window, WindowId(7));
+                assert_eq!(cert.body.payload.payload.plan.plan_epoch, 3);
             }
             other => panic!("unexpected result: {other:?}"),
         }

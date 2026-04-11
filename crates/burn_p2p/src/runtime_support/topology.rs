@@ -363,6 +363,7 @@ pub(crate) fn cached_connected_snapshots(
                 peer_id.clone(),
                 ControlPlaneSnapshot {
                     control_announcements: aggregate.control_announcements.clone(),
+                    lifecycle_announcements: aggregate.lifecycle_announcements.clone(),
                     head_announcements: aggregate
                         .head_announcements
                         .iter()
@@ -679,6 +680,119 @@ pub(crate) fn update_feature_sketch_from_metrics(
     )
 }
 
+fn lifecycle_announcements_for_experiment<'a>(
+    snapshot: &'a ControlPlaneSnapshot,
+    network_id: &'a NetworkId,
+    study_id: &'a StudyId,
+    experiment_id: &'a ExperimentId,
+) -> impl Iterator<Item = &'a ExperimentLifecycleAnnouncement> + 'a {
+    snapshot
+        .lifecycle_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.certificate.network_id == *network_id
+                && announcement.certificate.body.payload.payload.plan.study_id == *study_id
+                && announcement
+                    .certificate
+                    .body
+                    .payload
+                    .payload
+                    .plan
+                    .experiment_id
+                    == *experiment_id
+        })
+}
+
+fn latest_matching_lifecycle_target_entry(
+    snapshot: &ControlPlaneSnapshot,
+    experiment: &ExperimentHandle,
+) -> Option<ExperimentDirectoryEntry> {
+    lifecycle_announcements_for_experiment(
+        snapshot,
+        &experiment.network_id,
+        &experiment.study_id,
+        &experiment.experiment_id,
+    )
+    .filter(|announcement| {
+        let plan = &announcement.certificate.body.payload.payload.plan;
+        plan.phase.authorizes_switch()
+            && plan.target_entry.current_revision_id == experiment.revision_id
+    })
+    .max_by(|left, right| {
+        left.certificate
+            .activation
+            .activation_window
+            .cmp(&right.certificate.activation.activation_window)
+            .then(
+                left.certificate
+                    .body
+                    .payload
+                    .payload
+                    .plan
+                    .plan_epoch
+                    .cmp(&right.certificate.body.payload.payload.plan.plan_epoch),
+            )
+            .then(left.announced_at.cmp(&right.announced_at))
+    })
+    .map(|announcement| {
+        announcement
+            .certificate
+            .body
+            .payload
+            .payload
+            .plan
+            .target_entry
+            .clone()
+    })
+}
+
+pub(crate) fn experiment_has_lifecycle_plan(
+    snapshot: &ControlPlaneSnapshot,
+    network_id: &NetworkId,
+    study_id: &StudyId,
+    experiment_id: &ExperimentId,
+) -> bool {
+    lifecycle_announcements_for_experiment(snapshot, network_id, study_id, experiment_id)
+        .next()
+        .is_some()
+}
+
+pub(crate) fn effective_experiment_lifecycle_plan(
+    snapshot: &ControlPlaneSnapshot,
+    network_id: &NetworkId,
+    study_id: &StudyId,
+    experiment_id: &ExperimentId,
+    activation_window: WindowId,
+) -> Option<ExperimentLifecyclePlan> {
+    lifecycle_announcements_for_experiment(snapshot, network_id, study_id, experiment_id)
+        .filter(|announcement| {
+            announcement
+                .certificate
+                .body
+                .payload
+                .payload
+                .plan
+                .is_effective_for_window(activation_window)
+        })
+        .max_by(|left, right| {
+            left.certificate
+                .activation
+                .activation_window
+                .cmp(&right.certificate.activation.activation_window)
+                .then(
+                    left.certificate
+                        .body
+                        .payload
+                        .payload
+                        .plan
+                        .plan_epoch
+                        .cmp(&right.certificate.body.payload.payload.plan.plan_epoch),
+                )
+                .then(left.announced_at.cmp(&right.announced_at))
+        })
+        .map(|announcement| announcement.certificate.body.payload.payload.plan.clone())
+}
+
 pub(crate) fn active_experiment_directory_entry(
     config: &NodeConfig,
     snapshot: &NodeTelemetrySnapshot,
@@ -696,6 +810,7 @@ pub(crate) fn active_experiment_directory_entry(
             })
         })
         .cloned()
+        .or_else(|| latest_matching_lifecycle_target_entry(&snapshot.control_plane, experiment))
         .or_else(|| {
             snapshot
                 .control_plane

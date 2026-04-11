@@ -28,7 +28,7 @@ use burn_p2p_core::{
     ReducerLoadReport, ReductionCertificate, TelemetrySummary, UpdateAnnounce,
     ValidationQuorumCertificate,
 };
-use burn_p2p_experiment::ExperimentControlEnvelope;
+use burn_p2p_experiment::{ExperimentControlEnvelope, ExperimentLifecycleEnvelope};
 use chrono::{DateTime, Utc};
 #[cfg(not(target_arch = "wasm32"))]
 use futures::{Stream, StreamExt};

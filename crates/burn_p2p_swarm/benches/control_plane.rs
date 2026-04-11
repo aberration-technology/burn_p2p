@@ -267,6 +267,7 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
     };
     ControlPlaneSnapshot {
         control_announcements: Vec::new(),
+        lifecycle_announcements: Vec::new(),
         head_announcements: (0..4)
             .map(|index| HeadAnnouncement {
                 overlay: topics.heads.clone(),

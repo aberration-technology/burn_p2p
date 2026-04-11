@@ -102,6 +102,11 @@ impl MemoryControlPlaneShell {
         self.snapshot.insert_control_announcement(announcement);
     }
 
+    /// Performs the publish lifecycle operation.
+    pub fn publish_lifecycle(&mut self, announcement: ExperimentLifecycleAnnouncement) {
+        self.snapshot.insert_lifecycle_announcement(announcement);
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
         self.snapshot.insert_head_announcement(announcement);
@@ -640,6 +645,11 @@ impl MemoryControlPlaneShell {
     /// Performs the publish control operation.
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
         self.snapshot.insert_control_announcement(announcement);
+    }
+
+    /// Performs the publish lifecycle operation.
+    pub fn publish_lifecycle(&mut self, announcement: ExperimentLifecycleAnnouncement) {
+        self.snapshot.insert_lifecycle_announcement(announcement);
     }
 
     /// Performs the publish head operation.

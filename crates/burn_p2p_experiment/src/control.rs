@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use burn_p2p_core::{
-    CanonicalSchema, ContentId, ControlCertificate, DatasetViewId, ExperimentId, HeadId,
-    MergePolicy, NetworkId, PeerId, RevisionId, RevocationEpoch, SchemaEnvelope, StudyId,
-    WindowActivation, WindowId,
+    CanonicalSchema, ContentId, ControlCertificate, DatasetViewId, ExperimentDirectoryEntry,
+    ExperimentId, HeadId, MergePolicy, NetworkId, PeerId, RevisionId, RevocationEpoch,
+    SchemaEnvelope, StudyId, WindowActivation, WindowId,
 };
 use chrono::{DateTime, Utc};
 use semver::Version;
@@ -188,6 +188,113 @@ impl ExperimentControlEnvelope {
 
         let body = burn_p2p_core::SignedPayload::new(
             SchemaEnvelope::new("burn_p2p.control", protocol_version, self),
+            signer,
+        )?;
+
+        Ok(ControlCertificate {
+            control_cert_id: body.payload_id.clone().into(),
+            network_id: body.payload.payload.network_id.clone(),
+            activation,
+            required_client_capabilities,
+            body,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the lifecycle phases for an experiment revision rollout.
+pub enum ExperimentLifecyclePhase {
+    /// The lifecycle plan exists but is not yet scheduled for execution.
+    Draft,
+    /// The target revision has been announced to the network.
+    Announced,
+    /// The rollout has been staged for future activation.
+    Staged,
+    /// The network is prewarming artifacts ahead of activation.
+    Prewarming,
+    /// The rollout is ready but not yet active.
+    Ready,
+    /// The rollout is actively switching revisions at the activation window.
+    Activating,
+    /// The target revision is now the active revision.
+    Active,
+    /// The previous revision is draining while the target remains authoritative.
+    Draining,
+    /// The target revision is authoritative but paused.
+    Paused,
+    /// The lifecycle plan rolled traffic back to the target revision.
+    RolledBack,
+    /// The lifecycle plan has been retired from active scheduling.
+    Archived,
+}
+
+impl ExperimentLifecyclePhase {
+    /// Returns whether the phase is authoritative for revision selection.
+    pub fn authorizes_switch(&self) -> bool {
+        matches!(
+            self,
+            Self::Activating
+                | Self::Active
+                | Self::Draining
+                | Self::Paused
+                | Self::RolledBack
+                | Self::Archived
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents an authoritative lifecycle plan for one experiment.
+pub struct ExperimentLifecyclePlan {
+    /// The study ID.
+    pub study_id: StudyId,
+    /// The experiment ID.
+    pub experiment_id: ExperimentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The base revision expected before the plan takes effect.
+    pub base_revision_id: Option<RevisionId>,
+    /// The target directory projection for the rollout.
+    pub target_entry: ExperimentDirectoryEntry,
+    /// The current lifecycle phase.
+    pub phase: ExperimentLifecyclePhase,
+    /// The activation target.
+    pub target: ActivationTarget,
+    #[serde(default)]
+    /// Monotonic operator epoch for competing lifecycle plans.
+    pub plan_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional operator reason for the change-over.
+    pub reason: Option<String>,
+}
+
+impl ExperimentLifecyclePlan {
+    /// Returns whether the plan is effective for the supplied window.
+    pub fn is_effective_for_window(&self, window: WindowId) -> bool {
+        self.phase.authorizes_switch() && self.target.activation.becomes_active_at(window)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Wraps a lifecycle plan with transport metadata.
+pub struct ExperimentLifecycleEnvelope {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The lifecycle plan.
+    pub plan: ExperimentLifecyclePlan,
+}
+
+impl ExperimentLifecycleEnvelope {
+    /// Consumes the value and returns the signed cert.
+    pub fn into_signed_cert(
+        self,
+        signer: burn_p2p_core::SignatureMetadata,
+        protocol_version: Version,
+    ) -> Result<ControlCertificate<ExperimentLifecycleEnvelope>, burn_p2p_core::SchemaError> {
+        let activation = self.plan.target.activation.clone();
+        let required_client_capabilities = self.plan.target.required_client_capabilities.clone();
+
+        let body = burn_p2p_core::SignedPayload::new(
+            SchemaEnvelope::new("burn_p2p.lifecycle", protocol_version, self),
             signer,
         )?;
 

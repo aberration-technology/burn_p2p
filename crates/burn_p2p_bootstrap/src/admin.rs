@@ -10,7 +10,10 @@ use burn_p2p_core::{
     ControlCertificate, PeerId, ReenrollmentStatus, RevocationEpoch, SignatureMetadata,
     TrustBundleExport, TrustedIssuerStatus,
 };
-use burn_p2p_experiment::{ExperimentControlCommand, ExperimentControlEnvelope};
+use burn_p2p_experiment::{
+    ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
+    ExperimentLifecyclePlan,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +35,8 @@ pub struct AuthPolicyRollout {
 pub enum AdminAction {
     /// Uses the control variant.
     Control(ExperimentControlCommand),
+    /// Uses the lifecycle variant.
+    Lifecycle(Box<ExperimentLifecyclePlan>),
     /// Uses the ban peer variant.
     BanPeer {
         /// The peer ID.
@@ -77,7 +82,7 @@ impl AdminAction {
     /// Performs the capability operation.
     pub fn capability(&self) -> AdminCapability {
         match self {
-            Self::Control(_) => AdminCapability::Control,
+            Self::Control(_) | Self::Lifecycle(_) => AdminCapability::Control,
             Self::BanPeer { .. } => AdminCapability::BanPeer,
             Self::ExportDiagnostics => AdminCapability::ExportDiagnostics,
             Self::ExportDiagnosticsBundle => AdminCapability::ExportDiagnosticsBundle,
@@ -98,6 +103,8 @@ impl AdminAction {
 pub enum AdminResult {
     /// Uses the control variant.
     Control(Box<ControlCertificate<ExperimentControlEnvelope>>),
+    /// Uses the lifecycle variant.
+    Lifecycle(Box<ControlCertificate<ExperimentLifecycleEnvelope>>),
     /// Uses the peer banned variant.
     PeerBanned {
         /// The peer ID.
@@ -181,6 +188,23 @@ impl BootstrapPlan {
         .into_signed_cert(signer, self.genesis.protocol_version.clone())?)
     }
 
+    /// Issues the lifecycle certificate.
+    pub fn issue_lifecycle_certificate(
+        &self,
+        plan: ExperimentLifecyclePlan,
+        signer: SignatureMetadata,
+    ) -> Result<ControlCertificate<ExperimentLifecycleEnvelope>, BootstrapError> {
+        if !self.supports_service(&crate::BootstrapService::Authority) {
+            return Err(BootstrapError::AuthorityServiceRequired);
+        }
+
+        Ok(ExperimentLifecycleEnvelope {
+            network_id: self.genesis.network_id.clone(),
+            plan,
+        }
+        .into_signed_cert(signer, self.genesis.protocol_version.clone())?)
+    }
+
     /// Performs the execute admin action operation.
     pub fn execute_admin_action(
         &self,
@@ -200,6 +224,11 @@ impl BootstrapPlan {
                 apply_control_command_to_admin_state(state, &command);
                 let certificate = self.issue_control_certificate(command, signer)?;
                 Ok(AdminResult::Control(Box::new(certificate)))
+            }
+            AdminAction::Lifecycle(plan) => {
+                let signer = signer.ok_or(BootstrapError::MissingSigner)?;
+                let certificate = self.issue_lifecycle_certificate(*plan, signer)?;
+                Ok(AdminResult::Lifecycle(Box::new(certificate)))
             }
             AdminAction::BanPeer { peer_id, reason } => {
                 state.quarantined_peers.insert(peer_id.clone());

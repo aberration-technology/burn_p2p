@@ -12,6 +12,7 @@ pub mod topology;
 
 pub use control::{
     ActivationTarget, ExperimentControlCommand, ExperimentControlEnvelope, ExperimentControlState,
+    ExperimentLifecycleEnvelope, ExperimentLifecyclePhase, ExperimentLifecyclePlan,
     ExperimentSnapshot, PatchPlan, StageError,
 };
 pub use directory::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};

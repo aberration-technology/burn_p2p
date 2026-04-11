@@ -23,6 +23,9 @@ truth. docs here should stay short and code-adjacent.
   to prove protocol safety without leaking lean tooling into the rust runtime
 - [production-roadmap.md](production-roadmap.md): what is already production
   hardened, what only has seams today, and what is still open work
+- [network-administration-roadmap.md](network-administration-roadmap.md):
+  target model for experiment lifecycle, network reuse, control-plane
+  orchestration, and scheduler authority
 - [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
   multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance

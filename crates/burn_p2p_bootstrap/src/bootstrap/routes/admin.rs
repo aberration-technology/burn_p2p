@@ -270,6 +270,14 @@ pub(crate) fn publish_admin_result(
             certificate: certificate.as_ref().clone(),
             announced_at: Utc::now(),
         })?;
+    } else if let (Some(control_handle), burn_p2p_bootstrap::AdminResult::Lifecycle(certificate)) =
+        (control_handle, result)
+    {
+        control_handle.publish_lifecycle(burn_p2p::ExperimentLifecycleAnnouncement {
+            overlay: OverlayTopic::control(plan.network_id().clone()),
+            certificate: certificate.as_ref().clone(),
+            announced_at: Utc::now(),
+        })?;
     }
 
     Ok(())

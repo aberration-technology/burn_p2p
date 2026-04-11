@@ -5,6 +5,8 @@ use serde::de::DeserializeOwned;
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PersistedControlPlaneState {
     pub control_announcements: Vec<ControlAnnouncement>,
+    #[serde(default)]
+    pub lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
     pub lease_announcements: Vec<LeaseAnnouncement>,
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
@@ -20,6 +22,7 @@ impl PersistedControlPlaneState {
         bounded_snapshot.clamp_announcement_histories();
         Self {
             control_announcements: bounded_snapshot.control_announcements,
+            lifecycle_announcements: bounded_snapshot.lifecycle_announcements,
             lease_announcements: bounded_snapshot.lease_announcements,
             auth_announcements: bounded_snapshot.auth_announcements,
             directory_announcements: bounded_snapshot.directory_announcements,
@@ -30,6 +33,7 @@ impl PersistedControlPlaneState {
 
     fn apply_to_snapshot(self, snapshot: &mut ControlPlaneSnapshot) {
         snapshot.control_announcements = self.control_announcements;
+        snapshot.lifecycle_announcements = self.lifecycle_announcements;
         snapshot.lease_announcements = self.lease_announcements;
         snapshot.auth_announcements = self.auth_announcements;
         snapshot.directory_announcements = self.directory_announcements;
@@ -41,6 +45,9 @@ impl PersistedControlPlaneState {
     fn apply_to_shell(self, shell: &mut ControlPlaneShell) {
         for announcement in self.control_announcements {
             shell.publish_control(announcement);
+        }
+        for announcement in self.lifecycle_announcements {
+            shell.publish_lifecycle(announcement);
         }
         for announcement in self.lease_announcements {
             shell.publish_lease(announcement);
@@ -61,6 +68,7 @@ impl PersistedControlPlaneState {
 
     fn is_empty(&self) -> bool {
         self.control_announcements.is_empty()
+            && self.lifecycle_announcements.is_empty()
             && self.lease_announcements.is_empty()
             && self.auth_announcements.is_empty()
             && self.directory_announcements.is_empty()
