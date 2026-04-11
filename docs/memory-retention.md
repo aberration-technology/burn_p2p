@@ -131,10 +131,12 @@ scaling tradeoff:
 - the outbox is still intentionally lossless while receipts remain unsent
 - very large offline backlogs still make snapshot-sized durable state grow
 
-the next clean step is still:
+the next clean step is now narrower than it used to be:
 
-- an indexeddb-backed queue for wasm/browser deployments
-- with `BrowserStorageSnapshot` holding only counters and recent preview ids
+- the wasm/browser runtime already persists both the receipt outbox and the
+  full `BrowserStorageSnapshot` through indexeddb with local-storage fallback
+- the remaining durability work is resumable replay and chunk/artifact sync
+  checkpoints for long-offline browser peers, not basic durable browser storage
 
 ### large operator exports
 
@@ -146,9 +148,13 @@ for internet-scale or long-lived corporate deployments, the better shape is:
 
 - keep peer memory bounded and local
 - keep training-critical state in the p2p runtime
-- move operator history, leaderboard materializations, and long-term metrics into a durable store or external db
+- move operator history, leaderboard materializations, and long-term metrics into
+  a shared external backend
 
-the current file-backed stores are fine as the default reference implementation. a centralized db is the next scaling step for operator surfaces, not for training correctness.
+the repo now supports postgres-backed operator snapshots for shared read state
+across edges. the remaining scaling step is stronger audit/search/replay/export
+semantics on top of that backend, not proving that operator data can only live
+on local files.
 
 ## verification
 
