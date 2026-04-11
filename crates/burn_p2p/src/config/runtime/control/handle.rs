@@ -1,5 +1,5 @@
-use super::*;
 use super::transport::{sidecar_peer_addresses, split_fetch_timeout};
+use super::*;
 
 #[derive(Clone)]
 /// Represents a control handle.
