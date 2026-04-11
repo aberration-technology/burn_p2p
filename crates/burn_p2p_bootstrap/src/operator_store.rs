@@ -1255,6 +1255,89 @@ fn load_postgres_operator_audit_summary(
     })
 }
 
+#[derive(Clone, Debug, Default)]
+struct PostgresOperatorAuditFilters {
+    kind_slug: Option<String>,
+    study_id: Option<String>,
+    experiment_id: Option<String>,
+    revision_id: Option<String>,
+    peer_id: Option<String>,
+    head_id: Option<String>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+    text_pattern: Option<String>,
+}
+
+impl PostgresOperatorAuditFilters {
+    fn from_query(query: &OperatorAuditQuery) -> Self {
+        Self {
+            kind_slug: query.kind.as_ref().map(|kind| kind.as_slug().to_owned()),
+            study_id: query.study_id.as_ref().map(ToString::to_string),
+            experiment_id: query.experiment_id.as_ref().map(ToString::to_string),
+            revision_id: query.revision_id.as_ref().map(ToString::to_string),
+            peer_id: query.peer_id.as_ref().map(ToString::to_string),
+            head_id: query.head_id.as_ref().map(ToString::to_string),
+            since: query.since,
+            until: query.until,
+            text_pattern: query
+                .text
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("%{}%", value.to_ascii_lowercase())),
+        }
+    }
+
+    fn push_sql_filters<'a>(
+        &'a self,
+        params: &mut Vec<&'a (dyn ToSql + Sync)>,
+        clauses: &mut Vec<String>,
+    ) {
+        self.push_string_filter("kind", self.kind_slug.as_ref(), params, clauses);
+        self.push_string_filter("study_id", self.study_id.as_ref(), params, clauses);
+        self.push_string_filter(
+            "experiment_id",
+            self.experiment_id.as_ref(),
+            params,
+            clauses,
+        );
+        self.push_string_filter("revision_id", self.revision_id.as_ref(), params, clauses);
+        self.push_string_filter("peer_id", self.peer_id.as_ref(), params, clauses);
+        self.push_string_filter("head_id", self.head_id.as_ref(), params, clauses);
+
+        if let Some(since) = self.since.as_ref() {
+            params.push(since);
+            clauses.push(format!("captured_at >= ${}", params.len()));
+        }
+        if let Some(until) = self.until.as_ref() {
+            params.push(until);
+            clauses.push(format!("captured_at <= ${}", params.len()));
+        }
+        if let Some(text_pattern) = self.text_pattern.as_ref() {
+            params.push(text_pattern);
+            let record_idx = params.len();
+            params.push(text_pattern);
+            let summary_idx = params.len();
+            clauses.push(format!(
+                "(LOWER(record_id) LIKE ${record_idx} OR LOWER(summary_text) LIKE ${summary_idx})"
+            ));
+        }
+    }
+
+    fn push_string_filter<'a>(
+        &'a self,
+        column: &str,
+        value: Option<&'a String>,
+        params: &mut Vec<&'a (dyn ToSql + Sync)>,
+        clauses: &mut Vec<String>,
+    ) {
+        if let Some(value) = value {
+            params.push(value);
+            clauses.push(format!("{column} = ${}", params.len()));
+        }
+    }
+}
+
 fn load_postgres_operator_facet_counts(
     client: &mut postgres::Client,
     table_name: &str,
@@ -1264,62 +1347,10 @@ fn load_postgres_operator_facet_counts(
     limit: usize,
 ) -> anyhow::Result<Vec<OperatorFacetBucket>> {
     let table_name = ensure_valid_postgres_identifier(table_name)?;
-    let kind_slug = query.kind.as_ref().map(|kind| kind.as_slug());
-    let study_id_filter = query.study_id.as_ref().map(ToString::to_string);
-    let experiment_id_filter = query.experiment_id.as_ref().map(ToString::to_string);
-    let revision_id_filter = query.revision_id.as_ref().map(ToString::to_string);
-    let peer_id_filter = query.peer_id.as_ref().map(ToString::to_string);
-    let head_id_filter = query.head_id.as_ref().map(ToString::to_string);
-    let text_pattern = query
-        .text
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("%{}%", value.to_ascii_lowercase()));
+    let filters = PostgresOperatorAuditFilters::from_query(query);
     let mut params: Vec<&(dyn ToSql + Sync)> = vec![&snapshot_key];
     let mut clauses = vec!["snapshot_key = $1".to_owned()];
-
-    if let Some(kind) = kind_slug.as_ref() {
-        params.push(kind);
-        clauses.push(format!("kind = ${}", params.len()));
-    }
-    if let Some(study_id) = study_id_filter.as_ref() {
-        params.push(study_id);
-        clauses.push(format!("study_id = ${}", params.len()));
-    }
-    if let Some(experiment_id) = experiment_id_filter.as_ref() {
-        params.push(experiment_id);
-        clauses.push(format!("experiment_id = ${}", params.len()));
-    }
-    if let Some(revision_id) = revision_id_filter.as_ref() {
-        params.push(revision_id);
-        clauses.push(format!("revision_id = ${}", params.len()));
-    }
-    if let Some(peer_id) = peer_id_filter.as_ref() {
-        params.push(peer_id);
-        clauses.push(format!("peer_id = ${}", params.len()));
-    }
-    if let Some(head_id) = head_id_filter.as_ref() {
-        params.push(head_id);
-        clauses.push(format!("head_id = ${}", params.len()));
-    }
-    if let Some(since) = query.since.as_ref() {
-        params.push(since);
-        clauses.push(format!("captured_at >= ${}", params.len()));
-    }
-    if let Some(until) = query.until.as_ref() {
-        params.push(until);
-        clauses.push(format!("captured_at <= ${}", params.len()));
-    }
-    if let Some(text) = text_pattern.as_ref() {
-        params.push(text);
-        let record_idx = params.len();
-        params.push(text);
-        let summary_idx = params.len();
-        clauses.push(format!(
-            "(LOWER(record_id) LIKE ${record_idx} OR LOWER(summary_text) LIKE ${summary_idx})"
-        ));
-    }
+    filters.push_sql_filters(&mut params, &mut clauses);
 
     let normalized_limit = i64::try_from(normalize_operator_facet_limit(limit)).unwrap_or(i64::MAX);
     params.push(&normalized_limit);
