@@ -43,10 +43,12 @@ PR CI stays lean:
 Integration CI adds broader product-shape coverage:
 
 - mixed native/browser E2E
-- downstream mnist sanity with browser runtime drills, browser captures,
-  Playwright, live browser burn/webgpu execution, latency-shaped shard fetch,
-  reconnect recovery, lease-scoped http shard checks, and adversarial annex
-  checks
+- downstream mnist core integration with browser runtime drills, browser
+  captures, Playwright, live browser burn/webgpu execution, lease-scoped shard
+  checks, and adversarial annex checks
+- the hosted `ci-integration` mnist lane is intentionally bounded: it keeps the
+  baseline/low-lr promotion path, but skips the restart and late-joiner
+  resilience drills that are too flaky on `ubuntu-latest`
 - bounded multiprocess stress
 
 Nightly absorbs heavier work:
@@ -63,3 +65,10 @@ Nightly absorbs heavier work:
   `cargo xtask check auth-redis-live`
 - env-gated live oidc validation through `cargo xtask check auth-oidc-live`
 - benches
+
+MNIST note:
+
+- `cargo xtask e2e mnist --profile ci-integration` on hosted GitHub Actions is
+  the bounded core path
+- full MNIST restart and late-joiner resilience drills remain available via the
+  example and xtask outside that bounded hosted path

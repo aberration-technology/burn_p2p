@@ -98,6 +98,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         per_experiment: performance_by_experiment,
     };
     let resilience = ResilienceDrillSummary {
+        executed: run.resilience_drills_executed,
         restarted_trainer_label: run.restarted_trainer_label.clone(),
         trainer_restart_reconnected: run.trainer_restart_reconnected,
         trainer_restart_resumed_training: run.trainer_restart_resumed_training,
@@ -131,6 +132,9 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
                 notes.push("the browser probe consumes a lease-scoped peer bundle materialized from a p2p-synced artifact instead of fetching dataset bytes back through the edge route".into());
             } else {
                 notes.push("the browser edge now serves a lease-scoped browser data bundle that was first synced over the peer artifact transport from a live native peer".into());
+            }
+            if !run.resilience_drills_executed {
+                notes.push("the hosted bounded CI path skips the restart and late-joiner resilience drills; run the full mnist profile locally or on a heavier runner to exercise those flows".into());
             }
             notes
         },

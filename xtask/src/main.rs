@@ -1179,22 +1179,26 @@ fn wait_for_path_from_step(
 }
 
 fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
+    const BOUNDED_CI_MNIST_ENV: &str = "BURN_P2P_BOUNDED_CI_MNIST";
+
     let artifacts = ArtifactLayout::create(&workspace.root, "e2e-mnist", args.profile)?;
     let envs = BTreeMap::new();
     let demo_root = artifacts.root.join("mnist-demo");
     let trainer_windows = args.profile.settings().trainer_windows.max(1);
     let github_actions = env::var_os("GITHUB_ACTIONS").is_some();
-    let baseline_rounds = if github_actions {
+    let bounded_hosted_ci_mnist = github_actions && args.profile == Profile::CiIntegration;
+    let resilience_drills_expected = !bounded_hosted_ci_mnist;
+    let baseline_rounds = if bounded_hosted_ci_mnist {
         trainer_windows.min(1)
     } else {
         trainer_windows
     };
-    let low_lr_rounds = if github_actions {
+    let low_lr_rounds = if bounded_hosted_ci_mnist {
         trainer_windows.min(1)
     } else {
         trainer_windows
     };
-    let resilience_rounds = if github_actions { 0 } else { 1 };
+    let resilience_rounds = if resilience_drills_expected { 1 } else { 0 };
     let total_training_rounds = u64::from(baseline_rounds)
         .saturating_add(u64::from(low_lr_rounds))
         .saturating_add(resilience_rounds);
@@ -1343,6 +1347,10 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         low_lr_rounds.to_string(),
         "--live-browser-probe".to_owned(),
     ];
+    let mut demo_envs = envs.clone();
+    if bounded_hosted_ci_mnist {
+        demo_envs.insert(BOUNDED_CI_MNIST_ENV.into(), "1".into());
+    }
     let mut demo_process = Some(
         workspace.spawn(
             &artifacts,
@@ -1351,7 +1359,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("mnist demo binary path was not valid utf-8"))?,
             &demo_args,
-            &envs,
+            &demo_envs,
         )?,
     );
     let browser_probe_summary = {
@@ -1627,13 +1635,28 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             == Some(true),
         "mnist demo did not show baseline experiment outperforming low-lr variant",
     );
-    if !github_actions {
+    if resilience_drills_expected {
         ensure!(
             correctness
                 .get("late_joiner_synced_checkpoint")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true),
             "mnist demo late joiner did not sync the accepted checkpoint",
+        );
+        ensure!(
+            correctness
+                .pointer("/resilience/executed")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+            "mnist demo resilience drills were expected but not recorded as executed",
+        );
+    } else {
+        ensure!(
+            correctness
+                .pointer("/resilience/executed")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false),
+            "mnist demo bounded hosted CI run unexpectedly recorded resilience drills",
         );
     }
     ensure!(
@@ -1769,7 +1792,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             == Some(true),
         "mnist demo did not prove the split seed/reducer/validator topology",
     );
-    if !github_actions {
+    if resilience_drills_expected {
         ensure!(
             correctness
                 .pointer("/resilience/trainer_restart_reconnected")

@@ -8,7 +8,7 @@ It is not a synthetic toy workload. It uses:
 - real shard files plus a fetch manifest
 - real trainer lease assignment
 - real validator promotion
-- real reconnect / restart handling
+- real reconnect / restart handling in the full mnist path
 - real metrics indexing
 - real browser runtime role exercises
 - real browser portal snapshots
@@ -25,9 +25,9 @@ Purpose:
 - prove browser-facing runtime and portal surfaces against a real run
 - prove live browser burn/webgpu execution against the same prepared mnist shards
 - prove artifact sync, checkpoint sync, and shard assignment
-- prove browser shard access stays lease-scoped and http-backed
+- prove browser shard access stays lease-scoped and transport-aware
 - prove browser dataset latency and bandwidth shaping change end-to-end timing
-- prove restart recovery in the core run
+- prove restart recovery in the full mnist path
 - prove bounded-adversary behavior in the correctness harness
 - give downstream users one complete example crate to copy
 
@@ -126,7 +126,8 @@ Browser data transport in the demo is intentionally not p2p shard gossip:
 - browser-style shard access reads `fetch-manifest.json` from the dataset origin
 - browser-style shard access fetches only the assigned shard locators for the
   active lease
-- mnist shard bytes are served from the prepared dataset root over http
+- mnist shard bytes remain lease-scoped; the browser may consume an edge-served
+  bundle or a signed peer bundle materialized from a p2p-synced artifact
 - shard payloads are not broadcast over the peer overlay
 - native dataset preparation uses Burn's mnist dataset helpers on the host side
 - the browser wasm probe does not depend on `burn/vision`; it reads the
@@ -206,12 +207,13 @@ The xtask lane runs the example, keeps the native mnist fleet alive, then:
 Checks and exported signals covered by `summary.json`, `correctness.json`, and
 the top-level xtask artifact summary:
 
+- hosted `ci-integration` on GitHub Actions runs the bounded core path
+- local runs and heavier runners keep the full resilience drills
 - `baseline_outperformed_low_lr`
-- `late_joiner_synced_checkpoint`
 - `shard_assignments_are_distinct`
 - `browser_dataset_access.fetch_manifest_requested`
 - `browser_dataset_access.fetched_only_leased_shards`
-- `browser_dataset_access.shards_distributed_over_p2p == false`
+- `browser_dataset_access.shards_distributed_over_p2p == true`
 - `browser_wasm_probe.browser_execution.live_browser_training`
 - `browser_wasm_probe.browser_execution.browser_latency_emulated`
 - `browser_wasm_probe.browser_execution.slower_profile_increased_total_time`
@@ -222,8 +224,10 @@ the top-level xtask artifact summary:
 - `correctness.browser_execution.same_head_context`
 - `correctness.browser_execution.same_lease_context`
 - `correctness.browser_execution.same_leased_microshards`
-- `resilience.trainer_restart_reconnected`
-- `resilience.trainer_restart_resumed_training`
+- `resilience.executed`
+- `late_joiner_synced_checkpoint` when `resilience.executed == true`
+- `resilience.trainer_restart_reconnected` when `resilience.executed == true`
+- `resilience.trainer_restart_resumed_training` when `resilience.executed == true`
 - `correctness.adversarial.reports[*].malicious_update_acceptance_rate == 0.0`
 - `assessment.browser_runtime_roles_exercised`
 - per-experiment initial and final accuracy

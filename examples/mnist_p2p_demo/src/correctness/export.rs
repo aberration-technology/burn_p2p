@@ -110,6 +110,7 @@ pub struct BrowserDatasetAccessSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResilienceDrillSummary {
+    pub executed: bool,
     pub restarted_trainer_label: String,
     pub trainer_restart_reconnected: bool,
     pub trainer_restart_resumed_training: bool,

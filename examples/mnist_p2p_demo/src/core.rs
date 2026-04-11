@@ -73,6 +73,7 @@ const FOLLOWER_HEAD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEMO_VALIDATION_ROUND_TIMEOUT: Duration = Duration::from_secs(45);
 const RESTART_CANDIDATE_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(90);
+const BOUNDED_CI_MNIST_ENV: &str = "BURN_P2P_BOUNDED_CI_MNIST";
 
 pub(crate) struct CoreNodeRecord {
     pub label: String,
@@ -104,6 +105,7 @@ pub(crate) struct CoreMnistRun {
     pub validator_labels: Vec<String>,
     pub final_snapshots: BTreeMap<String, burn_p2p::NodeTelemetrySnapshot>,
     pub restarted_trainer_label: String,
+    pub resilience_drills_executed: bool,
     pub trainer_restart_reconnected: bool,
     pub trainer_restart_resumed_training: bool,
     pub late_joiner_synced_checkpoint: bool,
@@ -611,8 +613,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let trainer_restart_reconnected;
     let trainer_restart_resumed_training;
     let late_joiner_synced_checkpoint;
+    let resilience_drills_executed;
     let late_joiner;
     if resilience_drills_required {
+        resilience_drills_executed = true;
         write_demo_phase(&output, "restart-trainer-shutdown-start")?;
         shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
         write_demo_phase(&output, "restart-trainer-shutdown-complete")?;
@@ -764,6 +768,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         write_demo_phase(&output, "late-joiner-synced")?;
         late_joiner = Some(late_joiner_node);
     } else {
+        resilience_drills_executed = false;
         trainer_restart_reconnected = false;
         trainer_restart_resumed_training = false;
         late_joiner_synced_checkpoint = false;
@@ -1111,6 +1116,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         validator_labels: vec![VALIDATOR_LABEL.into(), VALIDATOR_B_LABEL.into()],
         final_snapshots,
         restarted_trainer_label,
+        resilience_drills_executed,
         trainer_restart_reconnected,
         trainer_restart_resumed_training,
         late_joiner_synced_checkpoint,
@@ -1482,8 +1488,16 @@ fn push_unique_peer_id(provider_peer_ids: &mut Vec<PeerId>, peer_id: PeerId) {
     }
 }
 
+fn hosted_ci_mode() -> bool {
+    std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some()
+}
+
+fn bounded_ci_mnist_mode() -> bool {
+    std::env::var_os(BOUNDED_CI_MNIST_ENV).is_some()
+}
+
 fn demo_artifact_sync_attempt_timeout() -> Duration {
-    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+    if hosted_ci_mode() {
         Duration::from_secs(20)
     } else {
         Duration::from_secs(5)
@@ -1491,7 +1505,7 @@ fn demo_artifact_sync_attempt_timeout() -> Duration {
 }
 
 fn demo_provider_artifact_timeout() -> Duration {
-    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+    if hosted_ci_mode() {
         Duration::from_secs(45)
     } else {
         Duration::from_secs(20)
@@ -1499,7 +1513,7 @@ fn demo_provider_artifact_timeout() -> Duration {
 }
 
 fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
-    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+    if hosted_ci_mode() {
         timeout.max(Duration::from_secs(90))
     } else {
         timeout
@@ -1507,7 +1521,7 @@ fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
 }
 
 fn demo_validation_round_timeout() -> Duration {
-    if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+    if hosted_ci_mode() {
         Duration::from_secs(75)
     } else {
         DEMO_VALIDATION_ROUND_TIMEOUT
@@ -1515,11 +1529,11 @@ fn demo_validation_round_timeout() -> Duration {
 }
 
 fn require_viewer_topology_convergence() -> bool {
-    std::env::var_os("CI").is_none() && std::env::var_os("GITHUB_ACTIONS").is_none()
+    !bounded_ci_mnist_mode()
 }
 
 fn require_resilience_drills() -> bool {
-    std::env::var_os("CI").is_none() && std::env::var_os("GITHUB_ACTIONS").is_none()
+    !bounded_ci_mnist_mode()
 }
 
 fn push_provider_list(target: &mut Vec<PeerId>, source: &[PeerId]) {
