@@ -9,7 +9,7 @@ use burn_p2p::FsArtifactStore;
 use burn_p2p::{ContributionReceipt, HeadDescriptor, MetricsRetentionBudget, StorageConfig};
 use burn_p2p_core::{
     BrowserLeaderboardSnapshot, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page,
-    PageRequest, PeerId, PrincipalId, PublicationTarget,
+    PageRequest, PeerId, PeerWindowMetrics, PrincipalId, PublicationTarget, ReducerCohortMetrics,
 };
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_publish::PublicationStore;
@@ -63,10 +63,13 @@ pub(crate) struct FileOperatorStoreConfig {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct FileOperatorStorePreview {
     pub(crate) receipts: Vec<ContributionReceipt>,
     pub(crate) heads: Vec<HeadDescriptor>,
     pub(crate) merges: Vec<MergeCertificate>,
+    pub(crate) peer_window_metrics: Vec<PeerWindowMetrics>,
+    pub(crate) reducer_cohort_metrics: Vec<ReducerCohortMetrics>,
     pub(crate) head_eval_reports: Vec<HeadEvalReport>,
     pub(crate) eval_protocol_manifests: Vec<StoredEvalProtocolManifestRecord>,
 }
@@ -99,6 +102,10 @@ pub(crate) struct FileOperatorStore {
     receipt_preview: Vec<ContributionReceipt>,
     head_preview: Vec<HeadDescriptor>,
     merge_preview: Vec<MergeCertificate>,
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    peer_window_preview: Vec<PeerWindowMetrics>,
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    reducer_cohort_preview: Vec<ReducerCohortMetrics>,
     head_eval_preview: Vec<HeadEvalReport>,
     #[cfg_attr(not(feature = "artifact-publish"), allow(dead_code))]
     eval_protocol_preview: Vec<StoredEvalProtocolManifestRecord>,
@@ -117,6 +124,8 @@ impl FileOperatorStore {
             receipt_preview: preview.receipts,
             head_preview: preview.heads,
             merge_preview: preview.merges,
+            peer_window_preview: preview.peer_window_metrics,
+            reducer_cohort_preview: preview.reducer_cohort_metrics,
             head_eval_preview: preview.head_eval_reports,
             eval_protocol_preview: preview.eval_protocol_manifests,
         }
@@ -182,6 +191,80 @@ impl FileOperatorStore {
             .map(|storage| history::load_all_head_eval_reports(&storage))
             .transpose()
             .map(|loaded| loaded.unwrap_or_else(|| self.head_eval_preview.clone()))
+    }
+
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    pub(crate) fn all_peer_window_metrics(&self) -> anyhow::Result<Vec<PeerWindowMetrics>> {
+        if let Some(preview) = self.remote_preview()? {
+            let mut metrics = preview.peer_window_metrics;
+            metrics.sort_by_key(|metrics| metrics.window_finished_at);
+            return Ok(metrics);
+        }
+
+        #[cfg(feature = "metrics-indexer")]
+        if let Some(root) = self.metrics_store_root.as_ref() {
+            let store = burn_p2p_metrics::MetricsStore::open(
+                root,
+                crate::metrics::metrics_indexer_config_for_budget(self.metrics_retention),
+            )
+            .map_err(anyhow::Error::from)?;
+            let mut metrics = store
+                .load_entries()
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    burn_p2p_metrics::MetricEnvelope::PeerWindow(metrics) => Some(metrics),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            metrics.sort_by_key(|metrics| metrics.window_finished_at);
+            return Ok(metrics);
+        }
+
+        self.storage_config()
+            .map(|storage| history::load_peer_window_metrics(&storage))
+            .transpose()
+            .map(|loaded| {
+                let mut metrics = loaded.unwrap_or_else(|| self.peer_window_preview.clone());
+                metrics.sort_by_key(|metrics| metrics.window_finished_at);
+                metrics
+            })
+    }
+
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    pub(crate) fn all_reducer_cohort_metrics(&self) -> anyhow::Result<Vec<ReducerCohortMetrics>> {
+        if let Some(preview) = self.remote_preview()? {
+            let mut metrics = preview.reducer_cohort_metrics;
+            metrics.sort_by_key(|metrics| metrics.captured_at);
+            return Ok(metrics);
+        }
+
+        #[cfg(feature = "metrics-indexer")]
+        if let Some(root) = self.metrics_store_root.as_ref() {
+            let store = burn_p2p_metrics::MetricsStore::open(
+                root,
+                crate::metrics::metrics_indexer_config_for_budget(self.metrics_retention),
+            )
+            .map_err(anyhow::Error::from)?;
+            let mut metrics = store
+                .load_entries()
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    burn_p2p_metrics::MetricEnvelope::ReducerCohort(metrics) => Some(metrics),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            metrics.sort_by_key(|metrics| metrics.captured_at);
+            return Ok(metrics);
+        }
+
+        self.storage_config()
+            .map(|storage| history::load_reducer_cohort_metrics(&storage))
+            .transpose()
+            .map(|loaded| {
+                let mut metrics = loaded.unwrap_or_else(|| self.reducer_cohort_preview.clone());
+                metrics.sort_by_key(|metrics| metrics.captured_at);
+                metrics
+            })
     }
 }
 
@@ -411,7 +494,7 @@ mod tests {
 
     use super::*;
     use crate::state::HeadQuery;
-    use burn_p2p::{HeadDescriptor, MetricValue};
+    use burn_p2p::{HeadDescriptor, MetricValue, PeerRole, PeerWindowStatus};
     use burn_p2p_core::{
         ArtifactId, ContentId, DatasetViewId, ExperimentId, HeadEvalStatus, MetricTrustClass,
         NetworkId, RevisionId, StudyId, WorkloadId,
@@ -508,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn redis_operator_snapshot_shares_heads_and_head_eval_reports_across_edges() {
+    fn redis_operator_snapshot_shares_heads_metrics_and_head_eval_reports_across_edges() {
         let Some(redis) = RedisTestServer::spawn() else {
             eprintln!(
                 "skipping redis-backed operator-store test because redis-server is unavailable"
@@ -546,8 +629,68 @@ mod tests {
             status: HeadEvalStatus::Completed,
             signature_bundle: Vec::new(),
         };
+        let peer_window_metrics = PeerWindowMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: head.experiment_id.clone(),
+            revision_id: head.revision_id.clone(),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            peer_id: PeerId::new("trainer-a"),
+            principal_id: None,
+            lease_id: burn_p2p::LeaseId::new("lease-a"),
+            base_head_id: burn_p2p_core::HeadId::new("base"),
+            window_started_at: now - chrono::Duration::seconds(5),
+            window_finished_at: now - chrono::Duration::seconds(1),
+            attempted_tokens_or_samples: 128,
+            accepted_tokens_or_samples: Some(128),
+            local_train_loss_mean: Some(0.25),
+            local_train_loss_last: Some(0.2),
+            grad_or_delta_norm: Some(0.9),
+            optimizer_step_count: 8,
+            compute_time_ms: 1_200,
+            data_fetch_time_ms: 200,
+            publish_latency_ms: 80,
+            head_lag_at_start: 0,
+            head_lag_at_finish: 1,
+            backend_class: burn_p2p_core::BackendClass::Ndarray,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        };
+        let reducer_cohort_metrics = ReducerCohortMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: head.experiment_id.clone(),
+            revision_id: head.revision_id.clone(),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            merge_window_id: ContentId::new("merge-window-a"),
+            reducer_group_id: ContentId::new("reducers-a"),
+            captured_at: now,
+            base_head_id: burn_p2p_core::HeadId::new("base"),
+            candidate_head_id: Some(head.head_id.clone()),
+            received_updates: 2,
+            accepted_updates: 2,
+            rejected_updates: 0,
+            sum_weight: 2.0,
+            accepted_tokens_or_samples: 128,
+            staleness_mean: 0.1,
+            staleness_max: 0.5,
+            window_close_delay_ms: 40,
+            cohort_duration_ms: 500,
+            aggregate_norm: 0.7,
+            reducer_load: 0.25,
+            ingress_bytes: 1024,
+            egress_bytes: 512,
+            replica_agreement: Some(1.0),
+            late_arrival_count: Some(0),
+            missing_peer_count: Some(0),
+            rejection_reasons: BTreeMap::new(),
+            status: burn_p2p_core::ReducerCohortStatus::Closed,
+        };
         let preview = FileOperatorStorePreview {
             heads: vec![head.clone()],
+            peer_window_metrics: vec![peer_window_metrics.clone()],
+            reducer_cohort_metrics: vec![reducer_cohort_metrics.clone()],
             head_eval_reports: vec![report.clone()],
             ..FileOperatorStorePreview::default()
         };
@@ -586,6 +729,138 @@ mod tests {
                 .head_eval_reports(&head.head_id)
                 .expect("load head eval reports from redis snapshot"),
             vec![report]
+        );
+        assert_eq!(
+            reader
+                .all_peer_window_metrics()
+                .expect("load peer window metrics from redis snapshot"),
+            vec![peer_window_metrics]
+        );
+        assert_eq!(
+            reader
+                .all_reducer_cohort_metrics()
+                .expect("load reducer cohort metrics from redis snapshot"),
+            vec![reducer_cohort_metrics]
+        );
+    }
+
+    #[cfg(feature = "metrics-indexer")]
+    #[test]
+    fn redis_operator_snapshot_drives_metrics_exports_across_edges() {
+        let Some(redis) = RedisTestServer::spawn() else {
+            eprintln!(
+                "skipping redis-backed metrics export test because redis-server is unavailable"
+            );
+            return;
+        };
+
+        let now = Utc::now();
+        let backend = OperatorStateBackendConfig::Redis {
+            url: redis.url.clone(),
+            snapshot_key: "burn-p2p:test:operator-state:metrics-snapshot".into(),
+        };
+        let peer_window_metrics = PeerWindowMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            peer_id: PeerId::new("trainer-a"),
+            principal_id: None,
+            lease_id: burn_p2p::LeaseId::new("lease-a"),
+            base_head_id: burn_p2p_core::HeadId::new("base"),
+            window_started_at: now - chrono::Duration::seconds(5),
+            window_finished_at: now - chrono::Duration::seconds(1),
+            attempted_tokens_or_samples: 128,
+            accepted_tokens_or_samples: Some(128),
+            local_train_loss_mean: Some(0.25),
+            local_train_loss_last: Some(0.2),
+            grad_or_delta_norm: Some(0.9),
+            optimizer_step_count: 8,
+            compute_time_ms: 1_200,
+            data_fetch_time_ms: 200,
+            publish_latency_ms: 80,
+            head_lag_at_start: 0,
+            head_lag_at_finish: 1,
+            backend_class: burn_p2p_core::BackendClass::Ndarray,
+            role: PeerRole::TrainerCpu,
+            status: PeerWindowStatus::Completed,
+            status_reason: None,
+        };
+        let reducer_cohort_metrics = ReducerCohortMetrics {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            workload_id: WorkloadId::new("workload"),
+            dataset_view_id: DatasetViewId::new("validation"),
+            merge_window_id: ContentId::new("merge-window-a"),
+            reducer_group_id: ContentId::new("reducers-a"),
+            captured_at: now,
+            base_head_id: burn_p2p_core::HeadId::new("base"),
+            candidate_head_id: Some(burn_p2p_core::HeadId::new("candidate")),
+            received_updates: 2,
+            accepted_updates: 2,
+            rejected_updates: 0,
+            sum_weight: 2.0,
+            accepted_tokens_or_samples: 128,
+            staleness_mean: 0.1,
+            staleness_max: 0.5,
+            window_close_delay_ms: 40,
+            cohort_duration_ms: 500,
+            aggregate_norm: 0.7,
+            reducer_load: 0.25,
+            ingress_bytes: 1024,
+            egress_bytes: 512,
+            replica_agreement: Some(1.0),
+            late_arrival_count: Some(0),
+            missing_peer_count: Some(0),
+            rejection_reasons: BTreeMap::new(),
+            status: burn_p2p_core::ReducerCohortStatus::Closed,
+        };
+        let report = HeadEvalReport {
+            network_id: NetworkId::new("mainnet"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            workload_id: WorkloadId::new("workload"),
+            head_id: burn_p2p_core::HeadId::new("candidate"),
+            base_head_id: Some(burn_p2p_core::HeadId::new("base")),
+            eval_protocol_id: ContentId::new("protocol"),
+            evaluator_set_id: ContentId::new("validators"),
+            metric_values: BTreeMap::from([("accuracy".into(), MetricValue::Float(0.91))]),
+            sample_count: 128,
+            dataset_view_id: DatasetViewId::new("validation"),
+            started_at: now - chrono::Duration::seconds(2),
+            finished_at: now - chrono::Duration::seconds(1),
+            trust_class: MetricTrustClass::Canonical,
+            status: HeadEvalStatus::Completed,
+            signature_bundle: Vec::new(),
+        };
+
+        persist_operator_state_snapshot(
+            Some(&backend),
+            &FileOperatorStorePreview {
+                peer_window_metrics: vec![peer_window_metrics.clone()],
+                reducer_cohort_metrics: vec![reducer_cohort_metrics.clone()],
+                head_eval_reports: vec![report],
+                ..FileOperatorStorePreview::default()
+            },
+        )
+        .expect("persist redis-backed operator metrics snapshot");
+
+        let state = crate::BootstrapAdminState {
+            operator_state_backend: Some(backend),
+            metrics_retention: MetricsRetentionBudget::default(),
+            ..crate::BootstrapAdminState::default()
+        };
+
+        let snapshots = state
+            .export_metrics_snapshots()
+            .expect("export metrics snapshots from redis-backed state");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].peer_window_metrics, vec![peer_window_metrics]);
+        assert_eq!(
+            snapshots[0].reducer_cohort_metrics,
+            vec![reducer_cohort_metrics]
         );
     }
 }

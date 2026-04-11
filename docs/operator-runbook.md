@@ -27,7 +27,8 @@ state into redis by setting:
 - optional `BURN_P2P_OPERATOR_STATE_KEY_PREFIX`
 
 that mirror is intentionally a read-coherence aid for heads, receipts, merges,
-and head-eval reports. it is not yet the final audited operator backend.
+peer-window metrics, reducer-cohort metrics, and head-eval reports. it is not
+yet the final audited operator backend.
 
 profiles:
 

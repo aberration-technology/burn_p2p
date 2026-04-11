@@ -42,49 +42,58 @@ fn reducer_cohort_is_disagreement(metrics: &ReducerCohortMetrics) -> bool {
 impl BootstrapAdminState {
     /// Exports grouped metrics snapshots across all loaded experiment revisions.
     pub fn export_metrics_snapshots(&self) -> anyhow::Result<Vec<MetricsSnapshot>> {
+        let peer_window_metrics = self.resolved_peer_window_metrics();
+        let reducer_cohort_metrics = self.resolved_reducer_cohort_metrics();
+        let head_eval_reports = self.resolved_head_eval_reports();
         if let Some(store) = self.metrics_store()? {
             let snapshots = store.load_snapshots()?;
-            if !snapshots.is_empty() || self.metric_envelopes().is_empty() {
+            if !snapshots.is_empty()
+                || Self::metric_envelopes(
+                    &peer_window_metrics,
+                    &reducer_cohort_metrics,
+                    &head_eval_reports,
+                )
+                .is_empty()
+            {
                 return Ok(snapshots);
             }
         }
-        self.metrics_indexers()?
-            .into_iter()
-            .map(|((experiment_id, revision_id), indexer)| {
-                let snapshot_seq = self
-                    .peer_window_metrics
+        self.metrics_indexers(
+            &peer_window_metrics,
+            &reducer_cohort_metrics,
+            &head_eval_reports,
+        )?
+        .into_iter()
+        .map(|((experiment_id, revision_id), indexer)| {
+            let snapshot_seq = peer_window_metrics
+                .iter()
+                .filter(|metrics| {
+                    metrics.experiment_id == experiment_id && metrics.revision_id == revision_id
+                })
+                .count()
+                + reducer_cohort_metrics
                     .iter()
                     .filter(|metrics| {
                         metrics.experiment_id == experiment_id && metrics.revision_id == revision_id
                     })
                     .count()
-                    + self
-                        .reducer_cohort_metrics
-                        .iter()
-                        .filter(|metrics| {
-                            metrics.experiment_id == experiment_id
-                                && metrics.revision_id == revision_id
-                        })
-                        .count()
-                    + self
-                        .head_eval_reports
-                        .iter()
-                        .filter(|report| {
-                            report.experiment_id == experiment_id
-                                && report.revision_id == revision_id
-                        })
-                        .count();
-                indexer
-                    .export_snapshot(
-                        &experiment_id,
-                        &revision_id,
-                        snapshot_seq as u64,
-                        None,
-                        Vec::new(),
-                    )
-                    .map_err(anyhow::Error::from)
-            })
-            .collect()
+                + head_eval_reports
+                    .iter()
+                    .filter(|report| {
+                        report.experiment_id == experiment_id && report.revision_id == revision_id
+                    })
+                    .count();
+            indexer
+                .export_snapshot(
+                    &experiment_id,
+                    &revision_id,
+                    snapshot_seq as u64,
+                    None,
+                    Vec::new(),
+                )
+                .map_err(anyhow::Error::from)
+        })
+        .collect()
     }
 
     /// Exports grouped metrics snapshots for one experiment.
@@ -94,7 +103,7 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<MetricsSnapshot>> {
         if let Some(store) = self.metrics_store()? {
             let snapshots = store.load_snapshots_for_experiment(experiment_id)?;
-            if !snapshots.is_empty() || self.metric_envelopes().is_empty() {
+            if !snapshots.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(snapshots);
             }
         }
@@ -111,12 +120,12 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<burn_p2p_core::MetricsLedgerSegment>> {
         if let Some(store) = self.metrics_store()? {
             let segments = store.load_ledger_segments()?;
-            if !segments.is_empty() || self.metric_envelopes().is_empty() {
+            if !segments.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(segments);
             }
         }
         let mut segments = Vec::new();
-        for ((experiment_id, revision_id), indexer) in self.metrics_indexers()? {
+        for ((experiment_id, revision_id), indexer) in self.resolved_metrics_indexers()? {
             segments.extend(indexer.export_ledger_segments(&experiment_id, &revision_id)?);
         }
         Ok(segments)
@@ -126,7 +135,7 @@ impl BootstrapAdminState {
     pub fn export_metrics_catchup_bundles(&self) -> anyhow::Result<Vec<MetricsCatchupBundle>> {
         if let Some(store) = self.metrics_store()? {
             let bundles = store.load_catchup_bundles()?;
-            if !bundles.is_empty() || self.metric_envelopes().is_empty() {
+            if !bundles.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(bundles);
             }
         }
@@ -143,7 +152,7 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<MetricsCatchupBundle>> {
         if let Some(store) = self.metrics_store()? {
             let bundles = store.load_catchup_bundles_for_experiment(experiment_id)?;
-            if !bundles.is_empty() || self.metric_envelopes().is_empty() {
+            if !bundles.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(bundles);
             }
         }
@@ -160,7 +169,7 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<PeerWindowDistributionSummary>> {
         if let Some(store) = self.metrics_store()? {
             let summaries = store.load_peer_window_distributions()?;
-            if !summaries.is_empty() || self.metric_envelopes().is_empty() {
+            if !summaries.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(summaries);
             }
         }
@@ -198,12 +207,12 @@ impl BootstrapAdminState {
                 revision_id,
                 base_head_id,
             )?;
-            if detail.is_some() || self.metric_envelopes().is_empty() {
+            if detail.is_some() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(detail);
             }
         }
         Ok(derive_peer_window_distribution_detail_with_limit(
-            &self.peer_window_metrics,
+            &self.resolved_peer_window_metrics(),
             experiment_id,
             revision_id,
             base_head_id,
@@ -217,7 +226,7 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<CanonicalHeadAdoptionCurve>> {
         if let Some(store) = self.metrics_store()? {
             let curves = store.load_head_adoption_curves()?;
-            if !curves.is_empty() || self.metric_envelopes().is_empty() {
+            if !curves.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(curves);
             }
         }
@@ -253,7 +262,7 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Vec<VisibleHeadPopulationHistogram>> {
         if let Some(store) = self.metrics_store()? {
             let histograms = store.load_visible_head_population_histograms()?;
-            if !histograms.is_empty() || self.metric_envelopes().is_empty() {
+            if !histograms.is_empty() || self.resolved_metric_envelopes().is_empty() {
                 return Ok(histograms);
             }
         }
@@ -366,12 +375,39 @@ impl BootstrapAdminState {
         }))
     }
 
+    fn resolved_metrics_indexers(
+        &self,
+    ) -> anyhow::Result<BTreeMap<(ExperimentId, RevisionId), MetricsIndexer>> {
+        let peer_window_metrics = self.resolved_peer_window_metrics();
+        let reducer_cohort_metrics = self.resolved_reducer_cohort_metrics();
+        let head_eval_reports = self.resolved_head_eval_reports();
+        self.metrics_indexers(
+            &peer_window_metrics,
+            &reducer_cohort_metrics,
+            &head_eval_reports,
+        )
+    }
+
+    fn resolved_metric_envelopes(&self) -> Vec<MetricEnvelope> {
+        let peer_window_metrics = self.resolved_peer_window_metrics();
+        let reducer_cohort_metrics = self.resolved_reducer_cohort_metrics();
+        let head_eval_reports = self.resolved_head_eval_reports();
+        Self::metric_envelopes(
+            &peer_window_metrics,
+            &reducer_cohort_metrics,
+            &head_eval_reports,
+        )
+    }
+
     fn metrics_indexers(
         &self,
+        peer_window_metrics: &[burn_p2p_core::PeerWindowMetrics],
+        reducer_cohort_metrics: &[ReducerCohortMetrics],
+        head_eval_reports: &[burn_p2p_core::HeadEvalReport],
     ) -> anyhow::Result<BTreeMap<(ExperimentId, RevisionId), MetricsIndexer>> {
         let mut indexers = BTreeMap::<(ExperimentId, RevisionId), MetricsIndexer>::new();
 
-        for metrics in &self.peer_window_metrics {
+        for metrics in peer_window_metrics {
             indexers
                 .entry((metrics.experiment_id.clone(), metrics.revision_id.clone()))
                 .or_insert_with(|| {
@@ -379,7 +415,7 @@ impl BootstrapAdminState {
                 })
                 .ingest_peer_window_metrics(metrics.clone());
         }
-        for metrics in &self.reducer_cohort_metrics {
+        for metrics in reducer_cohort_metrics {
             indexers
                 .entry((metrics.experiment_id.clone(), metrics.revision_id.clone()))
                 .or_insert_with(|| {
@@ -387,7 +423,7 @@ impl BootstrapAdminState {
                 })
                 .ingest_reducer_cohort_metrics(metrics.clone());
         }
-        for report in &self.head_eval_reports {
+        for report in head_eval_reports {
             indexers
                 .entry((report.experiment_id.clone(), report.revision_id.clone()))
                 .or_insert_with(|| {
@@ -399,19 +435,23 @@ impl BootstrapAdminState {
         Ok(indexers)
     }
 
-    fn metric_envelopes(&self) -> Vec<MetricEnvelope> {
-        self.peer_window_metrics
+    fn metric_envelopes(
+        peer_window_metrics: &[burn_p2p_core::PeerWindowMetrics],
+        reducer_cohort_metrics: &[ReducerCohortMetrics],
+        head_eval_reports: &[burn_p2p_core::HeadEvalReport],
+    ) -> Vec<MetricEnvelope> {
+        peer_window_metrics
             .iter()
             .cloned()
             .map(MetricEnvelope::PeerWindow)
             .chain(
-                self.reducer_cohort_metrics
+                reducer_cohort_metrics
                     .iter()
                     .cloned()
                     .map(MetricEnvelope::ReducerCohort),
             )
             .chain(
-                self.head_eval_reports
+                head_eval_reports
                     .iter()
                     .cloned()
                     .map(MetricEnvelope::HeadEval),
@@ -436,11 +476,18 @@ impl BootstrapAdminState {
         let Some(root) = self.metrics_store_root.as_ref() else {
             return Ok(());
         };
+        let peer_window_metrics = self.resolved_peer_window_metrics();
+        let reducer_cohort_metrics = self.resolved_reducer_cohort_metrics();
+        let head_eval_reports = self.resolved_head_eval_reports();
         let mut store = MetricsStore::open(
             root,
             metrics_indexer_config_for_budget(self.metrics_retention),
         )?;
-        store.replace_entries(self.metric_envelopes())?;
+        store.replace_entries(Self::metric_envelopes(
+            &peer_window_metrics,
+            &reducer_cohort_metrics,
+            &head_eval_reports,
+        ))?;
         store.materialize_views()?;
         Ok(())
     }

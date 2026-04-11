@@ -111,7 +111,8 @@ partially present:
 - publication/leaderboard/export paths reading through a shared `OperatorStore`
   seam
 - optional redis-mirrored operator snapshots for multi-edge read coherence
-  across heads, receipts, merges, and head-eval reports
+  across heads, receipts, merges, peer-window metrics, reducer-cohort metrics,
+  and head-eval reports
 
 still missing:
 

@@ -377,7 +377,9 @@ pub(crate) fn load_all_eval_protocol_manifests(
     )
 }
 
-fn load_peer_window_metrics(storage: &StorageConfig) -> anyhow::Result<Vec<PeerWindowMetrics>> {
+pub(crate) fn load_peer_window_metrics(
+    storage: &StorageConfig,
+) -> anyhow::Result<Vec<PeerWindowMetrics>> {
     read_storage_json_entries(
         storage.metrics_dir(),
         |name| name.starts_with("peer-window-") && name.ends_with(".json"),
@@ -385,7 +387,7 @@ fn load_peer_window_metrics(storage: &StorageConfig) -> anyhow::Result<Vec<PeerW
     )
 }
 
-fn load_reducer_cohort_metrics(
+pub(crate) fn load_reducer_cohort_metrics(
     storage: &StorageConfig,
 ) -> anyhow::Result<Vec<ReducerCohortMetrics>> {
     read_storage_json_entries(

@@ -481,6 +481,8 @@ impl BootstrapAdminState {
             receipts: self.contribution_receipts.clone(),
             heads: self.head_descriptors.clone(),
             merges: self.merge_certificates.clone(),
+            peer_window_metrics: self.peer_window_metrics.clone(),
+            reducer_cohort_metrics: self.reducer_cohort_metrics.clone(),
             head_eval_reports: self.head_eval_reports.clone(),
             eval_protocol_manifests: self.eval_protocol_manifests.clone(),
         }
@@ -508,6 +510,27 @@ impl BootstrapAdminState {
         )
     }
 
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    pub(crate) fn resolved_peer_window_metrics(&self) -> Vec<PeerWindowMetrics> {
+        self.operator_store()
+            .all_peer_window_metrics()
+            .unwrap_or_else(|_| self.peer_window_metrics.clone())
+    }
+
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    pub(crate) fn resolved_reducer_cohort_metrics(&self) -> Vec<ReducerCohortMetrics> {
+        self.operator_store()
+            .all_reducer_cohort_metrics()
+            .unwrap_or_else(|_| self.reducer_cohort_metrics.clone())
+    }
+
+    #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
+    pub(crate) fn resolved_head_eval_reports(&self) -> Vec<HeadEvalReport> {
+        self.operator_store()
+            .all_head_eval_reports()
+            .unwrap_or_else(|_| self.head_eval_reports.clone())
+    }
+
     #[cfg(feature = "artifact-publish")]
     pub(crate) fn stored_heads(&self) -> anyhow::Result<Vec<HeadDescriptor>> {
         self.operator_store().heads(&HeadQuery::default())
@@ -522,7 +545,7 @@ impl BootstrapAdminState {
 
     #[cfg(feature = "artifact-publish")]
     pub(crate) fn stored_head_eval_reports(&self) -> anyhow::Result<Vec<HeadEvalReport>> {
-        self.operator_store().all_head_eval_reports()
+        Ok(self.resolved_head_eval_reports())
     }
 }
 
