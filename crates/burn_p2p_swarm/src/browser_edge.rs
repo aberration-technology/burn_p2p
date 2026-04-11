@@ -213,6 +213,7 @@ impl BrowserEdgeControlPlaneClient {
                             generated_at: event.generated_at,
                         },
                         peer_window_hints: Vec::new(),
+                        placement_snapshot: None,
                     },
                 );
             }

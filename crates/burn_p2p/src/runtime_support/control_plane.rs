@@ -11,6 +11,7 @@ pub(crate) fn run_control_plane(
     const CONNECTIVITY_REPAIR_INTERVAL: Duration = Duration::from_secs(1);
     const PEER_DIRECTORY_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
     const TRUST_BUNDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+    let signing_keypair = keypair.clone();
     let mut auth = auth;
     let mut shell = match ControlPlaneShell::new(
         boundary.protocols.control.clone(),
@@ -337,7 +338,7 @@ pub(crate) fn run_control_plane(
                     snapshot.updated_at = Utc::now();
                 }
                 Ok(RuntimeCommand::PublishAuth(announcement)) => {
-                    let local_announcement = announcement.clone();
+                    let local_announcement = (*announcement).clone();
                     shell.publish_auth(local_announcement.clone());
                     if let Err(error) = shell.publish_pubsub(
                         boundary.control_overlay.clone(),
@@ -377,6 +378,26 @@ pub(crate) fn run_control_plane(
                     reconcile_live_revocation_policy(&mut auth, &mut snapshot, storage.as_ref());
                 }
                 Ok(RuntimeCommand::PublishMetrics(announcement)) => {
+                    let mut announcement = announcement;
+                    let local_peer_id = PeerId::new(shell.local_peer_id().to_string());
+                    if announcement.placement_snapshot.is_none() {
+                        let mut placement_snapshot = {
+                            let snapshot = lock_telemetry_state(&state);
+                            build_fleet_placement_snapshot(
+                                &snapshot,
+                                &snapshot.configured_roles,
+                                &local_peer_id,
+                                &announcement.peer_window_hints,
+                            )
+                        };
+                        if let Some(placement) = placement_snapshot.as_mut()
+                            && let Ok(signature) =
+                                sign_fleet_placement_snapshot(&signing_keypair, placement)
+                        {
+                            placement.signature_bundle.push(signature);
+                        }
+                        announcement.placement_snapshot = placement_snapshot;
+                    }
                     let overlay = announcement.overlay.clone();
                     let _ = shell.subscribe_topic(overlay.clone());
                     shell.publish_metrics(announcement.clone());

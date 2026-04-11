@@ -315,6 +315,7 @@ pub(crate) fn build_metrics_announcement(
             generated_at: Utc::now(),
         },
         peer_window_hints,
+        placement_snapshot: None,
     }
 }
 
@@ -324,7 +325,7 @@ pub(crate) fn build_peer_window_placement_hint(
     let accepted_tokens_or_samples =
         metrics
             .accepted_tokens_or_samples
-            .unwrap_or_else(|| match metrics.status {
+            .unwrap_or(match metrics.status {
                 PeerWindowStatus::Completed => metrics.attempted_tokens_or_samples,
                 _ => 0,
             });

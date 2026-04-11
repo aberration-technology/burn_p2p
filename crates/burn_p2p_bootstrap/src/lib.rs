@@ -51,7 +51,9 @@ pub use crate::history::StoredEvalProtocolManifestRecord;
 pub use crate::operator_store::OperatorStateBackendConfig;
 pub use crate::state::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPeerDiagnostic,
-    HeadQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
+    HeadQuery, OperatorAuditKind, OperatorAuditQuery, OperatorAuditRecord, OperatorAuditSummary,
+    OperatorReplayQuery, OperatorReplaySnapshot, OperatorReplaySnapshotSummary,
+    OperatorRetentionSummary, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
 };
 pub use burn_p2p::{NodeRuntimeState, SlotRuntimeState};
 pub use burn_p2p_core::{

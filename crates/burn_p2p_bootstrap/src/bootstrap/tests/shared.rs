@@ -228,28 +228,60 @@ pub(super) fn spawn_provider_json_server(
     response_status: &'static str,
     response_body: String,
 ) -> (String, thread::JoinHandle<()>) {
+    spawn_provider_mock_server(move |request| {
+        assert_request(request);
+        (response_status, response_body.clone())
+    })
+}
+
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
+pub(super) fn spawn_provider_mock_server(
+    handle_request: impl Fn(&str) -> (&'static str, String) + Send + 'static,
+) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider exchange listener");
+    listener
+        .set_nonblocking(true)
+        .expect("set provider exchange listener nonblocking");
     let addr = listener.local_addr().expect("local addr");
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept provider exchange");
-        stream
-            .set_read_timeout(Some(StdDuration::from_secs(2)))
-            .expect("set provider exchange read timeout");
-        let mut buffer = [0_u8; 8192];
-        let bytes_read = stream
-            .read(&mut buffer)
-            .expect("read provider exchange request");
-        let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
-        assert_request(&request);
-        let response = format!(
-            "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            response_body.len(),
-            response_body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .expect("write provider exchange response");
-        stream.flush().expect("flush provider exchange response");
+        let mut handled_requests = 0usize;
+        let mut idle_rounds = 0usize;
+        loop {
+            let (mut stream, _) = match listener.accept() {
+                Ok(pair) => {
+                    handled_requests += 1;
+                    idle_rounds = 0;
+                    pair
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if handled_requests > 0 && idle_rounds >= 20 {
+                        break;
+                    }
+                    idle_rounds += 1;
+                    thread::sleep(StdDuration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("accept provider exchange: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(StdDuration::from_secs(2)))
+                .expect("set provider exchange read timeout");
+            let mut buffer = [0_u8; 8192];
+            let bytes_read = stream
+                .read(&mut buffer)
+                .expect("read provider exchange request");
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let (response_status, response_body) = handle_request(&request);
+            let response = format!(
+                "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider exchange response");
+            stream.flush().expect("flush provider exchange response");
+        }
     });
     (format!("http://{addr}"), handle)
 }

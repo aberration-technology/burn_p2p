@@ -865,6 +865,7 @@ fn metrics_announcements_round_trip_and_use_metrics_overlay() {
             generated_at: Utc::now(),
         },
         peer_window_hints: Vec::new(),
+        placement_snapshot: None,
     };
 
     let payload = PubsubPayload::Metrics(announcement.clone());
@@ -906,6 +907,7 @@ fn metrics_announcements_keep_a_bounded_recent_tail() {
                     generated_at: Utc::now() + chrono::Duration::milliseconds(index as i64),
                 },
                 peer_window_hints: Vec::new(),
+                placement_snapshot: None,
             }),
         );
     }

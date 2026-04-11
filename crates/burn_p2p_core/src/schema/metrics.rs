@@ -276,6 +276,69 @@ pub struct PeerWindowPlacementHint {
     pub window_finished_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Summarizes one trainer candidate inside a long-horizon fleet placement snapshot.
+pub struct FleetPlacementPeer {
+    /// Peer covered by the ranked placement record.
+    pub peer_id: PeerId,
+    /// Runtime role most recently observed for the peer.
+    pub role: PeerRole,
+    /// Backend class most recently observed for the peer.
+    pub backend_class: BackendClass,
+    /// Count of recent placement windows retained in the summary.
+    pub recent_window_count: usize,
+    /// Count of completed windows retained in the summary.
+    pub completed_window_count: usize,
+    /// Number of consecutive recent failed or non-completed windows.
+    pub recent_failure_streak: usize,
+    /// Latest observed placement status.
+    pub latest_status: PeerWindowStatus,
+    /// Latest observed placement timestamp.
+    pub latest_finished_at: DateTime<Utc>,
+    /// Decayed health score across retained windows.
+    pub weighted_health: f64,
+    /// Decayed head-lag score across retained windows.
+    pub weighted_head_lag: f64,
+    /// Decayed throughput score across retained windows.
+    pub weighted_throughput: f64,
+    /// Current trust score visible to the planner.
+    pub trust_score: f64,
+    /// Planner-recommended budget scale for future lease sizing.
+    #[serde(default = "default_fleet_placement_scale")]
+    pub recommended_budget_scale: f64,
+    /// Planner-recommended microshard scale for future lease sizing.
+    #[serde(default = "default_fleet_placement_scale")]
+    pub recommended_microshard_scale: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Signed long-horizon trainer placement snapshot emitted on the metrics plane.
+pub struct FleetPlacementSnapshot {
+    /// Network covered by the placement snapshot.
+    pub network_id: NetworkId,
+    /// Planner peer that emitted the snapshot.
+    pub planner_peer_id: PeerId,
+    /// Monotonic generation time for the snapshot.
+    pub generated_at: DateTime<Utc>,
+    /// Freshness budget advertised by the planner.
+    pub freshness_secs: u32,
+    /// How many hint windows the planner retained when ranking peers.
+    pub retained_hint_windows: usize,
+    /// Selected trainers ordered from highest to lowest planner preference.
+    pub selected_peer_ids: Vec<PeerId>,
+    /// Ranked candidate summaries used to derive the selection.
+    pub ranked_candidates: Vec<FleetPlacementPeer>,
+    /// Free-form planner version label for audit and replay.
+    pub planner_version: String,
+    /// Signatures or attestations backing the placement decision.
+    #[serde(default)]
+    pub signature_bundle: Vec<SignatureMetadata>,
+}
+
+fn default_fleet_placement_scale() -> f64 {
+    1.0
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// Captures the status of one reducer cohort or merge window.
 pub enum ReducerCohortStatus {

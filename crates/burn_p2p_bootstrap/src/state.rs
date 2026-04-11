@@ -130,6 +130,308 @@ impl ReducerLoadQuery {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the audit record kinds surfaced by the operator plane.
+pub enum OperatorAuditKind {
+    Receipt,
+    Head,
+    Merge,
+    PeerWindowMetric,
+    ReducerCohortMetric,
+    HeadEvalReport,
+    Snapshot,
+}
+
+impl OperatorAuditKind {
+    /// Returns the stable slug used by HTTP and external backends.
+    pub const fn as_slug(&self) -> &'static str {
+        match self {
+            Self::Receipt => "receipt",
+            Self::Head => "head",
+            Self::Merge => "merge",
+            Self::PeerWindowMetric => "peer-window-metric",
+            Self::ReducerCohortMetric => "reducer-cohort-metric",
+            Self::HeadEvalReport => "head-eval-report",
+            Self::Snapshot => "snapshot",
+        }
+    }
+
+    /// Parses one stable audit kind slug.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug {
+            "receipt" => Some(Self::Receipt),
+            "head" => Some(Self::Head),
+            "merge" => Some(Self::Merge),
+            "peer-window-metric" => Some(Self::PeerWindowMetric),
+            "reducer-cohort-metric" => Some(Self::ReducerCohortMetric),
+            "head-eval-report" => Some(Self::HeadEvalReport),
+            "snapshot" => Some(Self::Snapshot),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Query parameters used to filter operator audit and replay exports.
+pub struct OperatorAuditQuery {
+    /// Optional audit record kind filter.
+    pub kind: Option<OperatorAuditKind>,
+    /// Optional study filter.
+    pub study_id: Option<StudyId>,
+    /// Optional experiment filter.
+    pub experiment_id: Option<ExperimentId>,
+    /// Optional revision filter.
+    pub revision_id: Option<RevisionId>,
+    /// Optional peer filter.
+    pub peer_id: Option<PeerId>,
+    /// Optional head filter.
+    pub head_id: Option<HeadId>,
+    /// Optional lower bound for captured timestamps.
+    pub since: Option<DateTime<Utc>>,
+    /// Optional upper bound for captured timestamps.
+    pub until: Option<DateTime<Utc>>,
+    /// Optional free-text substring filter.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One flattened operator audit record suitable for search, retention, and replay.
+pub struct OperatorAuditRecord {
+    /// Record kind.
+    pub kind: OperatorAuditKind,
+    /// Stable local record identifier.
+    pub record_id: String,
+    /// Optional study scope.
+    pub study_id: Option<StudyId>,
+    /// Optional experiment scope.
+    pub experiment_id: Option<ExperimentId>,
+    /// Optional revision scope.
+    pub revision_id: Option<RevisionId>,
+    /// Optional peer scope.
+    pub peer_id: Option<PeerId>,
+    /// Optional head scope.
+    pub head_id: Option<HeadId>,
+    /// Timestamp captured for replay ordering.
+    pub captured_at: DateTime<Utc>,
+    /// Flattened searchable summary map.
+    pub summary: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Aggregate audit-search summary for the current operator backend.
+pub struct OperatorAuditSummary {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Total records matching the supplied query.
+    pub record_count: usize,
+    /// Per-kind counts for matching records keyed by the stable kind slug.
+    pub counts_by_kind: BTreeMap<String, usize>,
+    /// Distinct studies visible across matching audit rows.
+    pub distinct_study_count: usize,
+    /// Distinct experiments visible across matching audit rows.
+    pub distinct_experiment_count: usize,
+    /// Distinct revisions visible across matching audit rows.
+    pub distinct_revision_count: usize,
+    /// Distinct peers visible across matching audit rows.
+    pub distinct_peer_count: usize,
+    /// Distinct heads visible across matching audit rows.
+    pub distinct_head_count: usize,
+    /// Earliest matching capture timestamp.
+    pub earliest_captured_at: Option<DateTime<Utc>>,
+    /// Latest matching capture timestamp.
+    pub latest_captured_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Query parameters used to filter retained operator replay snapshots.
+pub struct OperatorReplayQuery {
+    /// Optional study filter.
+    pub study_id: Option<StudyId>,
+    /// Optional experiment filter.
+    pub experiment_id: Option<ExperimentId>,
+    /// Optional revision filter.
+    pub revision_id: Option<RevisionId>,
+    /// Optional head filter.
+    pub head_id: Option<HeadId>,
+    /// Optional lower bound for captured timestamps.
+    pub since: Option<DateTime<Utc>>,
+    /// Optional upper bound for captured timestamps.
+    pub until: Option<DateTime<Utc>>,
+    /// Optional free-text substring filter.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One retained operator replay snapshot summary suitable for paging and search.
+pub struct OperatorReplaySnapshotSummary {
+    /// Snapshot timestamp.
+    pub captured_at: DateTime<Utc>,
+    /// Distinct studies retained in the snapshot.
+    pub study_ids: Vec<StudyId>,
+    /// Distinct experiments retained in the snapshot.
+    pub experiment_ids: Vec<ExperimentId>,
+    /// Distinct revisions retained in the snapshot.
+    pub revision_ids: Vec<RevisionId>,
+    /// Distinct heads retained in the snapshot.
+    pub head_ids: Vec<HeadId>,
+    /// Count of retained receipts.
+    pub receipt_count: usize,
+    /// Count of retained heads.
+    pub head_count: usize,
+    /// Count of retained merges.
+    pub merge_count: usize,
+    /// Count of retained peer-window metrics.
+    pub peer_window_metric_count: usize,
+    /// Count of retained reducer-cohort metrics.
+    pub reducer_cohort_metric_count: usize,
+    /// Count of retained head-eval reports.
+    pub head_eval_report_count: usize,
+    /// Flattened searchable summary map.
+    pub summary: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Summarizes operator retention state for the active backend.
+pub struct OperatorRetentionSummary {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Configured metrics retention budget.
+    pub metrics_retention: MetricsRetentionBudget,
+    /// Maximum retained replay snapshots for the backend snapshot table.
+    pub snapshot_retention_limit: usize,
+    /// Maximum retained audit rows for the backend audit table.
+    pub audit_retention_limit: usize,
+    /// Persisted retained replay snapshots currently available.
+    pub persisted_snapshot_count: usize,
+    /// Persisted retained audit rows currently available.
+    pub persisted_audit_record_count: usize,
+    /// Latest retained replay snapshot timestamp.
+    pub latest_snapshot_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One retained operator snapshot suitable for state replay/export.
+pub struct OperatorReplaySnapshot {
+    /// Timestamp at which the snapshot was captured.
+    pub captured_at: DateTime<Utc>,
+    /// Retained receipts.
+    pub receipts: Vec<ContributionReceipt>,
+    /// Retained head descriptors.
+    pub heads: Vec<HeadDescriptor>,
+    /// Retained merge certificates.
+    pub merges: Vec<MergeCertificate>,
+    /// Retained peer-window metrics.
+    pub peer_window_metrics: Vec<PeerWindowMetrics>,
+    /// Retained reducer cohort metrics.
+    pub reducer_cohort_metrics: Vec<ReducerCohortMetrics>,
+    /// Retained head evaluation reports.
+    pub head_eval_reports: Vec<HeadEvalReport>,
+    /// Retained eval protocol manifests.
+    pub eval_protocol_manifests: Vec<StoredEvalProtocolManifestRecord>,
+}
+
+impl OperatorAuditQuery {
+    /// Returns whether the audit query matches the supplied record.
+    pub fn matches(&self, record: &OperatorAuditRecord) -> bool {
+        let text_matches = self.text.as_ref().is_none_or(|text| {
+            let needle = text.trim().to_ascii_lowercase();
+            if needle.is_empty() {
+                return true;
+            }
+            record.record_id.to_ascii_lowercase().contains(&needle)
+                || record.summary.iter().any(|(key, value)| {
+                    key.to_ascii_lowercase().contains(&needle)
+                        || value.to_ascii_lowercase().contains(&needle)
+                })
+        });
+
+        self.kind.as_ref().is_none_or(|kind| &record.kind == kind)
+            && self
+                .study_id
+                .as_ref()
+                .is_none_or(|study_id| record.study_id.as_ref() == Some(study_id))
+            && self
+                .experiment_id
+                .as_ref()
+                .is_none_or(|experiment_id| record.experiment_id.as_ref() == Some(experiment_id))
+            && self
+                .revision_id
+                .as_ref()
+                .is_none_or(|revision_id| record.revision_id.as_ref() == Some(revision_id))
+            && self
+                .peer_id
+                .as_ref()
+                .is_none_or(|peer_id| record.peer_id.as_ref() == Some(peer_id))
+            && self
+                .head_id
+                .as_ref()
+                .is_none_or(|head_id| record.head_id.as_ref() == Some(head_id))
+            && self
+                .since
+                .as_ref()
+                .is_none_or(|since| &record.captured_at >= since)
+            && self
+                .until
+                .as_ref()
+                .is_none_or(|until| &record.captured_at <= until)
+            && text_matches
+    }
+}
+
+impl OperatorReplayQuery {
+    /// Returns whether the replay query matches the supplied retained snapshot summary.
+    pub fn matches(&self, snapshot: &OperatorReplaySnapshotSummary) -> bool {
+        let text_matches = self.text.as_ref().is_none_or(|text| {
+            let needle = text.trim().to_ascii_lowercase();
+            if needle.is_empty() {
+                return true;
+            }
+            snapshot
+                .study_ids
+                .iter()
+                .map(StudyId::as_str)
+                .chain(snapshot.experiment_ids.iter().map(ExperimentId::as_str))
+                .chain(snapshot.revision_ids.iter().map(RevisionId::as_str))
+                .chain(snapshot.head_ids.iter().map(HeadId::as_str))
+                .any(|value| value.to_ascii_lowercase().contains(&needle))
+                || snapshot.summary.iter().any(|(key, value)| {
+                    key.to_ascii_lowercase().contains(&needle)
+                        || value.to_ascii_lowercase().contains(&needle)
+                })
+        });
+
+        self.study_id.as_ref().is_none_or(|study_id| {
+            snapshot
+                .study_ids
+                .iter()
+                .any(|candidate| candidate == study_id)
+        }) && self.experiment_id.as_ref().is_none_or(|experiment_id| {
+            snapshot
+                .experiment_ids
+                .iter()
+                .any(|candidate| candidate == experiment_id)
+        }) && self.revision_id.as_ref().is_none_or(|revision_id| {
+            snapshot
+                .revision_ids
+                .iter()
+                .any(|candidate| candidate == revision_id)
+        }) && self.head_id.as_ref().is_none_or(|head_id| {
+            snapshot
+                .head_ids
+                .iter()
+                .any(|candidate| candidate == head_id)
+        }) && self
+            .since
+            .as_ref()
+            .is_none_or(|since| &snapshot.captured_at >= since)
+            && self
+                .until
+                .as_ref()
+                .is_none_or(|until| &snapshot.captured_at <= until)
+            && text_matches
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 /// Captures bootstrap admin state.
 pub struct BootstrapAdminState {
@@ -372,6 +674,45 @@ impl BootstrapAdminState {
             })
     }
 
+    /// Exports one durable operator audit page suitable for search and replay.
+    pub fn export_operator_audit_page(
+        &self,
+        query: &OperatorAuditQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<OperatorAuditRecord>> {
+        self.operator_store().audit_page(query, page)
+    }
+
+    /// Exports one aggregate operator audit summary for search and retention tooling.
+    pub fn export_operator_audit_summary(
+        &self,
+        query: &OperatorAuditQuery,
+    ) -> anyhow::Result<OperatorAuditSummary> {
+        self.operator_store().audit_summary(query)
+    }
+
+    /// Exports one retained operator snapshot at or before the requested timestamp.
+    pub fn export_operator_replay_snapshot(
+        &self,
+        captured_at: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Option<OperatorReplaySnapshot>> {
+        self.operator_store().replay_snapshot(captured_at)
+    }
+
+    /// Exports one retained replay snapshot summary page for search and retention tooling.
+    pub fn export_operator_replay_page(
+        &self,
+        query: &OperatorReplayQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<OperatorReplaySnapshotSummary>> {
+        self.operator_store().replay_page(query, page)
+    }
+
+    /// Exports backend retention diagnostics for operator snapshots and audit rows.
+    pub fn export_operator_retention_summary(&self) -> anyhow::Result<OperatorRetentionSummary> {
+        self.operator_store().retention_summary()
+    }
+
     /// Performs the diagnostics operation.
     pub fn diagnostics(
         &self,
@@ -491,6 +832,7 @@ impl BootstrapAdminState {
     pub(crate) fn persist_operator_state_snapshot(&self) -> anyhow::Result<()> {
         persist_operator_state_snapshot(
             self.operator_state_backend.as_ref(),
+            self.metrics_retention,
             &self.operator_store_preview(),
         )
     }

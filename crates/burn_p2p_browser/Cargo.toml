@@ -17,6 +17,7 @@ burn_p2p_metrics.workspace = true
 burn_p2p_publish = { version = "=0.21.0-pre.8", path = "../burn_p2p_publish" }
 burn_p2p_swarm.workspace = true
 burn_p2p_views.workspace = true
+base64 = "0.22"
 chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 semver.workspace = true
@@ -30,7 +31,7 @@ js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["DomException", "Event", "EventTarget", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "Storage", "Window"] }
+web-sys = { version = "0.3", features = ["DomException", "Event", "EventTarget", "Headers", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "ReadableStream", "ReadableStreamDefaultReader", "Request", "RequestInit", "Response", "Storage", "Window"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["net", "rt", "time"] }

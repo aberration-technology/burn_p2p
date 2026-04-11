@@ -144,6 +144,7 @@ fn bench_observed_rebudgeting(c: &mut Criterion) {
                 elapsed_seconds: 100,
                 completed_windows: 1,
                 sampled_at: Utc::now(),
+                coordination_penalty: None,
             },
         ),
         (
@@ -156,6 +157,7 @@ fn bench_observed_rebudgeting(c: &mut Criterion) {
                 elapsed_seconds: 45,
                 completed_windows: 2,
                 sampled_at: Utc::now(),
+                coordination_penalty: None,
             },
         ),
         (
@@ -168,6 +170,7 @@ fn bench_observed_rebudgeting(c: &mut Criterion) {
                 elapsed_seconds: 60,
                 completed_windows: 1,
                 sampled_at: Utc::now(),
+                coordination_penalty: None,
             },
         ),
     ];

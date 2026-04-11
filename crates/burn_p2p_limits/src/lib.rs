@@ -183,6 +183,9 @@ pub struct ObservedThroughputUpdate {
     pub completed_windows: u32,
     /// The sampled at.
     pub sampled_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional coordination penalty derived from lag, drift, or other control pressure.
+    pub coordination_penalty: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -503,8 +506,19 @@ pub fn corrected_work_units_per_second(
     {
         return Err(LimitsError::InvalidRebudgetRetention);
     }
+    if observed
+        .coordination_penalty
+        .is_some_and(|penalty| !penalty.is_finite() || penalty <= 0.0)
+    {
+        return Err(LimitsError::InvalidObservedWindow);
+    }
 
-    let observed_rate = observed.measured_work_units as f64 / observed.elapsed_seconds as f64;
+    let coordination_penalty = observed
+        .coordination_penalty
+        .unwrap_or(1.0)
+        .clamp(0.25, 1.0);
+    let observed_rate = (observed.measured_work_units as f64 / observed.elapsed_seconds as f64)
+        * coordination_penalty;
     let smoothed_rate =
         ((1.0 - smoothing) * baseline_work_units_per_second) + (smoothing * observed_rate);
     let min_rate = baseline_work_units_per_second * min_rebudget_retention_per_window;
@@ -686,7 +700,7 @@ mod tests {
 
     use crate::{
         CapabilityCalibrator, CapabilityProbe, LimitPolicy, LocalBackend, ObservedThroughputUpdate,
-        backend_preference_order, browser_probe_from_capabilities,
+        backend_preference_order, browser_probe_from_capabilities, corrected_work_units_per_second,
     };
 
     fn native_gpu_probe() -> CapabilityProbe {
@@ -863,6 +877,7 @@ mod tests {
                     elapsed_seconds: 100,
                     completed_windows: 1,
                     sampled_at: Utc::now(),
+                    coordination_penalty: None,
                 },
             )
             .expect("rebudgeted");
@@ -895,6 +910,7 @@ mod tests {
                     elapsed_seconds: 100,
                     completed_windows: 1,
                     sampled_at: Utc::now(),
+                    coordination_penalty: None,
                 },
             )
             .expect("rebudgeted");
@@ -925,6 +941,7 @@ mod tests {
                     elapsed_seconds: 100,
                     completed_windows: 1,
                     sampled_at: Utc::now(),
+                    coordination_penalty: None,
                 },
             )
             .expect("rebudgeted");
@@ -954,6 +971,7 @@ mod tests {
                     elapsed_seconds: 60,
                     completed_windows: 1,
                     sampled_at: Utc::now(),
+                    coordination_penalty: None,
                 },
             )
             .expect("rebudgeted");
@@ -968,5 +986,45 @@ mod tests {
                 .recommended_roles
                 .contains(&burn_p2p_core::PeerRole::TrainerGpu)
         );
+    }
+
+    #[test]
+    fn coordination_penalty_reduces_effective_observed_rate() {
+        let corrected = corrected_work_units_per_second(
+            1_000.0,
+            &ObservedThroughputUpdate {
+                measured_work_units: 100_000,
+                elapsed_seconds: 100,
+                completed_windows: 1,
+                sampled_at: Utc::now(),
+                coordination_penalty: Some(0.5),
+            },
+            1.0,
+            2.0,
+            0.1,
+        )
+        .expect("corrected throughput");
+
+        assert_eq!(corrected, 500.0);
+    }
+
+    #[test]
+    fn coordination_penalty_is_clamped_to_a_safe_floor() {
+        let corrected = corrected_work_units_per_second(
+            1_000.0,
+            &ObservedThroughputUpdate {
+                measured_work_units: 100_000,
+                elapsed_seconds: 100,
+                completed_windows: 1,
+                sampled_at: Utc::now(),
+                coordination_penalty: Some(0.01),
+            },
+            1.0,
+            2.0,
+            0.1,
+        )
+        .expect("corrected throughput");
+
+        assert_eq!(corrected, 250.0);
     }
 }

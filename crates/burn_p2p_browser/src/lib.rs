@@ -49,8 +49,9 @@ pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,
 };
 pub use storage::{
-    BrowserReceiptOutbox, BrowserReceiptOutboxBackend, BrowserStorageSnapshot,
-    BrowserStoredAssignment,
+    BrowserArtifactReplayBytePrefix, BrowserArtifactReplayCheckpoint, BrowserArtifactReplayChunk,
+    BrowserArtifactReplayChunkStorage, BrowserReceiptOutbox, BrowserReceiptOutboxBackend,
+    BrowserStorageSnapshot, BrowserStoredAssignment,
 };
 pub use training::{BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingResult};
 pub use transport::{BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus};

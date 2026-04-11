@@ -3,6 +3,9 @@ use crate::config::{
     ClientReenrollmentStatus, RuntimeCommand, TrustBundleState, default_node_runtime_state,
 };
 use crate::handles::dedupe_peer_ids;
+use burn_p2p_core::{
+    FleetPlacementPeer, FleetPlacementSnapshot, SignatureAlgorithm, SignatureMetadata,
+};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use sysinfo::{Disks, System};
@@ -1062,6 +1065,15 @@ const TRAINING_PLACEMENT_HISTORY_DECAY_FACTOR: f64 = 0.65;
 const TRAINING_PLACEMENT_FAILURE_STREAK_PRUNE: usize = 2;
 const TRAINING_PLACEMENT_MIN_WINDOWS_FOR_HEALTH_PRUNE: usize = 3;
 const TRAINING_PLACEMENT_MIN_WEIGHTED_HEALTH: f64 = 0.2;
+const FLEET_PLACEMENT_SNAPSHOT_FRESHNESS_SECS: u32 = 15 * 60;
+const FLEET_PLACEMENT_HISTORY_HORIZON_SECS: i64 = 6 * 60 * 60;
+const FLEET_PLACEMENT_HISTORY_MAX_SNAPSHOTS: usize = 24;
+const FLEET_PLACEMENT_HISTORY_DECAY_FACTOR: f64 = 0.82;
+const FLEET_PLACEMENT_MIN_SNAPSHOTS_FOR_GLOBAL_BACKPRESSURE: usize = 4;
+const FLEET_PLACEMENT_MIN_SUPPORT_RATIO_FOR_ASSIGNMENT: f64 = 0.2;
+const FLEET_PLACEMENT_MIN_BUDGET_SCALE_FOR_ASSIGNMENT: f64 = 0.55;
+const FLEET_PLACEMENT_MIN_MICROSHARD_SCALE_FOR_ASSIGNMENT: f64 = 0.55;
+const FLEET_PLACEMENT_PLANNER_VERSION: &str = "burn_p2p.runtime.v1";
 
 #[derive(Clone, Debug)]
 struct TrainingPlacementHistory {
@@ -1075,6 +1087,36 @@ struct TrainingPlacementHistory {
     weighted_throughput: f64,
 }
 
+#[derive(Clone, Debug)]
+struct FleetPlacementPlannerHistory {
+    snapshot_count: usize,
+    visible_weight: f64,
+    selected_weight: f64,
+    weighted_rank: f64,
+    weighted_health: f64,
+    weighted_head_lag: f64,
+    weighted_throughput: f64,
+    weighted_trust: f64,
+    weighted_budget_scale: f64,
+    weighted_microshard_scale: f64,
+    latest_generated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TrainingScheduleHint {
+    pub budget_scale: f64,
+    pub microshard_scale: f64,
+}
+
+impl Default for TrainingScheduleHint {
+    fn default() -> Self {
+        Self {
+            budget_scale: 1.0,
+            microshard_scale: 1.0,
+        }
+    }
+}
+
 fn training_status_health_score(status: &PeerWindowStatus) -> f64 {
     match status {
         PeerWindowStatus::Completed => 1.0,
@@ -1086,6 +1128,7 @@ fn training_status_health_score(status: &PeerWindowStatus) -> f64 {
 
 fn recent_training_peer_window_histories(
     snapshot: &NodeTelemetrySnapshot,
+    latest_hints: &[PeerWindowPlacementHint],
 ) -> BTreeMap<PeerId, Vec<PeerWindowPlacementHint>> {
     let freshness_cutoff =
         Utc::now() - chrono::Duration::minutes(TRAINING_PLACEMENT_HINT_FRESHNESS_MINUTES);
@@ -1110,8 +1153,26 @@ fn recent_training_peer_window_histories(
                 .push(hint.clone());
         }
     }
+    for hint in latest_hints {
+        if hint.window_finished_at < freshness_cutoff {
+            continue;
+        }
+        if !matches!(
+            hint.role,
+            PeerRole::TrainerGpu
+                | PeerRole::TrainerCpu
+                | PeerRole::BrowserTrainerWgpu
+                | PeerRole::BrowserTrainer
+        ) {
+            continue;
+        }
+        hints
+            .entry(hint.peer_id.clone())
+            .or_default()
+            .push(hint.clone());
+    }
     for values in hints.values_mut() {
-        values.sort_by(|left, right| right.window_finished_at.cmp(&left.window_finished_at));
+        values.sort_by_key(|hint| std::cmp::Reverse(hint.window_finished_at));
         values.truncate(TRAINING_PLACEMENT_HISTORY_WINDOWS);
     }
     hints
@@ -1183,6 +1244,7 @@ fn training_history_priority_rank(history: Option<&TrainingPlacementHistory>) ->
 fn compare_training_assignment_peer(
     snapshot: &NodeTelemetrySnapshot,
     histories: &BTreeMap<PeerId, TrainingPlacementHistory>,
+    planner_histories: &BTreeMap<PeerId, FleetPlacementPlannerHistory>,
     left: &PeerId,
     right: &PeerId,
 ) -> Ordering {
@@ -1195,6 +1257,18 @@ fn compare_training_assignment_peer(
     }
 
     if let (Some(left_history), Some(right_history)) = (left_history, right_history) {
+        let left_planner = planner_histories.get(left);
+        let right_planner = planner_histories.get(right);
+        let support_cmp =
+            planner_support_ratio(right_planner).total_cmp(&planner_support_ratio(left_planner));
+        if support_cmp != Ordering::Equal {
+            return support_cmp;
+        }
+        let rank_cmp =
+            planner_average_rank(left_planner).total_cmp(&planner_average_rank(right_planner));
+        if rank_cmp != Ordering::Equal {
+            return rank_cmp;
+        }
         let lag_cmp = left_history
             .weighted_head_lag
             .total_cmp(&right_history.weighted_head_lag);
@@ -1221,6 +1295,19 @@ fn compare_training_assignment_peer(
         }
     }
 
+    let left_planner = planner_histories.get(left);
+    let right_planner = planner_histories.get(right);
+    let support_cmp =
+        planner_support_ratio(right_planner).total_cmp(&planner_support_ratio(left_planner));
+    if support_cmp != Ordering::Equal {
+        return support_cmp;
+    }
+    let rank_cmp =
+        planner_average_rank(left_planner).total_cmp(&planner_average_rank(right_planner));
+    if rank_cmp != Ordering::Equal {
+        return rank_cmp;
+    }
+
     let left_trust = peer_trust_score_value(snapshot, left);
     let right_trust = peer_trust_score_value(snapshot, right);
     let trust_cmp = right_trust.total_cmp(&left_trust);
@@ -1231,27 +1318,158 @@ fn compare_training_assignment_peer(
     left.as_str().cmp(right.as_str())
 }
 
-pub(crate) fn runtime_training_assignment_peers(
+fn training_assignment_histories(
     snapshot: &NodeTelemetrySnapshot,
-    local_roles: &PeerRoleSet,
-    local_peer_id: &PeerId,
-) -> Vec<PeerId> {
-    let peers = runtime_training_peers(snapshot, local_roles, local_peer_id);
-    if peers.len() <= 1 {
-        return peers;
-    }
-
-    let histories = recent_training_peer_window_histories(snapshot)
+    latest_hints: &[PeerWindowPlacementHint],
+) -> BTreeMap<PeerId, TrainingPlacementHistory> {
+    recent_training_peer_window_histories(snapshot, latest_hints)
         .into_iter()
         .filter_map(|(peer_id, hints)| {
             summarize_training_peer_window_history(&hints).map(|history| (peer_id, history))
         })
-        .collect::<BTreeMap<_, _>>();
-    let mut selected = peers
+        .collect()
+}
+
+pub(crate) fn local_training_adaptation_factor(
+    snapshot: &NodeTelemetrySnapshot,
+    local_peer_id: &PeerId,
+) -> f64 {
+    let histories = training_assignment_histories(snapshot, &[]);
+    let planner_histories = fleet_placement_planner_histories(snapshot);
+    let lag_penalty = (1.0 / (1.0 + snapshot.head_lag_steps as f64 * 0.2)).clamp(0.2, 1.0);
+    let local_history_penalty = histories
+        .get(local_peer_id)
+        .map(|history| {
+            let failure_penalty =
+                (1.0 / (1.0 + history.recent_failure_streak as f64 * 0.75)).clamp(0.35, 1.0);
+            let completion_penalty = if history.latest_status == PeerWindowStatus::Completed {
+                1.0
+            } else {
+                0.75
+            };
+            failure_penalty * history.weighted_health.clamp(0.35, 1.0) * completion_penalty
+        })
+        .unwrap_or(1.0);
+    let planner_penalty = planner_histories
+        .get(local_peer_id)
+        .and_then(|history| {
+            (history.snapshot_count >= 3 && history.visible_weight > f64::EPSILON)
+                .then_some((history.selected_weight / history.visible_weight).clamp(0.4, 1.0))
+        })
+        .unwrap_or(1.0);
+    let planner_backpressure_penalty = (1.0
+        - planner_global_backpressure(planner_histories.get(local_peer_id)) * 0.7)
+        .clamp(0.25, 1.0);
+
+    (lag_penalty * local_history_penalty * planner_penalty * planner_backpressure_penalty)
+        .clamp(0.2, 1.0)
+}
+
+fn planner_average_budget_scale(history: Option<&FleetPlacementPlannerHistory>) -> f64 {
+    history
+        .map(|history| history.weighted_budget_scale / history.visible_weight.max(f64::EPSILON))
+        .unwrap_or(1.0)
+}
+
+fn planner_average_microshard_scale(history: Option<&FleetPlacementPlannerHistory>) -> f64 {
+    history
+        .map(|history| history.weighted_microshard_scale / history.visible_weight.max(f64::EPSILON))
+        .unwrap_or(1.0)
+}
+
+fn planner_global_backpressure(history: Option<&FleetPlacementPlannerHistory>) -> f64 {
+    let Some(history) = history else {
+        return 0.0;
+    };
+    if history.snapshot_count < FLEET_PLACEMENT_MIN_SNAPSHOTS_FOR_GLOBAL_BACKPRESSURE {
+        return 0.0;
+    }
+    let support_gap = (1.0 - planner_support_ratio(Some(history))).clamp(0.0, 1.0);
+    let budget_gap = (1.0 - planner_average_budget_scale(Some(history))).clamp(0.0, 1.0);
+    let microshard_gap = (1.0 - planner_average_microshard_scale(Some(history))).clamp(0.0, 1.0);
+    (support_gap * 0.45 + budget_gap * 0.35 + microshard_gap * 0.2).clamp(0.0, 1.0)
+}
+
+fn planner_prunes_training_assignment(history: Option<&FleetPlacementPlannerHistory>) -> bool {
+    let Some(history) = history else {
+        return false;
+    };
+    history.snapshot_count >= FLEET_PLACEMENT_MIN_SNAPSHOTS_FOR_GLOBAL_BACKPRESSURE
+        && planner_support_ratio(Some(history)) < FLEET_PLACEMENT_MIN_SUPPORT_RATIO_FOR_ASSIGNMENT
+        && planner_average_budget_scale(Some(history))
+            < FLEET_PLACEMENT_MIN_BUDGET_SCALE_FOR_ASSIGNMENT
+        && planner_average_microshard_scale(Some(history))
+            < FLEET_PLACEMENT_MIN_MICROSHARD_SCALE_FOR_ASSIGNMENT
+}
+
+pub(crate) fn local_training_schedule_hint(
+    snapshot: &NodeTelemetrySnapshot,
+    local_peer_id: &PeerId,
+) -> TrainingScheduleHint {
+    let histories = training_assignment_histories(snapshot, &[]);
+    let planner_histories = fleet_placement_planner_histories(snapshot);
+    let planner_history = planner_histories.get(local_peer_id);
+    let local_history = histories.get(local_peer_id);
+
+    let planner_support = planner_support_ratio(planner_history);
+    let planner_backpressure = planner_global_backpressure(planner_history);
+    let lag_penalty = (1.0 / (1.0 + snapshot.head_lag_steps as f64 * 0.15)).clamp(0.45, 1.0);
+    let failure_penalty = local_history
+        .map(|history| (1.0 / (1.0 + history.recent_failure_streak as f64 * 0.5)).clamp(0.5, 1.0))
+        .unwrap_or(1.0);
+    let health_factor = local_history
+        .map(|history| history.weighted_health.clamp(0.45, 1.2))
+        .unwrap_or(1.0);
+    let confidence = if planner_history.is_some_and(|history| history.snapshot_count >= 2) {
+        (0.5 + planner_support * 0.5).clamp(0.5, 1.0)
+    } else {
+        0.0
+    };
+    let planner_pressure_scale = (1.0 - planner_backpressure * 0.6).clamp(0.4, 1.0);
+    let budget_scale = if confidence <= f64::EPSILON {
+        1.0
+    } else {
+        let scaled = 1.0 + (planner_average_budget_scale(planner_history) - 1.0) * confidence;
+        (scaled
+            * lag_penalty
+            * failure_penalty
+            * health_factor.clamp(0.8, 1.1)
+            * planner_pressure_scale)
+            .clamp(0.25, 1.6)
+    };
+    let microshard_scale = if confidence <= f64::EPSILON {
+        1.0
+    } else {
+        let scaled = 1.0 + (planner_average_microshard_scale(planner_history) - 1.0) * confidence;
+        (scaled
+            * lag_penalty.sqrt()
+            * failure_penalty
+            * health_factor.clamp(0.85, 1.05)
+            * planner_pressure_scale)
+            .clamp(0.25, 1.4)
+    };
+
+    TrainingScheduleHint {
+        budget_scale,
+        microshard_scale,
+    }
+}
+
+fn filter_training_assignment_peers(
+    peers: &[PeerId],
+    snapshot: &NodeTelemetrySnapshot,
+    histories: &BTreeMap<PeerId, TrainingPlacementHistory>,
+    planner_histories: &BTreeMap<PeerId, FleetPlacementPlannerHistory>,
+    local_peer_id: &PeerId,
+) -> Vec<PeerId> {
+    peers
         .iter()
         .filter(|peer_id| {
             if *peer_id == local_peer_id {
                 return true;
+            }
+            if planner_prunes_training_assignment(planner_histories.get(*peer_id)) {
+                return false;
             }
             histories
                 .get(*peer_id)
@@ -1268,14 +1486,376 @@ pub(crate) fn runtime_training_assignment_peers(
                 .unwrap_or(true)
         })
         .cloned()
+        .collect()
+}
+
+fn recent_verified_fleet_placement_snapshots(
+    snapshot: &NodeTelemetrySnapshot,
+) -> Vec<&FleetPlacementSnapshot> {
+    let now = Utc::now();
+    let freshness_cutoff = now - chrono::Duration::seconds(FLEET_PLACEMENT_HISTORY_HORIZON_SECS);
+    let mut placements = snapshot
+        .control_plane
+        .metrics_announcements
+        .iter()
+        .filter_map(|announcement| announcement.placement_snapshot.as_ref())
+        .filter(|placement| {
+            !placement.selected_peer_ids.is_empty()
+                && !placement.signature_bundle.is_empty()
+                && placement.generated_at >= freshness_cutoff
+                && fleet_placement_snapshot_is_verified(snapshot, placement)
+        })
         .collect::<Vec<_>>();
+    placements.sort_by_key(|placement| std::cmp::Reverse(placement.generated_at));
+    placements.truncate(FLEET_PLACEMENT_HISTORY_MAX_SNAPSHOTS);
+    placements
+}
+
+fn latest_planner_public_key_hex<'a>(
+    snapshot: &'a NodeTelemetrySnapshot,
+    peer_id: &PeerId,
+) -> Option<&'a str> {
+    snapshot
+        .control_plane
+        .auth_announcements
+        .iter()
+        .filter(|announcement| &announcement.peer_id == peer_id)
+        .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
+        .map(|announcement| {
+            announcement
+                .envelope
+                .certificate
+                .claims()
+                .peer_public_key_hex
+                .as_str()
+        })
+}
+
+fn fleet_placement_snapshot_is_verified(
+    snapshot: &NodeTelemetrySnapshot,
+    placement: &FleetPlacementSnapshot,
+) -> bool {
+    let Some(public_key_hex) = latest_planner_public_key_hex(snapshot, &placement.planner_peer_id)
+    else {
+        return false;
+    };
+    let Ok(public_key_bytes) = hex::decode(public_key_hex) else {
+        return false;
+    };
+    let Ok(public_key) = libp2p_identity::PublicKey::try_decode_protobuf(&public_key_bytes) else {
+        return false;
+    };
+    if PeerId::new(libp2p_identity::PeerId::from_public_key(&public_key).to_string())
+        != placement.planner_peer_id
+    {
+        return false;
+    }
+    let mut unsigned = placement.clone();
+    unsigned.signature_bundle.clear();
+    let Ok(message) = burn_p2p_core::deterministic_cbor(&unsigned) else {
+        return false;
+    };
+    placement.signature_bundle.iter().any(|signature| {
+        signature.signer == placement.planner_peer_id
+            && signature.key_id == "runtime-fleet-placement"
+            && matches!(signature.algorithm, SignatureAlgorithm::Ed25519)
+            && hex::decode(&signature.signature_hex)
+                .map(|raw| public_key.verify(&message, &raw))
+                .unwrap_or(false)
+    })
+}
+
+fn placement_snapshot_peer_rank(
+    placement: &FleetPlacementSnapshot,
+    peer_id: &PeerId,
+) -> Option<usize> {
+    placement
+        .selected_peer_ids
+        .iter()
+        .position(|candidate| candidate == peer_id)
+}
+
+fn planner_history_visibility_rank(
+    placement: &FleetPlacementSnapshot,
+    peer_id: &PeerId,
+) -> Option<usize> {
+    if let Some(rank) = placement_snapshot_peer_rank(placement, peer_id) {
+        return Some(rank);
+    }
+    placement
+        .ranked_candidates
+        .iter()
+        .position(|candidate| &candidate.peer_id == peer_id)
+        .map(|rank| placement.selected_peer_ids.len() + rank)
+}
+
+fn fleet_placement_planner_histories(
+    snapshot: &NodeTelemetrySnapshot,
+) -> BTreeMap<PeerId, FleetPlacementPlannerHistory> {
+    let placements = recent_verified_fleet_placement_snapshots(snapshot);
+    let mut histories = BTreeMap::<PeerId, FleetPlacementPlannerHistory>::new();
+
+    for (index, placement) in placements.into_iter().enumerate() {
+        let recency_weight = FLEET_PLACEMENT_HISTORY_DECAY_FACTOR.powi(index as i32);
+        let planner_weight = recency_weight
+            * (1.0 + peer_trust_score_value(snapshot, &placement.planner_peer_id).clamp(0.0, 1.0));
+
+        for (rank, peer_id) in placement.selected_peer_ids.iter().enumerate() {
+            let entry =
+                histories
+                    .entry(peer_id.clone())
+                    .or_insert_with(|| FleetPlacementPlannerHistory {
+                        snapshot_count: 0,
+                        visible_weight: 0.0,
+                        selected_weight: 0.0,
+                        weighted_rank: 0.0,
+                        weighted_health: 0.0,
+                        weighted_head_lag: 0.0,
+                        weighted_throughput: 0.0,
+                        weighted_trust: 0.0,
+                        weighted_budget_scale: 0.0,
+                        weighted_microshard_scale: 0.0,
+                        latest_generated_at: placement.generated_at,
+                    });
+            entry.snapshot_count += 1;
+            entry.visible_weight += planner_weight;
+            entry.selected_weight += planner_weight;
+            entry.weighted_rank += planner_weight * rank as f64;
+            entry.latest_generated_at = entry.latest_generated_at.max(placement.generated_at);
+        }
+
+        for candidate in &placement.ranked_candidates {
+            let rank = planner_history_visibility_rank(placement, &candidate.peer_id)
+                .unwrap_or(placement.selected_peer_ids.len() + placement.ranked_candidates.len());
+            let entry = histories
+                .entry(candidate.peer_id.clone())
+                .or_insert_with(|| FleetPlacementPlannerHistory {
+                    snapshot_count: 0,
+                    visible_weight: 0.0,
+                    selected_weight: 0.0,
+                    weighted_rank: 0.0,
+                    weighted_health: 0.0,
+                    weighted_head_lag: 0.0,
+                    weighted_throughput: 0.0,
+                    weighted_trust: 0.0,
+                    weighted_budget_scale: 0.0,
+                    weighted_microshard_scale: 0.0,
+                    latest_generated_at: placement.generated_at,
+                });
+            if !placement
+                .selected_peer_ids
+                .iter()
+                .any(|peer_id| peer_id == &candidate.peer_id)
+            {
+                entry.snapshot_count += 1;
+                entry.visible_weight += planner_weight;
+                entry.weighted_rank += planner_weight * rank as f64;
+            }
+            entry.weighted_health += planner_weight * candidate.weighted_health;
+            entry.weighted_head_lag += planner_weight * candidate.weighted_head_lag;
+            entry.weighted_throughput += planner_weight * candidate.weighted_throughput;
+            entry.weighted_trust += planner_weight * candidate.trust_score;
+            entry.weighted_budget_scale += planner_weight * candidate.recommended_budget_scale;
+            entry.weighted_microshard_scale +=
+                planner_weight * candidate.recommended_microshard_scale;
+            entry.latest_generated_at = entry.latest_generated_at.max(placement.generated_at);
+        }
+    }
+
+    histories
+}
+
+fn planner_support_ratio(history: Option<&FleetPlacementPlannerHistory>) -> f64 {
+    history
+        .map(|history| {
+            if history.visible_weight <= f64::EPSILON {
+                0.0
+            } else {
+                history.selected_weight / history.visible_weight
+            }
+        })
+        .unwrap_or(0.0)
+}
+
+fn planner_average_rank(history: Option<&FleetPlacementPlannerHistory>) -> f64 {
+    history
+        .map(|history| history.weighted_rank / history.visible_weight.max(f64::EPSILON))
+        .unwrap_or(f64::MAX)
+}
+
+fn fleet_placement_peer_summary(
+    peer_id: &PeerId,
+    histories: &BTreeMap<PeerId, TrainingPlacementHistory>,
+    hints: &BTreeMap<PeerId, Vec<PeerWindowPlacementHint>>,
+    trust_score: f64,
+    max_weighted_throughput: f64,
+) -> Option<FleetPlacementPeer> {
+    let history = histories.get(peer_id)?;
+    let latest_hint = hints.get(peer_id).and_then(|values| values.first())?;
+    let normalized_throughput = if max_weighted_throughput > f64::EPSILON {
+        (history.weighted_throughput / max_weighted_throughput).clamp(0.0, 1.5)
+    } else {
+        1.0
+    };
+    let lag_penalty = (1.0 / (1.0 + history.weighted_head_lag * 0.25)).clamp(0.4, 1.0);
+    let failure_penalty =
+        (1.0 / (1.0 + history.recent_failure_streak as f64 * 0.5)).clamp(0.45, 1.0);
+    let completion_bias = if history.latest_status == PeerWindowStatus::Completed {
+        1.0
+    } else {
+        0.75
+    };
+    let recommended_budget_scale = ((0.45
+        + history.weighted_health.clamp(0.0, 1.1) * 0.55
+        + normalized_throughput * 0.55
+        + trust_score.clamp(0.0, 1.0) * 0.15)
+        * lag_penalty
+        * failure_penalty
+        * completion_bias)
+        .clamp(0.35, 1.75);
+    let recommended_microshard_scale = ((0.45
+        + history.weighted_health.clamp(0.0, 1.1) * 0.6
+        + normalized_throughput * 0.35
+        + trust_score.clamp(0.0, 1.0) * 0.1)
+        * lag_penalty.sqrt()
+        * failure_penalty
+        * completion_bias)
+        .clamp(0.35, 1.5);
+    Some(FleetPlacementPeer {
+        peer_id: peer_id.clone(),
+        role: latest_hint.role.clone(),
+        backend_class: latest_hint.backend_class.clone(),
+        recent_window_count: history.recent_window_count,
+        completed_window_count: history.completed_window_count,
+        recent_failure_streak: history.recent_failure_streak,
+        latest_status: history.latest_status.clone(),
+        latest_finished_at: history.latest_finished_at,
+        weighted_health: history.weighted_health,
+        weighted_head_lag: history.weighted_head_lag,
+        weighted_throughput: history.weighted_throughput,
+        trust_score,
+        recommended_budget_scale,
+        recommended_microshard_scale,
+    })
+}
+
+pub(crate) fn build_fleet_placement_snapshot(
+    snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
+    local_peer_id: &PeerId,
+    latest_hints: &[PeerWindowPlacementHint],
+) -> Option<FleetPlacementSnapshot> {
+    let network_id = snapshot.network_id.clone()?;
+    let peers = runtime_training_peers(snapshot, local_roles, local_peer_id);
+    if peers.is_empty() {
+        return None;
+    }
+
+    let hint_history = recent_training_peer_window_histories(snapshot, latest_hints);
+    let histories = hint_history
+        .iter()
+        .filter_map(|(peer_id, hints)| {
+            summarize_training_peer_window_history(hints).map(|history| (peer_id.clone(), history))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let planner_histories = fleet_placement_planner_histories(snapshot);
+    let max_weighted_throughput = histories
+        .values()
+        .map(|history| history.weighted_throughput)
+        .fold(0.0, f64::max);
+
+    let mut selected = filter_training_assignment_peers(
+        &peers,
+        snapshot,
+        &histories,
+        &planner_histories,
+        local_peer_id,
+    );
+    if selected.is_empty() {
+        selected = peers.clone();
+    }
+    selected.sort_by(|left, right| {
+        compare_training_assignment_peer(snapshot, &histories, &planner_histories, left, right)
+    });
+
+    let mut ranked_peer_ids = peers;
+    ranked_peer_ids.sort_by(|left, right| {
+        compare_training_assignment_peer(snapshot, &histories, &planner_histories, left, right)
+    });
+    let ranked_candidates = ranked_peer_ids
+        .into_iter()
+        .filter_map(|peer_id| {
+            fleet_placement_peer_summary(
+                &peer_id,
+                &histories,
+                &hint_history,
+                peer_trust_score_value(snapshot, &peer_id),
+                max_weighted_throughput,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    Some(FleetPlacementSnapshot {
+        network_id,
+        planner_peer_id: local_peer_id.clone(),
+        generated_at: Utc::now(),
+        freshness_secs: FLEET_PLACEMENT_SNAPSHOT_FRESHNESS_SECS,
+        retained_hint_windows: TRAINING_PLACEMENT_HISTORY_WINDOWS,
+        selected_peer_ids: selected,
+        ranked_candidates,
+        planner_version: FLEET_PLACEMENT_PLANNER_VERSION.into(),
+        signature_bundle: Vec::new(),
+    })
+}
+
+pub(crate) fn sign_fleet_placement_snapshot(
+    keypair: &Keypair,
+    snapshot: &FleetPlacementSnapshot,
+) -> anyhow::Result<SignatureMetadata> {
+    let mut unsigned = snapshot.clone();
+    unsigned.signature_bundle.clear();
+    let message = burn_p2p_core::deterministic_cbor(&unsigned)?;
+    let signature = keypair
+        .sign(&message)
+        .map_err(|error| anyhow::anyhow!("failed to sign placement snapshot: {error}"))?;
+    Ok(SignatureMetadata {
+        signer: PeerId::new(
+            libp2p_identity::PeerId::from_public_key(&keypair.public()).to_string(),
+        ),
+        key_id: "runtime-fleet-placement".into(),
+        algorithm: SignatureAlgorithm::Ed25519,
+        signed_at: Utc::now(),
+        signature_hex: hex::encode(signature),
+    })
+}
+
+pub(crate) fn runtime_training_assignment_peers(
+    snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
+    local_peer_id: &PeerId,
+) -> Vec<PeerId> {
+    let peers = runtime_training_peers(snapshot, local_roles, local_peer_id);
+    if peers.len() <= 1 {
+        return peers;
+    }
+
+    let histories = training_assignment_histories(snapshot, &[]);
+    let planner_histories = fleet_placement_planner_histories(snapshot);
+    let mut selected = filter_training_assignment_peers(
+        &peers,
+        snapshot,
+        &histories,
+        &planner_histories,
+        local_peer_id,
+    );
 
     if selected.is_empty() {
         selected = peers;
     }
 
-    selected
-        .sort_by(|left, right| compare_training_assignment_peer(snapshot, &histories, left, right));
+    selected.sort_by(|left, right| {
+        compare_training_assignment_peer(snapshot, &histories, &planner_histories, left, right)
+    });
     selected
 }
 
@@ -1479,7 +2059,11 @@ pub(crate) fn resolve_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn_p2p_core::{BackendClass, MetricsLiveEvent, MetricsLiveEventKind};
+    use burn_p2p_core::{
+        AuthProvider, BackendClass, ContentId, FleetPlacementPeer, MetricsLiveEvent,
+        MetricsLiveEventKind, NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope,
+        PrincipalId, ProjectFamilyId, RevocationEpoch,
+    };
 
     fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
         let mut snapshot = NodeTelemetrySnapshot::starting(
@@ -1529,6 +2113,62 @@ mod tests {
                 ],
                 advertised_roles: Some(PeerRoleSet::new(roles.iter().cloned())),
                 announced_at: Utc::now(),
+            });
+    }
+
+    fn advertise_auth_peer(
+        snapshot: &mut NodeTelemetrySnapshot,
+        peer_id: &str,
+        keypair: &Keypair,
+        announced_at: DateTime<Utc>,
+    ) {
+        let peer_id = PeerId::new(peer_id);
+        let certificate = NodeCertificate::new(
+            Version::new(1, 0, 0),
+            NodeCertificateClaims {
+                network_id: NetworkId::new("net-test"),
+                project_family_id: ProjectFamilyId::new("family-test"),
+                release_train_hash: ContentId::new("train-test"),
+                target_artifact_hash: ContentId::new("artifact-test"),
+                peer_id: peer_id.clone(),
+                peer_public_key_hex: hex::encode(keypair.public().encode_protobuf()),
+                principal_id: PrincipalId::new(format!("principal-{}", peer_id.as_str())),
+                provider: AuthProvider::Static {
+                    authority: "test".into(),
+                },
+                granted_roles: PeerRoleSet::new([PeerRole::TrainerCpu]),
+                experiment_scopes: BTreeSet::new(),
+                client_policy_hash: None,
+                auth_policy_snapshot: None,
+                not_before: announced_at,
+                not_after: announced_at + chrono::Duration::hours(1),
+                serial: 1,
+                revocation_epoch: RevocationEpoch(0),
+            },
+            SignatureMetadata {
+                signer: peer_id.clone(),
+                key_id: "test".into(),
+                algorithm: SignatureAlgorithm::Ed25519,
+                signed_at: announced_at,
+                signature_hex: "00".into(),
+            },
+        )
+        .expect("node certificate");
+        snapshot
+            .control_plane
+            .auth_announcements
+            .push(PeerAuthAnnouncement {
+                peer_id: peer_id.clone(),
+                envelope: PeerAuthEnvelope {
+                    peer_id,
+                    certificate,
+                    client_manifest_id: None,
+                    requested_scopes: BTreeSet::new(),
+                    nonce_hash: ContentId::new("nonce-test"),
+                    challenge_signature_hex: "00".into(),
+                    presented_at: announced_at,
+                },
+                announced_at,
             });
     }
 
@@ -1628,6 +2268,145 @@ mod tests {
                     head_lag_at_finish,
                     window_finished_at,
                 }],
+                placement_snapshot: None,
+            });
+    }
+
+    fn publish_signed_placement_snapshot(
+        snapshot: &mut NodeTelemetrySnapshot,
+        planner_peer_id: &str,
+        planner_keypair: &Keypair,
+        selected_peer_ids: &[&str],
+        generated_at: DateTime<Utc>,
+    ) {
+        let mut placement = FleetPlacementSnapshot {
+            network_id: NetworkId::new("net-test"),
+            planner_peer_id: PeerId::new(planner_peer_id),
+            generated_at,
+            freshness_secs: FLEET_PLACEMENT_SNAPSHOT_FRESHNESS_SECS,
+            retained_hint_windows: TRAINING_PLACEMENT_HISTORY_WINDOWS,
+            selected_peer_ids: selected_peer_ids
+                .iter()
+                .map(|peer_id| PeerId::new(*peer_id))
+                .collect(),
+            ranked_candidates: Vec::new(),
+            planner_version: FLEET_PLACEMENT_PLANNER_VERSION.into(),
+            signature_bundle: Vec::new(),
+        };
+        placement
+            .signature_bundle
+            .push(sign_fleet_placement_snapshot(planner_keypair, &placement).expect("signature"));
+        snapshot
+            .control_plane
+            .metrics_announcements
+            .push(MetricsAnnouncement {
+                overlay: OverlayTopic::experiment(
+                    NetworkId::new("net-test"),
+                    StudyId::new("study-test"),
+                    ExperimentId::new("exp-test"),
+                    OverlayChannel::Metrics,
+                )
+                .expect("metrics overlay"),
+                event: MetricsLiveEvent {
+                    network_id: NetworkId::new("net-test"),
+                    kind: MetricsLiveEventKind::LedgerAppend,
+                    cursors: Vec::new(),
+                    generated_at,
+                },
+                peer_window_hints: Vec::new(),
+                placement_snapshot: Some(placement),
+            });
+    }
+
+    fn publish_ranked_signed_placement_snapshot(
+        snapshot: &mut NodeTelemetrySnapshot,
+        planner_peer_id: &str,
+        planner_keypair: &Keypair,
+        selected_peer_ids: &[&str],
+        ranked_candidates: &[(&str, f64, f64, f64)],
+        generated_at: DateTime<Utc>,
+    ) {
+        publish_scaled_signed_placement_snapshot(
+            snapshot,
+            planner_peer_id,
+            planner_keypair,
+            selected_peer_ids,
+            &ranked_candidates
+                .iter()
+                .map(|(peer_id, health, lag, throughput)| {
+                    (*peer_id, *health, *lag, *throughput, 1.0, 1.0)
+                })
+                .collect::<Vec<_>>(),
+            generated_at,
+        );
+    }
+
+    fn publish_scaled_signed_placement_snapshot(
+        snapshot: &mut NodeTelemetrySnapshot,
+        planner_peer_id: &str,
+        planner_keypair: &Keypair,
+        selected_peer_ids: &[&str],
+        ranked_candidates: &[(&str, f64, f64, f64, f64, f64)],
+        generated_at: DateTime<Utc>,
+    ) {
+        let mut placement = FleetPlacementSnapshot {
+            network_id: NetworkId::new("net-test"),
+            planner_peer_id: PeerId::new(planner_peer_id),
+            generated_at,
+            freshness_secs: FLEET_PLACEMENT_SNAPSHOT_FRESHNESS_SECS,
+            retained_hint_windows: TRAINING_PLACEMENT_HISTORY_WINDOWS,
+            selected_peer_ids: selected_peer_ids
+                .iter()
+                .map(|peer_id| PeerId::new(*peer_id))
+                .collect(),
+            ranked_candidates: ranked_candidates
+                .iter()
+                .map(
+                    |(peer_id, health, lag, throughput, budget_scale, microshard_scale)| {
+                        FleetPlacementPeer {
+                            peer_id: PeerId::new(*peer_id),
+                            role: PeerRole::TrainerCpu,
+                            backend_class: BackendClass::Cpu,
+                            recent_window_count: 4,
+                            completed_window_count: 4,
+                            recent_failure_streak: 0,
+                            latest_status: PeerWindowStatus::Completed,
+                            latest_finished_at: generated_at,
+                            weighted_health: *health,
+                            weighted_head_lag: *lag,
+                            weighted_throughput: *throughput,
+                            trust_score: peer_trust_score_value(snapshot, &PeerId::new(*peer_id)),
+                            recommended_budget_scale: *budget_scale,
+                            recommended_microshard_scale: *microshard_scale,
+                        }
+                    },
+                )
+                .collect(),
+            planner_version: FLEET_PLACEMENT_PLANNER_VERSION.into(),
+            signature_bundle: Vec::new(),
+        };
+        placement
+            .signature_bundle
+            .push(sign_fleet_placement_snapshot(planner_keypair, &placement).expect("signature"));
+        snapshot
+            .control_plane
+            .metrics_announcements
+            .push(MetricsAnnouncement {
+                overlay: OverlayTopic::experiment(
+                    NetworkId::new("net-test"),
+                    StudyId::new("study-test"),
+                    ExperimentId::new("exp-test"),
+                    OverlayChannel::Metrics,
+                )
+                .expect("metrics overlay"),
+                event: MetricsLiveEvent {
+                    network_id: NetworkId::new("net-test"),
+                    kind: MetricsLiveEventKind::LedgerAppend,
+                    cursors: Vec::new(),
+                    generated_at,
+                },
+                peer_window_hints: Vec::new(),
+                placement_snapshot: Some(placement),
             });
     }
 
@@ -1802,6 +2581,429 @@ mod tests {
             .expect("peer-bursty present");
 
         assert!(consistent_index < bursty_index);
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_accept_verified_signed_snapshot_ranking() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([PeerId::new("peer-a"), PeerId::new("peer-b")]);
+        advertise_peer(&mut snapshot, "peer-a", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-b", &[PeerRole::TrainerCpu]);
+        let planner_keypair = Keypair::generate_ed25519();
+        let planner_peer_id = PeerId::new(
+            libp2p_identity::PeerId::from_public_key(&planner_keypair.public()).to_string(),
+        );
+        let now = Utc::now();
+        advertise_auth_peer(
+            &mut snapshot,
+            planner_peer_id.as_str(),
+            &planner_keypair,
+            now,
+        );
+        publish_signed_placement_snapshot(
+            &mut snapshot,
+            planner_peer_id.as_str(),
+            &planner_keypair,
+            &["peer-b", "peer-a"],
+            now,
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+        let peer_a_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-a"))
+            .expect("peer-a present");
+        let peer_b_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-b"))
+            .expect("peer-b present");
+
+        assert!(peer_b_index < peer_a_index);
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_ignore_unverified_signed_snapshot_ranking() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([PeerId::new("peer-a"), PeerId::new("peer-b")]);
+        advertise_peer(&mut snapshot, "peer-a", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-b", &[PeerRole::TrainerCpu]);
+        let trusted_planner = Keypair::generate_ed25519();
+        let untrusted_planner = Keypair::generate_ed25519();
+        let planner_peer_id = PeerId::new(
+            libp2p_identity::PeerId::from_public_key(&trusted_planner.public()).to_string(),
+        );
+        let now = Utc::now();
+        advertise_auth_peer(
+            &mut snapshot,
+            planner_peer_id.as_str(),
+            &trusted_planner,
+            now,
+        );
+        publish_signed_placement_snapshot(
+            &mut snapshot,
+            planner_peer_id.as_str(),
+            &untrusted_planner,
+            &["peer-b", "peer-a"],
+            now,
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+        let peer_a_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-a"))
+            .expect("peer-a present");
+        let peer_b_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-b"))
+            .expect("peer-b present");
+
+        assert!(peer_a_index < peer_b_index);
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_use_decayed_multi_planner_history() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([PeerId::new("peer-a"), PeerId::new("peer-b")]);
+        advertise_peer(&mut snapshot, "peer-a", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-b", &[PeerRole::TrainerCpu]);
+        let planner_a = Keypair::generate_ed25519();
+        let planner_b = Keypair::generate_ed25519();
+        let planner_c = Keypair::generate_ed25519();
+        let planner_a_peer =
+            PeerId::new(libp2p_identity::PeerId::from_public_key(&planner_a.public()).to_string());
+        let planner_b_peer =
+            PeerId::new(libp2p_identity::PeerId::from_public_key(&planner_b.public()).to_string());
+        let planner_c_peer =
+            PeerId::new(libp2p_identity::PeerId::from_public_key(&planner_c.public()).to_string());
+        let now = Utc::now();
+        advertise_auth_peer(&mut snapshot, planner_a_peer.as_str(), &planner_a, now);
+        advertise_auth_peer(
+            &mut snapshot,
+            planner_b_peer.as_str(),
+            &planner_b,
+            now - chrono::Duration::seconds(30),
+        );
+        advertise_auth_peer(
+            &mut snapshot,
+            planner_c_peer.as_str(),
+            &planner_c,
+            now - chrono::Duration::seconds(60),
+        );
+        publish_ranked_signed_placement_snapshot(
+            &mut snapshot,
+            planner_a_peer.as_str(),
+            &planner_a,
+            &["peer-b"],
+            &[("peer-b", 0.95, 0.0, 160.0), ("peer-a", 0.8, 0.0, 140.0)],
+            now,
+        );
+        publish_ranked_signed_placement_snapshot(
+            &mut snapshot,
+            planner_b_peer.as_str(),
+            &planner_b,
+            &["peer-b"],
+            &[("peer-b", 0.94, 0.0, 150.0), ("peer-a", 0.8, 0.0, 130.0)],
+            now - chrono::Duration::seconds(30),
+        );
+        publish_ranked_signed_placement_snapshot(
+            &mut snapshot,
+            planner_c_peer.as_str(),
+            &planner_c,
+            &["peer-a"],
+            &[("peer-a", 0.9, 0.0, 155.0), ("peer-b", 0.85, 0.0, 145.0)],
+            now - chrono::Duration::seconds(60),
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+        let peer_a_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-a"))
+            .expect("peer-a present");
+        let peer_b_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-b"))
+            .expect("peer-b present");
+
+        assert!(peer_b_index < peer_a_index);
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_prune_sustained_global_backpressure() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids =
+            BTreeSet::from([PeerId::new("peer-backed-off"), PeerId::new("peer-healthy")]);
+        advertise_peer(&mut snapshot, "peer-backed-off", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-healthy", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "peer-backed-off",
+            PeerWindowStatus::Completed,
+            96,
+            1_000,
+            0,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-healthy",
+            PeerWindowStatus::Completed,
+            128,
+            950,
+            0,
+            now,
+        );
+        for offset in [0, 20, 40, 60] {
+            let planner = Keypair::generate_ed25519();
+            let planner_peer_id = PeerId::new(
+                libp2p_identity::PeerId::from_public_key(&planner.public()).to_string(),
+            );
+            let generated_at = now - chrono::Duration::seconds(offset);
+            advertise_auth_peer(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                generated_at,
+            );
+            publish_scaled_signed_placement_snapshot(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                &["peer-healthy"],
+                &[
+                    ("peer-healthy", 0.96, 0.0, 180.0, 1.2, 1.1),
+                    ("peer-backed-off", 0.7, 0.0, 90.0, 0.45, 0.45),
+                ],
+                generated_at,
+            );
+        }
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        assert!(peers.contains(&PeerId::new("peer-healthy")));
+        assert!(!peers.contains(&PeerId::new("peer-backed-off")));
+    }
+
+    #[test]
+    fn local_training_adaptation_factor_uses_lag_history_and_planner_pressure() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.head_lag_steps = 4;
+        snapshot.observed_peer_ids =
+            BTreeSet::from([PeerId::new("peer-fast"), PeerId::new("local")]);
+        advertise_peer(&mut snapshot, "peer-fast", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "local",
+            PeerWindowStatus::Failed,
+            0,
+            1_200,
+            3,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "local",
+            PeerWindowStatus::Failed,
+            0,
+            1_150,
+            3,
+            now - chrono::Duration::seconds(20),
+        );
+        for offset in [0, 15, 30] {
+            let planner = Keypair::generate_ed25519();
+            let planner_peer_id = PeerId::new(
+                libp2p_identity::PeerId::from_public_key(&planner.public()).to_string(),
+            );
+            let generated_at = now - chrono::Duration::seconds(offset);
+            advertise_auth_peer(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                generated_at,
+            );
+            publish_ranked_signed_placement_snapshot(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                &["peer-fast"],
+                &[("peer-fast", 0.98, 0.0, 180.0), ("local", 0.4, 3.0, 60.0)],
+                generated_at,
+            );
+        }
+
+        let factor = local_training_adaptation_factor(&snapshot, &PeerId::new("local"));
+
+        assert!(factor < 0.35, "unexpected adaptation factor: {factor}");
+        assert!(
+            factor >= 0.2,
+            "factor should remain clamped to the safety floor"
+        );
+    }
+
+    #[test]
+    fn local_training_schedule_hint_uses_verified_planner_scales() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids =
+            BTreeSet::from([PeerId::new("peer-fast"), PeerId::new("local")]);
+        advertise_peer(&mut snapshot, "peer-fast", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "local",
+            PeerWindowStatus::Completed,
+            100,
+            900,
+            0,
+            now,
+        );
+        for offset in [0, 20, 40] {
+            let planner = Keypair::generate_ed25519();
+            let planner_peer_id = PeerId::new(
+                libp2p_identity::PeerId::from_public_key(&planner.public()).to_string(),
+            );
+            let generated_at = now - chrono::Duration::seconds(offset);
+            advertise_auth_peer(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                generated_at,
+            );
+            publish_scaled_signed_placement_snapshot(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                &["local"],
+                &[
+                    ("local", 0.95, 0.0, 180.0, 1.35, 1.25),
+                    ("peer-fast", 0.8, 0.0, 140.0, 0.85, 0.9),
+                ],
+                generated_at,
+            );
+        }
+
+        let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+
+        assert!(
+            hint.budget_scale > 1.15,
+            "unexpected budget scale: {}",
+            hint.budget_scale
+        );
+        assert!(
+            hint.microshard_scale > 1.05,
+            "unexpected microshard scale: {}",
+            hint.microshard_scale
+        );
+    }
+
+    #[test]
+    fn local_training_schedule_hint_ignores_unverified_planner_scales() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "local",
+            PeerWindowStatus::Completed,
+            100,
+            900,
+            0,
+            now,
+        );
+        for offset in [0, 20, 40] {
+            let trusted_planner = Keypair::generate_ed25519();
+            let signing_planner = Keypair::generate_ed25519();
+            let planner_peer_id = PeerId::new(
+                libp2p_identity::PeerId::from_public_key(&trusted_planner.public()).to_string(),
+            );
+            let generated_at = now - chrono::Duration::seconds(offset);
+            advertise_auth_peer(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &trusted_planner,
+                generated_at,
+            );
+            publish_scaled_signed_placement_snapshot(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &signing_planner,
+                &["local"],
+                &[("local", 0.95, 0.0, 180.0, 1.45, 1.35)],
+                generated_at,
+            );
+        }
+
+        let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+
+        assert_eq!(hint.budget_scale, 1.0);
+        assert_eq!(hint.microshard_scale, 1.0);
+    }
+
+    #[test]
+    fn local_training_schedule_hint_downscales_under_sustained_planner_backpressure() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "local",
+            PeerWindowStatus::Completed,
+            96,
+            1_000,
+            0,
+            now,
+        );
+        for offset in [0, 20, 40, 60] {
+            let planner = Keypair::generate_ed25519();
+            let planner_peer_id = PeerId::new(
+                libp2p_identity::PeerId::from_public_key(&planner.public()).to_string(),
+            );
+            let generated_at = now - chrono::Duration::seconds(offset);
+            advertise_auth_peer(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                generated_at,
+            );
+            publish_scaled_signed_placement_snapshot(
+                &mut snapshot,
+                planner_peer_id.as_str(),
+                &planner,
+                &["peer-fast"],
+                &[
+                    ("local", 0.75, 0.0, 90.0, 0.5, 0.5),
+                    ("peer-fast", 0.98, 0.0, 180.0, 1.2, 1.1),
+                ],
+                generated_at,
+            );
+        }
+
+        let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+
+        assert!(
+            hint.budget_scale < 0.8,
+            "unexpected budget scale: {}",
+            hint.budget_scale
+        );
+        assert!(
+            hint.microshard_scale < 0.8,
+            "unexpected microshard scale: {}",
+            hint.microshard_scale
+        );
     }
 
     #[test]

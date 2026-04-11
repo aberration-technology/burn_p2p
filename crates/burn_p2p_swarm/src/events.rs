@@ -1,4 +1,5 @@
 use super::*;
+use burn_p2p_core::FleetPlacementSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates high-level memory/native swarm shell events.
@@ -376,7 +377,7 @@ pub struct PeerDirectoryAnnouncement {
     pub announced_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents a metrics update announcement shared over an experiment metrics topic.
 pub struct MetricsAnnouncement {
     /// The overlay.
@@ -386,6 +387,9 @@ pub struct MetricsAnnouncement {
     #[serde(default)]
     /// Recent peer-window hints that can inform placement decisions.
     pub peer_window_hints: Vec<PeerWindowPlacementHint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Signed long-horizon fleet placement snapshot emitted alongside the live event.
+    pub placement_snapshot: Option<FleetPlacementSnapshot>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -663,7 +667,7 @@ pub enum PubsubPayload {
     /// Uses the reducer load variant.
     ReducerLoad(ReducerLoadAnnouncement),
     /// Uses the auth variant.
-    Auth(PeerAuthAnnouncement),
+    Auth(Box<PeerAuthAnnouncement>),
     /// Uses the directory variant.
     Directory(ExperimentDirectoryAnnouncement),
     /// Uses the peer directory variant.
@@ -1585,7 +1589,7 @@ pub(crate) fn apply_pubsub_payload_with_index(
         PubsubPayload::ReducerLoad(announcement) => {
             snapshot.insert_reducer_load_announcement(announcement);
         }
-        PubsubPayload::Auth(announcement) => snapshot.insert_auth_announcement(announcement),
+        PubsubPayload::Auth(announcement) => snapshot.insert_auth_announcement(*announcement),
         PubsubPayload::Directory(announcement) => {
             snapshot.insert_directory_announcement(announcement);
         }

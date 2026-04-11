@@ -1,15 +1,39 @@
 use std::collections::BTreeSet;
 
 use burn_p2p::{
-    ArtifactId, ContributionReceipt, ContributionReceiptId, ExperimentId, HeadId, MicroShardId,
-    PeerId, RevisionId, StudyId,
+    ArtifactDescriptor, ArtifactId, ChunkId, ContributionReceipt, ContributionReceiptId,
+    ExperimentId, HeadId, MicroShardId, PeerId, RevisionId, StudyId,
 };
-use burn_p2p_core::{MetricsLiveEvent, SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{
+    ArtifactProfile, MetricsLiveEvent, PublicationTargetId, RunId, SchemaEnvelope, SignedPayload,
+};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{BrowserDirectorySnapshot, BrowserLeaderboardSnapshot, BrowserSessionState};
+
+mod base64_bytes {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        STANDARD
+            .decode(encoded.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents a browser stored assignment.
@@ -20,6 +44,87 @@ pub struct BrowserStoredAssignment {
     pub experiment_id: ExperimentId,
     /// The revision ID.
     pub revision_id: RevisionId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Declares how one replay chunk payload is durably stored.
+pub enum BrowserArtifactReplayChunkStorage {
+    /// The chunk bytes are stored inline in the browser storage snapshot.
+    #[default]
+    Inline,
+    /// The chunk bytes are stored in the indexeddb replay chunk store.
+    IndexedDb,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One persisted chunk used to resume browser artifact replay across reloads.
+pub struct BrowserArtifactReplayChunk {
+    /// Persisted chunk identifier.
+    pub chunk_id: ChunkId,
+    /// Durable storage backend used for the chunk payload.
+    #[serde(default)]
+    pub storage: BrowserArtifactReplayChunkStorage,
+    /// Durable chunk length retained across reloads.
+    #[serde(default)]
+    pub persisted_bytes: u64,
+    /// Persisted verified chunk payload.
+    #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
+    pub chunk_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One durably persisted contiguous byte prefix for range-based artifact replay.
+pub struct BrowserArtifactReplayBytePrefix {
+    /// Durable storage backend used for the prefix payload.
+    #[serde(default)]
+    pub storage: BrowserArtifactReplayChunkStorage,
+    /// Number of verified bytes retained across reloads.
+    #[serde(default)]
+    pub persisted_bytes: u64,
+    /// Full artifact length when the edge download path exposes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    /// Persisted contiguous prefix bytes already downloaded from the edge.
+    #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Durable checkpoint describing an in-progress or failed active-head artifact replay.
+pub struct BrowserArtifactReplayCheckpoint {
+    /// Experiment covered by the checkpoint.
+    pub experiment_id: ExperimentId,
+    /// Revision covered by the checkpoint.
+    pub revision_id: RevisionId,
+    /// Run covered by the checkpoint.
+    pub run_id: RunId,
+    /// Head whose artifact is being replayed.
+    pub head_id: HeadId,
+    /// Artifact being replayed into the browser cache.
+    pub artifact_id: ArtifactId,
+    /// Publication profile used for the replay attempt.
+    pub artifact_profile: ArtifactProfile,
+    /// Publication target used for the replay attempt.
+    pub publication_target_id: PublicationTargetId,
+    /// Provider peers last attempted for the replay.
+    #[serde(default)]
+    pub provider_peer_ids: Vec<PeerId>,
+    /// Persisted descriptor, once the browser has resolved it from the swarm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_descriptor: Option<ArtifactDescriptor>,
+    /// Persisted verified chunks already downloaded for the artifact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_chunks: Vec<BrowserArtifactReplayChunk>,
+    /// Persisted contiguous byte prefix already downloaded through the edge range path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_download_prefix: Option<BrowserArtifactReplayBytePrefix>,
+    /// Aggregate completed replay bytes retained in the checkpoint.
+    #[serde(default)]
+    pub completed_bytes: u64,
+    /// Last replay attempt timestamp.
+    pub last_attempted_at: DateTime<Utc>,
+    /// Number of replay attempts retained for the checkpoint.
+    pub attempt_count: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +286,9 @@ pub struct BrowserStorageSnapshot {
     pub last_metrics_sync_at: Option<DateTime<Utc>>,
     /// The last head ID.
     pub last_head_id: Option<HeadId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Durable checkpoint for resuming active-head artifact replay after offline failure.
+    pub artifact_replay_checkpoint: Option<BrowserArtifactReplayCheckpoint>,
     /// The stored certificate peer ID.
     pub stored_certificate_peer_id: Option<PeerId>,
     /// The active assignment.
@@ -192,7 +300,7 @@ pub struct BrowserStorageSnapshot {
 impl Default for BrowserStorageSnapshot {
     fn default() -> Self {
         Self {
-            metadata_version: 1,
+            metadata_version: 3,
             session: BrowserSessionState::default(),
             cached_chunk_artifacts: BTreeSet::new(),
             cached_head_artifact_heads: BTreeSet::new(),
@@ -210,6 +318,7 @@ impl Default for BrowserStorageSnapshot {
             last_metrics_live_event: None,
             last_metrics_sync_at: None,
             last_head_id: None,
+            artifact_replay_checkpoint: None,
             stored_certificate_peer_id: None,
             active_assignment: None,
             updated_at: Utc::now(),
@@ -307,6 +416,161 @@ impl BrowserStorageSnapshot {
         self.updated_at = Utc::now();
     }
 
+    /// Performs the remember artifact replay checkpoint operation.
+    pub fn remember_artifact_replay_checkpoint(
+        &mut self,
+        checkpoint: BrowserArtifactReplayCheckpoint,
+    ) {
+        self.artifact_replay_checkpoint = Some(checkpoint);
+        self.updated_at = Utc::now();
+    }
+
+    /// Persists the resolved descriptor for the active replay checkpoint.
+    pub fn remember_artifact_replay_descriptor(&mut self, descriptor: ArtifactDescriptor) {
+        if let Some(checkpoint) = self.artifact_replay_checkpoint.as_mut() {
+            checkpoint.completed_chunks.retain(|chunk| {
+                descriptor
+                    .chunks
+                    .iter()
+                    .any(|descriptor_chunk| descriptor_chunk.chunk_id == chunk.chunk_id)
+            });
+            checkpoint.completed_bytes = checkpoint
+                .completed_chunks
+                .iter()
+                .map(browser_artifact_replay_chunk_len)
+                .sum();
+            checkpoint.edge_download_prefix = None;
+            checkpoint.artifact_descriptor = Some(descriptor);
+            checkpoint.last_attempted_at = Utc::now();
+            self.updated_at = Utc::now();
+        }
+    }
+
+    /// Persists one verified chunk for the active replay checkpoint.
+    pub fn remember_artifact_replay_chunk(&mut self, chunk_id: ChunkId, chunk_bytes: Vec<u8>) {
+        if let Some(checkpoint) = self.artifact_replay_checkpoint.as_mut() {
+            if let Some(existing) = checkpoint
+                .completed_chunks
+                .iter_mut()
+                .find(|chunk| chunk.chunk_id == chunk_id)
+            {
+                existing.storage = BrowserArtifactReplayChunkStorage::Inline;
+                existing.persisted_bytes = chunk_bytes.len() as u64;
+                existing.chunk_bytes = chunk_bytes;
+            } else {
+                checkpoint
+                    .completed_chunks
+                    .push(BrowserArtifactReplayChunk {
+                        chunk_id,
+                        storage: BrowserArtifactReplayChunkStorage::Inline,
+                        persisted_bytes: chunk_bytes.len() as u64,
+                        chunk_bytes,
+                    });
+            }
+            checkpoint.completed_bytes = checkpoint
+                .completed_chunks
+                .iter()
+                .map(browser_artifact_replay_chunk_len)
+                .sum();
+            checkpoint.last_attempted_at = Utc::now();
+            self.updated_at = Utc::now();
+        }
+    }
+
+    /// Persists the contiguous range-downloaded edge prefix for the active replay checkpoint.
+    pub fn remember_artifact_replay_edge_prefix(
+        &mut self,
+        total_bytes: Option<u64>,
+        bytes: Vec<u8>,
+    ) {
+        if let Some(checkpoint) = self.artifact_replay_checkpoint.as_mut() {
+            checkpoint.edge_download_prefix = Some(BrowserArtifactReplayBytePrefix {
+                storage: BrowserArtifactReplayChunkStorage::Inline,
+                persisted_bytes: bytes.len() as u64,
+                total_bytes,
+                bytes,
+            });
+            checkpoint.completed_bytes = checkpoint
+                .artifact_descriptor
+                .as_ref()
+                .map(|_| {
+                    checkpoint
+                        .completed_chunks
+                        .iter()
+                        .map(browser_artifact_replay_chunk_len)
+                        .sum()
+                })
+                .unwrap_or_else(|| {
+                    checkpoint
+                        .edge_download_prefix
+                        .as_ref()
+                        .map(browser_artifact_replay_prefix_len)
+                        .unwrap_or(0)
+                });
+            checkpoint.last_attempted_at = Utc::now();
+            self.updated_at = Utc::now();
+        }
+    }
+
+    /// Returns the stored replay checkpoint descriptor when present.
+    pub fn artifact_replay_descriptor(&self) -> Option<&ArtifactDescriptor> {
+        self.artifact_replay_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.artifact_descriptor.as_ref())
+    }
+
+    /// Returns one stored replay chunk payload when present.
+    pub fn artifact_replay_chunk_bytes(&self, chunk_id: &ChunkId) -> Option<&[u8]> {
+        self.artifact_replay_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| {
+                checkpoint
+                    .completed_chunks
+                    .iter()
+                    .find(|chunk| &chunk.chunk_id == chunk_id)
+            })
+            .and_then(|chunk| {
+                (!chunk.chunk_bytes.is_empty()).then_some(chunk.chunk_bytes.as_slice())
+            })
+    }
+
+    /// Returns the stored edge replay prefix bytes when present.
+    pub fn artifact_replay_edge_prefix_bytes(&self) -> Option<&[u8]> {
+        self.artifact_replay_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.edge_download_prefix.as_ref())
+            .and_then(|prefix| (!prefix.bytes.is_empty()).then_some(prefix.bytes.as_slice()))
+    }
+
+    /// Returns a clone suitable for durable persistence with large replay chunk payloads
+    /// externalized to IndexedDB metadata records.
+    pub fn durable_replay_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        if let Some(checkpoint) = snapshot.artifact_replay_checkpoint.as_mut() {
+            for chunk in &mut checkpoint.completed_chunks {
+                if !chunk.chunk_bytes.is_empty() {
+                    chunk.persisted_bytes = chunk.chunk_bytes.len() as u64;
+                    chunk.storage = BrowserArtifactReplayChunkStorage::IndexedDb;
+                    chunk.chunk_bytes.clear();
+                }
+            }
+            if let Some(prefix) = checkpoint.edge_download_prefix.as_mut()
+                && !prefix.bytes.is_empty()
+            {
+                prefix.persisted_bytes = prefix.bytes.len() as u64;
+                prefix.storage = BrowserArtifactReplayChunkStorage::IndexedDb;
+                prefix.bytes.clear();
+            }
+        }
+        snapshot
+    }
+
+    /// Performs the clear artifact replay checkpoint operation.
+    pub fn clear_artifact_replay_checkpoint(&mut self) {
+        self.artifact_replay_checkpoint = None;
+        self.updated_at = Utc::now();
+    }
+
     /// Performs the remember chunk artifact operation.
     pub fn remember_chunk_artifact(&mut self, artifact_id: ArtifactId) {
         self.cached_chunk_artifacts.insert(artifact_id);
@@ -320,6 +584,7 @@ impl BrowserStorageSnapshot {
         artifact_id: ArtifactId,
         transport: impl Into<String>,
     ) {
+        self.clear_artifact_replay_checkpoint();
         self.cached_head_artifact_heads.insert(head_id);
         self.cached_chunk_artifacts.insert(artifact_id);
         self.last_head_artifact_transport = Some(transport.into());
@@ -399,9 +664,18 @@ impl BrowserStorageSnapshot {
         self.cached_chunk_artifacts.clear();
         self.cached_head_artifact_heads.clear();
         self.last_head_artifact_transport = None;
+        self.artifact_replay_checkpoint = None;
         self.cached_microshards.clear();
         self.updated_at = Utc::now();
     }
+}
+
+fn browser_artifact_replay_chunk_len(chunk: &BrowserArtifactReplayChunk) -> u64 {
+    chunk.persisted_bytes.max(chunk.chunk_bytes.len() as u64)
+}
+
+fn browser_artifact_replay_prefix_len(prefix: &BrowserArtifactReplayBytePrefix) -> u64 {
+    prefix.persisted_bytes.max(prefix.bytes.len() as u64)
 }
 
 fn remember_recent_receipt_id(

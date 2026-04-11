@@ -517,20 +517,32 @@ impl BrowserAppController {
     pub async fn refresh(&mut self) -> Result<BrowserAppClientView, BrowserAuthClientError> {
         let mut runtime = self.model.runtime.clone();
         let session = runtime.storage.session.clone();
-        let events = self
+        let previous_error = self.model.last_error.clone();
+        match self
             .edge_client
             .sync_worker_runtime(&mut runtime, Some(&session), true)
-            .await?;
-        let previous_error = self.model.last_error.clone();
-        let mut model = BrowserAppModel::from_runtime(runtime);
-        model.last_error = previous_error;
-        for event in events {
-            model.apply_event(event);
+            .await
+        {
+            Ok(events) => {
+                let mut model = BrowserAppModel::from_runtime(runtime);
+                model.last_error = previous_error;
+                for event in events {
+                    model.apply_event(event);
+                }
+                self.model = model;
+                self.persist_receipt_outbox().await?;
+                self.persist_browser_storage().await?;
+                Ok(self.view())
+            }
+            Err(error) => {
+                let mut model = BrowserAppModel::from_runtime(runtime);
+                model.last_error = Some(error.to_string());
+                self.model = model;
+                let _ = self.persist_receipt_outbox().await;
+                let _ = self.persist_browser_storage().await;
+                Err(error)
+            }
         }
-        self.model = model;
-        self.persist_receipt_outbox().await?;
-        self.persist_browser_storage().await?;
-        Ok(self.view())
     }
 
     fn durable_network_id(&self) -> Result<burn_p2p_core::NetworkId, BrowserAuthClientError> {

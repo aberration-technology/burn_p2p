@@ -1,4 +1,6 @@
 use super::*;
+use burn_p2p_bootstrap::{OperatorAuditKind, OperatorAuditQuery, OperatorReplayQuery};
+use burn_p2p_core::{ExperimentId, HeadId, RevisionId, StudyId};
 
 pub(crate) fn handle_get_route(
     stream: &mut TcpStream,
@@ -59,6 +61,63 @@ pub(crate) fn handle_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_merges_page(page)?;
         write_json(stream, &merges)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
+            operator_audit_request_from_path(&request.path, "/operator/audit/page")?
+    {
+        let audit_page = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_audit_page(&query, page)?;
+        write_json(stream, &audit_page)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(query) =
+            operator_audit_summary_request_from_path(&request.path, "/operator/audit/summary")?
+    {
+        let audit_summary = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_audit_summary(&query)?;
+        write_json(stream, &audit_summary)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(captured_at) =
+            operator_replay_request_from_path(&request.path, "/operator/replay/snapshot")?
+    {
+        let replay_snapshot = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_replay_snapshot(captured_at)?;
+        write_json(stream, &replay_snapshot)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
+            operator_replay_page_request_from_path(&request.path, "/operator/replay/page")?
+    {
+        let replay_page = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_replay_page(&query, page)?;
+        write_json(stream, &replay_page)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET" && request.path == "/operator/retention" {
+        let retention = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_retention_summary()?;
+        write_json(stream, &retention)?;
         return Ok(true);
     }
 
@@ -304,6 +363,217 @@ fn page_request_from_path(
     }
 
     Ok(Some(page.normalized()))
+}
+
+fn operator_audit_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<(burn_p2p_core::PageRequest, OperatorAuditQuery)>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some((
+            burn_p2p_core::PageRequest::default(),
+            OperatorAuditQuery::default(),
+        )));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut page = burn_p2p_core::PageRequest::default();
+    let mut audit = OperatorAuditQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "offset" => {
+                page.offset = value.parse::<usize>()?;
+            }
+            "limit" => {
+                page.limit = value.parse::<usize>()?;
+            }
+            "kind" => {
+                audit.kind = Some(if let Some(kind) = OperatorAuditKind::from_slug(value) {
+                    kind
+                } else {
+                    return Err(format!("unsupported operator audit kind `{value}`").into());
+                });
+            }
+            "study_id" => {
+                audit.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                audit.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                audit.revision_id = Some(RevisionId::new(value));
+            }
+            "peer_id" => {
+                audit.peer_id = Some(PeerId::new(value));
+            }
+            "head_id" => {
+                audit.head_id = Some(HeadId::new(value));
+            }
+            "since" => {
+                audit.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                audit.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                audit.text = Some(value.replace('+', " "));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some((page.normalized(), audit)))
+}
+
+fn operator_replay_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<Option<DateTime<Utc>>>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some(None));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut captured_at = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "captured_at" && !value.is_empty() {
+            captured_at = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+        }
+    }
+    Ok(Some(captured_at))
+}
+
+fn operator_audit_summary_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<OperatorAuditQuery>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some(OperatorAuditQuery::default()));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut audit = OperatorAuditQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "kind" => {
+                audit.kind = Some(if let Some(kind) = OperatorAuditKind::from_slug(value) {
+                    kind
+                } else {
+                    return Err(format!("unsupported operator audit kind `{value}`").into());
+                });
+            }
+            "study_id" => {
+                audit.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                audit.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                audit.revision_id = Some(RevisionId::new(value));
+            }
+            "peer_id" => {
+                audit.peer_id = Some(PeerId::new(value));
+            }
+            "head_id" => {
+                audit.head_id = Some(HeadId::new(value));
+            }
+            "since" => {
+                audit.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                audit.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                audit.text = Some(value.replace('+', " "));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some(audit))
+}
+
+fn operator_replay_page_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<(burn_p2p_core::PageRequest, OperatorReplayQuery)>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some((
+            burn_p2p_core::PageRequest::default(),
+            OperatorReplayQuery::default(),
+        )));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut page = burn_p2p_core::PageRequest::default();
+    let mut replay = OperatorReplayQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "offset" => {
+                page.offset = value.parse::<usize>()?;
+            }
+            "limit" => {
+                page.limit = value.parse::<usize>()?;
+            }
+            "study_id" => {
+                replay.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                replay.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                replay.revision_id = Some(RevisionId::new(value));
+            }
+            "head_id" => {
+                replay.head_id = Some(HeadId::new(value));
+            }
+            "since" => {
+                replay.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                replay.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                replay.text = Some(value.replace('+', " "));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some((page.normalized(), replay)))
 }
 
 pub(crate) fn current_diagnostics(

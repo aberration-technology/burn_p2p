@@ -1,10 +1,14 @@
 use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
+#[cfg(target_arch = "wasm32")]
+use burn_p2p::ArtifactDescriptor;
 use burn_p2p::{
     ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ExperimentId,
     ExperimentScope, HeadId, LoginRequest, LoginStart, NetworkId, NodeCertificate, PeerId,
     PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
 };
+#[cfg(target_arch = "wasm32")]
+use burn_p2p_core::ChunkDescriptor;
 use burn_p2p_core::{
     ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
     BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, MetricsLiveEvent,
@@ -25,8 +29,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    BrowserMetricsSyncState, BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand,
-    BrowserWorkerEvent, BrowserWorkerRuntime,
+    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportStatus,
+    BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,24 +437,77 @@ impl BrowserEdgeClient {
         self
     }
 
-    fn peer_artifact_request(
-        view: &HeadArtifactView,
-        artifact_profile: ArtifactProfile,
-        publication: &PublishedArtifactRecord,
-    ) -> Option<BrowserPeerArtifactRequest> {
-        if view.provider_peer_ids.is_empty() {
-            return None;
+    fn replay_checkpoint_matches(
+        checkpoint: &BrowserArtifactReplayCheckpoint,
+        request: &BrowserPeerArtifactRequest,
+    ) -> bool {
+        checkpoint.experiment_id == request.experiment_id
+            && checkpoint.revision_id == request.revision_id
+            && checkpoint.run_id == request.run_id
+            && checkpoint.head_id == request.head_id
+            && checkpoint.artifact_id == request.artifact_id
+            && checkpoint.artifact_profile == request.artifact_profile
+            && checkpoint.publication_target_id == request.publication_target_id
+    }
+
+    fn apply_replay_checkpoint(
+        request: &mut BrowserPeerArtifactRequest,
+        checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
+    ) {
+        let Some(checkpoint) = checkpoint else {
+            return;
+        };
+        if !Self::replay_checkpoint_matches(checkpoint, request) {
+            return;
         }
-        Some(BrowserPeerArtifactRequest {
-            experiment_id: view.head.experiment_id.clone(),
-            revision_id: view.head.revision_id.clone(),
-            run_id: view.run_id.clone(),
-            head_id: view.head.head_id.clone(),
-            artifact_id: view.head.artifact_id.clone(),
-            artifact_profile,
-            publication_target_id: publication.publication_target_id.clone(),
-            provider_peer_ids: view.provider_peer_ids.clone(),
-        })
+
+        let mut provider_peer_ids = checkpoint.provider_peer_ids.clone();
+        for peer_id in &request.provider_peer_ids {
+            if !provider_peer_ids.contains(peer_id) {
+                provider_peer_ids.push(peer_id.clone());
+            }
+        }
+        request.provider_peer_ids = provider_peer_ids;
+    }
+
+    fn replay_checkpoint_for_request(
+        request: &BrowserPeerArtifactRequest,
+        checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
+    ) -> BrowserArtifactReplayCheckpoint {
+        let (
+            artifact_descriptor,
+            completed_chunks,
+            edge_download_prefix,
+            completed_bytes,
+            attempt_count,
+        ) = checkpoint
+            .filter(|checkpoint| Self::replay_checkpoint_matches(checkpoint, request))
+            .map(|checkpoint| {
+                (
+                    checkpoint.artifact_descriptor.clone(),
+                    checkpoint.completed_chunks.clone(),
+                    checkpoint.edge_download_prefix.clone(),
+                    checkpoint.completed_bytes,
+                    checkpoint.attempt_count + 1,
+                )
+            })
+            .unwrap_or((None, Vec::new(), None, 0, 1));
+        BrowserArtifactReplayCheckpoint {
+            experiment_id: request.experiment_id.clone(),
+            revision_id: request.revision_id.clone(),
+            run_id: request.run_id.clone(),
+            head_id: request.head_id.clone(),
+            artifact_id: request.artifact_id.clone(),
+            artifact_profile: request.artifact_profile.clone(),
+            publication_target_id: request.publication_target_id.clone(),
+            provider_peer_ids: request.provider_peer_ids.clone(),
+            artifact_descriptor,
+            completed_chunks,
+            edge_download_prefix,
+            completed_bytes,
+            last_attempted_at: Utc::now(),
+            attempt_count,
+        }
     }
 
     /// Performs the bindings operation.
@@ -1105,6 +1162,264 @@ impl BrowserEdgeClient {
             .await
     }
 
+    async fn persist_replay_storage(
+        runtime: &BrowserWorkerRuntime,
+    ) -> Result<(), BrowserAuthClientError> {
+        let Some(network_id) = runtime
+            .config
+            .as_ref()
+            .map(|config| config.network_id.clone())
+        else {
+            return Ok(());
+        };
+        crate::durability::persist_durable_browser_storage(&network_id, &runtime.storage)
+            .await
+            .map_err(BrowserAuthClientError::ArtifactTransport)
+    }
+
+    fn parse_download_total_bytes_from_parts(
+        status: StatusCode,
+        content_range: Option<&str>,
+        content_length: Option<u64>,
+        completed_prefix_len: usize,
+    ) -> Option<u64> {
+        content_range
+            .and_then(|value| value.split_once('/').map(|(_, total)| total))
+            .and_then(|total| total.parse::<u64>().ok())
+            .or_else(|| {
+                content_length.map(|length| {
+                    if status == StatusCode::PARTIAL_CONTENT {
+                        length + completed_prefix_len as u64
+                    } else {
+                        length
+                    }
+                })
+            })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_download_total_bytes(
+        response: &reqwest::Response,
+        completed_prefix_len: usize,
+    ) -> Option<u64> {
+        Self::parse_download_total_bytes_from_parts(
+            response.status(),
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok()),
+            response.content_length(),
+            completed_prefix_len,
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn download_artifact_bytes_resumable(
+        &self,
+        ticket_id: &burn_p2p_core::DownloadTicketId,
+        runtime: &mut BrowserWorkerRuntime,
+    ) -> Result<Vec<u8>, BrowserAuthClientError> {
+        use js_sys::{Reflect, Uint8Array};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
+        let mut prefix_bytes =
+            if let Some(bytes) = runtime.storage.artifact_replay_edge_prefix_bytes() {
+                bytes.to_vec()
+            } else if let (Some(network_id), Some(checkpoint)) = (
+                runtime
+                    .config
+                    .as_ref()
+                    .map(|config| config.network_id.clone()),
+                runtime.storage.artifact_replay_checkpoint.as_ref(),
+            ) {
+                crate::durability::load_durable_browser_artifact_replay_prefix(
+                    &network_id,
+                    &checkpoint.artifact_id,
+                )
+                .await
+                .map_err(BrowserAuthClientError::ArtifactTransport)?
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+        let Some(window) = web_sys::window() else {
+            return Err(BrowserAuthClientError::ArtifactTransport(
+                "browser window was unavailable for edge replay".into(),
+            ));
+        };
+        let url = self.artifact_download_url(ticket_id);
+        let request_init = web_sys::RequestInit::new();
+        request_init.set_method("GET");
+        let headers = web_sys::Headers::new()
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        if !prefix_bytes.is_empty() {
+            headers
+                .append("Range", &format!("bytes={}-", prefix_bytes.len()))
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        }
+        request_init.set_headers(&headers);
+        let request = web_sys::Request::new_with_str_and_init(&url, &request_init)
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let response_value = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let response = response_value
+            .dyn_into::<web_sys::Response>()
+            .map_err(|_| {
+                BrowserAuthClientError::ArtifactTransport(
+                    "browser edge fetch returned a non-response object".into(),
+                )
+            })?;
+        let status = StatusCode::from_u16(response.status()).map_err(|_| {
+            BrowserAuthClientError::ArtifactTransport(format!(
+                "browser edge returned invalid HTTP status {}",
+                response.status()
+            ))
+        })?;
+        if !status.is_success() {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "browser edge returned HTTP {} for resumable artifact download",
+                status.as_u16()
+            )));
+        }
+        if !prefix_bytes.is_empty() && status != StatusCode::PARTIAL_CONTENT {
+            prefix_bytes.clear();
+        }
+        let content_range = response
+            .headers()
+            .get("content-range")
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let content_length = response
+            .headers()
+            .get("content-length")
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?
+            .and_then(|value| value.parse::<u64>().ok());
+        let total_bytes = Self::parse_download_total_bytes_from_parts(
+            status,
+            content_range.as_deref(),
+            content_length,
+            prefix_bytes.len(),
+        );
+        let body = response.body().ok_or_else(|| {
+            BrowserAuthClientError::ArtifactTransport(
+                "browser edge response body was unavailable".into(),
+            )
+        })?;
+        let reader = body
+            .get_reader()
+            .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+            .map_err(|_| {
+                BrowserAuthClientError::ArtifactTransport(
+                    "browser edge response body reader was unavailable".into(),
+                )
+            })?;
+
+        loop {
+            let read_result = JsFuture::from(reader.read())
+                .await
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+            let done = Reflect::get(&read_result, &JsValue::from_str("done"))
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?
+                .as_bool()
+                .unwrap_or(false);
+            if done {
+                break;
+            }
+            let value = Reflect::get(&read_result, &JsValue::from_str("value"))
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+            let chunk = Uint8Array::new(&value).to_vec();
+            if chunk.is_empty() {
+                continue;
+            }
+            prefix_bytes.extend_from_slice(&chunk);
+            runtime
+                .storage
+                .remember_artifact_replay_edge_prefix(total_bytes, prefix_bytes.clone());
+            Self::persist_replay_storage(runtime).await?;
+        }
+
+        if let Some(total_bytes) = total_bytes
+            && prefix_bytes.len() as u64 != total_bytes
+        {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "edge replay reconstructed {} bytes but expected {}",
+                prefix_bytes.len(),
+                total_bytes
+            )));
+        }
+
+        Ok(prefix_bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn download_artifact_bytes_resumable(
+        &self,
+        ticket_id: &burn_p2p_core::DownloadTicketId,
+        runtime: &mut BrowserWorkerRuntime,
+    ) -> Result<Vec<u8>, BrowserAuthClientError> {
+        let mut prefix_bytes =
+            if let Some(bytes) = runtime.storage.artifact_replay_edge_prefix_bytes() {
+                bytes.to_vec()
+            } else if let (Some(network_id), Some(checkpoint)) = (
+                runtime
+                    .config
+                    .as_ref()
+                    .map(|config| config.network_id.clone()),
+                runtime.storage.artifact_replay_checkpoint.as_ref(),
+            ) {
+                crate::durability::load_durable_browser_artifact_replay_prefix(
+                    &network_id,
+                    &checkpoint.artifact_id,
+                )
+                .await
+                .map_err(BrowserAuthClientError::ArtifactTransport)?
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+        let url = self.artifact_download_url(ticket_id);
+        let mut request = self.http.get(url);
+        if !prefix_bytes.is_empty() {
+            request = request.header(
+                reqwest::header::RANGE,
+                format!("bytes={}-", prefix_bytes.len()),
+            );
+        }
+        let mut response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(BrowserAuthClientError::Http(
+                response.error_for_status().expect_err("non-success status"),
+            ));
+        }
+        if !prefix_bytes.is_empty() && response.status() != StatusCode::PARTIAL_CONTENT {
+            prefix_bytes.clear();
+        }
+        let total_bytes = Self::parse_download_total_bytes(&response, prefix_bytes.len());
+
+        while let Some(chunk) = response.chunk().await? {
+            prefix_bytes.extend_from_slice(&chunk);
+            runtime
+                .storage
+                .remember_artifact_replay_edge_prefix(total_bytes, prefix_bytes.clone());
+            Self::persist_replay_storage(runtime).await?;
+        }
+
+        if let Some(total_bytes) = total_bytes
+            && prefix_bytes.len() as u64 != total_bytes
+        {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "edge replay reconstructed {} bytes but expected {}",
+                prefix_bytes.len(),
+                total_bytes
+            )));
+        }
+
+        Ok(prefix_bytes)
+    }
+
     /// Requests a short-lived artifact ticket and immediately downloads the
     /// corresponding artifact bytes.
     pub async fn request_and_download_artifact(
@@ -1119,9 +1434,23 @@ impl BrowserEdgeClient {
             .await
     }
 
+    async fn request_and_download_artifact_resumable(
+        &self,
+        request: &DownloadTicketRequest,
+        session_id: Option<&ContentId>,
+        runtime: &mut BrowserWorkerRuntime,
+    ) -> Result<Vec<u8>, BrowserAuthClientError> {
+        let ticket = self
+            .request_artifact_download_ticket(request, session_id)
+            .await?;
+        self.download_artifact_bytes_resumable(&ticket.ticket.download_ticket_id, runtime)
+            .await
+    }
+
     async fn try_download_artifact_via_peer_transport(
         &self,
         request: &BrowserPeerArtifactRequest,
+        runtime: &mut BrowserWorkerRuntime,
     ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
         if let Some(fetcher) = self.peer_artifact_fetcher.as_ref() {
             return fetcher.fetch(request.clone()).await.map(|bytes| {
@@ -1133,11 +1462,11 @@ impl BrowserEdgeClient {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return try_download_artifact_via_browser_peer_transport(request).await;
+            return try_download_artifact_via_browser_peer_transport(request, runtime).await;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let _ = request;
+            let _ = (request, runtime);
             Ok(None)
         }
     }
@@ -1182,13 +1511,29 @@ impl BrowserEdgeClient {
         else {
             return Ok(Vec::new());
         };
+        let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.clone();
+        let mut replay_request = BrowserPeerArtifactRequest {
+            experiment_id: view.head.experiment_id.clone(),
+            revision_id: view.head.revision_id.clone(),
+            run_id: view.run_id.clone(),
+            head_id: view.head.head_id.clone(),
+            artifact_id: view.head.artifact_id.clone(),
+            artifact_profile: artifact_profile.clone(),
+            publication_target_id: publication.publication_target_id.clone(),
+            provider_peer_ids: view.provider_peer_ids.clone(),
+        };
+        Self::apply_replay_checkpoint(&mut replay_request, existing_checkpoint.as_ref());
+        runtime
+            .storage
+            .remember_artifact_replay_checkpoint(Self::replay_checkpoint_for_request(
+                &replay_request,
+                existing_checkpoint.as_ref(),
+            ));
         let mut transport = None;
         let mut peer_transport_error = None;
-        if let Some(peer_request) =
-            Self::peer_artifact_request(&view, artifact_profile.clone(), publication)
-        {
+        if !replay_request.provider_peer_ids.is_empty() {
             match self
-                .try_download_artifact_via_peer_transport(&peer_request)
+                .try_download_artifact_via_peer_transport(&replay_request, runtime)
                 .await
             {
                 Ok(Some(result)) => {
@@ -1208,7 +1553,7 @@ impl BrowserEdgeClient {
         }
         if transport.is_none() {
             match self
-                .request_and_download_artifact(
+                .request_and_download_artifact_resumable(
                     &DownloadTicketRequest {
                         principal_id: principal_id.clone(),
                         experiment_id: view.head.experiment_id.clone(),
@@ -1219,6 +1564,7 @@ impl BrowserEdgeClient {
                         artifact_alias_id: publication.artifact_alias_id.clone(),
                     },
                     Some(session_id),
+                    runtime,
                 )
                 .await
             {
@@ -1628,8 +1974,9 @@ impl BrowserEdgeClient {
 #[cfg(target_arch = "wasm32")]
 async fn try_download_artifact_via_browser_peer_transport(
     request: &BrowserPeerArtifactRequest,
+    runtime: &mut BrowserWorkerRuntime,
 ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
-    if let Some(bytes) = try_download_artifact_via_browser_peer_swarm(request).await? {
+    if let Some(bytes) = try_download_artifact_via_browser_peer_swarm(request, runtime).await? {
         return Ok(Some(BrowserPeerArtifactTransportResult {
             bytes,
             kind: BrowserPeerArtifactTransportKind::PeerSwarm,
@@ -1641,10 +1988,85 @@ async fn try_download_artifact_via_browser_peer_transport(
 #[cfg(target_arch = "wasm32")]
 async fn try_download_artifact_via_browser_peer_swarm(
     request: &BrowserPeerArtifactRequest,
+    runtime: &mut BrowserWorkerRuntime,
 ) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
     use js_sys::{Function, Promise, Reflect, Uint8Array};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
+
+    async fn persist_replay_progress(
+        runtime: &BrowserWorkerRuntime,
+    ) -> Result<(), BrowserAuthClientError> {
+        let Some(network_id) = runtime
+            .config
+            .as_ref()
+            .map(|config| config.network_id.clone())
+        else {
+            return Ok(());
+        };
+        crate::durability::persist_durable_browser_storage(&network_id, &runtime.storage)
+            .await
+            .map_err(BrowserAuthClientError::ArtifactTransport)
+    }
+
+    fn checkpoint_descriptor_for_request(
+        runtime: &BrowserWorkerRuntime,
+        request: &BrowserPeerArtifactRequest,
+    ) -> Option<ArtifactDescriptor> {
+        let checkpoint = runtime.storage.artifact_replay_checkpoint.as_ref()?;
+        if checkpoint.experiment_id != request.experiment_id
+            || checkpoint.revision_id != request.revision_id
+            || checkpoint.run_id != request.run_id
+            || checkpoint.head_id != request.head_id
+            || checkpoint.artifact_id != request.artifact_id
+            || checkpoint.artifact_profile != request.artifact_profile
+            || checkpoint.publication_target_id != request.publication_target_id
+        {
+            return None;
+        }
+        checkpoint.artifact_descriptor.clone()
+    }
+
+    async fn stored_checkpoint_chunk(
+        runtime: &BrowserWorkerRuntime,
+        chunk: &ChunkDescriptor,
+    ) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
+        let checkpoint = match runtime.storage.artifact_replay_checkpoint.as_ref() {
+            Some(checkpoint) => checkpoint,
+            None => return Ok(None),
+        };
+        let bytes =
+            if let Some(bytes) = runtime.storage.artifact_replay_chunk_bytes(&chunk.chunk_id) {
+                bytes.to_vec()
+            } else {
+                let Some(network_id) = runtime
+                    .config
+                    .as_ref()
+                    .map(|config| config.network_id.clone())
+                else {
+                    return Ok(None);
+                };
+                let Some(bytes) = crate::durability::load_durable_browser_artifact_replay_chunk(
+                    &network_id,
+                    &checkpoint.artifact_id,
+                    &chunk.chunk_id,
+                )
+                .await
+                .map_err(BrowserAuthClientError::ArtifactTransport)?
+                else {
+                    return Ok(None);
+                };
+                bytes
+            };
+        if bytes.len() as u64 != chunk.length_bytes {
+            return Ok(None);
+        }
+        let chunk_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
+        if chunk_hash != chunk.chunk_hash {
+            return Ok(None);
+        }
+        Ok(Some(bytes))
+    }
 
     let Some(window) = web_sys::window() else {
         return Ok(None);
@@ -1658,27 +2080,37 @@ async fn try_download_artifact_via_browser_peer_swarm(
         return Ok(None);
     }
 
-    let fetch_manifest = Reflect::get(&swarm_value, &JsValue::from_str("fetchArtifactManifest"))
-        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-    let fetch_manifest = fetch_manifest.dyn_into::<Function>().map_err(|_| {
-        BrowserAuthClientError::ArtifactTransport(
-            "browser peer artifact swarm is missing fetchArtifactManifest".into(),
-        )
-    })?;
-    let request_value = serde_wasm_bindgen::to_value(request)
-        .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
-    let manifest_promise = fetch_manifest
-        .call1(&swarm_value, &request_value)
-        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-    let manifest_value = JsFuture::from(Promise::from(manifest_promise))
-        .await
-        .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-    if manifest_value.is_undefined() || manifest_value.is_null() {
-        return Ok(None);
-    }
-    let descriptor: burn_p2p::ArtifactDescriptor =
-        serde_wasm_bindgen::from_value(manifest_value)
+    let descriptor = if let Some(descriptor) = checkpoint_descriptor_for_request(runtime, request) {
+        descriptor
+    } else {
+        let fetch_manifest =
+            Reflect::get(&swarm_value, &JsValue::from_str("fetchArtifactManifest"))
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let fetch_manifest = fetch_manifest.dyn_into::<Function>().map_err(|_| {
+            BrowserAuthClientError::ArtifactTransport(
+                "browser peer artifact swarm is missing fetchArtifactManifest".into(),
+            )
+        })?;
+        let request_value = serde_wasm_bindgen::to_value(request)
             .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+        let manifest_promise = fetch_manifest
+            .call1(&swarm_value, &request_value)
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        let manifest_value = JsFuture::from(Promise::from(manifest_promise))
+            .await
+            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
+        if manifest_value.is_undefined() || manifest_value.is_null() {
+            return Ok(None);
+        }
+        let descriptor: burn_p2p::ArtifactDescriptor =
+            serde_wasm_bindgen::from_value(manifest_value)
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+        runtime
+            .storage
+            .remember_artifact_replay_descriptor(descriptor.clone());
+        persist_replay_progress(runtime).await?;
+        descriptor
+    };
     if descriptor.artifact_id != request.artifact_id {
         return Err(BrowserAuthClientError::ArtifactTransport(format!(
             "browser peer swarm returned descriptor for unexpected artifact {}",
@@ -1703,6 +2135,10 @@ async fn try_download_artifact_via_browser_peer_swarm(
 
     let mut bytes = Vec::with_capacity(descriptor.bytes_len as usize);
     for chunk in &chunks {
+        if let Some(chunk_bytes) = stored_checkpoint_chunk(runtime, chunk).await? {
+            bytes.extend_from_slice(&chunk_bytes);
+            continue;
+        }
         let chunk_request = BrowserPeerArtifactChunkRequest {
             artifact: request.clone(),
             chunk_id: chunk.chunk_id.clone(),
@@ -1753,6 +2189,10 @@ async fn try_download_artifact_via_browser_peer_swarm(
                 chunk_hash.as_str()
             )));
         }
+        runtime
+            .storage
+            .remember_artifact_replay_chunk(chunk.chunk_id.clone(), chunk_bytes.clone());
+        persist_replay_progress(runtime).await?;
         bytes.extend_from_slice(&chunk_bytes);
     }
 
@@ -1780,6 +2220,7 @@ async fn try_download_artifact_via_browser_peer_swarm(
 #[allow(dead_code)]
 async fn try_download_artifact_via_browser_peer_transport(
     _request: &BrowserPeerArtifactRequest,
+    _runtime: &mut BrowserWorkerRuntime,
 ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
     Ok(None)
 }
@@ -1788,6 +2229,7 @@ async fn try_download_artifact_via_browser_peer_transport(
 #[allow(dead_code)]
 async fn try_download_artifact_via_browser_peer_swarm(
     _request: &BrowserPeerArtifactRequest,
+    _runtime: &mut BrowserWorkerRuntime,
 ) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
     Ok(None)
 }

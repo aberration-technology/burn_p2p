@@ -22,6 +22,25 @@ pub(super) fn build_github_portal_connector(
     principals: BTreeMap<PrincipalId, StaticPrincipalRecord>,
     endpoints: EdgeConnectorEndpoints,
 ) -> Result<EdgeIdentityConnector, Box<dyn std::error::Error>> {
+    let EdgeConnectorEndpoints {
+        authorize_base_url,
+        exchange_url,
+        token_url,
+        api_base_url,
+        client_id,
+        client_secret,
+        redirect_uri,
+        userinfo_url,
+        refresh_url,
+        revoke_url,
+        jwks_url,
+        persist_remote_tokens,
+    } = endpoints;
+    let userinfo_url = userinfo_url.or_else(|| {
+        api_base_url
+            .as_ref()
+            .map(|base| format!("{}/user", base.trim_end_matches('/')))
+    });
     Ok(EdgeIdentityConnector::new(
         vec![BrowserLoginProvider {
             label: "GitHub".into(),
@@ -31,17 +50,17 @@ pub(super) fn build_github_portal_connector(
         }],
         None,
         Box::new(
-            GitHubIdentityConnector::new(session_ttl, principals, endpoints.authorize_base_url)
-                .with_api_base_url(endpoints.api_base_url)
-                .with_exchange_url(endpoints.exchange_url)
-                .with_token_url(endpoints.token_url)
-                .with_client_credentials(endpoints.client_id, endpoints.client_secret)
-                .with_redirect_uri(endpoints.redirect_uri)
-                .with_userinfo_url(endpoints.userinfo_url)
-                .with_refresh_url(endpoints.refresh_url)
-                .with_revoke_url(endpoints.revoke_url)
-                .with_jwks_url(endpoints.jwks_url)
-                .with_persist_remote_tokens(endpoints.persist_remote_tokens),
+            GitHubIdentityConnector::new(session_ttl, principals, authorize_base_url)
+                .with_api_base_url(api_base_url)
+                .with_exchange_url(exchange_url)
+                .with_token_url(token_url)
+                .with_client_credentials(client_id, client_secret)
+                .with_redirect_uri(redirect_uri)
+                .with_userinfo_url(userinfo_url)
+                .with_refresh_url(refresh_url)
+                .with_revoke_url(revoke_url)
+                .with_jwks_url(jwks_url)
+                .with_persist_remote_tokens(persist_remote_tokens),
         ),
     ))
 }

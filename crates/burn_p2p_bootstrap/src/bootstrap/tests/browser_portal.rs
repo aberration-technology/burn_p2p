@@ -538,23 +538,54 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         })
         .to_string(),
     );
-    let (userinfo_url, userinfo_server) = spawn_provider_json_server(
-        |request| {
-            let request = request.to_ascii_lowercase();
-            assert!(request.contains("authorization: bearer access-token-1"));
-        },
-        "200 OK",
-        serde_json::json!({
-            "id": 42,
-            "login": "alice-gh",
-            "email": "alice@example.com",
-            "name": "Alice Upstream Browser",
-            "organizations": ["oss"],
-            "groups": ["maintainers"],
-            "avatar_url": "https://avatars.example/alice-upstream.png"
-        })
-        .to_string(),
-    );
+    let (github_api_base_url, github_api_server) = spawn_provider_mock_server(|request| {
+        let request = request.to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer access-token-1"));
+        if request.starts_with("get /user/orgs?per_page=100 ") {
+            return (
+                "200 OK",
+                serde_json::json!([{ "login": "oss" }]).to_string(),
+            );
+        }
+        if request.starts_with("get /user/teams?per_page=100 ") {
+            return (
+                "200 OK",
+                serde_json::json!([{
+                    "slug": "maintainers",
+                    "organization": { "login": "oss" }
+                }])
+                .to_string(),
+            );
+        }
+        if request.starts_with(
+            "get /user/repos?per_page=100&affiliation=owner,collaborator,organization_member ",
+        ) {
+            return (
+                "200 OK",
+                serde_json::json!([{
+                    "full_name": "burn-p2p/community-web",
+                    "permissions": {
+                        "pull": true,
+                        "push": true,
+                        "admin": false
+                    }
+                }])
+                .to_string(),
+            );
+        }
+        assert!(request.starts_with("get /user "));
+        (
+            "200 OK",
+            serde_json::json!({
+                "id": 42,
+                "login": "alice-gh",
+                "email": "alice@example.com",
+                "name": "Alice Upstream Browser",
+                "avatar_url": "https://avatars.example/alice-upstream.png"
+            })
+            .to_string(),
+        )
+    });
     let temp = tempdir().expect("temp dir");
     let mut auth_config = sample_auth_config_with_connector(
         temp.path(),
@@ -565,11 +596,11 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
             client_id: Some("github-client".into()),
             client_secret: Some("github-secret".into()),
             redirect_uri: None,
-            userinfo_url: Some(userinfo_url),
+            userinfo_url: None,
             refresh_url: None,
             revoke_url: None,
             jwks_url: None,
-            api_base_url: None,
+            api_base_url: Some(github_api_base_url),
         },
     );
     auth_config.principals[0]
@@ -656,7 +687,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         assert_eq!(session.claims.provider, AuthProvider::GitHub);
         assert_eq!(session.claims.display_name, "Alice Upstream Browser");
         assert!(session.claims.org_memberships.contains("oss"));
-        assert!(session.claims.group_memberships.contains("maintainers"));
+        assert!(session.claims.group_memberships.contains("oss/maintainers"));
         assert_eq!(
             session.claims.custom_claims.get("provider_login"),
             Some(&"alice-gh".to_owned())
@@ -668,9 +699,7 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
     });
 
     token_server.join().expect("join provider token server");
-    userinfo_server
-        .join()
-        .expect("join provider userinfo server");
+    github_api_server.join().expect("join github api server");
 }
 
 #[cfg(all(feature = "browser-edge", feature = "auth-github"))]
@@ -722,6 +751,16 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
         "200 OK",
         "{}".into(),
     );
+    let (userinfo_url, userinfo_server) = spawn_provider_mock_server(|request| {
+        assert!(request.contains("\"network_id\":\"secure-demo\""));
+        assert!(request.contains("\"principal_id\":\"alice\""));
+        assert!(request.contains("\"provider\":\"GitHub\""));
+        assert!(
+            request.contains("\"access_token\":\"access-token-1\"")
+                || request.contains("\"access_token\":\"access-token-2\"")
+        );
+        ("200 OK", "{}".into())
+    });
     let temp = tempdir().expect("temp dir");
     let auth = Arc::new(
         build_auth_portal(
@@ -734,7 +773,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
                     client_id: None,
                     client_secret: None,
                     redirect_uri: None,
-                    userinfo_url: None,
+                    userinfo_url: Some(userinfo_url),
                     refresh_url: Some(refresh_url),
                     revoke_url: Some(revoke_url),
                     jwks_url: None,
@@ -838,6 +877,7 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
     exchange_server.join().expect("join exchange server");
     refresh_server.join().expect("join refresh server");
     revoke_server.join().expect("join revoke server");
+    userinfo_server.join().expect("join userinfo server");
 }
 
 #[cfg(all(

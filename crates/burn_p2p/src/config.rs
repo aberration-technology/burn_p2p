@@ -1200,7 +1200,7 @@ pub(crate) enum RuntimeCommand {
     PublishReductionCertificate(ReductionCertificateAnnouncement),
     PublishValidationQuorum(ValidationQuorumAnnouncement),
     PublishReducerLoad(ReducerLoadAnnouncement),
-    PublishAuth(PeerAuthAnnouncement),
+    PublishAuth(Box<PeerAuthAnnouncement>),
     PublishDirectory(ExperimentDirectoryAnnouncement),
     PublishMetrics(MetricsAnnouncement),
     PublishArtifact {
@@ -1407,7 +1407,7 @@ impl ControlHandle {
     /// Performs the publish auth operation.
     pub fn publish_auth(&self, announcement: PeerAuthAnnouncement) -> anyhow::Result<()> {
         self.tx
-            .send(RuntimeCommand::PublishAuth(announcement))
+            .send(RuntimeCommand::PublishAuth(Box::new(announcement)))
             .map_err(|error| anyhow::anyhow!("failed to send auth announcement: {error}"))
     }
 

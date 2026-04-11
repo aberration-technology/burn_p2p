@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg(feature = "artifact-publish")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RequestedByteRange {
+    start: Option<u64>,
+    end_inclusive: Option<u64>,
+}
+
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 pub(crate) fn handle_portal_artifact_route(
     stream: &mut TcpStream,
@@ -299,6 +306,8 @@ pub(crate) fn handle_artifact_publish_get_route(
             .resolve_artifact_download(&burn_p2p_core::DownloadTicketId::new(ticket_id))?;
         match artifact {
             Some(artifact) => {
+                let requested_range =
+                    parse_requested_byte_range(request.headers.get("range").map(String::as_str))?;
                 if let Some(redirect_url) = artifact.redirect_url {
                     write_response_with_headers(
                         stream,
@@ -308,10 +317,11 @@ pub(crate) fn handle_artifact_publish_get_route(
                         Vec::new(),
                     )?;
                 } else {
-                    let headers = [(
+                    let mut headers = vec![(
                         "Content-Disposition",
                         format!("attachment; filename=\"{}\"", artifact.file_name),
                     )];
+                    headers.push(("Accept-Ranges", "bytes".into()));
                     match artifact.body {
                         burn_p2p_publish::DownloadArtifactBody::Empty => {
                             write_response_with_headers(
@@ -323,26 +333,64 @@ pub(crate) fn handle_artifact_publish_get_route(
                             )?;
                         }
                         burn_p2p_publish::DownloadArtifactBody::Bytes(bytes) => {
-                            write_response_with_headers(
-                                stream,
-                                "200 OK",
-                                &artifact.content_type,
-                                &headers,
-                                bytes,
-                            )?;
+                            if let Some((start, end_inclusive)) =
+                                normalize_requested_byte_range(requested_range, bytes.len() as u64)?
+                            {
+                                headers.push((
+                                    "Content-Range",
+                                    format!("bytes {}-{}/{}", start, end_inclusive, bytes.len()),
+                                ));
+                                write_response_with_headers(
+                                    stream,
+                                    "206 Partial Content",
+                                    &artifact.content_type,
+                                    &headers,
+                                    bytes[start as usize..=end_inclusive as usize].to_vec(),
+                                )?;
+                            } else {
+                                write_response_with_headers(
+                                    stream,
+                                    "200 OK",
+                                    &artifact.content_type,
+                                    &headers,
+                                    bytes,
+                                )?;
+                            }
                         }
                         burn_p2p_publish::DownloadArtifactBody::LocalFile {
                             path,
                             content_length,
                         } => {
-                            write_file_response_with_headers(
-                                stream,
-                                "200 OK",
-                                &artifact.content_type,
-                                &headers,
-                                &path,
-                                content_length,
-                            )?;
+                            if let Some((start, end_inclusive)) =
+                                normalize_requested_byte_range(requested_range, content_length)?
+                            {
+                                headers.push((
+                                    "Content-Range",
+                                    format!("bytes {}-{}/{}", start, end_inclusive, content_length),
+                                ));
+                                let mut file = std::fs::File::open(&path)?;
+                                use std::io::Seek;
+                                file.seek(std::io::SeekFrom::Start(start))?;
+                                let reader =
+                                    std::io::BufReader::new(file.take(end_inclusive - start + 1));
+                                write_stream_response_with_headers(
+                                    stream,
+                                    "206 Partial Content",
+                                    &artifact.content_type,
+                                    &headers,
+                                    end_inclusive - start + 1,
+                                    reader,
+                                )?;
+                            } else {
+                                write_file_response_with_headers(
+                                    stream,
+                                    "200 OK",
+                                    &artifact.content_type,
+                                    &headers,
+                                    &path,
+                                    content_length,
+                                )?;
+                            }
                         }
                         burn_p2p_publish::DownloadArtifactBody::RemoteProxy {
                             url,
@@ -350,13 +398,42 @@ pub(crate) fn handle_artifact_publish_get_route(
                         } => {
                             #[cfg(feature = "artifact-s3")]
                             {
-                                let response = reqwest::blocking::Client::new()
-                                    .get(url)
-                                    .send()?
-                                    .error_for_status()?;
+                                let mut proxy_request = reqwest::blocking::Client::new().get(url);
+                                if let Some((start, end_inclusive)) =
+                                    normalize_requested_byte_range(requested_range, content_length)?
+                                {
+                                    proxy_request = proxy_request.header(
+                                        reqwest::header::RANGE,
+                                        format!("bytes={start}-{end_inclusive}"),
+                                    );
+                                }
+                                let response = proxy_request.send()?.error_for_status()?;
+                                if requested_range.is_some()
+                                    && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
+                                {
+                                    write_response(
+                                        stream,
+                                        "502 Bad Gateway",
+                                        "text/plain; charset=utf-8",
+                                        b"upstream artifact proxy did not honor byte range"
+                                            .to_vec(),
+                                    )?;
+                                    return Ok(true);
+                                }
+                                if let Some(content_range) = response
+                                    .headers()
+                                    .get(reqwest::header::CONTENT_RANGE)
+                                    .and_then(|value| value.to_str().ok())
+                                {
+                                    headers.push(("Content-Range", content_range.to_owned()));
+                                }
                                 write_stream_response_with_headers(
                                     stream,
-                                    "200 OK",
+                                    if requested_range.is_some() {
+                                        "206 Partial Content"
+                                    } else {
+                                        "200 OK"
+                                    },
                                     &artifact.content_type,
                                     &headers,
                                     response.content_length().unwrap_or(content_length),
@@ -391,6 +468,61 @@ pub(crate) fn handle_artifact_publish_get_route(
     }
 
     Ok(false)
+}
+
+#[cfg(feature = "artifact-publish")]
+fn parse_requested_byte_range(
+    header: Option<&str>,
+) -> Result<Option<RequestedByteRange>, Box<dyn std::error::Error>> {
+    let Some(header) = header.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(ranges) = header.strip_prefix("bytes=") else {
+        return Err("unsupported range unit".into());
+    };
+    if ranges.contains(',') {
+        return Err("multipart ranges are unsupported".into());
+    }
+    let (start, end_inclusive) = ranges.split_once('-').unwrap_or((ranges, ""));
+    if start.is_empty() && end_inclusive.is_empty() {
+        return Err("empty byte range".into());
+    }
+    Ok(Some(RequestedByteRange {
+        start: (!start.is_empty())
+            .then(|| start.parse::<u64>())
+            .transpose()?,
+        end_inclusive: (!end_inclusive.is_empty())
+            .then(|| end_inclusive.parse::<u64>())
+            .transpose()?,
+    }))
+}
+
+#[cfg(feature = "artifact-publish")]
+fn normalize_requested_byte_range(
+    requested: Option<RequestedByteRange>,
+    content_length: u64,
+) -> Result<Option<(u64, u64)>, Box<dyn std::error::Error>> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    if content_length == 0 {
+        return Err("requested a byte range for an empty artifact".into());
+    }
+    let (start, end_inclusive) = match (requested.start, requested.end_inclusive) {
+        (Some(start), Some(end_inclusive)) => (start, end_inclusive.min(content_length - 1)),
+        (Some(start), None) => (start, content_length - 1),
+        (None, Some(suffix_len)) => {
+            let bounded = suffix_len.min(content_length);
+            (content_length - bounded, content_length - 1)
+        }
+        (None, None) => return Err("invalid byte range".into()),
+    };
+    if start >= content_length || end_inclusive < start {
+        return Err(
+            format!("requested byte range {start}-{end_inclusive} is out of bounds").into(),
+        );
+    }
+    Ok(Some((start, end_inclusive)))
 }
 
 #[cfg(not(feature = "artifact-publish"))]

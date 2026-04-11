@@ -4,7 +4,8 @@ use crate::metrics_runtime::{
     build_training_peer_window_metrics, persist_peer_window_metrics,
 };
 use crate::runtime_support::{
-    LagAssessment, active_experiment_directory_entry, runtime_training_assignment_peers,
+    LagAssessment, active_experiment_directory_entry, local_training_adaptation_factor,
+    local_training_schedule_hint, runtime_training_assignment_peers,
     snapshots_with_local_control_plane,
 };
 use burn_p2p_core::{MetricsLiveEventKind, MicroShard};
@@ -82,6 +83,7 @@ struct PrefetchLeasePlanArgs<'a> {
     microshards: &'a [MicroShard],
     window_id: WindowId,
     budget_work_units: u64,
+    adaptation_factor: f64,
 }
 
 fn observed_elapsed_seconds(started_at: DateTime<Utc>, finished_at: DateTime<Utc>) -> u64 {
@@ -104,9 +106,9 @@ fn plan_prefetch_lease_for_window(args: PrefetchLeasePlanArgs<'_>) -> anyhow::Re
     lease_planner.config.max_microshards_per_lease = lease_planner
         .config
         .max_microshards_per_lease
-        .min(fair_share_microshard_cap(
-            args.assignment_peers.len(),
-            preferred_microshards.len(),
+        .min(adaptive_microshard_cap(
+            fair_share_microshard_cap(args.assignment_peers.len(), preferred_microshards.len()),
+            args.adaptation_factor,
         ));
 
     Ok(lease_planner.plan_lease(
@@ -491,6 +493,10 @@ impl<P> RunningNode<P> {
             ),
             completed_windows: planned.window_id.0.min(u64::from(u32::MAX)) as u32,
             sampled_at: throughput_sample_finished_at,
+            coordination_penalty: Some(local_training_adaptation_factor(
+                &prepared.telemetry_snapshot,
+                &prepared.local_peer_id,
+            )),
         };
         planned.limit_profile = planned
             .calibrator
@@ -659,6 +665,10 @@ impl<P> RunningNode<P> {
             &prepared.telemetry_snapshot,
             experiment,
         );
+        let adaptation_factor =
+            local_training_adaptation_factor(&prepared.telemetry_snapshot, &prepared.local_peer_id);
+        let schedule_hint =
+            local_training_schedule_hint(&prepared.telemetry_snapshot, &prepared.local_peer_id);
         let placement_budget_work_units = training_placement_budget_work_units(
             planned
                 .limit_profile
@@ -667,6 +677,8 @@ impl<P> RunningNode<P> {
                 .max(1),
             capability,
             directory_entry.as_ref(),
+            adaptation_factor,
+            schedule_hint.budget_scale,
         )?;
         let assignment_peers = runtime_training_assignment_peers(
             &prepared.telemetry_snapshot,
@@ -682,6 +694,7 @@ impl<P> RunningNode<P> {
             microshards: &planned.microshard_plan.microshards,
             window_id: WindowId(planned.window_id.0 + 1),
             budget_work_units: placement_budget_work_units,
+            adaptation_factor,
         })?;
         let cached_ids = cached_microshards
             .iter()
@@ -749,10 +762,16 @@ impl<P> RunningNode<P> {
         if let Some(entry) = directory_entry.as_ref() {
             ensure_training_placement_roles(&prepared.mainnet_roles, entry)?;
         }
+        let adaptation_factor =
+            local_training_adaptation_factor(&prepared.telemetry_snapshot, &prepared.local_peer_id);
+        let schedule_hint =
+            local_training_schedule_hint(&prepared.telemetry_snapshot, &prepared.local_peer_id);
         let budget_work_units = training_placement_budget_work_units(
             limit_profile.recommended_budget.budget_work_units.max(1),
             capability,
             directory_entry.as_ref(),
+            adaptation_factor,
+            schedule_hint.budget_scale,
         )?;
         let registration = self
             .node
@@ -861,9 +880,12 @@ impl<P> RunningNode<P> {
             lease_planner.config.max_microshards_per_lease = lease_planner
                 .config
                 .max_microshards_per_lease
-                .min(fair_share_microshard_cap(
-                    assignment_peers.len(),
-                    lease_microshards.len(),
+                .min(adaptive_microshard_cap(
+                    scheduled_microshard_cap(
+                        fair_share_microshard_cap(assignment_peers.len(), lease_microshards.len()),
+                        schedule_hint.microshard_scale,
+                    ),
+                    adaptation_factor,
                 ));
             lease_planner.plan_lease(
                 prepared.network_id.clone(),
@@ -1055,9 +1077,14 @@ fn training_placement_budget_work_units(
     recommended_budget_work_units: u64,
     capability: &CapabilityEstimate,
     directory_entry: Option<&ExperimentDirectoryEntry>,
+    adaptation_factor: f64,
+    planner_budget_scale: f64,
 ) -> anyhow::Result<u64> {
     let Some(directory_entry) = directory_entry else {
-        return Ok(recommended_budget_work_units.max(1));
+        return Ok(adaptive_budget_work_units(
+            scheduled_budget_work_units(recommended_budget_work_units.max(1), planner_budget_scale),
+            adaptation_factor,
+        ));
     };
     let target_window_seconds = directory_entry
         .resource_requirements
@@ -1073,9 +1100,16 @@ fn training_placement_budget_work_units(
         );
     }
 
-    Ok(recommended_budget_work_units
-        .max(1)
-        .min(placement_budget_work_units))
+    Ok(adaptive_budget_work_units(
+        scheduled_budget_work_units(
+            recommended_budget_work_units
+                .max(1)
+                .min(placement_budget_work_units),
+            planner_budget_scale,
+        )
+        .min(placement_budget_work_units.max(1)),
+        adaptation_factor,
+    ))
 }
 
 fn fair_share_microshard_cap(
@@ -1099,6 +1133,30 @@ fn fair_share_budget_work_units(
 
     ((placement_budget_work_units * fair_share_microshards).div_ceil(available_microshards)).max(1)
         as u64
+}
+
+fn adaptive_budget_work_units(base_budget_work_units: u64, adaptation_factor: f64) -> u64 {
+    ((base_budget_work_units.max(1) as f64) * adaptation_factor.clamp(0.2, 1.0))
+        .ceil()
+        .max(1.0) as u64
+}
+
+fn adaptive_microshard_cap(base_cap: usize, adaptation_factor: f64) -> usize {
+    ((base_cap.max(1) as f64) * adaptation_factor.clamp(0.2, 1.0))
+        .ceil()
+        .max(1.0) as usize
+}
+
+fn scheduled_budget_work_units(base_budget_work_units: u64, planner_budget_scale: f64) -> u64 {
+    ((base_budget_work_units.max(1) as f64) * planner_budget_scale.clamp(0.35, 1.6))
+        .ceil()
+        .max(1.0) as u64
+}
+
+fn scheduled_microshard_cap(base_cap: usize, planner_microshard_scale: f64) -> usize {
+    ((base_cap.max(1) as f64) * planner_microshard_scale.clamp(0.35, 1.4))
+        .ceil()
+        .max(1.0) as usize
 }
 
 fn unleased_microshards_for_window(
@@ -1447,9 +1505,10 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        PrefetchLeasePlanArgs, fair_share_budget_work_units, fair_share_microshard_cap,
-        plan_prefetch_lease_for_window, prefetched_lease_is_reusable,
-        supports_background_shard_prefetch, wait_for_prefetch_completion,
+        PrefetchLeasePlanArgs, adaptive_budget_work_units, adaptive_microshard_cap,
+        fair_share_budget_work_units, fair_share_microshard_cap, plan_prefetch_lease_for_window,
+        prefetched_lease_is_reusable, supports_background_shard_prefetch,
+        wait_for_prefetch_completion,
     };
     use crate::{
         ExperimentHandle, LimitProfile, PeerId, PeerRoleSet, TrainingPrefetchTask, WorkBudget,
@@ -1472,6 +1531,17 @@ mod tests {
     fn fair_share_budget_never_drops_below_one() {
         assert_eq!(fair_share_budget_work_units(8, 1, 1), 1);
         assert_eq!(fair_share_budget_work_units(16, 16, 1), 1);
+    }
+
+    #[test]
+    fn adaptive_budget_and_microshard_cap_clamp_and_scale() {
+        assert_eq!(adaptive_budget_work_units(100, 1.0), 100);
+        assert_eq!(adaptive_budget_work_units(100, 0.5), 50);
+        assert_eq!(adaptive_budget_work_units(100, 0.0), 20);
+
+        assert_eq!(adaptive_microshard_cap(10, 1.0), 10);
+        assert_eq!(adaptive_microshard_cap(10, 0.45), 5);
+        assert_eq!(adaptive_microshard_cap(10, 0.0), 2);
     }
 
     #[test]
@@ -1511,6 +1581,7 @@ mod tests {
             microshards: &microshards,
             window_id: WindowId(9),
             budget_work_units: 128,
+            adaptation_factor: 1.0,
         })
         .expect("prefetch lease");
 
@@ -1613,6 +1684,7 @@ mod tests {
             microshards: &microshards,
             window_id: WindowId(3),
             budget_work_units: 128,
+            adaptation_factor: 1.0,
         })
         .expect("prefetch lease");
         let reusable = TrainingPrefetchTask {

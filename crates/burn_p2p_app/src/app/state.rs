@@ -238,6 +238,7 @@ mod tests {
                     .into(),
                 metrics_live_ready: true,
                 last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
+                diffusion: None,
                 last_error: None,
                 performance: Some(burn_p2p_views::BrowserAppPerformanceView {
                     scope_summary: "4 peer(s) · 8 train window(s) · 3 eval report(s)".into(),

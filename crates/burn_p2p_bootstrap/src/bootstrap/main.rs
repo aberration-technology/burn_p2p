@@ -130,7 +130,7 @@ fn load_bootstrap_daemon_config(
 ) -> Result<BootstrapDaemonConfig, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    resolve_config_env_placeholders(&mut value).map_err(|error| std::io::Error::other(error))?;
+    resolve_config_env_placeholders(&mut value).map_err(std::io::Error::other)?;
     Ok(serde_json::from_value(value)?)
 }
 

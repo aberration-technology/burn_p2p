@@ -152,7 +152,6 @@ pub fn launch_node_app(source: NodeAppHostSource) {
 #[component]
 fn NativeNodeAppRoot() -> Element {
     let source = consume_context::<NodeAppHostSource>();
-    let edge_base_url = source.config.edge_base_url.clone();
     let source_for_effect = source.clone();
     let mut ui_state = use_signal(|| source.initial_state());
     let mut selection = use_signal(|| source.config.selection.clone());

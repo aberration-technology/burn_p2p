@@ -1024,6 +1024,7 @@ dependencies = [
  "burn_p2p_workload",
  "chrono",
  "futures",
+ "hex",
  "libp2p-identity",
  "reqwest",
  "semver",
@@ -1140,6 +1141,7 @@ dependencies = [
 name = "burn_p2p_browser"
 version = "0.21.0-pre.8"
 dependencies = [
+ "base64 0.22.1",
  "burn_p2p",
  "burn_p2p_core",
  "burn_p2p_metrics",
