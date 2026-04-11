@@ -24,6 +24,10 @@ fn default_operator_state_key_prefix() -> String {
     "burn-p2p:operator-state".into()
 }
 
+fn default_operator_state_postgres_table_name() -> String {
+    "burn_p2p_operator_state_snapshots".into()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum BootstrapOperatorStateBackendConfig {
@@ -31,6 +35,13 @@ pub(super) enum BootstrapOperatorStateBackendConfig {
         url: String,
         #[serde(default = "default_operator_state_key_prefix")]
         key_prefix: String,
+    },
+    Postgres {
+        url: String,
+        #[serde(default = "default_operator_state_key_prefix")]
+        key_prefix: String,
+        #[serde(default = "default_operator_state_postgres_table_name")]
+        table_name: String,
     },
 }
 
@@ -116,12 +127,59 @@ pub(super) struct BootstrapAuthConfig {
     pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
     pub session_ttl_seconds: i64,
     pub minimum_revocation_epoch: u64,
+    #[serde(default)]
     pub principals: Vec<BootstrapAuthPrincipal>,
+    #[serde(default)]
+    pub provider_policy: Option<BootstrapAuthProviderPolicyConfig>,
     pub directory_entries: Vec<ExperimentDirectoryEntry>,
     #[serde(default)]
     pub trusted_issuers: Vec<TrustedIssuer>,
     #[serde(default)]
     pub reenrollment: Option<BootstrapReenrollmentConfig>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(super) struct BootstrapAuthProviderPolicyConfig {
+    #[serde(default)]
+    pub github: Option<BootstrapGitHubAuthPolicyConfig>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(super) struct BootstrapGitHubAuthPolicyConfig {
+    #[serde(default)]
+    pub rules: Vec<BootstrapGitHubPrincipalRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct BootstrapGitHubPrincipalRule {
+    pub principal_id: PrincipalId,
+    pub display_name: String,
+    #[serde(default)]
+    pub provider_login: Option<String>,
+    #[serde(default)]
+    pub provider_email: Option<String>,
+    #[serde(default)]
+    pub required_orgs: BTreeSet<String>,
+    #[serde(default)]
+    pub required_teams: BTreeSet<String>,
+    #[serde(default)]
+    pub required_repo_access: Vec<BootstrapGitHubRepoAccessRule>,
+    pub granted_roles: PeerRoleSet,
+    pub granted_scopes: BTreeSet<ExperimentScope>,
+    pub allowed_networks: BTreeSet<NetworkId>,
+    #[serde(default)]
+    pub custom_claims: BTreeMap<String, String>,
+}
+
+fn default_github_repo_permission() -> String {
+    "read".into()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct BootstrapGitHubRepoAccessRule {
+    pub repo: String,
+    #[serde(default = "default_github_repo_permission")]
+    pub minimum_permission: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

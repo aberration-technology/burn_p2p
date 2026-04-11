@@ -34,8 +34,8 @@ use burn_p2p_bootstrap::{
     BootstrapEmbeddedDaemonConfig, BootstrapPeerDaemon, BootstrapPeerDaemonConfig, BootstrapPlan,
     BootstrapService, BootstrapSpec, BrowserDirectorySnapshot, BrowserEdgeMode,
     BrowserEdgeSnapshotConfig, BrowserLoginProvider, BrowserReceiptSubmissionResponse,
-    BrowserTransportSurface, ReceiptQuery, ReenrollmentStatus, TrustBundleExport,
-    TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
+    BrowserTransportSurface, OperatorStateBackendConfig, ReceiptQuery, ReenrollmentStatus,
+    TrustBundleExport, TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
 };
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 use burn_p2p_bootstrap::{
@@ -137,23 +137,44 @@ fn load_bootstrap_daemon_config(
 fn resolve_operator_state_backend(
     config: &BootstrapDaemonConfig,
     network_id: &burn_p2p_core::NetworkId,
-) -> Option<(String, String)> {
+) -> Option<OperatorStateBackendConfig> {
     if let Some(operator_state_backend) = config.operator_state_backend.as_ref() {
         return match operator_state_backend {
-            BootstrapOperatorStateBackendConfig::Redis { url, key_prefix } => Some((
-                url.clone(),
-                format!("{key_prefix}:{}:snapshot", network_id.as_str()),
-            )),
+            BootstrapOperatorStateBackendConfig::Redis { url, key_prefix } => {
+                Some(OperatorStateBackendConfig::Redis {
+                    url: url.clone(),
+                    snapshot_key: format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+                })
+            }
+            BootstrapOperatorStateBackendConfig::Postgres {
+                url,
+                key_prefix,
+                table_name,
+            } => Some(OperatorStateBackendConfig::Postgres {
+                url: url.clone(),
+                table_name: table_name.clone(),
+                snapshot_key: format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+            }),
         };
     }
 
-    let url = std::env::var("BURN_P2P_OPERATOR_STATE_REDIS_URL").ok()?;
     let key_prefix = std::env::var("BURN_P2P_OPERATOR_STATE_KEY_PREFIX")
         .unwrap_or_else(|_| "burn-p2p:operator-state".into());
-    Some((
+    if let Ok(url) = std::env::var("BURN_P2P_OPERATOR_STATE_POSTGRES_URL") {
+        let table_name = std::env::var("BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE")
+            .unwrap_or_else(|_| "burn_p2p_operator_state_snapshots".into());
+        return Some(OperatorStateBackendConfig::Postgres {
+            url,
+            table_name,
+            snapshot_key: format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+        });
+    }
+
+    let url = std::env::var("BURN_P2P_OPERATOR_STATE_REDIS_URL").ok()?;
+    Some(OperatorStateBackendConfig::Redis {
         url,
-        format!("{key_prefix}:{}:snapshot", network_id.as_str()),
-    ))
+        snapshot_key: format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -242,10 +263,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut state_lock = state
             .lock()
             .expect("bootstrap daemon state should not be poisoned");
-        if let Some((url, snapshot_key)) =
+        if let Some(backend) =
             resolve_operator_state_backend(&config, &config.spec.genesis.network_id)
         {
-            state_lock.configure_operator_state_redis_snapshot(url, snapshot_key);
+            state_lock.configure_operator_state_backend(backend);
         }
         state_lock.publication_targets = config
             .artifact_publication

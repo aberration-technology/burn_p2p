@@ -426,6 +426,27 @@ fn burn_workload_adapter_derives_schema_and_manifest() {
 }
 
 #[test]
+fn standard_burn_workload_config_enables_root_ema_by_default() {
+    let supported_workload = SupportedWorkload {
+        workload_id: crate::WorkloadId::new("tiny-workload"),
+        workload_name: "Tiny Burn Workload".into(),
+        model_program_hash: ContentId::new("tiny-program"),
+        checkpoint_format_hash: ContentId::new("tiny-burnpack"),
+        supported_revision_family: ContentId::new("tiny-family"),
+        resource_class: "cpu".into(),
+    };
+
+    let config = BurnWorkloadConfig::standard(supported_workload);
+
+    match config.merge {
+        BurnMergeConfig::WeightedMeanWithRootEma { decay } => {
+            assert_eq!(decay, BurnWorkloadConfig::standard_root_ema_decay());
+        }
+        other => panic!("expected standard burn config to use root ema, got {other:?}"),
+    }
+}
+
+#[test]
 fn trainer_builder_wraps_single_burn_workload_with_trainer_roles() {
     let supported_workload = SupportedWorkload {
         workload_id: crate::WorkloadId::new("tiny-workload"),

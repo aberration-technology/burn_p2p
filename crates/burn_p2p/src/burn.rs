@@ -332,6 +332,11 @@ pub struct BurnWorkloadConfig {
 }
 
 impl BurnWorkloadConfig {
+    /// Default post-merge root-ema decay used by [`Self::standard`].
+    pub const fn standard_root_ema_decay() -> f64 {
+        0.35
+    }
+
     /// Creates a new config with weighted-mean merge enabled.
     pub fn new(supported_workload: SupportedWorkload, artifact: BurnArtifactConfig) -> Self {
         Self {
@@ -343,17 +348,25 @@ impl BurnWorkloadConfig {
 
     /// Creates the default burn config used by the learner-first happy path.
     ///
-    /// Uses burnpack artifacts with the default chunking scheme.
+    /// Uses burnpack artifacts with the default chunking scheme and applies one
+    /// root-ema smoothing step after weighted-mean merge.
     pub fn standard(supported_workload: SupportedWorkload) -> Self {
         Self::new(
             supported_workload,
             BurnArtifactConfig::burnpack(ChunkingScheme::default()),
         )
+        .with_root_ema(Self::standard_root_ema_decay())
     }
 
     /// Disables default merge behavior.
     pub fn with_merge_disabled(mut self) -> Self {
         self.merge = BurnMergeConfig::Disabled;
+        self
+    }
+
+    /// Forces plain weighted-mean merge without post-merge root ema.
+    pub fn with_plain_weighted_mean(mut self) -> Self {
+        self.merge = BurnMergeConfig::WeightedMean;
         self
     }
 

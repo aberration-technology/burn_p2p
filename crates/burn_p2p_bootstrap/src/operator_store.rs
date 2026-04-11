@@ -14,6 +14,7 @@ use burn_p2p_core::{
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_publish::PublicationStore;
 use chrono::{DateTime, Utc};
+use postgres::NoTls;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +77,15 @@ pub(crate) struct FileOperatorStorePreview {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperatorStateBackendConfig {
-    Redis { url: String, snapshot_key: String },
+    Redis {
+        url: String,
+        snapshot_key: String,
+    },
+    Postgres {
+        url: String,
+        table_name: String,
+        snapshot_key: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -155,6 +164,11 @@ impl FileOperatorStore {
                     })
                     .transpose()
             }
+            OperatorStateBackendConfig::Postgres {
+                url,
+                table_name,
+                snapshot_key,
+            } => load_postgres_operator_state_snapshot(url, table_name, snapshot_key),
         }
     }
 
@@ -268,6 +282,67 @@ impl FileOperatorStore {
     }
 }
 
+fn ensure_valid_postgres_identifier(identifier: &str) -> anyhow::Result<&str> {
+    if identifier.is_empty()
+        || !identifier
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        anyhow::bail!("invalid postgres identifier `{identifier}`");
+    }
+    Ok(identifier)
+}
+
+fn postgres_connection(url: &str) -> anyhow::Result<postgres::Client> {
+    Ok(postgres::Client::connect(url, NoTls)?)
+}
+
+fn ensure_postgres_operator_state_table(
+    client: &mut postgres::Client,
+    table_name: &str,
+) -> anyhow::Result<()> {
+    let table_name = ensure_valid_postgres_identifier(table_name)?;
+    client.batch_execute(&format!(
+        r#"
+CREATE TABLE IF NOT EXISTS {table_name} (
+    id BIGSERIAL PRIMARY KEY,
+    snapshot_key TEXT NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL,
+    preview_json JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS {table_name}_snapshot_lookup
+    ON {table_name} (snapshot_key, captured_at DESC, id DESC);
+"#
+    ))?;
+    Ok(())
+}
+
+fn load_postgres_operator_state_snapshot(
+    url: &str,
+    table_name: &str,
+    snapshot_key: &str,
+) -> anyhow::Result<Option<OperatorStateSnapshot>> {
+    let mut client = postgres_connection(url)?;
+    let table_name = ensure_valid_postgres_identifier(table_name)?;
+    ensure_postgres_operator_state_table(&mut client, table_name)?;
+    let row = client.query_opt(
+        &format!(
+            "SELECT captured_at, preview_json::text FROM {table_name} WHERE snapshot_key = $1 ORDER BY captured_at DESC, id DESC LIMIT 1"
+        ),
+        &[&snapshot_key],
+    )?;
+    row.map(|row| {
+        let captured_at = row.get::<_, DateTime<Utc>>(0);
+        let preview_json = row.get::<_, String>(1);
+        let preview = serde_json::from_str::<FileOperatorStorePreview>(&preview_json)?;
+        Ok(OperatorStateSnapshot {
+            captured_at,
+            preview,
+        })
+    })
+    .transpose()
+}
+
 pub(crate) fn persist_operator_state_snapshot(
     backend: Option<&OperatorStateBackendConfig>,
     preview: &FileOperatorStorePreview,
@@ -279,11 +354,33 @@ pub(crate) fn persist_operator_state_snapshot(
     match backend {
         OperatorStateBackendConfig::Redis { url, snapshot_key } => {
             let mut connection = FileOperatorStore::redis_connection(url)?;
-            let payload = serde_json::to_string(&OperatorStateSnapshot {
+            let snapshot = OperatorStateSnapshot {
                 captured_at: Utc::now(),
                 preview: preview.clone(),
-            })?;
+            };
+            let payload = serde_json::to_string(&snapshot)?;
             connection.set::<_, _, ()>(snapshot_key, payload)?;
+            Ok(())
+        }
+        OperatorStateBackendConfig::Postgres {
+            url,
+            table_name,
+            snapshot_key,
+        } => {
+            let snapshot = OperatorStateSnapshot {
+                captured_at: Utc::now(),
+                preview: preview.clone(),
+            };
+            let mut client = postgres_connection(url)?;
+            let table_name = ensure_valid_postgres_identifier(table_name)?;
+            ensure_postgres_operator_state_table(&mut client, table_name)?;
+            let preview_json = serde_json::to_string(&snapshot.preview)?;
+            client.execute(
+                &format!(
+                    "INSERT INTO {table_name} (snapshot_key, captured_at, preview_json) VALUES ($1, $2, $3::jsonb)"
+                ),
+                &[&snapshot_key, &snapshot.captured_at, &preview_json],
+            )?;
             Ok(())
         }
     }

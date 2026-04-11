@@ -216,8 +216,10 @@ two important notes:
   mean using `sample_weight * quality_weight`
 
 the optional post-merge root ema is separate. the runtime promotion policy asks
-for it by default, but the burn adapter only applies it when the workload is
-configured with `.with_root_ema(decay)`.
+for it by default, and the standard burn workload profile now applies it with a
+moderate default decay. use `.with_plain_weighted_mean()` if you explicitly
+want the older plain weighted-mean behavior, or `.with_root_ema(decay)` to pick
+a different decay.
 
 ## a sane starting profile
 
@@ -246,9 +248,11 @@ churn, the current design is most coherent when used like this:
   `target_leaf_cohort = 16`, `upper_fanin = 4`, and `reducer_replication = 2`
   are a reasonable middle ground between fan-in, reducer load, and resilience.
 
-- enable root ema when the experiment is noisy
-  if promotions are visibly jumpy, enabling `.with_root_ema(decay)` on the burn
-  workload can damp sharp transitions at the cost of slower adaptation.
+- keep or retune root ema when the experiment is noisy
+  the standard burn workload profile now enables a moderate root-ema smoothing
+  step by default. if promotions are still jumpy, increase the decay with
+  `.with_root_ema(decay)`; if adaptation becomes too sluggish, reduce the decay
+  or opt back into `.with_plain_weighted_mean()`.
 
 - do not treat the current defaults as llm-scale tuning
   for very large models or very heterogeneous data, you should expect to retune
@@ -290,7 +294,8 @@ main watch-outs:
 
 - if windows are too large, convergence gets noisier fast
 - if one peer does much more work, equal weighting is usually wrong
-- if promotions look jumpy, add burn-side `.with_root_ema(decay)`
+- if promotions look jumpy, increase burn-side `.with_root_ema(decay)` from the
+  standard default
 
 ### profile 2: larger high-latency decentralized training
 

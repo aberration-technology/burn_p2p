@@ -41,9 +41,10 @@
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
   "operator_state_backend": {
-    "kind": "redis",
-    "url": "${BURN_P2P_OPERATOR_STATE_REDIS_URL:-redis://burn-p2p-redis:6379/1}",
-    "key_prefix": "${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}"
+    "kind": "postgres",
+    "url": "${BURN_P2P_OPERATOR_STATE_POSTGRES_URL:-postgres://burn_p2p:burn-p2p-dev@burn-p2p-postgres:5432/burn_p2p}",
+    "key_prefix": "${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}",
+    "table_name": "${BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE:-burn_p2p_operator_state_snapshots}"
   },
   "bootstrap_peer": {
     "node": {

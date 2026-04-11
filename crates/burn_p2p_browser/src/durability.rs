@@ -1,8 +1,8 @@
 use burn_p2p_core::NetworkId;
 
-use crate::BrowserReceiptOutbox;
 #[cfg(target_arch = "wasm32")]
 use crate::BrowserReceiptOutboxBackend;
+use crate::{BrowserReceiptOutbox, BrowserStorageSnapshot};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
@@ -17,6 +17,14 @@ const RECEIPT_OUTBOX_INDEXED_DB_PREFIX: &str = "burn-p2p.browser.receipt-outbox.
 const RECEIPT_OUTBOX_INDEXED_DB_STORE: &str = "receipt_outboxes";
 #[cfg(target_arch = "wasm32")]
 const RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY: &str = "default";
+#[cfg(target_arch = "wasm32")]
+const STORAGE_SNAPSHOT_STORAGE_PREFIX: &str = "burn-p2p.browser.storage.";
+#[cfg(target_arch = "wasm32")]
+const STORAGE_SNAPSHOT_INDEXED_DB_PREFIX: &str = "burn-p2p.browser.storage.";
+#[cfg(target_arch = "wasm32")]
+const STORAGE_SNAPSHOT_INDEXED_DB_STORE: &str = "storage_snapshots";
+#[cfg(target_arch = "wasm32")]
+const STORAGE_SNAPSHOT_INDEXED_DB_VALUE_KEY: &str = "default";
 
 #[cfg(target_arch = "wasm32")]
 fn receipt_outbox_storage_key(network_id: &NetworkId) -> String {
@@ -26,6 +34,19 @@ fn receipt_outbox_storage_key(network_id: &NetworkId) -> String {
 #[cfg(target_arch = "wasm32")]
 fn receipt_outbox_indexed_db_name(network_id: &NetworkId) -> String {
     format!("{RECEIPT_OUTBOX_INDEXED_DB_PREFIX}{}", network_id.as_str())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_snapshot_storage_key(network_id: &NetworkId) -> String {
+    format!("{STORAGE_SNAPSHOT_STORAGE_PREFIX}{}", network_id.as_str())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_snapshot_indexed_db_name(network_id: &NetworkId) -> String {
+    format!(
+        "{STORAGE_SNAPSHOT_INDEXED_DB_PREFIX}{}",
+        network_id.as_str()
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -179,6 +200,34 @@ async fn open_receipt_outbox_indexed_db(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn open_storage_snapshot_indexed_db(
+    network_id: &NetworkId,
+) -> Result<Option<web_sys::IdbDatabase>, String> {
+    let Some(factory) = browser_indexed_db_factory() else {
+        return Ok(None);
+    };
+    let request = factory
+        .open_with_u32(&storage_snapshot_indexed_db_name(network_id), 1)
+        .map_err(|error| format!("failed to open browser indexeddb storage snapshot: {error:?}"))?;
+    let upgrade_request = request.clone();
+    let on_upgrade_needed = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+        if let Ok(result) = upgrade_request.result()
+            && let Ok(database) = result.dyn_into::<web_sys::IdbDatabase>()
+        {
+            let _ = database.create_object_store(STORAGE_SNAPSHOT_INDEXED_DB_STORE);
+        }
+    }));
+    request.set_onupgradeneeded(Some(on_upgrade_needed.as_ref().unchecked_ref()));
+    on_upgrade_needed.forget();
+
+    let value = await_idb_request(request.as_ref()).await?;
+    value
+        .dyn_into::<web_sys::IdbDatabase>()
+        .map(Some)
+        .map_err(|_| "indexeddb open request did not yield a database".into())
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn load_indexed_db_receipt_outbox(
     network_id: &NetworkId,
 ) -> Result<Option<BrowserReceiptOutbox>, String> {
@@ -209,6 +258,38 @@ async fn load_indexed_db_receipt_outbox(
         .map_err(|error| format!("failed to decode indexeddb receipt outbox: {error}"))?;
     outbox.configure_backend(BrowserReceiptOutboxBackend::IndexedDb);
     Ok(Some(outbox))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_indexed_db_storage_snapshot(
+    network_id: &NetworkId,
+) -> Result<Option<BrowserStorageSnapshot>, String> {
+    let Some(database) = open_storage_snapshot_indexed_db(network_id).await? else {
+        return Ok(None);
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            STORAGE_SNAPSHOT_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readonly,
+        )
+        .map_err(|error| format!("failed to open indexeddb readonly transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(STORAGE_SNAPSHOT_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb storage snapshot store: {error:?}"))?;
+    let request = store
+        .get(&JsValue::from_str(STORAGE_SNAPSHOT_INDEXED_DB_VALUE_KEY))
+        .map_err(|error| format!("failed to read indexeddb storage snapshot: {error:?}"))?;
+    let value = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let encoded = value
+        .as_string()
+        .ok_or_else(|| "indexeddb storage snapshot payload was not a string".to_owned())?;
+    let snapshot: BrowserStorageSnapshot = serde_json::from_str(&encoded)
+        .map_err(|error| format!("failed to decode indexeddb storage snapshot: {error}"))?;
+    Ok(Some(snapshot))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -243,6 +324,35 @@ async fn persist_indexed_db_receipt_outbox(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn persist_indexed_db_storage_snapshot(
+    network_id: &NetworkId,
+    snapshot: &BrowserStorageSnapshot,
+) -> Result<(), String> {
+    let Some(database) = open_storage_snapshot_indexed_db(network_id).await? else {
+        return Err("browser does not expose indexeddb".into());
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            STORAGE_SNAPSHOT_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readwrite,
+        )
+        .map_err(|error| format!("failed to open indexeddb readwrite transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(STORAGE_SNAPSHOT_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb storage snapshot store: {error:?}"))?;
+    let encoded = serde_json::to_string(snapshot)
+        .map_err(|error| format!("failed to encode indexeddb storage snapshot: {error}"))?;
+    let request = store
+        .put_with_key(
+            &JsValue::from_str(&encoded),
+            &JsValue::from_str(STORAGE_SNAPSHOT_INDEXED_DB_VALUE_KEY),
+        )
+        .map_err(|error| format!("failed to persist indexeddb storage snapshot: {error:?}"))?;
+    let _ = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn clear_indexed_db_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
     let Some(database) = open_receipt_outbox_indexed_db(network_id).await? else {
         return Ok(());
@@ -259,6 +369,27 @@ async fn clear_indexed_db_receipt_outbox(network_id: &NetworkId) -> Result<(), S
     let request = store
         .delete(&JsValue::from_str(RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY))
         .map_err(|error| format!("failed to clear indexeddb receipt outbox: {error:?}"))?;
+    let _ = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn clear_indexed_db_storage_snapshot(network_id: &NetworkId) -> Result<(), String> {
+    let Some(database) = open_storage_snapshot_indexed_db(network_id).await? else {
+        return Ok(());
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            STORAGE_SNAPSHOT_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readwrite,
+        )
+        .map_err(|error| format!("failed to open indexeddb readwrite transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(STORAGE_SNAPSHOT_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb storage snapshot store: {error:?}"))?;
+    let request = store
+        .delete(&JsValue::from_str(STORAGE_SNAPSHOT_INDEXED_DB_VALUE_KEY))
+        .map_err(|error| format!("failed to clear indexeddb storage snapshot: {error:?}"))?;
     let _ = await_idb_request(&request).await?;
     await_indexed_db_transaction(&transaction).await
 }
@@ -314,6 +445,53 @@ fn clear_local_storage_receipt_outbox(network_id: &NetworkId) -> Result<(), Stri
 }
 
 #[cfg(target_arch = "wasm32")]
+fn load_local_storage_storage_snapshot(
+    network_id: &NetworkId,
+) -> Result<Option<BrowserStorageSnapshot>, String> {
+    let Some(storage) = browser_local_storage() else {
+        return Ok(None);
+    };
+    let Some(value) = storage
+        .get_item(&storage_snapshot_storage_key(network_id))
+        .map_err(|error| format!("failed to read browser storage snapshot: {error:?}"))?
+    else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let snapshot: BrowserStorageSnapshot = serde_json::from_str(trimmed)
+        .map_err(|error| format!("failed to decode browser storage snapshot: {error}"))?;
+    Ok(Some(snapshot))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn persist_local_storage_storage_snapshot(
+    network_id: &NetworkId,
+    snapshot: &BrowserStorageSnapshot,
+) -> Result<(), String> {
+    let Some(storage) = browser_local_storage() else {
+        return Ok(());
+    };
+    let encoded = serde_json::to_string(snapshot)
+        .map_err(|error| format!("failed to encode browser storage snapshot: {error}"))?;
+    storage
+        .set_item(&storage_snapshot_storage_key(network_id), &encoded)
+        .map_err(|error| format!("failed to persist browser storage snapshot: {error:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn clear_local_storage_storage_snapshot(network_id: &NetworkId) -> Result<(), String> {
+    let Some(storage) = browser_local_storage() else {
+        return Ok(());
+    };
+    storage
+        .remove_item(&storage_snapshot_storage_key(network_id))
+        .map_err(|error| format!("failed to clear browser storage snapshot: {error:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn load_durable_receipt_outbox(
     network_id: &NetworkId,
 ) -> Result<BrowserReceiptOutbox, String> {
@@ -343,6 +521,26 @@ pub async fn load_durable_receipt_outbox(
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn load_durable_browser_storage(
+    network_id: &NetworkId,
+) -> Result<BrowserStorageSnapshot, String> {
+    if let Some(snapshot) = load_indexed_db_storage_snapshot(network_id).await? {
+        return Ok(snapshot);
+    }
+    if let Some(snapshot) = load_local_storage_storage_snapshot(network_id)? {
+        if browser_indexed_db_factory().is_some()
+            && persist_indexed_db_storage_snapshot(network_id, &snapshot)
+                .await
+                .is_ok()
+        {
+            return Ok(snapshot);
+        }
+        return Ok(snapshot);
+    }
+    Ok(BrowserStorageSnapshot::default())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn persist_durable_receipt_outbox(
     network_id: &NetworkId,
     outbox: &BrowserReceiptOutbox,
@@ -355,9 +553,29 @@ pub async fn persist_durable_receipt_outbox(
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn persist_durable_browser_storage(
+    network_id: &NetworkId,
+    snapshot: &BrowserStorageSnapshot,
+) -> Result<(), String> {
+    if browser_indexed_db_factory().is_some() {
+        persist_indexed_db_storage_snapshot(network_id, snapshot).await?;
+        return clear_local_storage_storage_snapshot(network_id);
+    }
+    persist_local_storage_storage_snapshot(network_id, snapshot)
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn clear_durable_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
     let indexed_db_result = clear_indexed_db_receipt_outbox(network_id).await;
     let local_storage_result = clear_local_storage_receipt_outbox(network_id);
+    indexed_db_result?;
+    local_storage_result
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn clear_durable_browser_storage(network_id: &NetworkId) -> Result<(), String> {
+    let indexed_db_result = clear_indexed_db_storage_snapshot(network_id).await;
+    let local_storage_result = clear_local_storage_storage_snapshot(network_id);
     indexed_db_result?;
     local_storage_result
 }
@@ -370,6 +588,13 @@ pub async fn load_durable_receipt_outbox(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub async fn load_durable_browser_storage(
+    _network_id: &NetworkId,
+) -> Result<BrowserStorageSnapshot, String> {
+    Ok(BrowserStorageSnapshot::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn persist_durable_receipt_outbox(
     _network_id: &NetworkId,
     _outbox: &BrowserReceiptOutbox,
@@ -378,6 +603,19 @@ pub async fn persist_durable_receipt_outbox(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub async fn persist_durable_browser_storage(
+    _network_id: &NetworkId,
+    _snapshot: &BrowserStorageSnapshot,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn clear_durable_receipt_outbox(_network_id: &NetworkId) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn clear_durable_browser_storage(_network_id: &NetworkId) -> Result<(), String> {
     Ok(())
 }

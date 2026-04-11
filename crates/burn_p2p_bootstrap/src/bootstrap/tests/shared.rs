@@ -452,6 +452,7 @@ pub(super) fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig 
                 metadata: BTreeMap::new(),
             },
         ],
+        provider_policy: None,
         trusted_issuers: Vec::new(),
         reenrollment: None,
     }

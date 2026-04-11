@@ -1854,6 +1854,7 @@ fn mnist_burn_workload_config(supported_workload: SupportedWorkload) -> BurnWork
         supported_workload,
         BurnArtifactConfig::named_mpk(BurnRecordPrecision::Full, ChunkingScheme::default()),
     )
+    .with_root_ema(BurnWorkloadConfig::standard_root_ema_decay())
 }
 
 pub(crate) fn release_manifest(supported_workload: &SupportedWorkload) -> ClientReleaseManifest {

@@ -35,6 +35,9 @@ bootstrap enrollment now revalidates provider-backed sessions before issuing
 node certificates, and issued certificates now capture an `AuthPolicySnapshot`
 inside the signed claims so the admission decision is auditable after the fact.
 
+deploy profiles can now also express first-class `provider_policy.github.rules`
+instead of encoding github-governed admission only as static principal records.
+
 ### authority config surface
 
 the repo now has first-class authority governance manifest types:
@@ -60,23 +63,23 @@ only chat/docs intent.
 bootstrap now reads operator history, metrics-backed eval reports, publication
 state, and leaderboard snapshots through `operator_store`.
 
-today the default implementation is still file-backed, but the important
-boundary is now explicit:
+the important boundary is now explicit:
 
 - bootstrap admin/export paths no longer need to read directly from ad hoc
   preview vectors
-- a shared operator store backend can be swapped in later without rewriting the
-  route layer
+- shared operator state can now be mirrored through postgres-backed snapshots
+  for multi-edge reads without rewriting the route layer
 
-### browser receipt outbox seam
+### browser browser-state durability seam
 
-browser receipt submission is no longer modeled as "just a vec in storage".
+browser storage is no longer only an in-memory snapshot plus a best-effort
+receipt queue.
 
-the browser storage model now has an explicit `BrowserReceiptOutbox` with a
-declared backend:
+the browser storage model now has:
 
-- `IndexedDb`
-- `LocalStorage`
+- an explicit `BrowserReceiptOutbox` backend with `IndexedDb` and `LocalStorage`
+- a durable `BrowserStorageSnapshot` path that prefers indexeddb and falls back
+  to local storage
 
 the wasm/browser runtime now prefers indexeddb-backed durability, falls back to
 local-storage when indexeddb is unavailable, and migrates legacy local-storage
@@ -113,13 +116,13 @@ partially present:
 - optional redis-mirrored operator snapshots for multi-edge read coherence
   across heads, receipts, merges, peer-window metrics, reducer-cohort metrics,
   and head-eval reports
+- postgres-backed shared operator snapshots for multi-edge read coherence
 - packaged redis/postgres reference modules in `deploy/compose/`
 
 still missing:
 
-- a real external backend, with postgres first
-- stronger search, retention, audit, and replay semantics than point-in-time
-  mirrored snapshots
+- stronger search, retention, audit, and replay semantics than the current
+  point-in-time snapshot backends
 - streaming export paths for very large operator histories
 
 ### browser durability
@@ -133,6 +136,8 @@ partially present:
 - local-storage-backed durable receipt outbox wired into the browser controller
 - indexeddb-backed durable receipt outbox wired into the browser controller with
   local-storage migration fallback
+- durable browser storage snapshots wired into the browser controller with
+  indexeddb/local-storage fallback
 
 still missing:
 
@@ -176,8 +181,10 @@ still missing:
 
 these roadmap items are still open work:
 
-- stronger local-sgd drift correction and adaptive micro-epoch sizing
-- long-run browser durability beyond bounded in-memory state
+- stronger local-sgd drift correction and adaptive micro-epoch sizing beyond
+  the new default root-ema smoothing
+- long-run browser durability beyond storage-snapshot persistence, especially
+  resumable artifact sync and long-offline replay
 
 ## current claim
 
@@ -187,6 +194,9 @@ the honest claim today is:
 - coherent validator-quorum authority boundary
 - sane deployment references
 - bounded long-run memory behavior in the main live runtime paths
+- provider-backed github policy, shared operator-state backends, and browser
+  storage durability represented directly in code/config rather than only as
+  future seams
 - production seams made explicit in code for the next stage
 
 the repo should not yet claim:

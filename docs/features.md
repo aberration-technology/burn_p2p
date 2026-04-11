@@ -159,6 +159,9 @@ notes:
   `provider_subject`, `provider_login`, or `provider_email`, and can now also
   match on `provider_groups`, `provider_orgs`, and `provider_claim:<name>`
   entries in `custom_claims`
+- deploy configs can express first-class github admission rules through
+  `provider_policy.github.rules` instead of only hand-maintained principal
+  records
 - open native membership is possible when no admission policy is configured, but
   that is a lab/trusted-community shape rather than the recommended production
   default

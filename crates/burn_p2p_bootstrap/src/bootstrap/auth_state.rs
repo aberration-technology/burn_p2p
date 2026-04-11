@@ -425,8 +425,8 @@ pub(super) fn build_auth_portal(
             authority: authority.clone(),
         },
     };
-    let principals = config
-        .principals
+    let configured_principals = configured_auth_principals(config)?;
+    let principals = configured_principals
         .iter()
         .map(|principal| {
             Ok((
@@ -618,6 +618,136 @@ pub(super) fn build_auth_portal(
     Ok(auth_state)
 }
 
+fn configured_auth_principals(
+    config: &BootstrapAuthConfig,
+) -> Result<Vec<BootstrapAuthPrincipal>, Box<dyn std::error::Error>> {
+    let mut principals = config.principals.clone();
+    let mut provider_policy_principals = match config.provider_policy.as_ref() {
+        Some(policy) => provider_policy_principals(config, policy)?,
+        None => Vec::new(),
+    };
+    principals.append(&mut provider_policy_principals);
+
+    let mut seen = BTreeSet::new();
+    for principal in &principals {
+        if !seen.insert(principal.principal_id.clone()) {
+            return Err(std::io::Error::other(format!(
+                "duplicate auth principal id `{}` in bootstrap auth config",
+                principal.principal_id.as_str()
+            ))
+            .into());
+        }
+    }
+    Ok(principals)
+}
+
+fn provider_policy_principals(
+    config: &BootstrapAuthConfig,
+    policy: &BootstrapAuthProviderPolicyConfig,
+) -> Result<Vec<BootstrapAuthPrincipal>, Box<dyn std::error::Error>> {
+    let mut principals = Vec::new();
+
+    if let Some(github) = policy.github.as_ref() {
+        if !matches!(
+            config.connector,
+            BootstrapAuthConnectorConfig::GitHub { .. }
+        ) {
+            return Err(std::io::Error::other(
+                "github provider policy requires the github auth connector",
+            )
+            .into());
+        }
+        principals.extend(
+            github
+                .rules
+                .iter()
+                .map(github_policy_rule_principal)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+
+    Ok(principals)
+}
+
+fn github_policy_rule_principal(
+    rule: &BootstrapGitHubPrincipalRule,
+) -> Result<BootstrapAuthPrincipal, Box<dyn std::error::Error>> {
+    let mut custom_claims = rule.custom_claims.clone();
+
+    if let Some(login) = rule.provider_login.as_ref().map(|login| login.trim()) {
+        if login.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "github policy rule `{}` configured an empty provider_login",
+                rule.principal_id.as_str()
+            ))
+            .into());
+        }
+        custom_claims.insert("provider_login".into(), login.to_owned());
+    }
+    if let Some(email) = rule.provider_email.as_ref().map(|email| email.trim()) {
+        if email.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "github policy rule `{}` configured an empty provider_email",
+                rule.principal_id.as_str()
+            ))
+            .into());
+        }
+        custom_claims.insert("provider_email".into(), email.to_owned());
+    }
+
+    let required_orgs = join_required_provider_claims(&rule.required_orgs);
+    if !required_orgs.is_empty() {
+        custom_claims.insert("provider_orgs".into(), required_orgs);
+    }
+    let required_teams = join_required_provider_claims(&rule.required_teams);
+    if !required_teams.is_empty() {
+        custom_claims.insert("provider_groups".into(), required_teams);
+    }
+
+    let required_repo_access = rule
+        .required_repo_access
+        .iter()
+        .map(|repo| {
+            let repository = repo.repo.trim();
+            let minimum_permission = repo.minimum_permission.trim().to_ascii_lowercase();
+            if repository.is_empty() || minimum_permission.is_empty() {
+                return Err(std::io::Error::other(format!(
+                    "github policy rule `{}` configured an empty repo access requirement",
+                    rule.principal_id.as_str()
+                )));
+            }
+            Ok(format!("{repository}:{minimum_permission}"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if !required_repo_access.is_empty() {
+        custom_claims.insert(
+            "provider_repo_access".into(),
+            join_required_provider_claims(&required_repo_access),
+        );
+    }
+
+    Ok(BootstrapAuthPrincipal {
+        principal_id: rule.principal_id.clone(),
+        display_name: rule.display_name.clone(),
+        org_memberships: BTreeSet::new(),
+        group_memberships: BTreeSet::new(),
+        granted_roles: rule.granted_roles.clone(),
+        granted_scopes: rule.granted_scopes.clone(),
+        allowed_networks: rule.allowed_networks.clone(),
+        custom_claims,
+    })
+}
+
+fn join_required_provider_claims(values: &BTreeSet<String>) -> String {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub(super) fn auth_directory_entries(
     auth: &AuthPortalState,
     request: &HttpRequest,
@@ -654,4 +784,106 @@ pub(super) fn session_allows_receipt_submission(
             }
             _ => false,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn_p2p::{PeerRole, ProjectFamilyId};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    fn github_policy_config() -> BootstrapAuthConfig {
+        BootstrapAuthConfig {
+            authority_name: "github-auth".into(),
+            connector: BootstrapAuthConnectorConfig::GitHub {
+                authorize_base_url: None,
+                exchange_url: None,
+                token_url: None,
+                api_base_url: None,
+                client_id: None,
+                client_secret: None,
+                redirect_uri: None,
+                userinfo_url: None,
+                refresh_url: None,
+                revoke_url: None,
+                jwks_url: None,
+            },
+            authority_key_path: PathBuf::from("authority.key"),
+            session_state_path: None,
+            session_state_backend: None,
+            persist_provider_tokens: false,
+            issuer_key_id: default_issuer_key_id(),
+            project_family_id: ProjectFamilyId::new("demo-family"),
+            required_release_train_hash: ContentId::new("demo-train"),
+            allowed_target_artifact_hashes: BTreeSet::new(),
+            session_ttl_seconds: 300,
+            minimum_revocation_epoch: 1,
+            principals: Vec::new(),
+            provider_policy: Some(BootstrapAuthProviderPolicyConfig {
+                github: Some(BootstrapGitHubAuthPolicyConfig {
+                    rules: vec![BootstrapGitHubPrincipalRule {
+                        principal_id: PrincipalId::new("github-community"),
+                        display_name: "GitHub Community".into(),
+                        provider_login: Some("mosure".into()),
+                        provider_email: None,
+                        required_orgs: BTreeSet::from(["burn-community".into()]),
+                        required_teams: BTreeSet::from(["burn-community/maintainers".into()]),
+                        required_repo_access: vec![BootstrapGitHubRepoAccessRule {
+                            repo: "aberration-technology/burn_p2p".into(),
+                            minimum_permission: "admin".into(),
+                        }],
+                        granted_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+                        granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                        allowed_networks: BTreeSet::from([NetworkId::new("community-web-demo")]),
+                        custom_claims: BTreeMap::from([(
+                            "deployment_profile".into(),
+                            "community-web".into(),
+                        )]),
+                    }],
+                }),
+            }),
+            directory_entries: Vec::new(),
+            trusted_issuers: Vec::new(),
+            reenrollment: None,
+        }
+    }
+
+    #[test]
+    fn github_provider_policy_compiles_into_dynamic_principal_rules() {
+        let config = github_policy_config();
+        let principals = configured_auth_principals(&config).expect("compile github policy");
+        assert_eq!(principals.len(), 1);
+        let principal = &principals[0];
+        assert_eq!(principal.principal_id, PrincipalId::new("github-community"));
+        assert_eq!(
+            principal.custom_claims.get("provider_login"),
+            Some(&"mosure".into())
+        );
+        assert_eq!(
+            principal.custom_claims.get("provider_orgs"),
+            Some(&"burn-community".into())
+        );
+        assert_eq!(
+            principal.custom_claims.get("provider_groups"),
+            Some(&"burn-community/maintainers".into())
+        );
+        assert_eq!(
+            principal.custom_claims.get("provider_repo_access"),
+            Some(&"aberration-technology/burn_p2p:admin".into())
+        );
+    }
+
+    #[test]
+    fn github_provider_policy_rejects_non_github_connector() {
+        let mut config = github_policy_config();
+        config.connector = BootstrapAuthConnectorConfig::Static;
+        let error =
+            configured_auth_principals(&config).expect_err("non-github connector should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("github provider policy requires the github auth connector")
+        );
+    }
 }

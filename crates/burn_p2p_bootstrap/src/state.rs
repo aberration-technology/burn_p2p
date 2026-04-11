@@ -472,8 +472,8 @@ impl BootstrapAdminState {
 
 impl BootstrapAdminState {
     #[doc(hidden)]
-    pub fn configure_operator_state_redis_snapshot(&mut self, url: String, snapshot_key: String) {
-        self.operator_state_backend = Some(OperatorStateBackendConfig::Redis { url, snapshot_key });
+    pub fn configure_operator_state_backend(&mut self, backend: OperatorStateBackendConfig) {
+        self.operator_state_backend = Some(backend);
     }
 
     pub(crate) fn operator_store_preview(&self) -> FileOperatorStorePreview {

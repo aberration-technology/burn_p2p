@@ -1,3 +1,4 @@
+use super::super::daemon_types::BootstrapGitHubRepoAccessRule;
 use super::shared::*;
 
 #[test]
@@ -27,7 +28,7 @@ fn deployment_profile_examples_deserialize() {
 }
 
 #[test]
-fn bootstrap_config_loader_resolves_env_placeholders_and_operator_backend() {
+fn bootstrap_config_loader_resolves_env_placeholders_and_postgres_operator_backend() {
     let temp = tempdir().expect("temp dir");
     let env_name = format!(
         "BURN_P2P_TEST_BOOTSTRAP_CONFIG_SECRET_{}_{}",
@@ -71,9 +72,10 @@ fn bootstrap_config_loader_resolves_env_placeholders_and_operator_backend() {
     "profile_mode": "Disabled"
   }},
   "operator_state_backend": {{
-    "kind": "redis",
-    "url": "${{{env_name}:-redis://127.0.0.1:6379/1}}",
-    "key_prefix": "burn-p2p:test-operator-state"
+    "kind": "postgres",
+    "url": "${{{env_name}:-postgres://burn_p2p:burn-p2p-dev@127.0.0.1:5432/burn_p2p}}",
+    "key_prefix": "burn-p2p:test-operator-state",
+    "table_name": "burn_p2p_test_operator_state"
   }},
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
@@ -98,10 +100,42 @@ fn bootstrap_config_loader_resolves_env_placeholders_and_operator_backend() {
     );
     assert_eq!(
         config.operator_state_backend,
-        Some(BootstrapOperatorStateBackendConfig::Redis {
-            url: "redis://127.0.0.1:6379/1".into(),
+        Some(BootstrapOperatorStateBackendConfig::Postgres {
+            url: "postgres://burn_p2p:burn-p2p-dev@127.0.0.1:5432/burn_p2p".into(),
             key_prefix: "burn-p2p:test-operator-state".into(),
+            table_name: "burn_p2p_test_operator_state".into(),
         })
+    );
+}
+
+#[test]
+fn community_web_config_uses_first_class_github_provider_policy() {
+    let config: BootstrapDaemonConfig =
+        serde_json::from_str(include_str!("../../../examples/community-web.json"))
+            .expect("deserialize community web profile");
+    let auth = config.auth.expect("community web auth config");
+    assert!(auth.principals.is_empty());
+    let github_policy = auth
+        .provider_policy
+        .and_then(|policy| policy.github)
+        .expect("community web github policy");
+    assert_eq!(github_policy.rules.len(), 1);
+    let rule = &github_policy.rules[0];
+    assert_eq!(
+        rule.required_orgs,
+        BTreeSet::from(["burn-community".into()])
+    );
+    assert_eq!(
+        rule.required_teams,
+        BTreeSet::from(["burn-community/maintainers".into()])
+    );
+    assert_eq!(rule.required_repo_access.len(), 1);
+    assert_eq!(
+        rule.required_repo_access[0],
+        BootstrapGitHubRepoAccessRule {
+            repo: "aberration-technology/burn_p2p".into(),
+            minimum_permission: "admin".into(),
+        }
     );
 }
 

@@ -20,15 +20,17 @@ they now act as relay-capable, rendezvous-capable, and kademlia-capable
 coherence seeds for native peers. browser peers still join through the browser
 edge rather than as direct libp2p peers.
 
-for multi-edge admin/browser surfaces, bootstrap can also mirror operator read
-state into redis by setting:
+for multi-edge admin/browser surfaces, bootstrap can externalize operator read
+state into postgres by setting:
 
-- `BURN_P2P_OPERATOR_STATE_REDIS_URL`
+- `BURN_P2P_OPERATOR_STATE_POSTGRES_URL`
+- optional `BURN_P2P_OPERATOR_STATE_POSTGRES_TABLE`
 - optional `BURN_P2P_OPERATOR_STATE_KEY_PREFIX`
 
-that mirror is intentionally a read-coherence aid for heads, receipts, merges,
-peer-window metrics, reducer-cohort metrics, and head-eval reports. it is not
-yet the final audited operator backend.
+that shared snapshot backend keeps heads, receipts, merges, peer-window
+metrics, reducer-cohort metrics, and head-eval reports coherent across edges.
+the older redis-backed mirror still exists as a compatibility/read-coherence
+mode, but postgres is now the main operator-state backend shape in the repo.
 
 artifact publication is now also an explicit deploy concern rather than an
 implicit local-filesystem side effect. the reference configs model:
@@ -67,7 +69,7 @@ before starting a deployment:
 5. verify storage paths exist and have enough space for heads, receipts, and artifact chunks.
 6. keep admin mutation routes private; the reference deploy assets no longer ship with inline admin secrets.
 7. if more than one edge/admin surface should show the same operator state, point
-   them at the same `BURN_P2P_OPERATOR_STATE_REDIS_URL`.
+   them at the same `BURN_P2P_OPERATOR_STATE_POSTGRES_URL`.
 
 for bootstrap-only deployments also confirm:
 
@@ -172,9 +174,9 @@ oidc guidance:
   uses pkce for the standard authorization-code path
 - `id_token` validation is jwks-backed rather than being treated as an opaque blob
 - principal records can still match explicit identities with `provider_subject`,
-  `provider_login`, or `provider_email`, and can now also require
-  `provider_groups`, `provider_orgs`, or `provider_claim:<name>` values in
-  `custom_claims`
+  `provider_login`, or `provider_email`, and deploy profiles can now express
+  first-class provider policy blocks such as `provider_policy.github.rules`
+  instead of only hand-maintained static principal records
 - the bootstrap edge persists both issued sessions and pending login state, so
   callback completion and refresh/logout can survive restart and can be shared
   across multiple edges that point at the same session backend
@@ -185,8 +187,8 @@ github community guidance:
   "https://github.com/login/oauth/access_token"` and `api_base_url =
   "https://api.github.com"`
 - use dynamic principal rules such as `provider_orgs`,
-  `provider_groups`, and `provider_repo_access` instead of hand-maintained
-  principal allowlists
+  `provider_groups`, and `provider_repo_access` through
+  `provider_policy.github.rules` instead of hand-maintained principal allowlists
 - enrollment now rehydrates upstream github claims before certificate issuance,
   so org/team/collaborator changes can revoke browser admission on the next
   enroll/refresh cycle

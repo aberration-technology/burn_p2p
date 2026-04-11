@@ -35,8 +35,8 @@ hand-authored user allowlist:
 
 - github oauth authorize/token endpoints point at the public github surface
 - `api_base_url` points at `https://api.github.com`
-- principal admission is expressed with `provider_orgs`,
-  `provider_groups`, and `provider_repo_access`
+- principal admission is expressed with `provider_policy.github.rules`
+  requiring org, team, and repo-collaborator access
 - bootstrap rehydrates provider claims before certificate issuance, so github
   membership changes can revoke future enrollments
 
@@ -78,9 +78,8 @@ docker compose -f deploy/compose/operator-state.compose.yaml up -d
 
 that module packages:
 
-- redis for browser-edge auth session state and the shared operator-state mirror
-- postgres as the reference external database module for the next audited
-  operator backend stage
+- redis for browser-edge auth session state
+- postgres as the reference shared operator-state backend
 
 reference artifact-publication backing service:
 
@@ -116,10 +115,10 @@ shape stay aligned across profiles.
 
 the split-fleet env example now includes:
 
-- shared operator-state redis wiring
+- shared operator-state postgres wiring
 - browser-edge auth session redis wiring
 - github / oidc client secret placeholders
-- packaged postgres module defaults for the next operator-backend stage
+- packaged postgres module defaults for the shared operator backend
 - packaged minio / s3-compatible artifact-publication defaults
 
 the compose browser-edge stacks bind `8787` to `127.0.0.1` on the host by
