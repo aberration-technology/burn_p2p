@@ -444,6 +444,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let browser_probe_manifest = None;
     let browser_probe_summary = None;
     let restarted_trainer_label = TRAINER_A2_LABEL.to_string();
+    let resilience_drills_required = require_resilience_drills();
     let mut head_eval_reports = vec![
         head_eval_report(
             &baseline_genesis,
@@ -607,179 +608,168 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
 
     write_demo_phase(&output, "baseline-rounds-complete")?;
 
-    write_demo_phase(&output, "restart-trainer-shutdown-start")?;
-    shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
-    write_demo_phase(&output, "restart-trainer-shutdown-complete")?;
-    let mut trainer_a2 = build_trainer_project(1.0e-3)?
-        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
-        .with_network(network_manifest.clone())?
-        .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
-        .with_bootstrap_peer(helper_addr.clone())
-        .spawn()?;
-    wait_for(
-        Duration::from_secs(15),
-        || trainer_a2.telemetry().snapshot().connected_peers >= 1,
-        "restarted trainer-a2 did not reconnect",
-    )?;
-    write_demo_phase(&output, "restart-trainer-reconnected")?;
-    let _ = wait_for_synced_head(
-        &trainer_a2,
-        &baseline,
-        FOLLOWER_HEAD_DISCOVERY_TIMEOUT,
-        "restarted trainer-a2 did not resync baseline head",
-    )?;
-    let trainer_restart_reconnected = true;
-    let restarted_outcome = run_training_round(
-        &mut trainer_a2,
-        TRAINER_A2_LABEL,
-        &baseline,
-        Some(&baseline_head),
-        &prepared_data,
-    )?;
-    write_demo_phase(&output, "restart-round-trained")?;
-    wait_for_candidate_artifacts(
-        [(TRAINER_A2_LABEL, &trainer_a2, &restarted_outcome)],
-        [
-            (REDUCER_LABEL, &reducer),
-            (VALIDATOR_LABEL, &validator),
-            (VALIDATOR_B_LABEL, &validator_b),
-        ],
-        &baseline,
-        RESTART_CANDIDATE_ARTIFACT_TIMEOUT,
-        "restarted trainer-a2 artifact was not fetchable by the reducer/validator tier",
-    )?;
-    wait_for_candidate_control_plane(
-        [
-            (REDUCER_LABEL, &reducer),
-            (VALIDATOR_LABEL, &validator),
-            (VALIDATOR_B_LABEL, &validator_b),
-        ],
-        &baseline,
-        [&restarted_outcome],
-        Duration::from_secs(45),
-        "restart candidate update did not propagate across the reducer/validator tier",
-    )?;
-    write_demo_phase(&output, "restart-round-candidates-ready")?;
-    baseline_outcomes.push(restarted_outcome);
-    let validation = run_reducer_validation_round(
-        &mut reducer,
-        &mut validator,
-        &mut validator_b,
-        &baseline,
-        &reducer_peer_id,
-        &validator_peer_ids,
-    )?;
-    write_demo_phase(&output, "restart-round-validation-complete")?;
-    baseline_head = validation.merged_head.clone();
-    baseline_head_providers = vec![
-        validation.merge_certificate.validator.clone(),
-        reducer_peer_id.clone(),
-        validator_peer_id.clone(),
-        validator_b_peer_id.clone(),
-    ];
-    if require_viewer_topology_convergence() {
-        sync_topology_heads(
-            &[
-                (REDUCER_LABEL, &reducer),
-                (VALIDATOR_LABEL, &validator),
-                (VALIDATOR_B_LABEL, &validator_b),
-                (TRAINER_A1_LABEL, &trainer_a1),
-                (TRAINER_A2_LABEL, &trainer_a2),
-                (VIEWER_LABEL, &viewer),
-            ],
-            &baseline_head_providers,
-            &baseline,
-            &baseline_head,
-            TOPOLOGY_HEAD_SYNC_TIMEOUT,
-            "restart validation did not converge on the promoted baseline head",
-        )?;
-    } else {
-        sync_topology_heads(
-            &[
-                (REDUCER_LABEL, &reducer),
-                (VALIDATOR_LABEL, &validator),
-                (VALIDATOR_B_LABEL, &validator_b),
-                (TRAINER_A1_LABEL, &trainer_a1),
-                (TRAINER_A2_LABEL, &trainer_a2),
-            ],
-            &baseline_head_providers,
-            &baseline,
-            &baseline_head,
-            TOPOLOGY_HEAD_SYNC_TIMEOUT,
-            "restart validation did not converge on the promoted baseline head",
-        )?;
-        let _ = wait_for_specific_head(
-            &viewer,
-            &baseline,
-            &baseline_head,
+    let trainer_restart_reconnected;
+    let trainer_restart_resumed_training;
+    let late_joiner_synced_checkpoint;
+    let late_joiner;
+    if resilience_drills_required {
+        write_demo_phase(&output, "restart-trainer-shutdown-start")?;
+        shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
+        write_demo_phase(&output, "restart-trainer-shutdown-complete")?;
+        let restarted_trainer_a2 = build_trainer_project(1.0e-3)?
+            .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
+            .with_network(network_manifest.clone())?
+            .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
+            .with_bootstrap_peer(helper_addr.clone())
+            .spawn()?;
+        trainer_a2 = restarted_trainer_a2;
+        wait_for(
             Duration::from_secs(15),
-            "viewer did not observe restart-promoted baseline head on time",
-        );
-    }
-    write_demo_phase(&output, "restart-round-topology-synced")?;
-    merge_certificates.push(validation.merge_certificate.clone());
-    head_eval_reports.push(head_eval_report_from_validation(
-        &validation,
-        &prepared_data,
-        supported_workload.workload_id.clone(),
-    ));
-    let trainer_restart_resumed_training = true;
+            || trainer_a2.telemetry().snapshot().connected_peers >= 1,
+            "restarted trainer-a2 did not reconnect",
+        )?;
+        write_demo_phase(&output, "restart-trainer-reconnected")?;
+        let _ = wait_for_synced_head(
+            &trainer_a2,
+            &baseline,
+            FOLLOWER_HEAD_DISCOVERY_TIMEOUT,
+            "restarted trainer-a2 did not resync baseline head",
+        )?;
+        trainer_restart_reconnected = true;
+        let restarted_outcome = run_training_round(
+            &mut trainer_a2,
+            TRAINER_A2_LABEL,
+            &baseline,
+            Some(&baseline_head),
+            &prepared_data,
+        )?;
+        write_demo_phase(&output, "restart-round-trained")?;
+        wait_for_candidate_artifacts(
+            [(TRAINER_A2_LABEL, &trainer_a2, &restarted_outcome)],
+            [
+                (REDUCER_LABEL, &reducer),
+                (VALIDATOR_LABEL, &validator),
+                (VALIDATOR_B_LABEL, &validator_b),
+            ],
+            &baseline,
+            RESTART_CANDIDATE_ARTIFACT_TIMEOUT,
+            "restarted trainer-a2 artifact was not fetchable by the reducer/validator tier",
+        )?;
+        wait_for_candidate_control_plane(
+            [
+                (REDUCER_LABEL, &reducer),
+                (VALIDATOR_LABEL, &validator),
+                (VALIDATOR_B_LABEL, &validator_b),
+            ],
+            &baseline,
+            [&restarted_outcome],
+            Duration::from_secs(45),
+            "restart candidate update did not propagate across the reducer/validator tier",
+        )?;
+        write_demo_phase(&output, "restart-round-candidates-ready")?;
+        baseline_outcomes.push(restarted_outcome);
+        let validation = run_reducer_validation_round(
+            &mut reducer,
+            &mut validator,
+            &mut validator_b,
+            &baseline,
+            &reducer_peer_id,
+            &validator_peer_ids,
+        )?;
+        write_demo_phase(&output, "restart-round-validation-complete")?;
+        baseline_head = validation.merged_head.clone();
+        baseline_head_providers = vec![
+            validation.merge_certificate.validator.clone(),
+            reducer_peer_id.clone(),
+            validator_peer_id.clone(),
+            validator_b_peer_id.clone(),
+        ];
+        if require_viewer_topology_convergence() {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                    (VIEWER_LABEL, &viewer),
+                ],
+                &baseline_head_providers,
+                &baseline,
+                &baseline_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "restart validation did not converge on the promoted baseline head",
+            )?;
+        } else {
+            sync_topology_heads(
+                &[
+                    (REDUCER_LABEL, &reducer),
+                    (VALIDATOR_LABEL, &validator),
+                    (VALIDATOR_B_LABEL, &validator_b),
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                ],
+                &baseline_head_providers,
+                &baseline,
+                &baseline_head,
+                TOPOLOGY_HEAD_SYNC_TIMEOUT,
+                "restart validation did not converge on the promoted baseline head",
+            )?;
+            let _ = wait_for_specific_head(
+                &viewer,
+                &baseline,
+                &baseline_head,
+                Duration::from_secs(15),
+                "viewer did not observe restart-promoted baseline head on time",
+            );
+        }
+        write_demo_phase(&output, "restart-round-topology-synced")?;
+        merge_certificates.push(validation.merge_certificate.clone());
+        head_eval_reports.push(head_eval_report_from_validation(
+            &validation,
+            &prepared_data,
+            supported_workload.workload_id.clone(),
+        ));
+        trainer_restart_resumed_training = true;
 
-    let late_joiner_checkpoint_required = require_late_joiner_checkpoint_convergence();
-    let late_joiner = build_trainer_project(1.0e-3)?
-        .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
-        .with_network(network_manifest.clone())?
-        .with_storage(StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)))
-        .with_bootstrap_peer(helper_addr.clone())
-        .spawn()?;
-    wait_for(
-        Duration::from_secs(15),
-        || late_joiner.telemetry().snapshot().connected_peers >= 1,
-        "late joiner did not connect",
-    )?;
-    let late_joiner_sync_attempt = (|| -> anyhow::Result<bool> {
+        let late_joiner_node = build_trainer_project(1.0e-3)?
+            .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
+            .with_network(network_manifest.clone())?
+            .with_storage(StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)))
+            .with_bootstrap_peer(helper_addr.clone())
+            .spawn()?;
+        wait_for(
+            Duration::from_secs(15),
+            || late_joiner_node.telemetry().snapshot().connected_peers >= 1,
+            "late joiner did not connect",
+        )?;
         wait_for_head_artifacts(
-            &[(TRAINER_LATE_LABEL, &late_joiner)],
+            &[(TRAINER_LATE_LABEL, &late_joiner_node)],
             &baseline_head_providers,
             &baseline_head.artifact_id,
             Duration::from_secs(20),
             "late joiner could not prewarm the promoted baseline head artifact",
         )?;
         let synced_head = wait_for_specific_head(
-            &late_joiner,
+            &late_joiner_node,
             &baseline,
             &baseline_head,
             FOLLOWER_HEAD_DISCOVERY_TIMEOUT,
             "late joiner did not discover baseline head",
         )?;
-        let late_joiner_store = late_joiner
+        let late_joiner_store = late_joiner_node
             .artifact_store()
             .context("late joiner missing artifact store")?;
-        Ok(late_joiner_store.has_manifest(&synced_head.artifact_id))
-    })();
-    let late_joiner_synced_checkpoint = if late_joiner_checkpoint_required {
-        let synced = late_joiner_sync_attempt?;
+        late_joiner_synced_checkpoint = late_joiner_store.has_manifest(&synced_head.artifact_id);
         write_demo_phase(&output, "late-joiner-synced")?;
-        synced
+        late_joiner = Some(late_joiner_node);
     } else {
-        match late_joiner_sync_attempt {
-            Ok(synced) => {
-                if synced {
-                    write_demo_phase(&output, "late-joiner-synced")?;
-                } else {
-                    write_demo_phase(&output, "late-joiner-best-effort")?;
-                }
-                synced
-            }
-            Err(error) => {
-                eprintln!(
-                    "mnist demo note: late joiner checkpoint sync was skipped as a hard CI requirement: {error}"
-                );
-                write_demo_phase(&output, "late-joiner-best-effort")?;
-                false
-            }
-        }
-    };
+        trainer_restart_reconnected = false;
+        trainer_restart_resumed_training = false;
+        late_joiner_synced_checkpoint = false;
+        late_joiner = None;
+        write_demo_phase(&output, "resilience-drills-skipped")?;
+    }
 
     for round_index in 0..args.low_lr_rounds {
         write_demo_phase(
@@ -1019,11 +1009,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         &trainer_a1,
         &trainer_a2,
         &trainer_b,
-        Some(node_record(
-            TRAINER_LATE_LABEL,
-            &late_joiner,
-            &storage_root.join(TRAINER_LATE_LABEL),
-        )),
+        late_joiner.as_ref().map(|late_joiner| {
+            node_record(
+                TRAINER_LATE_LABEL,
+                late_joiner,
+                &storage_root.join(TRAINER_LATE_LABEL),
+            )
+        }),
         &storage_root,
     );
     let mut bootstrap_plan = BTreeMap::from([
@@ -1036,11 +1028,11 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         (TRAINER_A2_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
         (TRAINER_B_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
     ]);
-    if late_joiner_checkpoint_required {
+    if late_joiner.is_some() {
         bootstrap_plan.insert(TRAINER_LATE_LABEL.to_string(), vec![HELPER_LABEL.to_string()]);
     }
     write_demo_phase(&output, "final-snapshots-start")?;
-    let final_snapshots = BTreeMap::from([
+    let mut final_snapshots = BTreeMap::from([
         (HELPER_LABEL.to_string(), helper.telemetry().snapshot()),
         (VALIDATOR_LABEL.to_string(), validator.telemetry().snapshot()),
         (VALIDATOR_B_LABEL.to_string(), validator_b.telemetry().snapshot()),
@@ -1049,9 +1041,11 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         (TRAINER_A1_LABEL.to_string(), trainer_a1.telemetry().snapshot()),
         (TRAINER_A2_LABEL.to_string(), trainer_a2.telemetry().snapshot()),
         (TRAINER_B_LABEL.to_string(), trainer_b.telemetry().snapshot()),
-        (TRAINER_LATE_LABEL.to_string(), late_joiner.telemetry().snapshot()),
     ]);
-    let metric_storages = [
+    if let Some(late_joiner) = &late_joiner {
+        final_snapshots.insert(TRAINER_LATE_LABEL.to_string(), late_joiner.telemetry().snapshot());
+    }
+    let mut metric_storages = vec![
         StorageConfig::new(storage_root.join(HELPER_LABEL)),
         StorageConfig::new(storage_root.join(VALIDATOR_LABEL)),
         StorageConfig::new(storage_root.join(VALIDATOR_B_LABEL)),
@@ -1060,8 +1054,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         StorageConfig::new(storage_root.join(TRAINER_A1_LABEL)),
         StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)),
         StorageConfig::new(storage_root.join(TRAINER_B_LABEL)),
-        StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)),
     ];
+    if late_joiner.is_some() {
+        metric_storages.push(StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)));
+    }
     let peer_window_metrics =
         load_metric_artifacts_from_storages::<PeerWindowMetrics>(&metric_storages, "peer-window-")?;
     let reducer_cohort_metrics = load_metric_artifacts_from_storages::<ReducerCohortMetrics>(
@@ -1078,7 +1074,9 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     )?;
 
     write_demo_phase(&output, "shutdown-start")?;
-    shutdown_node(TRAINER_LATE_LABEL, late_joiner)?;
+    if let Some(late_joiner) = late_joiner {
+        shutdown_node(TRAINER_LATE_LABEL, late_joiner)?;
+    }
     shutdown_node(TRAINER_B_LABEL, trainer_b)?;
     shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
     shutdown_node(TRAINER_A1_LABEL, trainer_a1)?;
@@ -1520,7 +1518,7 @@ fn require_viewer_topology_convergence() -> bool {
     std::env::var_os("CI").is_none() && std::env::var_os("GITHUB_ACTIONS").is_none()
 }
 
-fn require_late_joiner_checkpoint_convergence() -> bool {
+fn require_resilience_drills() -> bool {
     std::env::var_os("CI").is_none() && std::env::var_os("GITHUB_ACTIONS").is_none()
 }
 

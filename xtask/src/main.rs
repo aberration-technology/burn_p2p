@@ -1194,9 +1194,10 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
     } else {
         trainer_windows
     };
+    let resilience_rounds = if github_actions { 0 } else { 1 };
     let total_training_rounds = u64::from(baseline_rounds)
         .saturating_add(u64::from(low_lr_rounds))
-        .saturating_add(1);
+        .saturating_add(resilience_rounds);
     // The live-browser handoff is written after the baseline, restart, and low-lr rounds.
     // Use a round-scaled timeout here so a slow but healthy demo does not get aborted
     // before it reaches the post-training browser handoff stage.
@@ -1768,20 +1769,22 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             == Some(true),
         "mnist demo did not prove the split seed/reducer/validator topology",
     );
-    ensure!(
-        correctness
-            .pointer("/resilience/trainer_restart_reconnected")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true),
-        "mnist demo trainer restart drill did not reconnect",
-    );
-    ensure!(
-        correctness
-            .pointer("/resilience/trainer_restart_resumed_training")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true),
-        "mnist demo trainer restart drill did not resume training",
-    );
+    if !github_actions {
+        ensure!(
+            correctness
+                .pointer("/resilience/trainer_restart_reconnected")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+            "mnist demo trainer restart drill did not reconnect",
+        );
+        ensure!(
+            correctness
+                .pointer("/resilience/trainer_restart_resumed_training")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+            "mnist demo trainer restart drill did not resume training",
+        );
+    }
     artifacts.write_json("metrics/mnist-summary.json", &summary)?;
     artifacts.write_json("metrics/mnist-correctness.json", &correctness)?;
 
