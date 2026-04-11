@@ -1,7 +1,7 @@
 services:
   burn-p2p-redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--save", "", "--appendonly", "yes"]
     volumes:
       - burn-p2p-redis-data:/data
     restart: unless-stopped

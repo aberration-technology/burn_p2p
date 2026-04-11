@@ -30,6 +30,16 @@ that mirror is intentionally a read-coherence aid for heads, receipts, merges,
 peer-window metrics, reducer-cohort metrics, and head-eval reports. it is not
 yet the final audited operator backend.
 
+artifact publication is now also an explicit deploy concern rather than an
+implicit local-filesystem side effect. the reference configs model:
+
+- hot local publication under the bootstrap storage root
+- warm s3-compatible publication through `artifact_publication.targets`
+
+for local/reference deployments, the repo now ships a packaged minio compose
+module so that warm object-store publication can be exercised without wiring a
+third-party bucket first.
+
 profiles:
 
 - `reference split fleet`
@@ -64,6 +74,8 @@ for bootstrap-only deployments also confirm:
 1. the preset resolves to `CoherenceSeed`
 2. no embedded runtime is configured
 3. retention is lean and does not keep validator/archive-heavy state unless explicitly needed
+4. if artifact publication is enabled, the hot local root and warm object-store
+   bucket are both reachable before export jobs are requested
 
 ## profile guidance
 
@@ -267,6 +279,32 @@ operational note:
 
 - public/community should not be interpreted as unauthenticated peer contribution by default
 - contributor browsers should still authenticate, receive a local burn session, and enroll for a node certificate before they submit work
+
+## authority governance workflow
+
+current repo-backed workflow:
+
+1. define the next validator set and authority epoch manifests offline
+2. verify quorum weights, network id binding, and release-train compatibility
+3. roll the manifests together with any issuer rotation and trusted-issuer changes
+4. advance revocation policy when retiring validators, issuers, or browser admission policies
+5. keep bootstrap admin mutation surfaces private during rollout
+
+this is now grounded in first-class manifest types, not just operator intent.
+what is still open is a fully automated byzantine-grade governance pipeline and
+evidence publication flow.
+
+## artifact storage classes
+
+use the reference storage tiers intentionally:
+
+- hot: local bootstrap publication root for low-latency active-head streaming
+- warm: s3-compatible mirror for signed-url delivery and longer-lived exports
+- cold: external archival/compliance system outside the live bootstrap path
+
+phase-1 public/community deployments should keep browser participation off the
+critical durability path and rely on native/archive operators for the longer-run
+artifact history boundary.
 
 ## open admission and unauthenticated networks
 

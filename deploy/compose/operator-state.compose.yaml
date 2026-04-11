@@ -1,0 +1,35 @@
+services:
+  burn-p2p-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - burn-p2p-redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  burn-p2p-postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: ${BURN_P2P_OPERATOR_STATE_POSTGRES_DB:-burn_p2p}
+      POSTGRES_USER: ${BURN_P2P_OPERATOR_STATE_POSTGRES_USER:-burn_p2p}
+      POSTGRES_PASSWORD: ${BURN_P2P_OPERATOR_STATE_POSTGRES_PASSWORD:-burn-p2p-dev}
+    volumes:
+      - burn-p2p-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BURN_P2P_OPERATOR_STATE_POSTGRES_USER:-burn_p2p} -d ${BURN_P2P_OPERATOR_STATE_POSTGRES_DB:-burn_p2p}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  burn-p2p-redis-data: {}
+  burn-p2p-postgres-data: {}

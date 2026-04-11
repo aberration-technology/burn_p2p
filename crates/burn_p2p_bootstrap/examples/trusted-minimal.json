@@ -12,7 +12,10 @@
     },
     "platform": "Native",
     "bootstrap_addresses": [],
-    "listen_addresses": [],
+    "listen_addresses": [
+      "/ip4/0.0.0.0/tcp/4001",
+      "/ip4/0.0.0.0/udp/4001/quic-v1"
+    ],
     "authority": null,
     "archive": {
       "pinned_heads": [],
@@ -28,9 +31,7 @@
       "receipt_exports_enabled": true
     }
   },
-  "http_bind_addr": "127.0.0.1:8790",
-  "admin_token": "local-admin",
-  "allow_dev_admin_token": true,
+  "http_bind_addr": "0.0.0.0:8787",
   "optional_services": {
     "browser_edge_enabled": false,
     "browser_mode": "Disabled",
@@ -39,12 +40,31 @@
   },
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
+  "operator_state_backend": {
+    "kind": "redis",
+    "url": "${BURN_P2P_OPERATOR_STATE_REDIS_URL:-redis://burn-p2p-redis:6379/1}",
+    "key_prefix": "${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}"
+  },
+  "bootstrap_peer": {
+    "node": {
+      "identity": "Persistent",
+      "storage": {
+        "root": "/var/lib/burn-p2p/bootstrap-peer"
+      },
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": [
+        "/ip4/0.0.0.0/tcp/4001",
+        "/ip4/0.0.0.0/udp/4001/quic-v1"
+      ]
+    }
+  },
   "auth": {
     "authority_name": "trusted-minimal-auth",
     "connector": {
       "kind": "static"
     },
-    "authority_key_path": ".burn_p2p-auth/trusted-minimal-authority.key",
+    "authority_key_path": "/var/lib/burn-p2p/auth/trusted-minimal-authority.key",
     "project_family_id": "demo-family",
     "required_release_train_hash": "demo-train",
     "allowed_target_artifact_hashes": [

@@ -132,6 +132,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
             bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
+            operator_state_backend: None,
             artifact_publication: Some(BootstrapArtifactPublicationConfig {
                 targets: state
                     .lock()
@@ -391,6 +392,7 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
             bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
+            operator_state_backend: None,
             artifact_publication: Some(BootstrapArtifactPublicationConfig {
                 targets: state
                     .lock()

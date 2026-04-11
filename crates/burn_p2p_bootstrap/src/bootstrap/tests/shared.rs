@@ -3,11 +3,12 @@ pub(super) use super::super::BootstrapArtifactPublicationConfig;
 pub(super) use super::super::{
     AuthSessionStateStore, BootstrapAuthConfig, BootstrapAuthConnectorConfig,
     BootstrapAuthPrincipal, BootstrapAuthSessionBackendConfig, BootstrapDaemonConfig,
-    BootstrapEmbeddedDaemonConfig, BootstrapOptionalServicesConfig, BootstrapPeerDaemonConfig,
-    HttpRequest, HttpServerContext, auth_directory_entries, auth_session_state_store,
-    build_auth_portal, current_revocation_epoch, current_trust_bundle, default_issuer_key_id,
-    handle_connection, load_or_create_keypair, persist_daemon_config, retire_trusted_issuers,
-    rollout_auth_policy, rotate_authority_material, validate_compiled_feature_support_with,
+    BootstrapEmbeddedDaemonConfig, BootstrapOperatorStateBackendConfig,
+    BootstrapOptionalServicesConfig, BootstrapPeerDaemonConfig, HttpRequest, HttpServerContext,
+    auth_directory_entries, auth_session_state_store, build_auth_portal, current_revocation_epoch,
+    current_trust_bundle, default_issuer_key_id, handle_connection, load_bootstrap_daemon_config,
+    load_or_create_keypair, persist_daemon_config, retire_trusted_issuers, rollout_auth_policy,
+    rotate_authority_material, validate_compiled_feature_support_with,
 };
 pub(super) use crate::compiled_feature_set;
 #[cfg(feature = "artifact-s3")]

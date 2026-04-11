@@ -12,7 +12,10 @@
     },
     "platform": "Native",
     "bootstrap_addresses": [],
-    "listen_addresses": [],
+    "listen_addresses": [
+      "/ip4/0.0.0.0/tcp/4001",
+      "/ip4/0.0.0.0/udp/4001/quic-v1"
+    ],
     "authority": null,
     "archive": {
       "pinned_heads": [],
@@ -28,7 +31,7 @@
       "receipt_exports_enabled": true
     }
   },
-  "http_bind_addr": "127.0.0.1:8791",
+  "http_bind_addr": "0.0.0.0:8787",
   "optional_services": {
     "browser_edge_enabled": true,
     "browser_mode": "Disabled",
@@ -37,16 +40,109 @@
   },
   "remaining_work_units": 120,
   "admin_signer_peer_id": "bootstrap-authority",
+  "operator_state_backend": {
+    "kind": "redis",
+    "url": "${BURN_P2P_OPERATOR_STATE_REDIS_URL:-redis://burn-p2p-redis:6379/1}",
+    "key_prefix": "${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}"
+  },
+  "artifact_publication": {
+    "targets": [
+      {
+        "publication_target_id": "local-default",
+        "label": "hot-local",
+        "kind": "LocalFilesystem",
+        "publication_mode": "LazyOnDemand",
+        "access_mode": "Authenticated",
+        "allow_public_reads": false,
+        "supports_signed_urls": false,
+        "edge_proxy_required": true,
+        "max_artifact_size_bytes": 21474836480,
+        "retention_ttl_secs": 604800,
+        "allowed_artifact_profiles": [
+          "FullTrainingCheckpoint",
+          "ServeCheckpoint",
+          "BrowserSnapshot",
+          "ManifestOnly"
+        ],
+        "eager_alias_names": [],
+        "local_root": "/var/lib/burn-p2p/publication/hot",
+        "bucket": null,
+        "endpoint": null,
+        "region": null,
+        "access_key_id": null,
+        "secret_access_key": null,
+        "session_token": null,
+        "path_prefix": "hot",
+        "multipart_threshold_bytes": null,
+        "server_side_encryption": null,
+        "signed_url_ttl_secs": null
+      },
+      {
+        "publication_target_id": "warm-s3",
+        "label": "warm-object-store",
+        "kind": "S3Compatible",
+        "publication_mode": "LazyOnDemand",
+        "access_mode": "Authenticated",
+        "allow_public_reads": false,
+        "supports_signed_urls": true,
+        "edge_proxy_required": false,
+        "max_artifact_size_bytes": 53687091200,
+        "retention_ttl_secs": 2592000,
+        "allowed_artifact_profiles": [
+          "FullTrainingCheckpoint",
+          "ServeCheckpoint",
+          "BrowserSnapshot",
+          "ManifestOnly"
+        ],
+        "eager_alias_names": [],
+        "local_root": null,
+        "bucket": "${BURN_P2P_ARTIFACT_S3_BUCKET:-burn-p2p-artifacts}",
+        "endpoint": "${BURN_P2P_ARTIFACT_S3_ENDPOINT:-http://burn-p2p-minio:9000}",
+        "region": "${BURN_P2P_ARTIFACT_S3_REGION:-us-east-1}",
+        "access_key_id": "${BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID:-burn-p2p}",
+        "secret_access_key": "${BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY:-burn-p2p-dev-secret}",
+        "session_token": null,
+        "path_prefix": "${BURN_P2P_ARTIFACT_S3_PATH_PREFIX:-artifacts}",
+        "multipart_threshold_bytes": 16777216,
+        "server_side_encryption": "${BURN_P2P_ARTIFACT_S3_SERVER_SIDE_ENCRYPTION:-AES256}",
+        "signed_url_ttl_secs": 900
+      }
+    ]
+  },
+  "bootstrap_peer": {
+    "node": {
+      "identity": "Persistent",
+      "storage": {
+        "root": "/var/lib/burn-p2p/bootstrap-peer"
+      },
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": [
+        "/ip4/0.0.0.0/tcp/4001",
+        "/ip4/0.0.0.0/udp/4001/quic-v1"
+      ]
+    }
+  },
   "auth": {
     "authority_name": "enterprise-auth",
     "connector": {
       "kind": "oidc",
-      "issuer": "https://issuer.example",
-      "authorize_base_url": "https://issuer.example/authorize",
-      "exchange_url": "https://issuer.example/exchange",
+      "issuer": "${BURN_P2P_OIDC_ISSUER:-https://issuer.example}",
+      "authorize_base_url": "${BURN_P2P_OIDC_AUTHORIZE_BASE_URL:-https://issuer.example/authorize}",
+      "token_url": "${BURN_P2P_OIDC_TOKEN_URL:-https://issuer.example/oauth/token}",
+      "client_id": "${BURN_P2P_OIDC_CLIENT_ID:-burn-p2p-browser-edge}",
+      "client_secret": "${BURN_P2P_OIDC_CLIENT_SECRET}",
+      "redirect_uri": "${BURN_P2P_OIDC_REDIRECT_URI:-https://edge.example/callback/oidc}",
+      "jwks_url": "https://issuer.example/.well-known/jwks.json",
       "userinfo_url": "https://issuer.example/userinfo"
     },
-    "authority_key_path": ".burn_p2p-auth/enterprise-authority.key",
+    "authority_key_path": "/var/lib/burn-p2p/auth/enterprise-authority.key",
+    "session_state_backend": {
+      "kind": "redis",
+      "url": "${BURN_P2P_AUTH_SESSION_REDIS_URL:-redis://burn-p2p-redis:6379/0}",
+      "key_prefix": "burn-p2p:enterprise-auth"
+    },
+    "persist_provider_tokens": false,
     "project_family_id": "demo-family",
     "required_release_train_hash": "demo-train",
     "allowed_target_artifact_hashes": [
@@ -83,7 +179,10 @@
           "enterprise-sso-demo"
         ],
         "custom_claims": {
-          "deployment_profile": "enterprise-sso"
+          "deployment_profile": "enterprise-sso",
+          "provider_email": "alice@example.com",
+          "provider_groups": "operators,burn-enterprise",
+          "provider_claim:department": "ml-platform"
         }
       }
     ],

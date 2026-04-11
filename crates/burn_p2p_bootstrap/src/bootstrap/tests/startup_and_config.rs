@@ -27,6 +27,85 @@ fn deployment_profile_examples_deserialize() {
 }
 
 #[test]
+fn bootstrap_config_loader_resolves_env_placeholders_and_operator_backend() {
+    let temp = tempdir().expect("temp dir");
+    let env_name = format!(
+        "BURN_P2P_TEST_BOOTSTRAP_CONFIG_SECRET_{}_{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let config_path = temp.path().join("bootstrap-config.json");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{{
+  "spec": {{
+    "preset": "BootstrapOnly",
+    "genesis": {{
+      "network_id": "config-env-demo",
+      "protocol_version": "0.1.0",
+      "display_name": "Config Env Demo",
+      "created_at": "2026-01-01T00:00:00Z",
+      "metadata": {{}}
+    }},
+    "platform": "Native",
+    "bootstrap_addresses": [],
+    "listen_addresses": ["/ip4/127.0.0.1/tcp/4001"],
+    "authority": null,
+    "archive": {{
+      "pinned_heads": [],
+      "pinned_artifacts": [],
+      "retain_contribution_receipts": false
+    }},
+    "admin_api": {{
+      "supported_actions": ["ExportDiagnostics"],
+      "diagnostics_enabled": true,
+      "receipt_exports_enabled": false
+    }}
+  }},
+  "http_bind_addr": "127.0.0.1:8787",
+  "optional_services": {{
+    "browser_edge_enabled": false,
+    "browser_mode": "Disabled",
+    "social_mode": "Disabled",
+    "profile_mode": "Disabled"
+  }},
+  "operator_state_backend": {{
+    "kind": "redis",
+    "url": "${{{env_name}:-redis://127.0.0.1:6379/1}}",
+    "key_prefix": "burn-p2p:test-operator-state"
+  }},
+  "remaining_work_units": 120,
+  "admin_signer_peer_id": "bootstrap-authority",
+  "bootstrap_peer": {{
+    "node": {{
+      "identity": "Ephemeral",
+      "storage": null,
+      "dataset": null,
+      "bootstrap_peers": [],
+      "listen_addresses": ["/ip4/127.0.0.1/tcp/4001"]
+    }}
+  }}
+}}"#
+        ),
+    )
+    .expect("write bootstrap config");
+
+    let config = load_bootstrap_daemon_config(&config_path).expect("load bootstrap config");
+    assert_eq!(
+        config.spec.genesis.network_id,
+        NetworkId::new("config-env-demo")
+    );
+    assert_eq!(
+        config.operator_state_backend,
+        Some(BootstrapOperatorStateBackendConfig::Redis {
+            url: "redis://127.0.0.1:6379/1".into(),
+            key_prefix: "burn-p2p:test-operator-state".into(),
+        })
+    );
+}
+
+#[test]
 fn auth_session_state_store_prefers_explicit_redis_backend_config() {
     let temp = tempdir().expect("temp dir");
     let mut config = sample_auth_config(temp.path());
@@ -72,6 +151,7 @@ fn startup_validation_rejects_uncompiled_optional_services() {
         bootstrap_peer: None,
         embedded_runtime: None,
         auth: Some(sample_auth_config(temp.path())),
+        operator_state_backend: None,
         artifact_publication: None,
     };
     let compiled = CompiledFeatureSet {
@@ -95,6 +175,7 @@ fn startup_validation_rejects_mixed_bootstrap_peer_and_embedded_runtime() {
         bootstrap_peer: Some(BootstrapPeerDaemonConfig::default()),
         embedded_runtime: Some(BootstrapEmbeddedDaemonConfig::default()),
         auth: None,
+        operator_state_backend: None,
         artifact_publication: None,
     };
     let error = validate_compiled_feature_support_with(&compiled_feature_set(), &config)
@@ -123,6 +204,7 @@ fn startup_validation_rejects_untrusted_external_auth_config() {
                 trusted_internal_only: false,
             },
         )),
+        operator_state_backend: None,
         artifact_publication: None,
     };
     let compiled = CompiledFeatureSet {
@@ -211,6 +293,7 @@ fn startup_validation_rejects_non_tls_provider_auth_urls_except_localhost_dev() 
                 jwks_url: Some("http://issuer.example/jwks".into()),
             },
         )),
+        operator_state_backend: None,
         artifact_publication: None,
     };
     validate_compiled_feature_support_with(&compiled, &config)

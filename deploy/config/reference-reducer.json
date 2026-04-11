@@ -36,6 +36,11 @@
   "http_bind_addr": "0.0.0.0:8789",
   "remaining_work_units": 120,
   "admin_signer_peer_id": "reducer-operator",
+  "operator_state_backend": {
+    "kind": "redis",
+    "url": "${BURN_P2P_OPERATOR_STATE_REDIS_URL:-redis://burn-p2p-redis:6379/1}",
+    "key_prefix": "${BURN_P2P_OPERATOR_STATE_KEY_PREFIX:-burn-p2p:operator-state}"
+  },
   "embedded_runtime": {
     "node": {
       "identity": "Persistent",

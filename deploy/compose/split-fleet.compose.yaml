@@ -24,6 +24,13 @@ x-bootstrap-node: &bootstrap-node
     - ALL
 
 services:
+  burn-p2p-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "yes"]
+    volumes:
+      - burn-p2p-redis-data:/data
+    restart: unless-stopped
+
   bootstrap:
     <<: *bootstrap-node
     build:
@@ -32,6 +39,8 @@ services:
       args:
         BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics}
     command: ["/config/reference-bootstrap.json"]
+    depends_on:
+      - burn-p2p-redis
     ports:
       - "8787:8787"
       - "4001:4001/tcp"
@@ -50,6 +59,7 @@ services:
     command: ["/config/reference-validator.json"]
     depends_on:
       - bootstrap
+      - burn-p2p-redis
     ports:
       - "8788:8788"
       - "4002:4002/tcp"
@@ -68,6 +78,7 @@ services:
     command: ["/config/reference-reducer.json"]
     depends_on:
       - bootstrap
+      - burn-p2p-redis
     ports:
       - "8789:8789"
       - "4003:4003/tcp"
@@ -114,6 +125,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  burn-p2p-redis-data: {}
   burn-p2p-bootstrap-data: {}
   burn-p2p-validator-data: {}
   burn-p2p-reducer-data: {}

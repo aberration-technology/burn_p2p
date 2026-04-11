@@ -499,6 +499,7 @@ impl BrowserAppController {
         );
         let mut runtime = runtime;
         runtime.storage.pending_receipts = load_durable_receipt_outbox(&snapshot.network_id)
+            .await
             .map_err(BrowserAuthClientError::ArtifactTransport)?;
         let mut controller = Self {
             edge_client,
@@ -523,11 +524,11 @@ impl BrowserAppController {
             model.apply_event(event);
         }
         self.model = model;
-        self.persist_receipt_outbox()?;
+        self.persist_receipt_outbox().await?;
         Ok(self.view())
     }
 
-    fn persist_receipt_outbox(&self) -> Result<(), BrowserAuthClientError> {
+    async fn persist_receipt_outbox(&self) -> Result<(), BrowserAuthClientError> {
         let network_id = self
             .model
             .runtime
@@ -549,12 +550,14 @@ impl BrowserAppController {
             })?;
         if self.model.runtime.storage.pending_receipts.is_empty() {
             clear_durable_receipt_outbox(&network_id)
+                .await
                 .map_err(BrowserAuthClientError::ArtifactTransport)
         } else {
             persist_durable_receipt_outbox(
                 &network_id,
                 &self.model.runtime.storage.pending_receipts,
             )
+            .await
             .map_err(BrowserAuthClientError::ArtifactTransport)
         }
     }

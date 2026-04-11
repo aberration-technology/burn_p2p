@@ -15,7 +15,23 @@ pub(super) struct BootstrapDaemonConfig {
     pub embedded_runtime: Option<BootstrapEmbeddedDaemonConfig>,
     pub auth: Option<BootstrapAuthConfig>,
     #[serde(default)]
+    pub operator_state_backend: Option<BootstrapOperatorStateBackendConfig>,
+    #[serde(default)]
     pub artifact_publication: Option<BootstrapArtifactPublicationConfig>,
+}
+
+fn default_operator_state_key_prefix() -> String {
+    "burn-p2p:operator-state".into()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum BootstrapOperatorStateBackendConfig {
+    Redis {
+        url: String,
+        #[serde(default = "default_operator_state_key_prefix")]
+        key_prefix: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

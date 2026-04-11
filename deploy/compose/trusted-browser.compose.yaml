@@ -1,4 +1,11 @@
 services:
+  burn-p2p-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "yes"]
+    volumes:
+      - burn-p2p-redis-data:/data
+    restart: unless-stopped
+
   burn-p2p-bootstrap:
     extends:
       file: ./bootstrap-base.compose.yaml
@@ -7,9 +14,12 @@ services:
       args:
         BURN_P2P_BOOTSTRAP_FEATURES: ${BURN_P2P_BOOTSTRAP_FEATURES:-admin-http,metrics,browser-edge,browser-join,auth-external}
     command: ["/config/trusted-browser.json"]
+    depends_on:
+      - burn-p2p-redis
     volumes:
       - ../config/trusted-browser.json:/config/trusted-browser.json:ro
       - burn-p2p-bootstrap-data:/var/lib/burn-p2p
 
 volumes:
   burn-p2p-bootstrap-data: {}
+  burn-p2p-redis-data: {}

@@ -229,6 +229,7 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
             bootstrap_peer: None,
             embedded_runtime: None,
             auth: None,
+            operator_state_backend: None,
             artifact_publication: None,
         })),
         config_path: Arc::new(std::env::temp_dir().join("burn-p2p-bootstrap-metrics.json")),

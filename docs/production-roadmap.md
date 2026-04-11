@@ -75,12 +75,12 @@ browser receipt submission is no longer modeled as "just a vec in storage".
 the browser storage model now has an explicit `BrowserReceiptOutbox` with a
 declared backend:
 
-- `Snapshot`
 - `IndexedDb`
+- `LocalStorage`
 
-the wasm/browser runtime still defaults to snapshot-backed persistence today,
-but the storage schema and worker flow now have a durable-outbox seam and
-backward-compatible snapshot decoding.
+the wasm/browser runtime now prefers indexeddb-backed durability, falls back to
+local-storage when indexeddb is unavailable, and migrates legacy local-storage
+payloads forward when possible.
 
 ## partially implemented
 
@@ -113,6 +113,7 @@ partially present:
 - optional redis-mirrored operator snapshots for multi-edge read coherence
   across heads, receipts, merges, peer-window metrics, reducer-cohort metrics,
   and head-eval reports
+- packaged redis/postgres reference modules in `deploy/compose/`
 
 still missing:
 
@@ -130,10 +131,11 @@ partially present:
 - explicit outbox backend seam
 - compatibility with legacy snapshot payloads
 - local-storage-backed durable receipt outbox wired into the browser controller
+- indexeddb-backed durable receipt outbox wired into the browser controller with
+  local-storage migration fallback
 
 still missing:
 
-- indexeddb-backed durable outbox implementation
 - resumable outbox sync and replay after long offline periods
 - durable artifact/receipt sync checkpoints for browser peers
 
@@ -155,14 +157,25 @@ still missing:
 - stronger placement feedback loop between limits, topology, and lease planning
 - attested or signed placement inputs for semi-trusted/public fleets
 
+### artifact publication and storage
+
+partially present:
+
+- explicit `artifact_publication.targets` in the reference/browser deployment configs
+- hot local filesystem publication target for low-latency edge streaming
+- warm s3-compatible publication target wired through env-placeholder deployment config
+- packaged minio reference module for local/reference s3-compatible publication
+
+still missing:
+
+- a true cold-archive lifecycle manager
+- operator-grade large-export orchestration and retention enforcement across tiers
+- managed-cloud reference modules for artifact publication beyond the local/reference minio stack
+
 ## not complete yet
 
 these roadmap items are still open work:
 
-- hot / warm / cold artifact storage classes and clearer large-artifact
-  placement policy
-- first-class deploy secret injection and packaged redis/postgres reference
-  modules
 - stronger local-sgd drift correction and adaptive micro-epoch sizing
 - long-run browser durability beyond bounded in-memory state
 

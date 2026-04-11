@@ -5,9 +5,13 @@ use std::process::Command;
 #[test]
 #[ignore = "requires local Playwright plus Chrome/Firefox system binaries or Playwright-managed browsers"]
 fn browser_real_device_probe_reports_budget_and_role_evidence() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize repo root");
     let output = Command::new("node")
         .arg("crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs")
-        .current_dir("/home/mosure/repos/burn_p2p")
+        .current_dir(&repo_root)
         .output();
 
     let output = match output {
@@ -18,7 +22,7 @@ fn browser_real_device_probe_reports_budget_and_role_evidence() {
             .arg("playwright")
             .arg("node")
             .arg("crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs")
-            .current_dir("/home/mosure/repos/burn_p2p")
+            .current_dir(&repo_root)
             .output()
             .expect("real-browser probe should launch"),
     };

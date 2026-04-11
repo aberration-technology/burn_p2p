@@ -1,0 +1,44 @@
+services:
+  burn-p2p-minio:
+    image: minio/minio:RELEASE.2026-03-25T07-01-41Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID:-burn-p2p}
+      MINIO_ROOT_PASSWORD: ${BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY:-burn-p2p-dev-secret}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - burn-p2p-minio-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  burn-p2p-minio-init:
+    image: minio/mc:RELEASE.2026-03-29T15-55-16Z
+    depends_on:
+      burn-p2p-minio:
+        condition: service_healthy
+    environment:
+      BURN_P2P_ARTIFACT_S3_ENDPOINT: ${BURN_P2P_ARTIFACT_S3_ENDPOINT:-http://burn-p2p-minio:9000}
+      BURN_P2P_ARTIFACT_S3_BUCKET: ${BURN_P2P_ARTIFACT_S3_BUCKET:-burn-p2p-artifacts}
+      BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID: ${BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID:-burn-p2p}
+      BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY: ${BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY:-burn-p2p-dev-secret}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set burn-p2p "$${BURN_P2P_ARTIFACT_S3_ENDPOINT}" "$${BURN_P2P_ARTIFACT_S3_ACCESS_KEY_ID}" "$${BURN_P2P_ARTIFACT_S3_SECRET_ACCESS_KEY}"
+        mc mb --ignore-existing "burn-p2p/$${BURN_P2P_ARTIFACT_S3_BUCKET}"
+        mc anonymous set none "burn-p2p/$${BURN_P2P_ARTIFACT_S3_BUCKET}"
+    restart: "no"
+
+volumes:
+  burn-p2p-minio-data:

@@ -5,11 +5,27 @@ use crate::BrowserReceiptOutbox;
 use crate::BrowserReceiptOutboxBackend;
 
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+
+#[cfg(target_arch = "wasm32")]
 const RECEIPT_OUTBOX_STORAGE_PREFIX: &str = "burn-p2p.browser.receipt-outbox.";
+#[cfg(target_arch = "wasm32")]
+const RECEIPT_OUTBOX_INDEXED_DB_PREFIX: &str = "burn-p2p.browser.receipt-outbox.";
+#[cfg(target_arch = "wasm32")]
+const RECEIPT_OUTBOX_INDEXED_DB_STORE: &str = "receipt_outboxes";
+#[cfg(target_arch = "wasm32")]
+const RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY: &str = "default";
 
 #[cfg(target_arch = "wasm32")]
 fn receipt_outbox_storage_key(network_id: &NetworkId) -> String {
     format!("{RECEIPT_OUTBOX_STORAGE_PREFIX}{}", network_id.as_str())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn receipt_outbox_indexed_db_name(network_id: &NetworkId) -> String {
+    format!("{RECEIPT_OUTBOX_INDEXED_DB_PREFIX}{}", network_id.as_str())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -18,32 +34,260 @@ fn browser_local_storage() -> Option<web_sys::Storage> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn load_durable_receipt_outbox(network_id: &NetworkId) -> Result<BrowserReceiptOutbox, String> {
+fn browser_indexed_db_factory() -> Option<web_sys::IdbFactory> {
+    web_sys::window()?.indexed_db().ok().flatten()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_error_message(value: &JsValue) -> String {
+    value
+        .as_string()
+        .or_else(|| {
+            value
+                .dyn_ref::<web_sys::DomException>()
+                .map(|error| error.message())
+        })
+        .unwrap_or_else(|| format!("{value:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dom_exception_error_message(error: Option<web_sys::DomException>, fallback: &str) -> String {
+    error
+        .map(|error| error.message())
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn await_idb_request(request: &web_sys::IdbRequest) -> Result<JsValue, String> {
+    let request = request.clone();
+    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
+        let resolve_success = resolve.clone();
+        let request_success = request.clone();
+        let reject_success = reject.clone();
+        let success =
+            Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(
+                move |_event| match request_success.result() {
+                    Ok(value) => {
+                        let _ = resolve_success.call1(&JsValue::UNDEFINED, &value);
+                    }
+                    Err(error) => {
+                        let _ = reject_success.call1(
+                            &JsValue::UNDEFINED,
+                            &JsValue::from_str(&js_value_error_message(&error)),
+                        );
+                    }
+                },
+            ));
+
+        let reject_error = reject.clone();
+        let request_error = request.clone();
+        let error = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+            let _ = reject_error.call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(&dom_exception_error_message(
+                    request_error.error().ok().flatten(),
+                    "indexeddb request failed",
+                )),
+            );
+        }));
+
+        request.set_onsuccess(Some(success.as_ref().unchecked_ref()));
+        request.set_onerror(Some(error.as_ref().unchecked_ref()));
+        success.forget();
+        error.forget();
+    });
+
+    JsFuture::from(promise)
+        .await
+        .map_err(|error| js_value_error_message(&error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn await_indexed_db_transaction(transaction: &web_sys::IdbTransaction) -> Result<(), String> {
+    let transaction = transaction.clone();
+    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
+        let resolve_complete = resolve.clone();
+        let complete = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+            let _ = resolve_complete.call0(&JsValue::UNDEFINED);
+        }));
+
+        let reject_abort = reject.clone();
+        let transaction_abort = transaction.clone();
+        let abort = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+            let _ = reject_abort.call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(&dom_exception_error_message(
+                    transaction_abort.error(),
+                    "indexeddb transaction aborted",
+                )),
+            );
+        }));
+
+        let reject_error = reject.clone();
+        let transaction_error = transaction.clone();
+        let error = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+            let _ = reject_error.call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(&dom_exception_error_message(
+                    transaction_error.error(),
+                    "indexeddb transaction failed",
+                )),
+            );
+        }));
+
+        transaction.set_oncomplete(Some(complete.as_ref().unchecked_ref()));
+        transaction.set_onabort(Some(abort.as_ref().unchecked_ref()));
+        transaction.set_onerror(Some(error.as_ref().unchecked_ref()));
+        complete.forget();
+        abort.forget();
+        error.forget();
+    });
+
+    JsFuture::from(promise)
+        .await
+        .map_err(|error| js_value_error_message(&error))
+        .map(|_| ())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn open_receipt_outbox_indexed_db(
+    network_id: &NetworkId,
+) -> Result<Option<web_sys::IdbDatabase>, String> {
+    let Some(factory) = browser_indexed_db_factory() else {
+        return Ok(None);
+    };
+    let request = factory
+        .open_with_u32(&receipt_outbox_indexed_db_name(network_id), 1)
+        .map_err(|error| format!("failed to open browser indexeddb receipt outbox: {error:?}"))?;
+    let upgrade_request = request.clone();
+    let on_upgrade_needed = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_event| {
+        if let Ok(result) = upgrade_request.result()
+            && let Ok(database) = result.dyn_into::<web_sys::IdbDatabase>()
+        {
+            let _ = database.create_object_store(RECEIPT_OUTBOX_INDEXED_DB_STORE);
+        }
+    }));
+    request.set_onupgradeneeded(Some(on_upgrade_needed.as_ref().unchecked_ref()));
+    on_upgrade_needed.forget();
+
+    let value = await_idb_request(request.as_ref()).await?;
+    value
+        .dyn_into::<web_sys::IdbDatabase>()
+        .map(Some)
+        .map_err(|_| "indexeddb open request did not yield a database".into())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_indexed_db_receipt_outbox(
+    network_id: &NetworkId,
+) -> Result<Option<BrowserReceiptOutbox>, String> {
+    let Some(database) = open_receipt_outbox_indexed_db(network_id).await? else {
+        return Ok(None);
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            RECEIPT_OUTBOX_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readonly,
+        )
+        .map_err(|error| format!("failed to open indexeddb readonly transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(RECEIPT_OUTBOX_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb receipt outbox store: {error:?}"))?;
+    let request = store
+        .get(&JsValue::from_str(RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY))
+        .map_err(|error| format!("failed to read indexeddb receipt outbox: {error:?}"))?;
+    let value = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let encoded = value
+        .as_string()
+        .ok_or_else(|| "indexeddb receipt outbox payload was not a string".to_owned())?;
+    let mut outbox: BrowserReceiptOutbox = serde_json::from_str(&encoded)
+        .map_err(|error| format!("failed to decode indexeddb receipt outbox: {error}"))?;
+    outbox.configure_backend(BrowserReceiptOutboxBackend::IndexedDb);
+    Ok(Some(outbox))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn persist_indexed_db_receipt_outbox(
+    network_id: &NetworkId,
+    outbox: &BrowserReceiptOutbox,
+) -> Result<(), String> {
+    let Some(database) = open_receipt_outbox_indexed_db(network_id).await? else {
+        return Err("browser does not expose indexeddb".into());
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            RECEIPT_OUTBOX_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readwrite,
+        )
+        .map_err(|error| format!("failed to open indexeddb readwrite transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(RECEIPT_OUTBOX_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb receipt outbox store: {error:?}"))?;
+    let mut durable = outbox.clone();
+    durable.configure_backend(BrowserReceiptOutboxBackend::IndexedDb);
+    let encoded = serde_json::to_string(&durable)
+        .map_err(|error| format!("failed to encode indexeddb receipt outbox: {error}"))?;
+    let request = store
+        .put_with_key(
+            &JsValue::from_str(&encoded),
+            &JsValue::from_str(RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY),
+        )
+        .map_err(|error| format!("failed to persist indexeddb receipt outbox: {error:?}"))?;
+    let _ = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn clear_indexed_db_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
+    let Some(database) = open_receipt_outbox_indexed_db(network_id).await? else {
+        return Ok(());
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            RECEIPT_OUTBOX_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readwrite,
+        )
+        .map_err(|error| format!("failed to open indexeddb readwrite transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(RECEIPT_OUTBOX_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb receipt outbox store: {error:?}"))?;
+    let request = store
+        .delete(&JsValue::from_str(RECEIPT_OUTBOX_INDEXED_DB_VALUE_KEY))
+        .map_err(|error| format!("failed to clear indexeddb receipt outbox: {error:?}"))?;
+    let _ = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_local_storage_receipt_outbox(
+    network_id: &NetworkId,
+) -> Result<Option<BrowserReceiptOutbox>, String> {
     let Some(storage) = browser_local_storage() else {
-        return Ok(BrowserReceiptOutbox::default());
+        return Ok(None);
     };
     let Some(value) = storage
         .get_item(&receipt_outbox_storage_key(network_id))
         .map_err(|error| format!("failed to read browser receipt outbox: {error:?}"))?
     else {
-        let mut outbox = BrowserReceiptOutbox::default();
-        outbox.configure_backend(BrowserReceiptOutboxBackend::LocalStorage);
-        return Ok(outbox);
+        return Ok(None);
     };
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        let mut outbox = BrowserReceiptOutbox::default();
-        outbox.configure_backend(BrowserReceiptOutboxBackend::LocalStorage);
-        return Ok(outbox);
+        return Ok(None);
     }
     let mut outbox: BrowserReceiptOutbox = serde_json::from_str(trimmed)
         .map_err(|error| format!("failed to decode browser receipt outbox: {error}"))?;
     outbox.configure_backend(BrowserReceiptOutboxBackend::LocalStorage);
-    Ok(outbox)
+    Ok(Some(outbox))
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn persist_durable_receipt_outbox(
+fn persist_local_storage_receipt_outbox(
     network_id: &NetworkId,
     outbox: &BrowserReceiptOutbox,
 ) -> Result<(), String> {
@@ -60,7 +304,7 @@ pub fn persist_durable_receipt_outbox(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn clear_durable_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
+fn clear_local_storage_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
     let Some(storage) = browser_local_storage() else {
         return Ok(());
     };
@@ -69,15 +313,64 @@ pub fn clear_durable_receipt_outbox(network_id: &NetworkId) -> Result<(), String
         .map_err(|error| format!("failed to clear browser receipt outbox: {error:?}"))
 }
 
+#[cfg(target_arch = "wasm32")]
+pub async fn load_durable_receipt_outbox(
+    network_id: &NetworkId,
+) -> Result<BrowserReceiptOutbox, String> {
+    if let Some(outbox) = load_indexed_db_receipt_outbox(network_id).await? {
+        return Ok(outbox);
+    }
+    if let Some(outbox) = load_local_storage_receipt_outbox(network_id)? {
+        if browser_indexed_db_factory().is_some()
+            && persist_indexed_db_receipt_outbox(network_id, &outbox)
+                .await
+                .is_ok()
+        {
+            let mut migrated = outbox.clone();
+            migrated.configure_backend(BrowserReceiptOutboxBackend::IndexedDb);
+            return Ok(migrated);
+        }
+        return Ok(outbox);
+    }
+
+    let mut outbox = BrowserReceiptOutbox::default();
+    outbox.configure_backend(if browser_indexed_db_factory().is_some() {
+        BrowserReceiptOutboxBackend::IndexedDb
+    } else {
+        BrowserReceiptOutboxBackend::LocalStorage
+    });
+    Ok(outbox)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn persist_durable_receipt_outbox(
+    network_id: &NetworkId,
+    outbox: &BrowserReceiptOutbox,
+) -> Result<(), String> {
+    if browser_indexed_db_factory().is_some() {
+        persist_indexed_db_receipt_outbox(network_id, outbox).await?;
+        return clear_local_storage_receipt_outbox(network_id);
+    }
+    persist_local_storage_receipt_outbox(network_id, outbox)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn clear_durable_receipt_outbox(network_id: &NetworkId) -> Result<(), String> {
+    let indexed_db_result = clear_indexed_db_receipt_outbox(network_id).await;
+    let local_storage_result = clear_local_storage_receipt_outbox(network_id);
+    indexed_db_result?;
+    local_storage_result
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_durable_receipt_outbox(
+pub async fn load_durable_receipt_outbox(
     _network_id: &NetworkId,
 ) -> Result<BrowserReceiptOutbox, String> {
     Ok(BrowserReceiptOutbox::default())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn persist_durable_receipt_outbox(
+pub async fn persist_durable_receipt_outbox(
     _network_id: &NetworkId,
     _outbox: &BrowserReceiptOutbox,
 ) -> Result<(), String> {
@@ -85,6 +378,6 @@ pub fn persist_durable_receipt_outbox(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn clear_durable_receipt_outbox(_network_id: &NetworkId) -> Result<(), String> {
+pub async fn clear_durable_receipt_outbox(_network_id: &NetworkId) -> Result<(), String> {
     Ok(())
 }

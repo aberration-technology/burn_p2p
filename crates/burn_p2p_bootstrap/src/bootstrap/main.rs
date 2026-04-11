@@ -70,9 +70,83 @@ use key_material::*;
 use routes::*;
 use synthetic_dataset::*;
 
+fn expand_env_placeholders(input: &str) -> Result<String, String> {
+    let mut expanded = String::new();
+    let mut remaining = input;
+
+    while let Some(start) = remaining.find("${") {
+        expanded.push_str(&remaining[..start]);
+        let placeholder = &remaining[start + 2..];
+        let end = placeholder.find('}').ok_or_else(|| {
+            format!("unterminated environment placeholder in bootstrap config string `{input}`")
+        })?;
+        let expression = &placeholder[..end];
+        let (name, default) = expression
+            .split_once(":-")
+            .map(|(name, default)| (name.trim(), Some(default)))
+            .unwrap_or((expression.trim(), None));
+        if name.is_empty() {
+            return Err(format!(
+                "empty environment placeholder in bootstrap config string `{input}`"
+            ));
+        }
+        let value = std::env::var(name)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| default.map(str::to_owned))
+            .ok_or_else(|| {
+                format!("missing required environment variable `{name}` in bootstrap config")
+            })?;
+        expanded.push_str(&value);
+        remaining = &placeholder[end + 1..];
+    }
+
+    expanded.push_str(remaining);
+    Ok(expanded)
+}
+
+fn resolve_config_env_placeholders(value: &mut serde_json::Value) -> Result<(), String> {
+    match value {
+        serde_json::Value::String(string) => {
+            *string = expand_env_placeholders(string)?;
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                resolve_config_env_placeholders(value)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                resolve_config_env_placeholders(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn load_bootstrap_daemon_config(
+    path: &Path,
+) -> Result<BootstrapDaemonConfig, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    resolve_config_env_placeholders(&mut value).map_err(|error| std::io::Error::other(error))?;
+    Ok(serde_json::from_value(value)?)
+}
+
 fn resolve_operator_state_backend(
+    config: &BootstrapDaemonConfig,
     network_id: &burn_p2p_core::NetworkId,
 ) -> Option<(String, String)> {
+    if let Some(operator_state_backend) = config.operator_state_backend.as_ref() {
+        return match operator_state_backend {
+            BootstrapOperatorStateBackendConfig::Redis { url, key_prefix } => Some((
+                url.clone(),
+                format!("{key_prefix}:{}:snapshot", network_id.as_str()),
+            )),
+        };
+    }
+
     let url = std::env::var("BURN_P2P_OPERATOR_STATE_REDIS_URL").ok()?;
     let key_prefix = std::env::var("BURN_P2P_OPERATOR_STATE_KEY_PREFIX")
         .unwrap_or_else(|_| "burn-p2p:operator-state".into());
@@ -87,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .map(PathBuf::from)
         .ok_or("usage: burn-p2p-bootstrap <config.json>")?;
-    let config: BootstrapDaemonConfig = serde_json::from_slice(&std::fs::read(&config_path)?)?;
+    let config = load_bootstrap_daemon_config(&config_path)?;
     validate_compiled_feature_support(&config)?;
     let shared_config = Arc::new(Mutex::new(config.clone()));
     let shared_config_path = Arc::new(config_path);
@@ -169,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .lock()
             .expect("bootstrap daemon state should not be poisoned");
         if let Some((url, snapshot_key)) =
-            resolve_operator_state_backend(&config.spec.genesis.network_id)
+            resolve_operator_state_backend(&config, &config.spec.genesis.network_id)
         {
             state_lock.configure_operator_state_redis_snapshot(url, snapshot_key);
         }
