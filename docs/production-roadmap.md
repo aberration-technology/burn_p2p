@@ -146,6 +146,8 @@ partially present:
 - damped observed-throughput rebudgeting
 - recent peer-window placement hints propagated through the metrics plane and used to avoid
   immediately reassigning freshly failed or badly lagging trainers
+- bounded decayed multi-window trainer history used to rank stable healthy peers above
+  bursty or repeatedly failing peers during assignment
 
 still missing:
 

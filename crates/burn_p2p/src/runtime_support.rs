@@ -1057,13 +1057,39 @@ pub(crate) fn runtime_training_peers(
 }
 
 const TRAINING_PLACEMENT_HINT_FRESHNESS_MINUTES: i64 = 30;
+const TRAINING_PLACEMENT_HISTORY_WINDOWS: usize = 8;
+const TRAINING_PLACEMENT_HISTORY_DECAY_FACTOR: f64 = 0.65;
+const TRAINING_PLACEMENT_FAILURE_STREAK_PRUNE: usize = 2;
+const TRAINING_PLACEMENT_MIN_WINDOWS_FOR_HEALTH_PRUNE: usize = 3;
+const TRAINING_PLACEMENT_MIN_WEIGHTED_HEALTH: f64 = 0.2;
 
-fn latest_training_peer_window_hints(
+#[derive(Clone, Debug)]
+struct TrainingPlacementHistory {
+    recent_window_count: usize,
+    completed_window_count: usize,
+    recent_failure_streak: usize,
+    latest_status: PeerWindowStatus,
+    latest_finished_at: DateTime<Utc>,
+    weighted_health: f64,
+    weighted_head_lag: f64,
+    weighted_throughput: f64,
+}
+
+fn training_status_health_score(status: &PeerWindowStatus) -> f64 {
+    match status {
+        PeerWindowStatus::Completed => 1.0,
+        PeerWindowStatus::Aborted => 0.4,
+        PeerWindowStatus::Rejected => 0.2,
+        PeerWindowStatus::Failed => 0.0,
+    }
+}
+
+fn recent_training_peer_window_histories(
     snapshot: &NodeTelemetrySnapshot,
-) -> BTreeMap<PeerId, PeerWindowPlacementHint> {
+) -> BTreeMap<PeerId, Vec<PeerWindowPlacementHint>> {
     let freshness_cutoff =
         Utc::now() - chrono::Duration::minutes(TRAINING_PLACEMENT_HINT_FRESHNESS_MINUTES);
-    let mut hints = BTreeMap::<PeerId, PeerWindowPlacementHint>::new();
+    let mut hints = BTreeMap::<PeerId, Vec<PeerWindowPlacementHint>>::new();
     for announcement in &snapshot.control_plane.metrics_announcements {
         for hint in &announcement.peer_window_hints {
             if hint.window_finished_at < freshness_cutoff {
@@ -1078,16 +1104,57 @@ fn latest_training_peer_window_hints(
             ) {
                 continue;
             }
-            let replace = hints
-                .get(&hint.peer_id)
-                .map(|current| hint.window_finished_at > current.window_finished_at)
-                .unwrap_or(true);
-            if replace {
-                hints.insert(hint.peer_id.clone(), hint.clone());
-            }
+            hints
+                .entry(hint.peer_id.clone())
+                .or_default()
+                .push(hint.clone());
         }
     }
+    for values in hints.values_mut() {
+        values.sort_by(|left, right| right.window_finished_at.cmp(&left.window_finished_at));
+        values.truncate(TRAINING_PLACEMENT_HISTORY_WINDOWS);
+    }
     hints
+}
+
+fn summarize_training_peer_window_history(
+    hints: &[PeerWindowPlacementHint],
+) -> Option<TrainingPlacementHistory> {
+    let latest = hints.first()?;
+    let mut total_weight = 0.0;
+    let mut weighted_health = 0.0;
+    let mut weighted_head_lag = 0.0;
+    let mut weighted_throughput = 0.0;
+    let mut completed_window_count = 0usize;
+
+    for (index, hint) in hints.iter().enumerate() {
+        let weight = TRAINING_PLACEMENT_HISTORY_DECAY_FACTOR.powi(index as i32);
+        total_weight += weight;
+        weighted_health += weight * training_status_health_score(&hint.status);
+        weighted_head_lag += weight * hint.head_lag_at_finish as f64;
+        weighted_throughput += weight
+            * ((hint.accepted_tokens_or_samples.max(1) as f64 * 1000.0)
+                / hint.window_elapsed_ms.max(1) as f64);
+        if hint.status == PeerWindowStatus::Completed {
+            completed_window_count += 1;
+        }
+    }
+
+    let recent_failure_streak = hints
+        .iter()
+        .take_while(|hint| hint.status != PeerWindowStatus::Completed)
+        .count();
+
+    Some(TrainingPlacementHistory {
+        recent_window_count: hints.len(),
+        completed_window_count,
+        recent_failure_streak,
+        latest_status: latest.status.clone(),
+        latest_finished_at: latest.window_finished_at,
+        weighted_health: weighted_health / total_weight.max(f64::EPSILON),
+        weighted_head_lag: weighted_head_lag / total_weight.max(f64::EPSILON),
+        weighted_throughput: weighted_throughput / total_weight.max(f64::EPSILON),
+    })
 }
 
 fn peer_trust_score_value(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> f64 {
@@ -1099,54 +1166,56 @@ fn peer_trust_score_value(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) ->
         .unwrap_or(0.0)
 }
 
-fn training_hint_priority_rank(hint: Option<&PeerWindowPlacementHint>) -> u8 {
-    match hint {
-        Some(hint) if hint.status == PeerWindowStatus::Completed => 2,
+fn training_history_priority_rank(history: Option<&TrainingPlacementHistory>) -> u8 {
+    match history {
+        Some(history)
+            if history.latest_status == PeerWindowStatus::Completed
+                && history.recent_failure_streak == 0 =>
+        {
+            3
+        }
+        Some(history) if history.completed_window_count > 0 => 2,
         None => 1,
         Some(_) => 0,
     }
 }
 
-fn compare_hint_throughput(
-    left: &PeerWindowPlacementHint,
-    right: &PeerWindowPlacementHint,
-) -> Ordering {
-    let left_accepted = left.accepted_tokens_or_samples.max(1) as u128;
-    let right_accepted = right.accepted_tokens_or_samples.max(1) as u128;
-    let left_elapsed = left.window_elapsed_ms.max(1) as u128;
-    let right_elapsed = right.window_elapsed_ms.max(1) as u128;
-
-    (left_accepted * right_elapsed).cmp(&(right_accepted * left_elapsed))
-}
-
 fn compare_training_assignment_peer(
     snapshot: &NodeTelemetrySnapshot,
-    hints: &BTreeMap<PeerId, PeerWindowPlacementHint>,
+    histories: &BTreeMap<PeerId, TrainingPlacementHistory>,
     left: &PeerId,
     right: &PeerId,
 ) -> Ordering {
-    let left_hint = hints.get(left);
-    let right_hint = hints.get(right);
-    let left_rank = training_hint_priority_rank(left_hint);
-    let right_rank = training_hint_priority_rank(right_hint);
+    let left_history = histories.get(left);
+    let right_history = histories.get(right);
+    let left_rank = training_history_priority_rank(left_history);
+    let right_rank = training_history_priority_rank(right_history);
     if left_rank != right_rank {
         return right_rank.cmp(&left_rank);
     }
 
-    if let (Some(left_hint), Some(right_hint)) = (left_hint, right_hint) {
-        let lag_cmp = left_hint
-            .head_lag_at_finish
-            .cmp(&right_hint.head_lag_at_finish);
+    if let (Some(left_history), Some(right_history)) = (left_history, right_history) {
+        let lag_cmp = left_history
+            .weighted_head_lag
+            .total_cmp(&right_history.weighted_head_lag);
         if lag_cmp != Ordering::Equal {
             return lag_cmp;
         }
-        let throughput_cmp = compare_hint_throughput(left_hint, right_hint);
-        if throughput_cmp != Ordering::Equal {
-            return throughput_cmp.reverse();
+        let health_cmp = right_history
+            .weighted_health
+            .total_cmp(&left_history.weighted_health);
+        if health_cmp != Ordering::Equal {
+            return health_cmp;
         }
-        let recency_cmp = left_hint
-            .window_finished_at
-            .cmp(&right_hint.window_finished_at);
+        let throughput_cmp = right_history
+            .weighted_throughput
+            .total_cmp(&left_history.weighted_throughput);
+        if throughput_cmp != Ordering::Equal {
+            return throughput_cmp;
+        }
+        let recency_cmp = left_history
+            .latest_finished_at
+            .cmp(&right_history.latest_finished_at);
         if recency_cmp != Ordering::Equal {
             return recency_cmp.reverse();
         }
@@ -1172,18 +1241,29 @@ pub(crate) fn runtime_training_assignment_peers(
         return peers;
     }
 
-    let hints = latest_training_peer_window_hints(snapshot);
+    let histories = recent_training_peer_window_histories(snapshot)
+        .into_iter()
+        .filter_map(|(peer_id, hints)| {
+            summarize_training_peer_window_history(&hints).map(|history| (peer_id, history))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut selected = peers
         .iter()
         .filter(|peer_id| {
             if *peer_id == local_peer_id {
                 return true;
             }
-            hints
+            histories
                 .get(*peer_id)
-                .map(|hint| {
-                    hint.status == PeerWindowStatus::Completed
-                        && hint.head_lag_at_finish <= snapshot.lag_policy.max_head_lag_before_block
+                .map(|history| {
+                    history.weighted_head_lag
+                        <= snapshot.lag_policy.max_head_lag_before_block as f64
+                        && !(history.latest_status != PeerWindowStatus::Completed
+                            && history.completed_window_count == 0)
+                        && history.recent_failure_streak < TRAINING_PLACEMENT_FAILURE_STREAK_PRUNE
+                        && !(history.recent_window_count
+                            >= TRAINING_PLACEMENT_MIN_WINDOWS_FOR_HEALTH_PRUNE
+                            && history.weighted_health < TRAINING_PLACEMENT_MIN_WEIGHTED_HEALTH)
                 })
                 .unwrap_or(true)
         })
@@ -1194,7 +1274,8 @@ pub(crate) fn runtime_training_assignment_peers(
         selected = peers;
     }
 
-    selected.sort_by(|left, right| compare_training_assignment_peer(snapshot, &hints, left, right));
+    selected
+        .sort_by(|left, right| compare_training_assignment_peer(snapshot, &histories, left, right));
     selected
 }
 
@@ -1615,6 +1696,112 @@ mod tests {
         );
 
         assert!(peers.contains(&PeerId::new("peer-stale-failed")));
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_keep_single_recent_failure_with_healthy_history() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([PeerId::new("peer-recovering")]);
+        advertise_peer(&mut snapshot, "peer-recovering", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "peer-recovering",
+            PeerWindowStatus::Failed,
+            0,
+            1_000,
+            0,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-recovering",
+            PeerWindowStatus::Completed,
+            128,
+            900,
+            0,
+            now - chrono::Duration::seconds(30),
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-recovering",
+            PeerWindowStatus::Completed,
+            128,
+            950,
+            0,
+            now - chrono::Duration::minutes(1),
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        assert!(peers.contains(&PeerId::new("peer-recovering")));
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_prefer_consistent_completed_history() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids =
+            BTreeSet::from([PeerId::new("peer-consistent"), PeerId::new("peer-bursty")]);
+        advertise_peer(&mut snapshot, "peer-consistent", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-bursty", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "peer-consistent",
+            PeerWindowStatus::Completed,
+            128,
+            1_000,
+            0,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-consistent",
+            PeerWindowStatus::Completed,
+            120,
+            950,
+            0,
+            now - chrono::Duration::seconds(30),
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-bursty",
+            PeerWindowStatus::Completed,
+            180,
+            900,
+            0,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-bursty",
+            PeerWindowStatus::Failed,
+            0,
+            900,
+            0,
+            now - chrono::Duration::seconds(30),
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        let consistent_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-consistent"))
+            .expect("peer-consistent present");
+        let bursty_index = peers
+            .iter()
+            .position(|peer_id| peer_id == &PeerId::new("peer-bursty"))
+            .expect("peer-bursty present");
+
+        assert!(consistent_index < bursty_index);
     }
 
     #[test]
