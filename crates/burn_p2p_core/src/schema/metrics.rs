@@ -255,6 +255,27 @@ impl PeerWindowMetrics {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Lightweight placement hint derived from a recent peer-window metric.
+pub struct PeerWindowPlacementHint {
+    /// Peer that produced the source window.
+    pub peer_id: PeerId,
+    /// Runtime role used while executing the source window.
+    pub role: PeerRole,
+    /// Backend class used by the peer for the source window.
+    pub backend_class: BackendClass,
+    /// Outcome of the source window.
+    pub status: PeerWindowStatus,
+    /// Accepted work units surfaced by the source window.
+    pub accepted_tokens_or_samples: u64,
+    /// End-to-end elapsed time for the source window.
+    pub window_elapsed_ms: u64,
+    /// Head lag observed when the source window finished.
+    pub head_lag_at_finish: u64,
+    /// Completion timestamp for the source window.
+    pub window_finished_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// Captures the status of one reducer cohort or merge window.
 pub enum ReducerCohortStatus {

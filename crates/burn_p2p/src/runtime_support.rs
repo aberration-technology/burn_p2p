@@ -3,6 +3,7 @@ use crate::config::{
     ClientReenrollmentStatus, RuntimeCommand, TrustBundleState, default_node_runtime_state,
 };
 use crate::handles::dedupe_peer_ids;
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use sysinfo::{Disks, System};
 mod control_plane;
@@ -1055,6 +1056,148 @@ pub(crate) fn runtime_training_peers(
     peers.into_iter().collect()
 }
 
+const TRAINING_PLACEMENT_HINT_FRESHNESS_MINUTES: i64 = 30;
+
+fn latest_training_peer_window_hints(
+    snapshot: &NodeTelemetrySnapshot,
+) -> BTreeMap<PeerId, PeerWindowPlacementHint> {
+    let freshness_cutoff =
+        Utc::now() - chrono::Duration::minutes(TRAINING_PLACEMENT_HINT_FRESHNESS_MINUTES);
+    let mut hints = BTreeMap::<PeerId, PeerWindowPlacementHint>::new();
+    for announcement in &snapshot.control_plane.metrics_announcements {
+        for hint in &announcement.peer_window_hints {
+            if hint.window_finished_at < freshness_cutoff {
+                continue;
+            }
+            if !matches!(
+                hint.role,
+                PeerRole::TrainerGpu
+                    | PeerRole::TrainerCpu
+                    | PeerRole::BrowserTrainerWgpu
+                    | PeerRole::BrowserTrainer
+            ) {
+                continue;
+            }
+            let replace = hints
+                .get(&hint.peer_id)
+                .map(|current| hint.window_finished_at > current.window_finished_at)
+                .unwrap_or(true);
+            if replace {
+                hints.insert(hint.peer_id.clone(), hint.clone());
+            }
+        }
+    }
+    hints
+}
+
+fn peer_trust_score_value(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId) -> f64 {
+    snapshot
+        .trust_scores
+        .iter()
+        .find(|score| &score.peer_id == peer_id)
+        .map(|score| score.score)
+        .unwrap_or(0.0)
+}
+
+fn training_hint_priority_rank(hint: Option<&PeerWindowPlacementHint>) -> u8 {
+    match hint {
+        Some(hint) if hint.status == PeerWindowStatus::Completed => 2,
+        None => 1,
+        Some(_) => 0,
+    }
+}
+
+fn compare_hint_throughput(
+    left: &PeerWindowPlacementHint,
+    right: &PeerWindowPlacementHint,
+) -> Ordering {
+    let left_accepted = left.accepted_tokens_or_samples.max(1) as u128;
+    let right_accepted = right.accepted_tokens_or_samples.max(1) as u128;
+    let left_elapsed = left.window_elapsed_ms.max(1) as u128;
+    let right_elapsed = right.window_elapsed_ms.max(1) as u128;
+
+    (left_accepted * right_elapsed).cmp(&(right_accepted * left_elapsed))
+}
+
+fn compare_training_assignment_peer(
+    snapshot: &NodeTelemetrySnapshot,
+    hints: &BTreeMap<PeerId, PeerWindowPlacementHint>,
+    left: &PeerId,
+    right: &PeerId,
+) -> Ordering {
+    let left_hint = hints.get(left);
+    let right_hint = hints.get(right);
+    let left_rank = training_hint_priority_rank(left_hint);
+    let right_rank = training_hint_priority_rank(right_hint);
+    if left_rank != right_rank {
+        return right_rank.cmp(&left_rank);
+    }
+
+    if let (Some(left_hint), Some(right_hint)) = (left_hint, right_hint) {
+        let lag_cmp = left_hint
+            .head_lag_at_finish
+            .cmp(&right_hint.head_lag_at_finish);
+        if lag_cmp != Ordering::Equal {
+            return lag_cmp;
+        }
+        let throughput_cmp = compare_hint_throughput(left_hint, right_hint);
+        if throughput_cmp != Ordering::Equal {
+            return throughput_cmp.reverse();
+        }
+        let recency_cmp = left_hint
+            .window_finished_at
+            .cmp(&right_hint.window_finished_at);
+        if recency_cmp != Ordering::Equal {
+            return recency_cmp.reverse();
+        }
+    }
+
+    let left_trust = peer_trust_score_value(snapshot, left);
+    let right_trust = peer_trust_score_value(snapshot, right);
+    let trust_cmp = right_trust.total_cmp(&left_trust);
+    if trust_cmp != Ordering::Equal {
+        return trust_cmp;
+    }
+
+    left.as_str().cmp(right.as_str())
+}
+
+pub(crate) fn runtime_training_assignment_peers(
+    snapshot: &NodeTelemetrySnapshot,
+    local_roles: &PeerRoleSet,
+    local_peer_id: &PeerId,
+) -> Vec<PeerId> {
+    let peers = runtime_training_peers(snapshot, local_roles, local_peer_id);
+    if peers.len() <= 1 {
+        return peers;
+    }
+
+    let hints = latest_training_peer_window_hints(snapshot);
+    let mut selected = peers
+        .iter()
+        .filter(|peer_id| {
+            if *peer_id == local_peer_id {
+                return true;
+            }
+            hints
+                .get(*peer_id)
+                .map(|hint| {
+                    hint.status == PeerWindowStatus::Completed
+                        && hint.head_lag_at_finish <= snapshot.lag_policy.max_head_lag_before_block
+                })
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if selected.is_empty() {
+        selected = peers;
+    }
+
+    selected.sort_by(|left, right| compare_training_assignment_peer(snapshot, &hints, left, right));
+    selected
+}
+
 pub(crate) fn runtime_validator_peers(
     snapshot: &NodeTelemetrySnapshot,
     local_roles: &PeerRoleSet,
@@ -1255,6 +1398,7 @@ pub(crate) fn resolve_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn_p2p_core::{BackendClass, MetricsLiveEvent, MetricsLiveEventKind};
 
     fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
         let mut snapshot = NodeTelemetrySnapshot::starting(
@@ -1365,6 +1509,112 @@ mod tests {
         assert!(peers.contains(&PeerId::new("peer-browser-trainer")));
         assert!(!peers.contains(&PeerId::new("peer-validator")));
         assert!(!peers.contains(&PeerId::new("peer-quarantined")));
+    }
+
+    fn publish_training_hint(
+        snapshot: &mut NodeTelemetrySnapshot,
+        peer_id: &str,
+        status: PeerWindowStatus,
+        accepted_tokens_or_samples: u64,
+        window_elapsed_ms: u64,
+        head_lag_at_finish: u64,
+        window_finished_at: DateTime<Utc>,
+    ) {
+        snapshot
+            .control_plane
+            .metrics_announcements
+            .push(MetricsAnnouncement {
+                overlay: OverlayTopic::experiment(
+                    NetworkId::new("net-test"),
+                    StudyId::new("study-test"),
+                    ExperimentId::new("exp-test"),
+                    OverlayChannel::Metrics,
+                )
+                .expect("metrics overlay"),
+                event: MetricsLiveEvent {
+                    network_id: NetworkId::new("net-test"),
+                    kind: MetricsLiveEventKind::LedgerAppend,
+                    cursors: Vec::new(),
+                    generated_at: window_finished_at,
+                },
+                peer_window_hints: vec![PeerWindowPlacementHint {
+                    peer_id: PeerId::new(peer_id),
+                    role: PeerRole::TrainerCpu,
+                    backend_class: BackendClass::Cpu,
+                    status,
+                    accepted_tokens_or_samples,
+                    window_elapsed_ms,
+                    head_lag_at_finish,
+                    window_finished_at,
+                }],
+            });
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_prune_recent_failed_trainers() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([
+            PeerId::new("peer-fast"),
+            PeerId::new("peer-failed"),
+            PeerId::new("peer-unknown"),
+        ]);
+        advertise_peer(&mut snapshot, "peer-fast", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-failed", &[PeerRole::TrainerCpu]);
+        advertise_peer(&mut snapshot, "peer-unknown", &[PeerRole::TrainerCpu]);
+        let now = Utc::now();
+        publish_training_hint(
+            &mut snapshot,
+            "peer-fast",
+            PeerWindowStatus::Completed,
+            120,
+            1_000,
+            0,
+            now,
+        );
+        publish_training_hint(
+            &mut snapshot,
+            "peer-failed",
+            PeerWindowStatus::Failed,
+            0,
+            1_000,
+            0,
+            now,
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        assert!(peers.contains(&PeerId::new("local")));
+        assert!(peers.contains(&PeerId::new("peer-fast")));
+        assert!(peers.contains(&PeerId::new("peer-unknown")));
+        assert!(!peers.contains(&PeerId::new("peer-failed")));
+    }
+
+    #[test]
+    fn runtime_training_assignment_peers_ignore_stale_failed_hints() {
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.observed_peer_ids = BTreeSet::from([PeerId::new("peer-stale-failed")]);
+        advertise_peer(&mut snapshot, "peer-stale-failed", &[PeerRole::TrainerCpu]);
+        publish_training_hint(
+            &mut snapshot,
+            "peer-stale-failed",
+            PeerWindowStatus::Failed,
+            0,
+            1_000,
+            0,
+            Utc::now() - chrono::Duration::minutes(60),
+        );
+
+        let peers = runtime_training_assignment_peers(
+            &snapshot,
+            &PeerRoleSet::new([PeerRole::TrainerCpu]),
+            &PeerId::new("local"),
+        );
+
+        assert!(peers.contains(&PeerId::new("peer-stale-failed")));
     }
 
     #[test]

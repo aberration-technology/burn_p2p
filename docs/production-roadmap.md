@@ -143,6 +143,8 @@ partially present:
 - native and browser capability probes
 - role/budget heuristics
 - damped observed-throughput rebudgeting
+- recent peer-window placement hints propagated through the metrics plane and used to avoid
+  immediately reassigning freshly failed or badly lagging trainers
 
 still missing:
 

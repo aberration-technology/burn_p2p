@@ -24,8 +24,9 @@ use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
     ContentId, ControlCertificate, DatasetViewId, ExperimentDirectoryEntry, HeadDescriptor, HeadId,
     MergeCertificate, MergeWindowState, MetricsLiveEvent, MicroShardId, NetworkId,
-    PeerAuthEnvelope, PeerId, PeerRoleSet, ReducerAssignment, ReducerLoadReport,
-    ReductionCertificate, TelemetrySummary, UpdateAnnounce, ValidationQuorumCertificate,
+    PeerAuthEnvelope, PeerId, PeerRoleSet, PeerWindowPlacementHint, ReducerAssignment,
+    ReducerLoadReport, ReductionCertificate, TelemetrySummary, UpdateAnnounce,
+    ValidationQuorumCertificate,
 };
 use burn_p2p_experiment::ExperimentControlEnvelope;
 use chrono::{DateTime, Utc};

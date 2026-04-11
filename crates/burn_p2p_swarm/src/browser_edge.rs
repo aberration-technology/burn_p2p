@@ -212,6 +212,7 @@ impl BrowserEdgeControlPlaneClient {
                             cursors: vec![cursor.clone()],
                             generated_at: event.generated_at,
                         },
+                        peer_window_hints: Vec::new(),
                     },
                 );
             }

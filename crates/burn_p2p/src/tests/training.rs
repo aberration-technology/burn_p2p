@@ -1,4 +1,5 @@
 use super::support::*;
+use burn_p2p_core::PeerWindowStatus;
 
 #[test]
 fn runtime_rebudgets_next_window_after_slow_observed_throughput() {
@@ -519,6 +520,15 @@ fn training_window_persists_peer_window_metrics() {
         metrics_events[0].overlay,
         experiment().overlay_set().expect("overlays").metrics
     );
+    assert_eq!(metrics_events[0].peer_window_hints.len(), 1);
+    assert_eq!(
+        metrics_events[0].peer_window_hints[0].peer_id,
+        peer_window.peer_id
+    );
+    assert_eq!(
+        metrics_events[0].peer_window_hints[0].status,
+        PeerWindowStatus::Completed
+    );
     assert!(
         peer_window.compute_time_ms <= peer_window.compute_time_ms + peer_window.data_fetch_time_ms
     );
@@ -829,6 +839,8 @@ fn validation_persists_cohort_and_head_eval_metrics() {
         metrics_events[1].event.cursors[0].latest_merge_window_id,
         Some(reducer_cohorts[0].merge_window_id.clone())
     );
+    assert_eq!(metrics_events[0].peer_window_hints.len(), 1);
+    assert_eq!(metrics_events[1].peer_window_hints.len(), 1);
     assert_eq!(
         metrics_events[1].overlay,
         experiment.overlay_set().expect("overlays").metrics

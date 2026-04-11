@@ -1,9 +1,9 @@
 use super::*;
 use crate::metrics_runtime::{
     ValidationMetricBuildArgs, build_head_eval_report, build_metrics_announcement,
-    build_reducer_cohort_metrics, build_validation_peer_window_metrics,
-    persist_eval_protocol_manifest, persist_head_eval_report, persist_peer_window_metrics,
-    persist_reducer_cohort_metrics,
+    build_peer_window_placement_hint, build_reducer_cohort_metrics,
+    build_validation_peer_window_metrics, persist_eval_protocol_manifest, persist_head_eval_report,
+    persist_peer_window_metrics, persist_reducer_cohort_metrics,
 };
 use crate::runtime_support::LagAssessment;
 use crate::runtime_support::{
@@ -1518,6 +1518,7 @@ impl<P> RunningNode<P> {
             &peer_window_metrics,
             prepared.metrics_retention,
         )?;
+        let peer_window_hint = build_peer_window_placement_hint(&peer_window_metrics);
         if let Some(materialization) = execution.local_aggregate_materialization.as_ref() {
             let reducer_cohort_metrics = build_reducer_cohort_metrics(
                 self.config(),
@@ -1571,6 +1572,7 @@ impl<P> RunningNode<P> {
                 MetricsLiveEventKind::CatchupRefresh,
                 Some(execution.merged_head.head_id.clone()),
                 Some(prepared.merge_window.merge_window_id.clone()),
+                vec![peer_window_hint],
             ))?;
         }
         self.set_experiment_idle_state(

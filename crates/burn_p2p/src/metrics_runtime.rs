@@ -297,6 +297,7 @@ pub(crate) fn build_metrics_announcement(
     kind: MetricsLiveEventKind,
     latest_head_id: Option<HeadId>,
     latest_merge_window_id: Option<ContentId>,
+    peer_window_hints: Vec<PeerWindowPlacementHint>,
 ) -> MetricsAnnouncement {
     MetricsAnnouncement {
         overlay,
@@ -313,6 +314,35 @@ pub(crate) fn build_metrics_announcement(
             }],
             generated_at: Utc::now(),
         },
+        peer_window_hints,
+    }
+}
+
+pub(crate) fn build_peer_window_placement_hint(
+    metrics: &PeerWindowMetrics,
+) -> PeerWindowPlacementHint {
+    let accepted_tokens_or_samples =
+        metrics
+            .accepted_tokens_or_samples
+            .unwrap_or_else(|| match metrics.status {
+                PeerWindowStatus::Completed => metrics.attempted_tokens_or_samples,
+                _ => 0,
+            });
+    let window_elapsed_ms = metrics
+        .window_finished_at
+        .signed_duration_since(metrics.window_started_at)
+        .num_milliseconds()
+        .max(1) as u64;
+
+    PeerWindowPlacementHint {
+        peer_id: metrics.peer_id.clone(),
+        role: metrics.role.clone(),
+        backend_class: metrics.backend_class.clone(),
+        status: metrics.status.clone(),
+        accepted_tokens_or_samples,
+        window_elapsed_ms,
+        head_lag_at_finish: metrics.head_lag_at_finish,
+        window_finished_at: metrics.window_finished_at,
     }
 }
 

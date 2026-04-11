@@ -383,6 +383,9 @@ pub struct MetricsAnnouncement {
     pub overlay: OverlayTopic,
     /// The live event.
     pub event: MetricsLiveEvent,
+    #[serde(default)]
+    /// Recent peer-window hints that can inform placement decisions.
+    pub peer_window_hints: Vec<PeerWindowPlacementHint>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -1,10 +1,10 @@
 use super::*;
 use crate::metrics_runtime::{
-    TrainingMetricBuildArgs, build_metrics_announcement, build_training_peer_window_metrics,
-    persist_peer_window_metrics,
+    TrainingMetricBuildArgs, build_metrics_announcement, build_peer_window_placement_hint,
+    build_training_peer_window_metrics, persist_peer_window_metrics,
 };
 use crate::runtime_support::{
-    LagAssessment, active_experiment_directory_entry, runtime_training_peers,
+    LagAssessment, active_experiment_directory_entry, runtime_training_assignment_peers,
     snapshots_with_local_control_plane,
 };
 use burn_p2p_core::{MetricsLiveEventKind, MicroShard};
@@ -668,7 +668,7 @@ impl<P> RunningNode<P> {
             capability,
             directory_entry.as_ref(),
         )?;
-        let assignment_peers = runtime_training_peers(
+        let assignment_peers = runtime_training_assignment_peers(
             &prepared.telemetry_snapshot,
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
@@ -782,7 +782,7 @@ impl<P> RunningNode<P> {
             experiment,
             Some(&base_head_id),
         );
-        let assignment_peers = runtime_training_peers(
+        let assignment_peers = runtime_training_assignment_peers(
             &prepared.telemetry_snapshot,
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
@@ -1011,12 +1011,14 @@ impl<P> RunningNode<P> {
             &peer_window_metrics,
             prepared.metrics_retention,
         )?;
+        let peer_window_hint = build_peer_window_placement_hint(&peer_window_metrics);
         self.control.publish_metrics(build_metrics_announcement(
             experiment,
             overlays.metrics,
             MetricsLiveEventKind::LedgerAppend,
             None,
             Some(execution.merge_window.merge_window_id.clone()),
+            vec![peer_window_hint],
         ))?;
         self.update_runtime_state(
             NodeRuntimeState::WaitingMerge,
