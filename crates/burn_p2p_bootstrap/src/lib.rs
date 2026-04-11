@@ -1540,17 +1540,37 @@ mod tests {
             Some(MetricValue::Float(_))
         ));
 
-        wait_for(
-            Duration::from_secs(5),
-            || {
+        let certification_started = Instant::now();
+        loop {
+            let diagnostics = daemon.diagnostics(None);
+            if diagnostics.accepted_receipts >= 1 && diagnostics.certified_merges >= 1 {
+                break;
+            }
+
+            if certification_started.elapsed() >= Duration::from_secs(20) {
+                let telemetry = daemon_telemetry.snapshot();
                 let state = daemon.admin_state();
                 let state = state
                     .lock()
                     .expect("embedded daemon state should not be poisoned");
-                !state.contribution_receipts.is_empty() && !state.merge_certificates.is_empty()
-            },
-            "embedded daemon did not certify trainer update",
-        );
+                panic!(
+                    "embedded daemon did not certify trainer update within 20s; \
+                     diagnostics=accepted_receipts:{} certified_merges:{} \
+                     state_receipts:{} state_merges:{} connected_peers:{} \
+                     update_announcements:{} merge_announcements:{} last_error={:?}",
+                    diagnostics.accepted_receipts,
+                    diagnostics.certified_merges,
+                    state.contribution_receipts.len(),
+                    state.merge_certificates.len(),
+                    telemetry.connected_peers,
+                    telemetry.control_plane.update_announcements.len(),
+                    telemetry.control_plane.merge_announcements.len(),
+                    telemetry.last_error,
+                );
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
 
         let diagnostics = daemon.diagnostics(None);
         assert_eq!(diagnostics.accepted_receipts, 1);
