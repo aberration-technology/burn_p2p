@@ -197,6 +197,26 @@ pub trait P2pWorkload {
         self.supported_workload().workload_id
     }
 
+    /// Switches the live runtime to one other compiled workload when supported.
+    ///
+    /// The default implementation only succeeds when the requested workload is
+    /// already active. Family-style runtimes can override this to hot-swap the
+    /// selected workload during an experiment lifecycle transition.
+    fn switch_runtime_workload(
+        &mut self,
+        workload_id: &burn_p2p_core::WorkloadId,
+    ) -> anyhow::Result<()> {
+        if self.workload_id() != *workload_id {
+            anyhow::bail!(
+                "runtime workload switch to {} is unsupported for {}",
+                workload_id.as_str(),
+                self.workload_id().as_str(),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Returns the checkpoint format hash.
     fn checkpoint_format_hash(&self) -> ContentId {
         self.supported_workload().checkpoint_format_hash

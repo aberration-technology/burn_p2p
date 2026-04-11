@@ -314,15 +314,20 @@ impl crate::P2pWorkload for SyntheticRuntimeProject {
 pub(super) struct SwitchingTestWorkload {
     pub(super) manifest: crate::SupportedWorkload,
     pub(super) model_schema_hash: crate::ContentId,
+    pub(super) dataset_root: PathBuf,
+    pub(super) learning_rate: f64,
+    pub(super) target_model: f64,
 }
 
 impl crate::P2pWorkload for SwitchingTestWorkload {
     type Device = String;
-    type Model = ();
-    type Batch = ();
+    type Model = f64;
+    type Batch = f64;
     type WindowStats = BTreeMap<String, MetricValue>;
 
-    fn init_model(&self, _device: &String) -> Self::Model {}
+    fn init_model(&self, _device: &String) -> Self::Model {
+        0.0
+    }
 
     fn benchmark(&self, _model: &Self::Model, _device: &String) -> CapabilityEstimate {
         CapabilityEstimate {
@@ -334,18 +339,34 @@ impl crate::P2pWorkload for SwitchingTestWorkload {
 
     fn train_window(
         &self,
-        _ctx: &mut WindowCtx<String, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<String, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, crate::TrainError> {
+        let delta = ctx.batches.iter().copied().sum::<f64>() * self.learning_rate;
+        ctx.model += delta;
+
         Ok(WindowReport {
             contribution: None,
-            stats: BTreeMap::new(),
+            stats: BTreeMap::from([
+                ("delta".into(), MetricValue::Float(delta)),
+                ("model".into(), MetricValue::Float(ctx.model)),
+                (
+                    "loss".into(),
+                    MetricValue::Float((self.target_model - ctx.model).abs()),
+                ),
+            ]),
             completed_at: Utc::now(),
         })
     }
 
-    fn evaluate(&self, _model: &Self::Model, _split: EvalSplit) -> MetricReport {
+    fn evaluate(&self, model: &Self::Model, _split: EvalSplit) -> MetricReport {
         MetricReport {
-            metrics: BTreeMap::new(),
+            metrics: BTreeMap::from([
+                (
+                    "loss".into(),
+                    MetricValue::Float((self.target_model - *model).abs()),
+                ),
+                ("model".into(), MetricValue::Float(*model)),
+            ]),
             captured_at: Utc::now(),
         }
     }
@@ -367,50 +388,105 @@ impl crate::P2pWorkload for SwitchingTestWorkload {
     }
 
     fn dataset_registration(&self) -> anyhow::Result<DatasetRegistration> {
-        anyhow::bail!("unused in switching test")
+        Ok(DatasetRegistration {
+            manifest: crate::DatasetManifest {
+                dataset_id: crate::DatasetId::new("dataset"),
+                source_uri: self.dataset_root.display().to_string(),
+                format: "microshards".into(),
+                manifest_hash: crate::ContentId::new("manifest"),
+                metadata: BTreeMap::new(),
+            },
+            view: crate::DatasetView {
+                dataset_view_id: crate::DatasetViewId::new("dataset-view"),
+                dataset_id: crate::DatasetId::new("dataset"),
+                preprocessing_hash: crate::ContentId::new("preprocess"),
+                tokenizer_hash: None,
+                manifest_hash: crate::ContentId::new("manifest"),
+                metadata: BTreeMap::new(),
+            },
+            upstream: UpstreamAdapter::Local {
+                root: self.dataset_root.display().to_string(),
+            },
+        })
     }
 
     fn microshard_plan(
         &self,
-        _registration: &DatasetRegistration,
+        registration: &DatasetRegistration,
     ) -> anyhow::Result<crate::MicroShardPlan> {
-        anyhow::bail!("unused in switching test")
+        Ok(crate::MicroShardPlanner::new(MicroShardPlannerConfig {
+            target_microshard_bytes: 10,
+            min_microshards: 2,
+            max_microshards: 2,
+        })?
+        .plan(
+            &registration.view,
+            DatasetSizing {
+                total_examples: 2,
+                total_tokens: 2,
+                total_bytes: 20,
+            },
+        )?)
     }
 
     fn load_batches(
         &self,
         _lease: &AssignmentLease,
-        _cached_microshards: &[CachedMicroShard],
+        cached_microshards: &[CachedMicroShard],
     ) -> anyhow::Result<Vec<Self::Batch>> {
-        Ok(Vec::new())
+        cached_microshards
+            .iter()
+            .map(|shard| {
+                let bytes = fs::read(&shard.path)?;
+                let text = String::from_utf8(bytes)?;
+                text.trim().parse::<f64>().map_err(anyhow::Error::from)
+            })
+            .collect()
     }
 
     fn load_model_artifact(
         &self,
-        model: Self::Model,
-        _descriptor: &ArtifactDescriptor,
-        _store: &FsArtifactStore,
+        _model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        store: &FsArtifactStore,
         _device: &String,
     ) -> anyhow::Result<Self::Model> {
-        Ok(model)
+        Ok(serde_json::from_slice(
+            &store.materialize_artifact_bytes(descriptor)?,
+        )?)
     }
 
     fn materialize_model_artifact(
         &self,
-        _model: &Self::Model,
-        _artifact_kind: ArtifactKind,
-        _head_id: crate::HeadId,
-        _base_head_id: Option<crate::HeadId>,
-        _store: &FsArtifactStore,
+        model: &Self::Model,
+        artifact_kind: ArtifactKind,
+        head_id: crate::HeadId,
+        base_head_id: Option<crate::HeadId>,
+        store: &FsArtifactStore,
     ) -> anyhow::Result<ArtifactDescriptor> {
-        anyhow::bail!("unused in switching test")
+        let bytes = serde_json::to_vec(model)?;
+        let mut spec = ArtifactBuildSpec::new(
+            artifact_kind,
+            crate::Precision::Fp32,
+            self.model_schema_hash.clone(),
+            "synthetic-json",
+        )
+        .with_head(head_id);
+        if let Some(base_head_id) = base_head_id {
+            spec = spec.with_base_head(base_head_id);
+        }
+        Ok(store.store_artifact_reader(
+            &spec,
+            std::io::Cursor::new(bytes),
+            ChunkingScheme::new(16)?,
+        )?)
     }
 
     fn contribution_metrics(
         &self,
-        _report: &WindowReport<Self::WindowStats>,
+        report: &WindowReport<Self::WindowStats>,
     ) -> BTreeMap<String, MetricValue> {
-        BTreeMap::new()
+        report.stats.clone()
     }
 
     fn supported_workload(&self) -> crate::SupportedWorkload {
@@ -452,6 +528,17 @@ pub(super) fn switching_test_workload(
     schema_hash: &str,
     checkpoint_format_hash: &str,
 ) -> SwitchingTestWorkload {
+    let dataset_root = std::env::temp_dir().join(format!(
+        "burn-p2p-switching-{}-{}-{}",
+        workload_id,
+        std::process::id(),
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000),
+    ));
+    fs::create_dir_all(&dataset_root).expect("create switching dataset root");
+    create_runtime_dataset(&dataset_root);
+
     SwitchingTestWorkload {
         manifest: crate::SupportedWorkload {
             workload_id: crate::WorkloadId::new(workload_id),
@@ -464,6 +551,9 @@ pub(super) fn switching_test_workload(
             resource_class: "cpu".into(),
         },
         model_schema_hash: crate::ContentId::new(schema_hash),
+        dataset_root,
+        learning_rate: 1.0,
+        target_model: 10.0,
     }
 }
 

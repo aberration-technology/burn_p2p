@@ -425,6 +425,10 @@ where
     fn model_schema_hash(&self) -> ContentId {
         self.workload.model_schema_hash()
     }
+
+    fn switch_runtime_workload(&mut self, workload_id: &WorkloadId) -> anyhow::Result<()> {
+        self.switch_workload(workload_id.clone())
+    }
 }
 
 fn validate_network_manifest(

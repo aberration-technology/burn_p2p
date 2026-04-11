@@ -86,6 +86,13 @@ where
         let prepared = self
             .node
             .prepare_training_state(&self.experiment, self.training_head.as_ref())?;
+        if prepared.experiment != self.experiment {
+            self.reset_session_to_prepared_experiment(&prepared)?;
+        } else {
+            let _ = self.reconcile_visible_canonical_head(
+                prepared.current_head.as_ref().map(|(_, head)| head.clone()),
+            )?;
+        }
         let model = self
             .warm_model
             .take()
@@ -102,7 +109,7 @@ where
             (device, capability)
         };
         let execution = self.node.execute_training_window_with_model(
-            &self.experiment,
+            &prepared.experiment,
             &prepared,
             device,
             model,
@@ -110,8 +117,9 @@ where
         )?;
         let publish_latency_ms =
             self.node
-                .publish_training_execution(&self.experiment, &prepared, &execution)?;
+                .publish_training_execution(&prepared.experiment, &prepared, &execution)?;
 
+        self.experiment = prepared.experiment.clone();
         self.training_head = Some(execution.head.clone());
         self.warm_model = Some(execution.model);
 
@@ -213,5 +221,27 @@ where
         self.canonical_head = Some(latest.clone());
         self.training_head = Some(latest.clone());
         Ok(Some(latest))
+    }
+
+    fn reset_session_to_prepared_experiment(
+        &mut self,
+        prepared: &TrainingPreparedState,
+    ) -> anyhow::Result<()> {
+        let model = {
+            let project = &mut self
+                .node
+                .node
+                .as_mut()
+                .expect("running node should retain prepared node")
+                .project;
+            let device = project.runtime_device();
+            load_runtime_model(project, &prepared.current_head, &prepared.store, &device)?
+        };
+        let current_head = prepared.current_head.as_ref().map(|(_, head)| head.clone());
+        self.experiment = prepared.experiment.clone();
+        self.canonical_head = current_head.clone();
+        self.training_head = current_head;
+        self.warm_model = Some(model);
+        Ok(())
     }
 }

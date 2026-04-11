@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::default_node_runtime_state;
 
 impl<P> RunningNode<P> {
     /// Creates a stateful continuous trainer with the default policy.
@@ -46,9 +47,9 @@ impl<P> RunningNode<P> {
         P: P2pWorkload,
     {
         let prepared = self.prepare_training_state(experiment, pinned_head)?;
-        let execution = self.execute_training_window(experiment, &prepared)?;
+        let execution = self.execute_training_window(&prepared.experiment, &prepared)?;
         let publish_latency_ms =
-            self.publish_training_execution(experiment, &prepared, &execution)?;
+            self.publish_training_execution(&prepared.experiment, &prepared, &execution)?;
 
         Ok(TrainingWindowOutcome {
             lease: execution.lease,
@@ -69,27 +70,32 @@ impl<P> RunningNode<P> {
         &mut self,
         experiment: &ExperimentHandle,
         pinned_head: Option<&HeadDescriptor>,
-    ) -> anyhow::Result<TrainingPreparedState> {
-        let assignment = SlotAssignmentState::from_experiment(experiment);
-        self.persist_primary_assignment(&assignment)?;
-        self.update_runtime_state(
-            NodeRuntimeState::LeasePending,
-            Some(SlotRuntimeState::Assigned(assignment.clone())),
-        );
-        self.ensure_experiment_topics(experiment)?;
-
+    ) -> anyhow::Result<TrainingPreparedState>
+    where
+        P: P2pWorkload,
+    {
         let storage = self
             .config()
             .storage
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("training requires configured storage"))?;
+        let experiment =
+            self.reconcile_training_experiment_for_window(experiment, &storage, pinned_head)?;
+        let assignment = SlotAssignmentState::from_experiment(&experiment);
+        self.persist_primary_assignment(&assignment)?;
+        self.update_runtime_state(
+            NodeRuntimeState::LeasePending,
+            Some(SlotRuntimeState::Assigned(assignment.clone())),
+        );
+        self.ensure_experiment_topics(&experiment)?;
+
         let store = FsArtifactStore::new(storage.root.clone());
         store.ensure_layout()?;
 
-        let snapshots = self.fetch_experiment_snapshots(experiment, Duration::from_secs(3))?;
+        let snapshots = self.fetch_experiment_snapshots(&experiment, Duration::from_secs(3))?;
         let telemetry_snapshot = self.telemetry().snapshot();
-        let lag_assessment = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
+        let lag_assessment = self.assess_and_record_lag(&storage, &experiment, &snapshots)?;
         if matches!(
             lag_assessment.state,
             LagState::LeaseBlocked | LagState::RebaseRequired
@@ -110,6 +116,11 @@ impl<P> RunningNode<P> {
             .snapshot()
             .local_peer_id
             .ok_or_else(|| anyhow::anyhow!("runtime does not have a local peer id yet"))?;
+        let pinned_head = pinned_head.filter(|head| {
+            head.study_id == experiment.study_id
+                && head.experiment_id == experiment.experiment_id
+                && head.revision_id == experiment.revision_id
+        });
         let current_head = if let Some(head) = pinned_head.cloned() {
             anyhow::ensure!(
                 head.study_id == experiment.study_id
@@ -128,8 +139,8 @@ impl<P> RunningNode<P> {
                 Some(&local_peer_id),
                 &telemetry_snapshot.control_plane,
             );
-            resolve_canonical_head(&storage, experiment, &canonical_snapshots)?.or_else(|| {
-                latest_head_from_snapshot(telemetry_snapshot.control_plane.clone(), experiment)
+            resolve_canonical_head(&storage, &experiment, &canonical_snapshots)?.or_else(|| {
+                latest_head_from_snapshot(telemetry_snapshot.control_plane.clone(), &experiment)
             })
         };
         let network_id = self.mainnet().network_id().clone();
@@ -141,7 +152,7 @@ impl<P> RunningNode<P> {
             .metrics_retention
             .resolve_for_roles(&mainnet_roles);
         let robustness_policy =
-            runtime_robustness_policy(&node_config, &telemetry_snapshot, experiment);
+            runtime_robustness_policy(&node_config, &telemetry_snapshot, &experiment);
 
         self.update_runtime_state(
             NodeRuntimeState::HeadSync,
@@ -169,6 +180,7 @@ impl<P> RunningNode<P> {
         }
 
         Ok(TrainingPreparedState {
+            experiment: experiment.clone(),
             assignment,
             storage,
             store,
@@ -181,6 +193,98 @@ impl<P> RunningNode<P> {
             node_config,
             robustness_policy,
         })
+    }
+
+    fn reconcile_training_experiment_for_window(
+        &mut self,
+        experiment: &ExperimentHandle,
+        storage: &StorageConfig,
+        pinned_head: Option<&HeadDescriptor>,
+    ) -> anyhow::Result<ExperimentHandle>
+    where
+        P: P2pWorkload,
+    {
+        let activation_window = inferred_next_window_id(storage, experiment, pinned_head)?;
+        let snapshot = self.telemetry().snapshot();
+        let lifecycle_plan = effective_experiment_lifecycle_plan(
+            &snapshot.control_plane,
+            self.mainnet().network_id(),
+            &experiment.study_id,
+            &experiment.experiment_id,
+            activation_window,
+        )
+        .filter(|plan| {
+            plan.base_revision_id
+                .as_ref()
+                .map(|base_revision_id| base_revision_id == &experiment.revision_id)
+                .unwrap_or(true)
+                || plan.target_entry.current_revision_id == experiment.revision_id
+        });
+        let Some(plan) = lifecycle_plan else {
+            return Ok(experiment.clone());
+        };
+        let target_entry = plan.target_entry;
+        let target_experiment = self.experiment(
+            target_entry.study_id.clone(),
+            target_entry.experiment_id.clone(),
+            target_entry.current_revision_id.clone(),
+        );
+        let current_workload_id = self
+            .node
+            .as_ref()
+            .expect("running node should retain prepared node")
+            .project
+            .workload_id();
+        if target_experiment == *experiment && current_workload_id == target_entry.workload_id {
+            return Ok(target_experiment);
+        }
+
+        let assignment = SlotAssignmentState::from_experiment(&target_experiment);
+        let idle_state = default_node_runtime_state(&self.mainnet().roles);
+        self.update_runtime_state(
+            NodeRuntimeState::DirectorySync,
+            Some(SlotRuntimeState::Migrating(assignment.clone())),
+        );
+
+        let result = (|| -> anyhow::Result<()> {
+            {
+                let node = self
+                    .node
+                    .as_mut()
+                    .expect("running node should retain prepared node");
+                let previous_workload_id = node.project.workload_id();
+                if previous_workload_id != target_entry.workload_id {
+                    node.project
+                        .switch_runtime_workload(&target_entry.workload_id)?;
+                }
+                if node.config.selected_workload_id.as_ref() != Some(&target_entry.workload_id)
+                    && (node.config.selected_workload_id.is_some()
+                        || previous_workload_id != target_entry.workload_id)
+                {
+                    node.config.selected_workload_id = Some(target_entry.workload_id.clone());
+                    if let Some(storage) = node.config.storage.as_ref() {
+                        persist_runtime_binding_state(storage, node.config())?;
+                    }
+                }
+            }
+            self.ensure_experiment_topics(&target_experiment)?;
+            self.persist_primary_assignment(&assignment)?;
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            self.update_runtime_state(
+                idle_state,
+                Some(SlotRuntimeState::Blocked {
+                    assignment: Some(assignment),
+                    reason: error.to_string(),
+                }),
+            );
+            return Err(error);
+        }
+
+        self.update_runtime_state(idle_state, Some(SlotRuntimeState::Assigned(assignment)));
+        Ok(target_experiment)
     }
 
     fn execute_training_window(

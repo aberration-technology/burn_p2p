@@ -28,6 +28,7 @@ use planning::{
 };
 
 struct TrainingPreparedState {
+    experiment: ExperimentHandle,
     assignment: SlotAssignmentState,
     storage: StorageConfig,
     store: FsArtifactStore,
