@@ -300,6 +300,7 @@ pub(crate) fn export_admin_capabilities() -> BTreeSet<AdminCapability> {
         AdminCapability::ExportReceipts,
         AdminCapability::ExportReducerLoad,
         AdminCapability::ExportTrustBundle,
+        AdminCapability::OperatorRetentionPrune,
     ])
 }
 
@@ -323,6 +324,7 @@ pub(crate) fn all_admin_capabilities() -> BTreeSet<AdminCapability> {
         AdminCapability::RolloutAuthPolicy,
         AdminCapability::RetireTrustedIssuers,
         AdminCapability::RotateAuthorityMaterial,
+        AdminCapability::OperatorRetentionPrune,
     ])
 }
 
@@ -339,6 +341,9 @@ pub(crate) fn parse_admin_capability_token(token: &str) -> Option<AdminCapabilit
         "exportreceipts" | "export_receipts" => Some(AdminCapability::ExportReceipts),
         "exportreducerload" | "export_reducer_load" => Some(AdminCapability::ExportReducerLoad),
         "exporttrustbundle" | "export_trust_bundle" => Some(AdminCapability::ExportTrustBundle),
+        "operatorretentionprune" | "operator_retention_prune" => {
+            Some(AdminCapability::OperatorRetentionPrune)
+        }
         "rolloutauthpolicy" | "rollout_auth_policy" => Some(AdminCapability::RolloutAuthPolicy),
         "retiretrustedissuers" | "retire_trusted_issuers" => {
             Some(AdminCapability::RetireTrustedIssuers)

@@ -2,8 +2,8 @@ use burn_p2p::{ArtifactId, ChunkId};
 use burn_p2p_core::NetworkId;
 
 #[cfg(target_arch = "wasm32")]
-use crate::{BrowserArtifactReplayCheckpoint, BrowserReceiptOutboxBackend};
-use crate::{BrowserReceiptOutbox, BrowserStorageSnapshot};
+use crate::BrowserReceiptOutboxBackend;
+use crate::{BrowserArtifactReplayCheckpoint, BrowserReceiptOutbox, BrowserStorageSnapshot};
 
 #[cfg(target_arch = "wasm32")]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -72,6 +72,11 @@ fn artifact_replay_chunk_value_key(artifact_id: &ArtifactId, chunk_id: &ChunkId)
 #[cfg(target_arch = "wasm32")]
 fn artifact_replay_prefix_value_key(artifact_id: &ArtifactId) -> String {
     artifact_id.as_str().to_owned()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn artifact_replay_segment_value_key(artifact_id: &ArtifactId, start_offset: u64) -> String {
+    format!("segment:{}:{start_offset:020}", artifact_id.as_str())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -481,6 +486,89 @@ async fn load_indexed_db_artifact_replay_prefix(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn load_indexed_db_artifact_replay_segment(
+    network_id: &NetworkId,
+    artifact_id: &ArtifactId,
+    start_offset: u64,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(database) = open_artifact_replay_indexed_db(network_id).await? else {
+        return Ok(None);
+    };
+    let transaction = database
+        .transaction_with_str_and_mode(
+            ARTIFACT_REPLAY_PREFIX_INDEXED_DB_STORE,
+            web_sys::IdbTransactionMode::Readonly,
+        )
+        .map_err(|error| format!("failed to open indexeddb readonly transaction: {error:?}"))?;
+    let store = transaction
+        .object_store(ARTIFACT_REPLAY_PREFIX_INDEXED_DB_STORE)
+        .map_err(|error| format!("failed to open indexeddb replay prefix store: {error:?}"))?;
+    let request = store
+        .get(&JsValue::from_str(&artifact_replay_segment_value_key(
+            artifact_id,
+            start_offset,
+        )))
+        .map_err(|error| format!("failed to read indexeddb replay segment: {error:?}"))?;
+    let value = await_idb_request(&request).await?;
+    await_indexed_db_transaction(&transaction).await?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let encoded = value
+        .as_string()
+        .ok_or_else(|| "indexeddb replay segment payload was not a string".to_owned())?;
+    STANDARD
+        .decode(encoded.as_bytes())
+        .map(Some)
+        .map_err(|error| format!("failed to decode indexeddb replay segment payload: {error}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_indexed_db_artifact_replay_prefix_from_segments(
+    network_id: &NetworkId,
+    checkpoint: &BrowserArtifactReplayCheckpoint,
+) -> Result<Option<Vec<u8>>, String> {
+    if checkpoint.edge_download_segments.is_empty() {
+        return Ok(None);
+    }
+
+    let mut segments = checkpoint.edge_download_segments.clone();
+    segments.sort_by_key(|segment| segment.start_offset);
+    let mut prefix = Vec::new();
+    let mut expected_offset = 0u64;
+
+    for segment in segments {
+        if segment.start_offset > expected_offset {
+            break;
+        }
+        let mut bytes = if !segment.bytes.is_empty() {
+            segment.bytes.clone()
+        } else {
+            load_indexed_db_artifact_replay_segment(
+                network_id,
+                &checkpoint.artifact_id,
+                segment.start_offset,
+            )
+            .await?
+            .unwrap_or_default()
+        };
+        if bytes.is_empty() {
+            break;
+        }
+        let segment_len = segment.persisted_bytes.max(bytes.len() as u64);
+        let overlap = expected_offset.saturating_sub(segment.start_offset) as usize;
+        if overlap >= bytes.len() {
+            expected_offset = segment.start_offset.saturating_add(segment_len);
+            continue;
+        }
+        prefix.extend_from_slice(&bytes.split_off(overlap));
+        expected_offset = segment.start_offset.saturating_add(segment_len);
+    }
+
+    Ok((!prefix.is_empty()).then_some(prefix))
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn persist_indexed_db_artifact_replay_chunks(
     network_id: &NetworkId,
     checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
@@ -545,23 +633,42 @@ async fn persist_indexed_db_artifact_replay_prefix(
         .clear()
         .map_err(|error| format!("failed to clear indexeddb replay prefix store: {error:?}"))?;
     let _ = await_idb_request(&clear_request).await?;
-    if let Some(prefix) = checkpoint.and_then(|checkpoint| {
-        checkpoint
-            .edge_download_prefix
-            .as_ref()
-            .map(|prefix| (&checkpoint.artifact_id, prefix))
-    }) && !prefix.1.bytes.is_empty()
-    {
-        let encoded = STANDARD.encode(&prefix.1.bytes);
-        let request = store
-            .put_with_key(
-                &JsValue::from_str(&encoded),
-                &JsValue::from_str(&artifact_replay_prefix_value_key(prefix.0)),
-            )
-            .map_err(|error| {
-                format!("failed to persist indexeddb artifact replay prefix: {error:?}")
-            })?;
-        let _ = await_idb_request(&request).await?;
+    if let Some(checkpoint) = checkpoint {
+        let mut persisted_segment = false;
+        for segment in &checkpoint.edge_download_segments {
+            if segment.bytes.is_empty() {
+                continue;
+            }
+            persisted_segment = true;
+            let encoded = STANDARD.encode(&segment.bytes);
+            let request = store
+                .put_with_key(
+                    &JsValue::from_str(&encoded),
+                    &JsValue::from_str(&artifact_replay_segment_value_key(
+                        &checkpoint.artifact_id,
+                        segment.start_offset,
+                    )),
+                )
+                .map_err(|error| {
+                    format!("failed to persist indexeddb artifact replay segment: {error:?}")
+                })?;
+            let _ = await_idb_request(&request).await?;
+        }
+        if !persisted_segment
+            && let Some(prefix) = checkpoint.edge_download_prefix.as_ref()
+            && !prefix.bytes.is_empty()
+        {
+            let encoded = STANDARD.encode(&prefix.bytes);
+            let request = store
+                .put_with_key(
+                    &JsValue::from_str(&encoded),
+                    &JsValue::from_str(&artifact_replay_prefix_value_key(&checkpoint.artifact_id)),
+                )
+                .map_err(|error| {
+                    format!("failed to persist indexeddb artifact replay prefix: {error:?}")
+                })?;
+            let _ = await_idb_request(&request).await?;
+        }
     }
     await_indexed_db_transaction(&transaction).await
 }
@@ -855,9 +962,16 @@ pub async fn load_durable_browser_artifact_replay_chunk(
 #[cfg(target_arch = "wasm32")]
 pub async fn load_durable_browser_artifact_replay_prefix(
     network_id: &NetworkId,
-    artifact_id: &ArtifactId,
+    checkpoint: &BrowserArtifactReplayCheckpoint,
 ) -> Result<Option<Vec<u8>>, String> {
-    load_indexed_db_artifact_replay_prefix(network_id, artifact_id).await
+    if let Some(prefix) =
+        load_indexed_db_artifact_replay_prefix_from_segments(network_id, checkpoint)
+            .await
+            .unwrap_or(None)
+    {
+        return Ok(Some(prefix));
+    }
+    load_indexed_db_artifact_replay_prefix(network_id, &checkpoint.artifact_id).await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -922,7 +1036,7 @@ pub async fn load_durable_browser_artifact_replay_chunk(
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn load_durable_browser_artifact_replay_prefix(
     _network_id: &NetworkId,
-    _artifact_id: &ArtifactId,
+    _checkpoint: &BrowserArtifactReplayCheckpoint,
 ) -> Result<Option<Vec<u8>>, String> {
     Ok(None)
 }

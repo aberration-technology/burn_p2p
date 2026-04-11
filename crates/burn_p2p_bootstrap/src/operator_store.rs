@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::state::{
-    HeadQuery, OperatorAuditKind, OperatorAuditQuery, OperatorAuditRecord, OperatorAuditSummary,
-    OperatorReplayQuery, OperatorReplaySnapshot, OperatorReplaySnapshotSummary,
+    HeadQuery, OperatorAuditFacetSummary, OperatorAuditKind, OperatorAuditQuery,
+    OperatorAuditRecord, OperatorAuditSummary, OperatorFacetBucket, OperatorReplayQuery,
+    OperatorReplaySnapshot, OperatorReplaySnapshotSummary, OperatorRetentionPruneResult,
     OperatorRetentionSummary, ReceiptQuery,
 };
 #[cfg(feature = "artifact-publish")]
@@ -43,6 +44,11 @@ pub(crate) trait OperatorStore {
         page: PageRequest,
     ) -> anyhow::Result<Page<OperatorAuditRecord>>;
     fn audit_summary(&self, query: &OperatorAuditQuery) -> anyhow::Result<OperatorAuditSummary>;
+    fn audit_facets(
+        &self,
+        query: &OperatorAuditQuery,
+        limit: usize,
+    ) -> anyhow::Result<OperatorAuditFacetSummary>;
     fn replay_snapshot(
         &self,
         captured_at: Option<DateTime<Utc>>,
@@ -53,6 +59,7 @@ pub(crate) trait OperatorStore {
         page: PageRequest,
     ) -> anyhow::Result<Page<OperatorReplaySnapshotSummary>>;
     fn retention_summary(&self) -> anyhow::Result<OperatorRetentionSummary>;
+    fn prune_retention(&self) -> anyhow::Result<OperatorRetentionPruneResult>;
     fn head_eval_reports(&self, head_id: &HeadId) -> anyhow::Result<Vec<HeadEvalReport>>;
     #[cfg(feature = "artifact-publish")]
     fn eval_protocol_manifests(&self) -> anyhow::Result<Vec<StoredEvalProtocolManifestRecord>>;
@@ -785,6 +792,79 @@ fn operator_backend_label(backend: Option<&OperatorStateBackendConfig>) -> Strin
     }
 }
 
+fn normalize_operator_facet_limit(limit: usize) -> usize {
+    limit.clamp(1, 64)
+}
+
+fn top_operator_facet_buckets(
+    values: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Vec<OperatorFacetBucket> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for value in values {
+        if value.trim().is_empty() {
+            continue;
+        }
+        *counts.entry(value).or_default() += 1;
+    }
+    let mut buckets = counts
+        .into_iter()
+        .map(|(value, count)| OperatorFacetBucket { value, count })
+        .collect::<Vec<_>>();
+    buckets.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    buckets.truncate(normalize_operator_facet_limit(limit));
+    buckets
+}
+
+fn build_operator_audit_facets(
+    backend: String,
+    records: impl IntoIterator<Item = OperatorAuditRecord>,
+    limit: usize,
+) -> OperatorAuditFacetSummary {
+    let normalized_limit = normalize_operator_facet_limit(limit);
+    let mut kinds = Vec::new();
+    let mut studies = Vec::new();
+    let mut experiments = Vec::new();
+    let mut revisions = Vec::new();
+    let mut peers = Vec::new();
+    let mut heads = Vec::new();
+
+    for record in records {
+        kinds.push(record.kind.as_slug().to_owned());
+        if let Some(study_id) = record.study_id {
+            studies.push(study_id.as_str().to_owned());
+        }
+        if let Some(experiment_id) = record.experiment_id {
+            experiments.push(experiment_id.as_str().to_owned());
+        }
+        if let Some(revision_id) = record.revision_id {
+            revisions.push(revision_id.as_str().to_owned());
+        }
+        if let Some(peer_id) = record.peer_id {
+            peers.push(peer_id.as_str().to_owned());
+        }
+        if let Some(head_id) = record.head_id {
+            heads.push(head_id.as_str().to_owned());
+        }
+    }
+
+    OperatorAuditFacetSummary {
+        backend,
+        limit: normalized_limit,
+        kinds: top_operator_facet_buckets(kinds, normalized_limit),
+        studies: top_operator_facet_buckets(studies, normalized_limit),
+        experiments: top_operator_facet_buckets(experiments, normalized_limit),
+        revisions: top_operator_facet_buckets(revisions, normalized_limit),
+        peers: top_operator_facet_buckets(peers, normalized_limit),
+        heads: top_operator_facet_buckets(heads, normalized_limit),
+    }
+}
+
 fn build_operator_audit_summary(
     backend: String,
     records: impl IntoIterator<Item = OperatorAuditRecord>,
@@ -906,9 +986,9 @@ fn prune_postgres_snapshot_rows(
     table_name: &str,
     snapshot_key: &str,
     max_rows: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let table_name = ensure_valid_postgres_identifier(table_name)?;
-    client.execute(
+    let deleted = client.execute(
         &format!(
             "DELETE FROM {table_name} WHERE id IN (\
                 SELECT id FROM {table_name} \
@@ -919,7 +999,7 @@ fn prune_postgres_snapshot_rows(
         ),
         &[&snapshot_key, &i64::try_from(max_rows).unwrap_or(i64::MAX)],
     )?;
-    Ok(())
+    Ok(usize::try_from(deleted).unwrap_or(usize::MAX))
 }
 
 fn prune_postgres_audit_rows(
@@ -927,9 +1007,9 @@ fn prune_postgres_audit_rows(
     table_name: &str,
     snapshot_key: &str,
     max_rows: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let table_name = ensure_valid_postgres_identifier(table_name)?;
-    client.execute(
+    let deleted = client.execute(
         &format!(
             "DELETE FROM {table_name} WHERE id IN (\
                 SELECT id FROM {table_name} \
@@ -940,7 +1020,7 @@ fn prune_postgres_audit_rows(
         ),
         &[&snapshot_key, &i64::try_from(max_rows).unwrap_or(i64::MAX)],
     )?;
-    Ok(())
+    Ok(usize::try_from(deleted).unwrap_or(usize::MAX))
 }
 
 fn load_postgres_operator_audit_page(
@@ -1175,6 +1255,162 @@ fn load_postgres_operator_audit_summary(
     })
 }
 
+fn load_postgres_operator_facet_counts(
+    client: &mut postgres::Client,
+    table_name: &str,
+    snapshot_key: &str,
+    query: &OperatorAuditQuery,
+    value_expr: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<OperatorFacetBucket>> {
+    let table_name = ensure_valid_postgres_identifier(table_name)?;
+    let kind_slug = query.kind.as_ref().map(|kind| kind.as_slug());
+    let study_id_filter = query.study_id.as_ref().map(ToString::to_string);
+    let experiment_id_filter = query.experiment_id.as_ref().map(ToString::to_string);
+    let revision_id_filter = query.revision_id.as_ref().map(ToString::to_string);
+    let peer_id_filter = query.peer_id.as_ref().map(ToString::to_string);
+    let head_id_filter = query.head_id.as_ref().map(ToString::to_string);
+    let text_pattern = query
+        .text
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("%{}%", value.to_ascii_lowercase()));
+    let mut params: Vec<&(dyn ToSql + Sync)> = vec![&snapshot_key];
+    let mut clauses = vec!["snapshot_key = $1".to_owned()];
+
+    if let Some(kind) = kind_slug.as_ref() {
+        params.push(kind);
+        clauses.push(format!("kind = ${}", params.len()));
+    }
+    if let Some(study_id) = study_id_filter.as_ref() {
+        params.push(study_id);
+        clauses.push(format!("study_id = ${}", params.len()));
+    }
+    if let Some(experiment_id) = experiment_id_filter.as_ref() {
+        params.push(experiment_id);
+        clauses.push(format!("experiment_id = ${}", params.len()));
+    }
+    if let Some(revision_id) = revision_id_filter.as_ref() {
+        params.push(revision_id);
+        clauses.push(format!("revision_id = ${}", params.len()));
+    }
+    if let Some(peer_id) = peer_id_filter.as_ref() {
+        params.push(peer_id);
+        clauses.push(format!("peer_id = ${}", params.len()));
+    }
+    if let Some(head_id) = head_id_filter.as_ref() {
+        params.push(head_id);
+        clauses.push(format!("head_id = ${}", params.len()));
+    }
+    if let Some(since) = query.since.as_ref() {
+        params.push(since);
+        clauses.push(format!("captured_at >= ${}", params.len()));
+    }
+    if let Some(until) = query.until.as_ref() {
+        params.push(until);
+        clauses.push(format!("captured_at <= ${}", params.len()));
+    }
+    if let Some(text) = text_pattern.as_ref() {
+        params.push(text);
+        let record_idx = params.len();
+        params.push(text);
+        let summary_idx = params.len();
+        clauses.push(format!(
+            "(LOWER(record_id) LIKE ${record_idx} OR LOWER(summary_text) LIKE ${summary_idx})"
+        ));
+    }
+
+    let normalized_limit = i64::try_from(normalize_operator_facet_limit(limit)).unwrap_or(i64::MAX);
+    params.push(&normalized_limit);
+    let rows = client.query(
+        &format!(
+            "SELECT {value_expr} AS value, COUNT(*)::BIGINT AS count \
+             FROM {table_name} \
+             WHERE {} AND {value_expr} IS NOT NULL AND {value_expr} <> '' \
+             GROUP BY value \
+             ORDER BY count DESC, value ASC \
+             LIMIT ${}",
+            clauses.join(" AND "),
+            params.len()
+        ),
+        &params,
+    )?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            row.get::<_, Option<String>>("value")
+                .map(|value| OperatorFacetBucket {
+                    value,
+                    count: usize::try_from(row.get::<_, i64>("count")).unwrap_or(usize::MAX),
+                })
+        })
+        .collect())
+}
+
+fn load_postgres_operator_audit_facets(
+    url: &str,
+    table_name: &str,
+    snapshot_key: &str,
+    query: &OperatorAuditQuery,
+    limit: usize,
+) -> anyhow::Result<OperatorAuditFacetSummary> {
+    let mut client = postgres_connection(url)?;
+    let normalized_limit = normalize_operator_facet_limit(limit);
+    Ok(OperatorAuditFacetSummary {
+        backend: "postgres".into(),
+        limit: normalized_limit,
+        kinds: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "kind",
+            normalized_limit,
+        )?,
+        studies: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "study_id",
+            normalized_limit,
+        )?,
+        experiments: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "experiment_id",
+            normalized_limit,
+        )?,
+        revisions: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "revision_id",
+            normalized_limit,
+        )?,
+        peers: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "peer_id",
+            normalized_limit,
+        )?,
+        heads: load_postgres_operator_facet_counts(
+            &mut client,
+            table_name,
+            snapshot_key,
+            query,
+            "head_id",
+            normalized_limit,
+        )?,
+    })
+}
+
 fn load_postgres_operator_replay_page(
     url: &str,
     table_name: &str,
@@ -1330,6 +1566,41 @@ fn load_postgres_operator_retention_summary(
     })
 }
 
+fn prune_postgres_operator_retention(
+    url: &str,
+    table_name: &str,
+    snapshot_key: &str,
+    metrics_retention: MetricsRetentionBudget,
+) -> anyhow::Result<OperatorRetentionPruneResult> {
+    let mut client = postgres_connection(url)?;
+    let table_name = ensure_valid_postgres_identifier(table_name)?;
+    let audit_table_name = postgres_operator_audit_table_name(table_name);
+    ensure_postgres_operator_state_table(&mut client, table_name)?;
+    ensure_postgres_operator_audit_table(&mut client, &audit_table_name)?;
+    let pruned_snapshot_count = prune_postgres_snapshot_rows(
+        &mut client,
+        table_name,
+        snapshot_key,
+        operator_snapshot_retention_limit(metrics_retention),
+    )?;
+    let pruned_audit_record_count = prune_postgres_audit_rows(
+        &mut client,
+        &audit_table_name,
+        snapshot_key,
+        operator_audit_retention_limit(metrics_retention),
+    )?;
+    let summary =
+        load_postgres_operator_retention_summary(url, table_name, snapshot_key, metrics_retention)?;
+    Ok(OperatorRetentionPruneResult {
+        backend: summary.backend,
+        pruned_snapshot_count,
+        pruned_audit_record_count,
+        remaining_snapshot_count: summary.persisted_snapshot_count,
+        remaining_audit_record_count: summary.persisted_audit_record_count,
+        latest_snapshot_at: summary.latest_snapshot_at,
+    })
+}
+
 fn load_postgres_operator_state_snapshot(
     url: &str,
     table_name: &str,
@@ -1475,13 +1746,13 @@ pub(crate) fn persist_operator_state_snapshot(
                 snapshot_key,
                 &audit_records,
             )?;
-            prune_postgres_snapshot_rows(
+            let _ = prune_postgres_snapshot_rows(
                 &mut client,
                 table_name,
                 snapshot_key,
                 operator_snapshot_retention_limit(metrics_retention),
             )?;
-            prune_postgres_audit_rows(
+            let _ = prune_postgres_audit_rows(
                 &mut client,
                 &audit_table_name,
                 snapshot_key,
@@ -1650,6 +1921,37 @@ impl OperatorStore for FileOperatorStore {
         ))
     }
 
+    fn audit_facets(
+        &self,
+        query: &OperatorAuditQuery,
+        limit: usize,
+    ) -> anyhow::Result<OperatorAuditFacetSummary> {
+        if let Some(OperatorStateBackendConfig::Postgres {
+            url,
+            table_name,
+            snapshot_key,
+        }) = self.operator_state_backend.as_ref()
+        {
+            return load_postgres_operator_audit_facets(
+                url,
+                &postgres_operator_audit_table_name(table_name),
+                snapshot_key,
+                query,
+                limit,
+            );
+        }
+        let records = self
+            .build_audit_records()?
+            .into_iter()
+            .filter(|record| query.matches(record))
+            .collect::<Vec<_>>();
+        Ok(build_operator_audit_facets(
+            operator_backend_label(self.operator_state_backend.as_ref()),
+            records,
+            limit,
+        ))
+    }
+
     fn replay_snapshot(
         &self,
         captured_at: Option<DateTime<Utc>>,
@@ -1757,6 +2059,31 @@ impl OperatorStore for FileOperatorStore {
             persisted_snapshot_count: usize::from(latest_snapshot_at.is_some()),
             persisted_audit_record_count: self.build_audit_records()?.len(),
             latest_snapshot_at,
+        })
+    }
+
+    fn prune_retention(&self) -> anyhow::Result<OperatorRetentionPruneResult> {
+        if let Some(OperatorStateBackendConfig::Postgres {
+            url,
+            table_name,
+            snapshot_key,
+        }) = self.operator_state_backend.as_ref()
+        {
+            return prune_postgres_operator_retention(
+                url,
+                table_name,
+                snapshot_key,
+                self.metrics_retention,
+            );
+        }
+        let summary = self.retention_summary()?;
+        Ok(OperatorRetentionPruneResult {
+            backend: summary.backend,
+            pruned_snapshot_count: 0,
+            pruned_audit_record_count: 0,
+            remaining_snapshot_count: summary.persisted_snapshot_count,
+            remaining_audit_record_count: summary.persisted_audit_record_count,
+            latest_snapshot_at: summary.latest_snapshot_at,
         })
     }
 
@@ -2176,6 +2503,47 @@ mod tests {
         assert_eq!(summary.distinct_head_count, 2);
         assert!(summary.earliest_captured_at.is_some());
         assert!(summary.latest_captured_at.is_some());
+    }
+
+    #[test]
+    fn file_operator_store_audit_facets_surface_top_buckets() {
+        let now = Utc::now();
+        let preview = sample_operator_preview(now);
+        let store = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::default(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: None,
+            },
+            preview,
+        );
+
+        let facets = store
+            .audit_facets(&OperatorAuditQuery::default(), 4)
+            .expect("audit facets");
+
+        assert_eq!(facets.backend, "file");
+        assert_eq!(facets.limit, 4);
+        assert_eq!(
+            facets.kinds.first().map(|bucket| bucket.value.as_str()),
+            Some("head")
+        );
+        assert!(
+            facets
+                .experiments
+                .iter()
+                .any(|bucket| bucket.value == "exp" && bucket.count >= 1)
+        );
+        assert!(
+            facets
+                .heads
+                .iter()
+                .any(|bucket| bucket.value == "head-1" && bucket.count >= 1)
+        );
     }
 
     #[test]

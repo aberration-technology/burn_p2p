@@ -90,6 +90,25 @@ pub struct BrowserArtifactReplayBytePrefix {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One persisted range segment used to resume edge-based artifact replay across reloads.
+pub struct BrowserArtifactReplayByteSegment {
+    /// Inclusive starting byte offset of the persisted segment.
+    pub start_offset: u64,
+    /// Durable storage backend used for the segment payload.
+    #[serde(default)]
+    pub storage: BrowserArtifactReplayChunkStorage,
+    /// Number of verified bytes retained for the segment.
+    #[serde(default)]
+    pub persisted_bytes: u64,
+    /// Full artifact length when the edge download path exposes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    /// Persisted contiguous bytes for this segment.
+    #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Durable checkpoint describing an in-progress or failed active-head artifact replay.
 pub struct BrowserArtifactReplayCheckpoint {
     /// Experiment covered by the checkpoint.
@@ -118,6 +137,9 @@ pub struct BrowserArtifactReplayCheckpoint {
     /// Persisted contiguous byte prefix already downloaded through the edge range path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_download_prefix: Option<BrowserArtifactReplayBytePrefix>,
+    /// Persisted edge download segments retained for long-offline resumable replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_download_segments: Vec<BrowserArtifactReplayByteSegment>,
     /// Aggregate completed replay bytes retained in the checkpoint.
     #[serde(default)]
     pub completed_bytes: u64,
@@ -440,6 +462,7 @@ impl BrowserStorageSnapshot {
                 .map(browser_artifact_replay_chunk_len)
                 .sum();
             checkpoint.edge_download_prefix = None;
+            checkpoint.edge_download_segments.clear();
             checkpoint.artifact_descriptor = Some(descriptor);
             checkpoint.last_attempted_at = Utc::now();
             self.updated_at = Utc::now();
@@ -484,6 +507,29 @@ impl BrowserStorageSnapshot {
         bytes: Vec<u8>,
     ) {
         if let Some(checkpoint) = self.artifact_replay_checkpoint.as_mut() {
+            let previous_prefix_len = checkpoint
+                .edge_download_prefix
+                .as_ref()
+                .map(browser_artifact_replay_prefix_len)
+                .or_else(|| {
+                    replay_edge_prefix_bytes_from_segments(&checkpoint.edge_download_segments)
+                        .map(|prefix| prefix.len() as u64)
+                })
+                .unwrap_or(0);
+            if bytes.len() as u64 > previous_prefix_len {
+                checkpoint
+                    .edge_download_segments
+                    .push(BrowserArtifactReplayByteSegment {
+                        start_offset: previous_prefix_len,
+                        storage: BrowserArtifactReplayChunkStorage::Inline,
+                        persisted_bytes: (bytes.len() as u64).saturating_sub(previous_prefix_len),
+                        total_bytes,
+                        bytes: bytes[previous_prefix_len as usize..].to_vec(),
+                    });
+                checkpoint
+                    .edge_download_segments
+                    .sort_by_key(|segment| segment.start_offset);
+            }
             checkpoint.edge_download_prefix = Some(BrowserArtifactReplayBytePrefix {
                 storage: BrowserArtifactReplayChunkStorage::Inline,
                 persisted_bytes: bytes.len() as u64,
@@ -535,11 +581,18 @@ impl BrowserStorageSnapshot {
     }
 
     /// Returns the stored edge replay prefix bytes when present.
-    pub fn artifact_replay_edge_prefix_bytes(&self) -> Option<&[u8]> {
+    pub fn artifact_replay_edge_prefix_bytes(&self) -> Option<Vec<u8>> {
         self.artifact_replay_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.edge_download_prefix.as_ref())
-            .and_then(|prefix| (!prefix.bytes.is_empty()).then_some(prefix.bytes.as_slice()))
+            .and_then(|prefix| (!prefix.bytes.is_empty()).then_some(prefix.bytes.clone()))
+            .or_else(|| {
+                self.artifact_replay_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| {
+                        replay_edge_prefix_bytes_from_segments(&checkpoint.edge_download_segments)
+                    })
+            })
     }
 
     /// Returns a clone suitable for durable persistence with large replay chunk payloads
@@ -560,6 +613,13 @@ impl BrowserStorageSnapshot {
                 prefix.persisted_bytes = prefix.bytes.len() as u64;
                 prefix.storage = BrowserArtifactReplayChunkStorage::IndexedDb;
                 prefix.bytes.clear();
+            }
+            for segment in &mut checkpoint.edge_download_segments {
+                if !segment.bytes.is_empty() {
+                    segment.persisted_bytes = segment.bytes.len() as u64;
+                    segment.storage = BrowserArtifactReplayChunkStorage::IndexedDb;
+                    segment.bytes.clear();
+                }
             }
         }
         snapshot
@@ -676,6 +736,43 @@ fn browser_artifact_replay_chunk_len(chunk: &BrowserArtifactReplayChunk) -> u64 
 
 fn browser_artifact_replay_prefix_len(prefix: &BrowserArtifactReplayBytePrefix) -> u64 {
     prefix.persisted_bytes.max(prefix.bytes.len() as u64)
+}
+
+fn browser_artifact_replay_segment_len(segment: &BrowserArtifactReplayByteSegment) -> u64 {
+    segment.persisted_bytes.max(segment.bytes.len() as u64)
+}
+
+fn replay_edge_prefix_bytes_from_segments(
+    segments: &[BrowserArtifactReplayByteSegment],
+) -> Option<Vec<u8>> {
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut sorted = segments.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|segment| segment.start_offset);
+    let mut prefix = Vec::new();
+    let mut expected_offset = 0u64;
+    for segment in sorted {
+        if segment.start_offset > expected_offset {
+            break;
+        }
+        let segment_len = browser_artifact_replay_segment_len(segment);
+        if segment_len == 0 {
+            continue;
+        }
+        if segment.bytes.is_empty() {
+            return None;
+        }
+        let overlap = expected_offset.saturating_sub(segment.start_offset) as usize;
+        if overlap >= segment.bytes.len() {
+            expected_offset = segment.start_offset.saturating_add(segment_len);
+            continue;
+        }
+        prefix.extend_from_slice(&segment.bytes[overlap..]);
+        expected_offset = segment.start_offset.saturating_add(segment_len);
+    }
+    (!prefix.is_empty()).then_some(prefix)
 }
 
 fn remember_recent_receipt_id(

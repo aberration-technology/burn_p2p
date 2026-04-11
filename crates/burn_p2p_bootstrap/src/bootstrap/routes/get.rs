@@ -89,6 +89,18 @@ pub(crate) fn handle_get_route(
     }
 
     if request.method == "GET"
+        && let Some((limit, query)) =
+            operator_audit_facets_request_from_path(&request.path, "/operator/audit/facets")?
+    {
+        let audit_facets = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_audit_facets(&query, limit)?;
+        write_json(stream, &audit_facets)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
         && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot")?
     {
@@ -515,6 +527,69 @@ fn operator_audit_summary_request_from_path(
     }
 
     Ok(Some(audit))
+}
+
+fn operator_audit_facets_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<(usize, OperatorAuditQuery)>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some((8, OperatorAuditQuery::default())));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut audit = OperatorAuditQuery::default();
+    let mut limit = 8usize;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "kind" => {
+                audit.kind = Some(if let Some(kind) = OperatorAuditKind::from_slug(value) {
+                    kind
+                } else {
+                    return Err(format!("unsupported operator audit kind `{value}`").into());
+                });
+            }
+            "study_id" => {
+                audit.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                audit.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                audit.revision_id = Some(RevisionId::new(value));
+            }
+            "peer_id" => {
+                audit.peer_id = Some(PeerId::new(value));
+            }
+            "head_id" => {
+                audit.head_id = Some(HeadId::new(value));
+            }
+            "since" => {
+                audit.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                audit.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                audit.text = Some(value.replace('+', " "));
+            }
+            "limit" => {
+                limit = value.parse::<usize>()?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some((limit, audit)))
 }
 
 fn operator_replay_page_request_from_path(

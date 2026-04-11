@@ -478,6 +478,7 @@ impl BrowserEdgeClient {
             artifact_descriptor,
             completed_chunks,
             edge_download_prefix,
+            edge_download_segments,
             completed_bytes,
             attempt_count,
         ) = checkpoint
@@ -487,11 +488,12 @@ impl BrowserEdgeClient {
                     checkpoint.artifact_descriptor.clone(),
                     checkpoint.completed_chunks.clone(),
                     checkpoint.edge_download_prefix.clone(),
+                    checkpoint.edge_download_segments.clone(),
                     checkpoint.completed_bytes,
                     checkpoint.attempt_count + 1,
                 )
             })
-            .unwrap_or((None, Vec::new(), None, 0, 1));
+            .unwrap_or((None, Vec::new(), None, Vec::new(), 0, 1));
         BrowserArtifactReplayCheckpoint {
             experiment_id: request.experiment_id.clone(),
             revision_id: request.revision_id.clone(),
@@ -504,6 +506,7 @@ impl BrowserEdgeClient {
             artifact_descriptor,
             completed_chunks,
             edge_download_prefix,
+            edge_download_segments,
             completed_bytes,
             last_attempted_at: Utc::now(),
             attempt_count,
@@ -1223,26 +1226,24 @@ impl BrowserEdgeClient {
         use wasm_bindgen::{JsCast, JsValue};
         use wasm_bindgen_futures::JsFuture;
 
-        let mut prefix_bytes =
-            if let Some(bytes) = runtime.storage.artifact_replay_edge_prefix_bytes() {
-                bytes.to_vec()
-            } else if let (Some(network_id), Some(checkpoint)) = (
-                runtime
-                    .config
-                    .as_ref()
-                    .map(|config| config.network_id.clone()),
-                runtime.storage.artifact_replay_checkpoint.as_ref(),
-            ) {
-                crate::durability::load_durable_browser_artifact_replay_prefix(
-                    &network_id,
-                    &checkpoint.artifact_id,
-                )
+        let mut prefix_bytes = if let Some(bytes) =
+            runtime.storage.artifact_replay_edge_prefix_bytes()
+        {
+            bytes
+        } else if let (Some(network_id), Some(checkpoint)) = (
+            runtime
+                .config
+                .as_ref()
+                .map(|config| config.network_id.clone()),
+            runtime.storage.artifact_replay_checkpoint.as_ref(),
+        ) {
+            crate::durability::load_durable_browser_artifact_replay_prefix(&network_id, checkpoint)
                 .await
                 .map_err(BrowserAuthClientError::ArtifactTransport)?
                 .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+        } else {
+            Vec::new()
+        };
 
         let Some(window) = web_sys::window() else {
             return Err(BrowserAuthClientError::ArtifactTransport(
@@ -1359,26 +1360,24 @@ impl BrowserEdgeClient {
         ticket_id: &burn_p2p_core::DownloadTicketId,
         runtime: &mut BrowserWorkerRuntime,
     ) -> Result<Vec<u8>, BrowserAuthClientError> {
-        let mut prefix_bytes =
-            if let Some(bytes) = runtime.storage.artifact_replay_edge_prefix_bytes() {
-                bytes.to_vec()
-            } else if let (Some(network_id), Some(checkpoint)) = (
-                runtime
-                    .config
-                    .as_ref()
-                    .map(|config| config.network_id.clone()),
-                runtime.storage.artifact_replay_checkpoint.as_ref(),
-            ) {
-                crate::durability::load_durable_browser_artifact_replay_prefix(
-                    &network_id,
-                    &checkpoint.artifact_id,
-                )
+        let mut prefix_bytes = if let Some(bytes) =
+            runtime.storage.artifact_replay_edge_prefix_bytes()
+        {
+            bytes
+        } else if let (Some(network_id), Some(checkpoint)) = (
+            runtime
+                .config
+                .as_ref()
+                .map(|config| config.network_id.clone()),
+            runtime.storage.artifact_replay_checkpoint.as_ref(),
+        ) {
+            crate::durability::load_durable_browser_artifact_replay_prefix(&network_id, checkpoint)
                 .await
                 .map_err(BrowserAuthClientError::ArtifactTransport)?
                 .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+        } else {
+            Vec::new()
+        };
 
         let url = self.artifact_download_url(ticket_id);
         let mut request = self.http.get(url);

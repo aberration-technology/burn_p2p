@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::{
     AdminCapability, BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle,
-    BootstrapError, BootstrapPlan, HeadQuery, ReceiptQuery, ReducerLoadQuery,
+    BootstrapError, BootstrapPlan, HeadQuery, OperatorRetentionPruneResult, ReceiptQuery,
+    ReducerLoadQuery,
 };
 use burn_p2p::{ContributionReceipt, HeadDescriptor, ReducerLoadAnnouncement, TrustedIssuer};
 use burn_p2p_core::{
@@ -68,6 +69,8 @@ pub enum AdminAction {
         /// The reenrollment reason.
         reenrollment_reason: Option<String>,
     },
+    /// Uses the operator retention prune variant.
+    PruneOperatorRetention,
 }
 
 impl AdminAction {
@@ -85,6 +88,7 @@ impl AdminAction {
             Self::RolloutAuthPolicy(_) => AdminCapability::RolloutAuthPolicy,
             Self::RetireTrustedIssuers { .. } => AdminCapability::RetireTrustedIssuers,
             Self::RotateAuthorityMaterial { .. } => AdminCapability::RotateAuthorityMaterial,
+            Self::PruneOperatorRetention => AdminCapability::OperatorRetentionPrune,
         }
     }
 }
@@ -148,6 +152,8 @@ pub enum AdminResult {
         /// The rotated at.
         rotated_at: DateTime<Utc>,
     },
+    /// Uses the operator retention pruned variant.
+    OperatorRetentionPruned(OperatorRetentionPruneResult),
 }
 
 impl BootstrapPlan {
@@ -323,6 +329,13 @@ impl BootstrapPlan {
                         .is_some(),
                 rotated_at: captured_at,
             }),
+            AdminAction::PruneOperatorRetention => Ok(AdminResult::OperatorRetentionPruned(
+                state.prune_operator_retention().map_err(|error| {
+                    BootstrapError::InvalidConfig(format!(
+                        "failed to prune operator retention: {error}"
+                    ))
+                })?,
+            )),
         }
     }
 }

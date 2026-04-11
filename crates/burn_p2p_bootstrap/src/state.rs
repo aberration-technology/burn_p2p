@@ -242,6 +242,36 @@ pub struct OperatorAuditSummary {
     pub latest_captured_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One top facet bucket surfaced by operator audit search tooling.
+pub struct OperatorFacetBucket {
+    /// Normalized facet value.
+    pub value: String,
+    /// Count of records that matched the facet value.
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Top facet values across one filtered operator audit search query.
+pub struct OperatorAuditFacetSummary {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Maximum buckets retained per facet list.
+    pub limit: usize,
+    /// Top record kinds.
+    pub kinds: Vec<OperatorFacetBucket>,
+    /// Top study identifiers.
+    pub studies: Vec<OperatorFacetBucket>,
+    /// Top experiment identifiers.
+    pub experiments: Vec<OperatorFacetBucket>,
+    /// Top revision identifiers.
+    pub revisions: Vec<OperatorFacetBucket>,
+    /// Top peer identifiers.
+    pub peers: Vec<OperatorFacetBucket>,
+    /// Top head identifiers.
+    pub heads: Vec<OperatorFacetBucket>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Query parameters used to filter retained operator replay snapshots.
 pub struct OperatorReplayQuery {
@@ -306,6 +336,23 @@ pub struct OperatorRetentionSummary {
     /// Persisted retained audit rows currently available.
     pub persisted_audit_record_count: usize,
     /// Latest retained replay snapshot timestamp.
+    pub latest_snapshot_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Reports one explicit operator retention prune operation against the active backend.
+pub struct OperatorRetentionPruneResult {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Retained replay snapshots removed by the prune.
+    pub pruned_snapshot_count: usize,
+    /// Retained audit rows removed by the prune.
+    pub pruned_audit_record_count: usize,
+    /// Persisted retained replay snapshots still available after pruning.
+    pub remaining_snapshot_count: usize,
+    /// Persisted retained audit rows still available after pruning.
+    pub remaining_audit_record_count: usize,
+    /// Latest retained replay snapshot timestamp after pruning.
     pub latest_snapshot_at: Option<DateTime<Utc>>,
 }
 
@@ -691,6 +738,15 @@ impl BootstrapAdminState {
         self.operator_store().audit_summary(query)
     }
 
+    /// Exports one top-facet summary for operator audit search tooling.
+    pub fn export_operator_audit_facets(
+        &self,
+        query: &OperatorAuditQuery,
+        limit: usize,
+    ) -> anyhow::Result<OperatorAuditFacetSummary> {
+        self.operator_store().audit_facets(query, limit)
+    }
+
     /// Exports one retained operator snapshot at or before the requested timestamp.
     pub fn export_operator_replay_snapshot(
         &self,
@@ -711,6 +767,11 @@ impl BootstrapAdminState {
     /// Exports backend retention diagnostics for operator snapshots and audit rows.
     pub fn export_operator_retention_summary(&self) -> anyhow::Result<OperatorRetentionSummary> {
         self.operator_store().retention_summary()
+    }
+
+    /// Prunes retained operator history against the configured backend budgets.
+    pub fn prune_operator_retention(&self) -> anyhow::Result<OperatorRetentionPruneResult> {
+        self.operator_store().prune_retention()
     }
 
     /// Performs the diagnostics operation.

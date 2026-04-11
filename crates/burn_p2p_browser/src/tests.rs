@@ -396,6 +396,7 @@ fn browser_storage_round_trips_artifact_replay_checkpoint() {
             chunk_bytes: b"test".to_vec(),
         }],
         edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
         completed_bytes: 4,
         last_attempted_at: Utc::now(),
         attempt_count: 2,
@@ -429,6 +430,7 @@ fn browser_storage_tracks_partial_artifact_replay_chunks() {
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
         edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
         completed_bytes: 0,
         last_attempted_at: Utc::now(),
         attempt_count: 1,
@@ -504,6 +506,7 @@ fn browser_storage_externalizes_replay_chunks_for_durable_snapshot() {
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
         edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
         completed_bytes: 0,
         last_attempted_at: Utc::now(),
         attempt_count: 1,
@@ -538,11 +541,13 @@ fn browser_storage_externalizes_edge_replay_prefix_for_durable_snapshot() {
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
         edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
         completed_bytes: 0,
         last_attempted_at: Utc::now(),
         attempt_count: 1,
     });
     storage.remember_artifact_replay_edge_prefix(Some(8), b"test".to_vec());
+    storage.remember_artifact_replay_edge_prefix(Some(8), b"testdata".to_vec());
 
     let durable = storage.durable_replay_snapshot();
     let checkpoint = durable
@@ -553,8 +558,47 @@ fn browser_storage_externalizes_edge_replay_prefix_for_durable_snapshot() {
         .expect("durable snapshot should keep edge replay prefix metadata");
     assert!(prefix.bytes.is_empty());
     assert_eq!(prefix.storage, BrowserArtifactReplayChunkStorage::IndexedDb);
-    assert_eq!(prefix.persisted_bytes, 4);
+    assert_eq!(prefix.persisted_bytes, 8);
     assert_eq!(prefix.total_bytes, Some(8));
+    assert_eq!(checkpoint.edge_download_segments.len(), 2);
+    assert_eq!(checkpoint.edge_download_segments[0].start_offset, 0);
+    assert_eq!(checkpoint.edge_download_segments[0].persisted_bytes, 4);
+    assert_eq!(checkpoint.edge_download_segments[1].start_offset, 4);
+    assert_eq!(checkpoint.edge_download_segments[1].persisted_bytes, 4);
+}
+
+#[test]
+fn browser_storage_reconstructs_edge_replay_prefix_from_segments() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        run_id: RunId::new("run-browser"),
+        head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        provider_peer_ids: vec![PeerId::new("peer-a")],
+        artifact_descriptor: None,
+        completed_chunks: Vec::new(),
+        edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
+        completed_bytes: 0,
+        last_attempted_at: Utc::now(),
+        attempt_count: 1,
+    });
+    storage.remember_artifact_replay_edge_prefix(Some(8), b"test".to_vec());
+    storage.remember_artifact_replay_edge_prefix(Some(8), b"testdata".to_vec());
+    if let Some(checkpoint) = storage.artifact_replay_checkpoint.as_mut() {
+        checkpoint.edge_download_prefix = None;
+    }
+
+    assert_eq!(
+        storage
+            .artifact_replay_edge_prefix_bytes()
+            .expect("reconstructed prefix"),
+        b"testdata".to_vec()
+    );
 }
 
 #[test]
@@ -4349,6 +4393,7 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
             artifact_descriptor: None,
             completed_chunks: Vec::new(),
             edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
             completed_bytes: 0,
             last_attempted_at: Utc::now(),
             attempt_count: 1,
