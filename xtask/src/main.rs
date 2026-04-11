@@ -1296,22 +1296,34 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
         ],
         &envs,
     )?);
-    steps.push(workspace.run_cargo(
-        &artifacts,
-        "mnist-demo-build",
-        &[
-            "build",
-            "--manifest-path",
-            "examples/mnist_p2p_demo/Cargo.toml",
-            "--bin",
-            "mnist_p2p_demo",
-            "--bin",
-            "mnist_browser_live_edge",
-            "--bin",
+    let mut demo_build_envs = envs.clone();
+    if github_actions {
+        demo_build_envs.insert("CARGO_BUILD_JOBS".into(), "1".into());
+        demo_build_envs.insert("CARGO_INCREMENTAL".into(), "0".into());
+        demo_build_envs.insert("CARGO_PROFILE_DEV_DEBUG".into(), "0".into());
+        demo_build_envs.insert("CARGO_PROFILE_DEV_STRIP".into(), "debuginfo".into());
+    }
+    for (label, bin) in [
+        ("mnist-demo-build-demo", "mnist_p2p_demo"),
+        ("mnist-demo-build-browser-edge", "mnist_browser_live_edge"),
+        (
+            "mnist-demo-build-browser-finalize",
             "mnist_browser_probe_finalize",
-        ],
-        &envs,
-    )?);
+        ),
+    ] {
+        steps.push(workspace.run_cargo(
+            &artifacts,
+            label,
+            &[
+                "build",
+                "--manifest-path",
+                "examples/mnist_p2p_demo/Cargo.toml",
+                "--bin",
+                bin,
+            ],
+            &demo_build_envs,
+        )?);
+    }
     let demo_binary = workspace
         .root
         .join("examples/mnist_p2p_demo/target/debug/mnist_p2p_demo");
