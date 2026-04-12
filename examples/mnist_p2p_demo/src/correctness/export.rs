@@ -270,6 +270,9 @@ pub struct CoreMnistSummary {
 pub struct MnistCorrectnessSummary {
     pub generated_at: DateTime<Utc>,
     pub baseline_outperformed_low_lr: bool,
+    pub baseline_accuracy_delta_vs_low_lr: f64,
+    pub baseline_accuracy_tolerance_vs_low_lr: f64,
+    pub baseline_loss_advantage_vs_low_lr: f64,
     pub late_joiner_synced_checkpoint: bool,
     pub shard_assignments_are_distinct: bool,
     pub phase_timeline: DemoPhaseSummary,

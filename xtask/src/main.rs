@@ -1749,12 +1749,51 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             .with_context(|| format!("failed to read {}", export_path.display()))?,
     )
     .with_context(|| format!("failed to decode {}", export_path.display()))?;
+    let baseline_experiment = summary
+        .get("experiments")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|experiments| experiments.first());
+    let low_lr_experiment = summary
+        .get("experiments")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|experiments| experiments.get(1));
     ensure!(
         correctness
             .get("baseline_outperformed_low_lr")
             .and_then(serde_json::Value::as_bool)
             == Some(true),
-        "mnist demo did not show baseline experiment outperforming low-lr variant",
+        "mnist demo did not show baseline experiment outperforming low-lr variant \
+         (baseline_final_accuracy={:?}, low_lr_final_accuracy={:?}, baseline_final_loss={:?}, \
+         low_lr_final_loss={:?}, baseline_accuracy_gain={:?}, low_lr_accuracy_gain={:?}, \
+         baseline_accuracy_delta_vs_low_lr={:?}, baseline_accuracy_tolerance_vs_low_lr={:?}, \
+         baseline_loss_advantage_vs_low_lr={:?})",
+        baseline_experiment
+            .and_then(|experiment| experiment.get("final_accuracy"))
+            .and_then(serde_json::Value::as_f64),
+        low_lr_experiment
+            .and_then(|experiment| experiment.get("final_accuracy"))
+            .and_then(serde_json::Value::as_f64),
+        baseline_experiment
+            .and_then(|experiment| experiment.get("final_loss"))
+            .and_then(serde_json::Value::as_f64),
+        low_lr_experiment
+            .and_then(|experiment| experiment.get("final_loss"))
+            .and_then(serde_json::Value::as_f64),
+        correctness
+            .pointer("/dynamics/baseline_accuracy_gain")
+            .and_then(serde_json::Value::as_f64),
+        correctness
+            .pointer("/dynamics/low_lr_accuracy_gain")
+            .and_then(serde_json::Value::as_f64),
+        correctness
+            .get("baseline_accuracy_delta_vs_low_lr")
+            .and_then(serde_json::Value::as_f64),
+        correctness
+            .get("baseline_accuracy_tolerance_vs_low_lr")
+            .and_then(serde_json::Value::as_f64),
+        correctness
+            .get("baseline_loss_advantage_vs_low_lr")
+            .and_then(serde_json::Value::as_f64),
     );
     if resilience_drills_expected {
         ensure!(

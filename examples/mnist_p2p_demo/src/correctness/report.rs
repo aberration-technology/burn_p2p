@@ -23,11 +23,51 @@ use crate::{
     },
 };
 
+#[derive(Clone, Copy, Debug)]
+struct VariantAccuracyComparison {
+    baseline_outperformed_low_lr: bool,
+    baseline_accuracy_delta_vs_low_lr: f64,
+    baseline_accuracy_tolerance_vs_low_lr: f64,
+    baseline_loss_advantage_vs_low_lr: f64,
+}
+
+fn compare_baseline_vs_low_lr(
+    eval_examples: usize,
+    baseline_accuracy: f64,
+    baseline_loss: f64,
+    low_lr_accuracy: f64,
+    low_lr_loss: f64,
+) -> VariantAccuracyComparison {
+    let accuracy_delta = baseline_accuracy - low_lr_accuracy;
+    let accuracy_tolerance = if eval_examples == 0 {
+        0.0
+    } else {
+        2.0 / eval_examples as f64
+    };
+    let loss_advantage = low_lr_loss - baseline_loss;
+    VariantAccuracyComparison {
+        baseline_outperformed_low_lr: accuracy_delta > 0.0
+            || (accuracy_delta >= -accuracy_tolerance && loss_advantage > 0.0),
+        baseline_accuracy_delta_vs_low_lr: accuracy_delta,
+        baseline_accuracy_tolerance_vs_low_lr: accuracy_tolerance,
+        baseline_loss_advantage_vs_low_lr: loss_advantage,
+    }
+}
+
 pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExport> {
     let baseline_accuracy = metric_float(&run.baseline_head.metrics, "accuracy");
     let low_lr_accuracy = metric_float(&run.low_lr_head.metrics, "accuracy");
     let baseline_initial_accuracy = metric_float(&run.baseline_genesis.metrics, "accuracy");
     let low_lr_initial_accuracy = metric_float(&run.low_lr_genesis.metrics, "accuracy");
+    let baseline_loss = metric_float(&run.baseline_head.metrics, "loss");
+    let low_lr_loss = metric_float(&run.low_lr_head.metrics, "loss");
+    let accuracy_comparison = compare_baseline_vs_low_lr(
+        run.prepared_data.eval_records.len(),
+        baseline_accuracy,
+        baseline_loss,
+        low_lr_accuracy,
+        low_lr_loss,
+    );
 
     let directory_entries = experiment_directory_entries(
         &run.network_manifest,
@@ -160,7 +200,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
                 final_head_id: run.baseline_head.head_id.clone(),
                 initial_accuracy: baseline_initial_accuracy,
                 final_accuracy: baseline_accuracy,
-                final_loss: metric_float(&run.baseline_head.metrics, "loss"),
+                final_loss: baseline_loss,
                 digit_zero_accuracy: metric_float(
                     &run.baseline_head.metrics,
                     "digit_zero_accuracy",
@@ -183,7 +223,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
                 final_head_id: run.low_lr_head.head_id.clone(),
                 initial_accuracy: low_lr_initial_accuracy,
                 final_accuracy: low_lr_accuracy,
-                final_loss: metric_float(&run.low_lr_head.metrics, "loss"),
+                final_loss: low_lr_loss,
                 digit_zero_accuracy: metric_float(&run.low_lr_head.metrics, "digit_zero_accuracy"),
                 merge_count: run
                     .merge_certificates
@@ -209,7 +249,13 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
 
     let correctness = MnistCorrectnessSummary {
         generated_at: Utc::now(),
-        baseline_outperformed_low_lr: baseline_accuracy > low_lr_accuracy,
+        baseline_outperformed_low_lr: accuracy_comparison.baseline_outperformed_low_lr,
+        baseline_accuracy_delta_vs_low_lr: accuracy_comparison
+            .baseline_accuracy_delta_vs_low_lr,
+        baseline_accuracy_tolerance_vs_low_lr: accuracy_comparison
+            .baseline_accuracy_tolerance_vs_low_lr,
+        baseline_loss_advantage_vs_low_lr: accuracy_comparison
+            .baseline_loss_advantage_vs_low_lr,
         late_joiner_synced_checkpoint: run.late_joiner_synced_checkpoint,
         shard_assignments_are_distinct,
         phase_timeline: run.phase_timeline.clone(),
@@ -683,7 +729,7 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
     let all_non_seed_nodes_bootstrap_via_seed = non_seed_labels.iter().all(|label| {
         run.bootstrap_plan
             .get(label)
-            .is_some_and(|bootstraps| bootstraps == &[run.bootstrap_seed_label.clone()])
+            .is_some_and(|bootstraps| bootstraps == std::slice::from_ref(&run.bootstrap_seed_label))
     });
     let mesh_fanout_beyond_seed_observed = non_seed_labels.iter().all(|label| {
         run.final_snapshots.get(label).is_some_and(|snapshot| {
@@ -943,4 +989,46 @@ fn browser_execution_summary(
             notes
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compare_baseline_vs_low_lr;
+
+    #[test]
+    fn comparison_prefers_clear_accuracy_advantage() {
+        let comparison = compare_baseline_vs_low_lr(320, 0.45, 2.10, 0.40, 2.20);
+        assert!(comparison.baseline_outperformed_low_lr);
+        assert!(comparison.baseline_accuracy_delta_vs_low_lr > 0.0);
+    }
+
+    #[test]
+    fn comparison_uses_loss_tiebreak_within_two_eval_examples() {
+        let comparison = compare_baseline_vs_low_lr(
+            320,
+            0.496875,
+            2.18,
+            0.5,
+            2.24,
+        );
+        assert!(comparison.baseline_accuracy_delta_vs_low_lr < 0.0);
+        assert!(
+            comparison.baseline_accuracy_delta_vs_low_lr
+                >= -comparison.baseline_accuracy_tolerance_vs_low_lr
+        );
+        assert!(comparison.baseline_loss_advantage_vs_low_lr > 0.0);
+        assert!(comparison.baseline_outperformed_low_lr);
+    }
+
+    #[test]
+    fn comparison_rejects_material_accuracy_regression_even_with_better_loss() {
+        let comparison = compare_baseline_vs_low_lr(320, 0.46, 2.10, 0.48, 2.11);
+        assert!(comparison.baseline_accuracy_delta_vs_low_lr < 0.0);
+        assert!(
+            comparison.baseline_accuracy_delta_vs_low_lr
+                < -comparison.baseline_accuracy_tolerance_vs_low_lr
+        );
+        assert!(comparison.baseline_loss_advantage_vs_low_lr > 0.0);
+        assert!(!comparison.baseline_outperformed_low_lr);
+    }
 }

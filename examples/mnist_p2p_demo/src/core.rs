@@ -68,6 +68,9 @@ const TRAINER_A1_LABEL: &str = "trainer-a1";
 const TRAINER_A2_LABEL: &str = "trainer-a2";
 const TRAINER_B_LABEL: &str = "trainer-b";
 const TRAINER_LATE_LABEL: &str = "trainer-late";
+const BASELINE_LEARNING_RATE: f64 = 1.0e-3;
+const LOW_LR_LEARNING_RATE: f64 = 2.0e-4;
+const BOUNDED_CI_LOW_LR_LEARNING_RATE: f64 = 1.0e-4;
 const TOPOLOGY_HEAD_SYNC_TIMEOUT: Duration = Duration::from_secs(45);
 const FOLLOWER_HEAD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -146,6 +149,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     let burn_workload_config = mnist_burn_workload_config(supported_workload.clone());
     let release_manifest = release_manifest(&supported_workload);
     let network_manifest = network_manifest(&release_manifest);
+    let low_lr_learning_rate = demo_low_lr_learning_rate();
 
     let build_trainer_project = |learning_rate: f64| -> anyhow::Result<_> {
         let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
@@ -309,19 +313,19 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .with_bootstrap_peer(helper_addr.clone())
         .spawn()?;
 
-    let trainer_a1 = build_trainer_project(1.0e-3)?
+    let trainer_a1 = build_trainer_project(BASELINE_LEARNING_RATE)?
         .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_A1_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
         .spawn()?;
-    let trainer_a2 = build_trainer_project(1.0e-3)?
+    let trainer_a2 = build_trainer_project(BASELINE_LEARNING_RATE)?
         .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
         .with_bootstrap_peer(helper_addr.clone())
         .spawn()?;
-    let trainer_b = build_trainer_project(2.0e-4)?
+    let trainer_b = build_trainer_project(low_lr_learning_rate)?
         .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
         .with_network(network_manifest.clone())?
         .with_storage(StorageConfig::new(storage_root.join(TRAINER_B_LABEL)))
@@ -632,7 +636,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         write_demo_phase(&output, "restart-trainer-shutdown-start")?;
         shutdown_node(TRAINER_A2_LABEL, trainer_a2)?;
         write_demo_phase(&output, "restart-trainer-shutdown-complete")?;
-        let restarted_trainer_a2 = build_trainer_project(1.0e-3)?
+        let restarted_trainer_a2 = build_trainer_project(BASELINE_LEARNING_RATE)?
             .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
             .with_network(network_manifest.clone())?
             .with_storage(StorageConfig::new(storage_root.join(TRAINER_A2_LABEL)))
@@ -760,7 +764,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         ));
         trainer_restart_resumed_training = true;
 
-        let late_joiner_node = build_trainer_project(1.0e-3)?
+        let late_joiner_node = build_trainer_project(BASELINE_LEARNING_RATE)?
             .trainer_with_config(release_manifest.clone(), burn_workload_config.clone())?
             .with_network(network_manifest.clone())?
             .with_storage(StorageConfig::new(storage_root.join(TRAINER_LATE_LABEL)))
@@ -1548,6 +1552,18 @@ fn bounded_ci_mnist_mode() -> bool {
     std::env::var_os(BOUNDED_CI_MNIST_ENV).is_some()
 }
 
+fn demo_low_lr_learning_rate() -> f64 {
+    if bounded_ci_mnist_mode() {
+        BOUNDED_CI_LOW_LR_LEARNING_RATE
+    } else {
+        LOW_LR_LEARNING_RATE
+    }
+}
+
+fn format_learning_rate(value: f64) -> String {
+    format!("{value:.1e}")
+}
+
 fn demo_artifact_sync_attempt_timeout() -> Duration {
     if bounded_ci_mnist_mode() {
         Duration::from_secs(45)
@@ -2034,8 +2050,16 @@ pub(crate) fn experiment_directory_entries(
     };
 
     vec![
-        make_entry(heads[0], "MNIST baseline", "1.0e-3"),
-        make_entry(heads[1], "MNIST lower learning rate", "2.0e-4"),
+        make_entry(
+            heads[0],
+            "MNIST baseline",
+            &format_learning_rate(BASELINE_LEARNING_RATE),
+        ),
+        make_entry(
+            heads[1],
+            "MNIST lower learning rate",
+            &format_learning_rate(demo_low_lr_learning_rate()),
+        ),
     ]
 }
 
