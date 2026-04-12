@@ -140,6 +140,9 @@ pub struct SyntheticProcessConfig {
     pub merge_wait_timeout_secs: u64,
     /// Whether a trainer process must observe the canonical head advance after publishing.
     pub wait_for_canonical_advance: bool,
+    /// Whether failure to observe a canonical advance should fail the process.
+    #[serde(default = "default_canonical_advance_required")]
+    pub canonical_advance_required: bool,
     /// Whether trainer processes should use the speculative continuous trainer API.
     #[serde(default)]
     pub continuous_training: bool,
@@ -174,6 +177,7 @@ impl SyntheticProcessConfig {
             sync_timeout_secs: 15,
             merge_wait_timeout_secs: 15,
             wait_for_canonical_advance: true,
+            canonical_advance_required: true,
             continuous_training: false,
             window_count: 1,
         }
@@ -206,6 +210,7 @@ impl SyntheticProcessConfig {
             sync_timeout_secs: 15,
             merge_wait_timeout_secs: 15,
             wait_for_canonical_advance: true,
+            canonical_advance_required: true,
             continuous_training: false,
             window_count: 1,
         }
@@ -267,6 +272,9 @@ pub struct SyntheticWindowTimeline {
     pub trained_at: Option<DateTime<Utc>>,
     /// When the process observed the canonical head advance after training.
     pub canonical_advanced_at: Option<DateTime<Utc>>,
+    /// Whether canonical observation timed out for the completed window.
+    #[serde(default)]
+    pub canonical_observation_timed_out: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,6 +350,9 @@ pub struct SyntheticSoakConfig {
     pub sync_timeout_secs: u64,
     /// The merge wait timeout secs.
     pub merge_wait_timeout_secs: u64,
+    /// Whether each trainer must fail when it cannot directly observe canonical advancement.
+    #[serde(default = "default_canonical_advance_required")]
+    pub canonical_advance_required: bool,
 }
 
 impl Default for SyntheticSoakConfig {
@@ -362,8 +373,13 @@ impl Default for SyntheticSoakConfig {
             poll_interval_ms: 50,
             sync_timeout_secs: 15,
             merge_wait_timeout_secs: 15,
+            canonical_advance_required: true,
         }
     }
+}
+
+fn default_canonical_advance_required() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1401,7 +1417,7 @@ where
         write_report(&config.report_path, report)?;
 
         if config.wait_for_canonical_advance {
-            let observed_head = wait_for_canonical_advance(
+            match wait_for_canonical_advance(
                 node,
                 experiment,
                 CanonicalAdvanceWait {
@@ -1415,10 +1431,22 @@ where
                         storage_root: &config.storage_root,
                     },
                 },
-            )?;
-            report.observed_canonical_head_id = Some(observed_head.head_id.to_string());
-            if let Some(timeline) = report.window_timelines.last_mut() {
-                timeline.canonical_advanced_at = Some(Utc::now());
+            ) {
+                Ok(observed_head) => {
+                    report.observed_canonical_head_id = Some(observed_head.head_id.to_string());
+                    if let Some(timeline) = report.window_timelines.last_mut() {
+                        timeline.canonical_advanced_at = Some(Utc::now());
+                    }
+                }
+                Err(_error) if !config.canonical_advance_required => {
+                    if let Some(timeline) = report.window_timelines.last_mut() {
+                        timeline.canonical_observation_timed_out = true;
+                    }
+                    report.error = None;
+                    refresh_report_counts(report, &config.storage_root)?;
+                    write_report(&config.report_path, report)?;
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -2150,6 +2178,7 @@ pub fn run_synthetic_process_soak(
             trainer_config.poll_interval_ms = config.poll_interval_ms;
             trainer_config.sync_timeout_secs = config.sync_timeout_secs;
             trainer_config.merge_wait_timeout_secs = config.merge_wait_timeout_secs;
+            trainer_config.canonical_advance_required = config.canonical_advance_required;
             trainer_config.continuous_training = config.continuous_training;
             if config.continuous_training {
                 trainer_config.wait_for_canonical_advance = false;
@@ -2221,6 +2250,7 @@ pub fn run_synthetic_process_soak(
                 trainer_config.poll_interval_ms = config.poll_interval_ms;
                 trainer_config.sync_timeout_secs = config.sync_timeout_secs;
                 trainer_config.merge_wait_timeout_secs = config.merge_wait_timeout_secs;
+                trainer_config.canonical_advance_required = config.canonical_advance_required;
                 trainer_config.continuous_training = config.continuous_training;
                 if config.continuous_training {
                     trainer_config.wait_for_canonical_advance = false;

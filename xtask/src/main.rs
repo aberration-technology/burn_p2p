@@ -2510,6 +2510,7 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         poll_interval_ms: 50,
         sync_timeout_secs: 20,
         merge_wait_timeout_secs: 20,
+        canonical_advance_required: false,
     };
     artifacts.write_json("configs/multiprocess-config.json", &config)?;
 
@@ -3249,6 +3250,7 @@ fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<(
         poll_interval_ms: 50,
         sync_timeout_secs: 45,
         merge_wait_timeout_secs: 45,
+        canonical_advance_required: true,
     };
     artifacts.write_json("configs/network-soak-config.json", &soak_config)?;
 

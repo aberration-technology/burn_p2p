@@ -82,6 +82,11 @@ Multiprocess stress:
 cargo xtask stress multiprocess --peers 8 --duration 90s
 ```
 
+This churn-oriented soak treats validator-side merge progress as the success
+criterion. Trainer-side canonical-head observation is still recorded when it
+lands in time, but it is best-effort so one lagging trainer does not fail the
+entire fleet stress lane.
+
 Seeded chaos replay:
 
 ```bash

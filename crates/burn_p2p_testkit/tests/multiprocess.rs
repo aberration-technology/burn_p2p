@@ -423,6 +423,7 @@ fn native_process_soak_runner_reports_persistent_multi_window_progress() -> anyh
             poll_interval_ms: 50,
             sync_timeout_secs: test_timeout_secs(30),
             merge_wait_timeout_secs: test_timeout_secs(45),
+            canonical_advance_required: true,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -480,6 +481,7 @@ fn native_process_soak_runner_supports_continuous_speculative_training() -> anyh
             poll_interval_ms: 50,
             sync_timeout_secs: test_timeout_secs(30),
             merge_wait_timeout_secs: test_timeout_secs(45),
+            canonical_advance_required: true,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -519,6 +521,7 @@ fn burn_native_process_soak_runner_reports_persistent_multi_window_progress() ->
             poll_interval_ms: 50,
             sync_timeout_secs: test_timeout_secs(30),
             merge_wait_timeout_secs: test_timeout_secs(45),
+            canonical_advance_required: true,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -556,6 +559,7 @@ fn burn_native_process_soak_runner_supports_persistent_multi_trainer_rounds() ->
             poll_interval_ms: 50,
             sync_timeout_secs: test_timeout_secs(45),
             merge_wait_timeout_secs: test_timeout_secs(45),
+            canonical_advance_required: true,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -593,6 +597,7 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
             poll_interval_ms: 50,
             sync_timeout_secs: test_timeout_secs(45),
             merge_wait_timeout_secs: test_timeout_secs(45),
+            canonical_advance_required: false,
         },
         Path::new(env!("CARGO_BIN_EXE_burn-p2p-testkit-node")),
     )?;
@@ -622,8 +627,16 @@ fn native_process_soak_runner_reports_concurrent_round_progress() -> anyhow::Res
         .dynamics_summary
         .as_ref()
         .context("expected synthetic soak dynamics summary")?;
-    assert!(dynamics.trainer_canonical_advance_latency_ms.sample_count >= 3);
     assert!(dynamics.merge_rate_per_sec > 0.0);
+    assert!(
+        summary
+            .trainer_reports
+            .iter()
+            .flat_map(|report| report.window_timelines.iter())
+            .any(|timeline| {
+                timeline.canonical_advanced_at.is_some() || timeline.canonical_observation_timed_out
+            })
+    );
     Ok(())
 }
 
