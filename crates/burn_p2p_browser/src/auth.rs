@@ -289,6 +289,10 @@ pub struct BrowserPeerArtifactRequest {
     pub artifact_profile: ArtifactProfile,
     /// The publication target backing the artifact, when known.
     pub publication_target_id: PublicationTargetId,
+    /// Content hash exposed by the selected publication when known.
+    pub publication_content_hash: Option<ContentId>,
+    /// Content length exposed by the selected publication when known.
+    pub publication_content_length: Option<u64>,
     /// Peer providers currently known to advertise the head artifact.
     pub provider_peer_ids: Vec<PeerId>,
 }
@@ -448,6 +452,21 @@ impl BrowserEdgeClient {
             && checkpoint.artifact_id == request.artifact_id
             && checkpoint.artifact_profile == request.artifact_profile
             && checkpoint.publication_target_id == request.publication_target_id
+            && checkpoint.publication_content_hash == request.publication_content_hash
+            && checkpoint.publication_content_length == request.publication_content_length
+    }
+
+    fn storage_update_if_changed(
+        runtime: &BrowserWorkerRuntime,
+        previous_storage: &crate::BrowserStorageSnapshot,
+    ) -> Vec<BrowserWorkerEvent> {
+        if runtime.storage == *previous_storage {
+            Vec::new()
+        } else {
+            vec![BrowserWorkerEvent::StorageUpdated(Box::new(
+                runtime.storage.clone(),
+            ))]
+        }
     }
 
     fn apply_replay_checkpoint(
@@ -502,6 +521,8 @@ impl BrowserEdgeClient {
             artifact_id: request.artifact_id.clone(),
             artifact_profile: request.artifact_profile.clone(),
             publication_target_id: request.publication_target_id.clone(),
+            publication_content_hash: request.publication_content_hash.clone(),
+            publication_content_length: request.publication_content_length,
             provider_peer_ids: request.provider_peer_ids.clone(),
             artifact_descriptor,
             completed_chunks,
@@ -1476,25 +1497,27 @@ impl BrowserEdgeClient {
         runtime: &mut BrowserWorkerRuntime,
         session: Option<&BrowserSessionState>,
     ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+        let previous_storage = runtime.storage.clone();
+        runtime.storage.invalidate_stale_assignment_replay_state();
         let Some(session) = session else {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
         let (Some(session_id), Some(principal_id)) = (session.session_id(), session.principal_id())
         else {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
         let Some(active_assignment) = runtime.storage.active_assignment.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
         let Some(active_head_id) = runtime.storage.last_head_id.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
         if runtime
             .storage
             .cached_head_artifact_heads
             .contains(active_head_id)
         {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
 
         let view = self.fetch_head_artifact_view(active_head_id).await?;
@@ -1502,7 +1525,7 @@ impl BrowserEdgeClient {
             || view.head.experiment_id != active_assignment.experiment_id
             || view.head.revision_id != active_assignment.revision_id
         {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
 
         let Some((artifact_profile, publication)) =
@@ -1519,6 +1542,8 @@ impl BrowserEdgeClient {
             artifact_id: view.head.artifact_id.clone(),
             artifact_profile: artifact_profile.clone(),
             publication_target_id: publication.publication_target_id.clone(),
+            publication_content_hash: Some(publication.content_hash.clone()),
+            publication_content_length: Some(publication.content_length),
             provider_peer_ids: view.provider_peer_ids.clone(),
         };
         Self::apply_replay_checkpoint(&mut replay_request, existing_checkpoint.as_ref());
@@ -1579,19 +1604,12 @@ impl BrowserEdgeClient {
             }
         }
 
-        let previous_storage = runtime.storage.clone();
         runtime.storage.remember_synced_head_artifact(
             view.head.head_id.clone(),
             view.head.artifact_id.clone(),
             transport.unwrap_or_else(|| "unknown".into()),
         );
-        if runtime.storage == previous_storage {
-            return Ok(Vec::new());
-        }
-
-        Ok(vec![BrowserWorkerEvent::StorageUpdated(Box::new(
-            runtime.storage.clone(),
-        ))])
+        Ok(Self::storage_update_if_changed(runtime, &previous_storage))
     }
 
     /// Submits the receipts.
@@ -2020,6 +2038,8 @@ async fn try_download_artifact_via_browser_peer_swarm(
             || checkpoint.artifact_id != request.artifact_id
             || checkpoint.artifact_profile != request.artifact_profile
             || checkpoint.publication_target_id != request.publication_target_id
+            || checkpoint.publication_content_hash != request.publication_content_hash
+            || checkpoint.publication_content_length != request.publication_content_length
         {
             return None;
         }

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use burn_p2p::{
     ArtifactDescriptor, ArtifactId, ChunkId, ContributionReceipt, ContributionReceiptId,
-    ExperimentId, HeadId, MicroShardId, PeerId, RevisionId, StudyId,
+    ExperimentDirectoryEntry, ExperimentId, HeadId, MicroShardId, PeerId, RevisionId, StudyId,
 };
 use burn_p2p_core::{
     ArtifactProfile, MetricsLiveEvent, PublicationTargetId, RunId, SchemaEnvelope, SignedPayload,
@@ -133,6 +133,12 @@ pub struct BrowserArtifactReplayCheckpoint {
     pub artifact_profile: ArtifactProfile,
     /// Publication target used for the replay attempt.
     pub publication_target_id: PublicationTargetId,
+    /// Content hash exposed by the publication when the checkpoint was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_content_hash: Option<burn_p2p::ContentId>,
+    /// Content length exposed by the publication when the checkpoint was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_content_length: Option<u64>,
     /// Provider peers last attempted for the replay.
     #[serde(default)]
     pub provider_peer_ids: Vec<PeerId>,
@@ -375,7 +381,56 @@ impl BrowserStorageSnapshot {
     ) {
         self.last_directory_sync_at = Some(Utc::now());
         self.last_signed_directory_snapshot = Some(snapshot);
+        self.invalidate_stale_assignment_replay_state();
         self.updated_at = Utc::now();
+    }
+
+    fn directory_entry_for_assignment(
+        &self,
+        assignment: &BrowserStoredAssignment,
+    ) -> Option<&ExperimentDirectoryEntry> {
+        self.last_signed_directory_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot.payload.payload.entries.iter().find(|entry| {
+                    entry.study_id == assignment.study_id
+                        && entry.experiment_id == assignment.experiment_id
+                })
+            })
+    }
+
+    /// Returns the current directory revision when the active assignment is still visible.
+    pub fn active_assignment_directory_revision(&self) -> Option<RevisionId> {
+        let assignment = self.active_assignment.as_ref()?;
+        self.directory_entry_for_assignment(assignment)
+            .map(|entry| entry.current_revision_id.clone())
+    }
+
+    /// Returns the current directory revision when the active assignment has been superseded.
+    pub fn active_assignment_rollover_revision(&self) -> Option<RevisionId> {
+        let assignment = self.active_assignment.as_ref()?;
+        let entry = self.directory_entry_for_assignment(assignment)?;
+        (entry.current_revision_id != assignment.revision_id)
+            .then(|| entry.current_revision_id.clone())
+    }
+
+    /// Clears replay/head state when the signed directory shows that the active assignment has
+    /// rolled forward to a newer revision.
+    pub fn invalidate_stale_assignment_replay_state(&mut self) -> bool {
+        if self.active_assignment_rollover_revision().is_none() {
+            return false;
+        }
+        if self.artifact_replay_checkpoint.is_none()
+            && self.last_head_id.is_none()
+            && self.last_head_artifact_transport.is_none()
+        {
+            return false;
+        }
+        self.artifact_replay_checkpoint = None;
+        self.last_head_id = None;
+        self.last_head_artifact_transport = None;
+        self.updated_at = Utc::now();
+        true
     }
 
     /// Performs the remember leaderboard snapshot operation.

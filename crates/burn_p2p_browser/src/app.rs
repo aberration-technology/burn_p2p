@@ -690,6 +690,7 @@ fn selected_experiment_summary(
     capability: Option<&BrowserCapabilityReport>,
 ) -> Option<BrowserAppExperimentSummary> {
     let entries = &directory?.entries;
+    let selected_assignment = runtime.storage.active_assignment.as_ref();
     let selected_experiment_id = runtime
         .storage
         .active_assignment
@@ -721,6 +722,14 @@ fn selected_experiment_summary(
                 && selected_revision_id
                     .map(|revision_id| entry.current_revision_id.as_str() == revision_id)
                     .unwrap_or(true)
+        })
+        .or_else(|| {
+            selected_assignment.and_then(|assignment| {
+                entries.iter().find(|entry| {
+                    entry.study_id == assignment.study_id
+                        && entry.experiment_id == assignment.experiment_id
+                })
+            })
         })
         .map(|entry| experiment_summary(entry, runtime_state, capability))
 }
@@ -1225,6 +1234,9 @@ fn training_slice_status(
 ) -> String {
     if storage.active_assignment.is_none() {
         return "waiting for work".into();
+    }
+    if let Some(revision_id) = storage.active_assignment_rollover_revision() {
+        return format!("waiting for revision {}", revision_id.as_str());
     }
     if storage.last_head_id.is_none() {
         return "waiting for checkpoint sync".into();

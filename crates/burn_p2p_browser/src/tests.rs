@@ -530,6 +530,8 @@ fn browser_storage_round_trips_artifact_replay_checkpoint() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a"), PeerId::new("peer-b")],
         artifact_descriptor: Some(burn_p2p::ArtifactDescriptor {
             artifact_id: ArtifactId::new("artifact-browser"),
@@ -589,6 +591,8 @@ fn browser_storage_tracks_partial_artifact_replay_chunks() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -665,6 +669,8 @@ fn browser_storage_externalizes_replay_chunks_for_durable_snapshot() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -700,6 +706,8 @@ fn browser_storage_externalizes_edge_replay_prefix_for_durable_snapshot() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -741,6 +749,8 @@ fn browser_storage_reconstructs_edge_replay_prefix_from_segments() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -781,6 +791,8 @@ fn browser_storage_keeps_replay_state_when_assignment_binding_is_unchanged() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -818,6 +830,8 @@ fn browser_storage_clears_replay_state_when_assignment_binding_changes() {
         artifact_id: ArtifactId::new("artifact-browser"),
         artifact_profile: ArtifactProfile::BrowserSnapshot,
         publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
         provider_peer_ids: vec![PeerId::new("peer-a")],
         artifact_descriptor: None,
         completed_chunks: Vec::new(),
@@ -836,6 +850,60 @@ fn browser_storage_clears_replay_state_when_assignment_binding_changes() {
 
     assert_eq!(storage.last_head_id, None);
     assert!(storage.artifact_replay_checkpoint.is_none());
+}
+
+#[test]
+fn browser_storage_clears_replay_state_when_directory_revision_advances() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+    storage.remember_head(HeadId::new("head-browser"));
+    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        run_id: RunId::new("run-browser"),
+        head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: Some(ContentId::new("content-browser-old")),
+        publication_content_length: Some(4),
+        provider_peer_ids: vec![PeerId::new("peer-a")],
+        artifact_descriptor: None,
+        completed_chunks: Vec::new(),
+        edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
+        completed_bytes: 0,
+        last_attempted_at: Utc::now(),
+        attempt_count: 1,
+    });
+
+    let next_revision = burn_p2p::RevisionManifest {
+        revision_id: RevisionId::new("rev-next"),
+        ..conformance_revision_manifest()
+    };
+    let entry = ExperimentDirectoryProjectionBuilder::from_revision(
+        NetworkId::new("net-browser"),
+        StudyId::new("study-browser"),
+        "Browser Demo",
+        &next_revision,
+    )
+    .with_visibility(ExperimentVisibility::Public)
+    .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_scope(ExperimentScope::Connect)
+    .build();
+
+    storage.remember_directory_snapshot(signed_browser_directory_snapshot(vec![entry]));
+
+    assert_eq!(storage.last_head_id, None);
+    assert!(storage.artifact_replay_checkpoint.is_none());
+    assert_eq!(
+        storage.active_assignment_rollover_revision(),
+        Some(RevisionId::new("rev-next"))
+    );
 }
 
 #[test]
@@ -3800,6 +3868,64 @@ fn browser_app_model_projects_trainer_focused_client_view() {
 }
 
 #[test]
+fn browser_app_model_surfaces_current_directory_revision_when_assignment_is_stale() {
+    let mut runtime = BrowserWorkerRuntime {
+        config: Some(BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        )),
+        state: Some(BrowserRuntimeState::Trainer),
+        capability: Some(BrowserCapabilityReport {
+            gpu_support: BrowserGpuSupport::Available,
+            recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserCapabilityReport::default()
+        }),
+        ..BrowserWorkerRuntime::default()
+    };
+    let next_revision = burn_p2p::RevisionManifest {
+        revision_id: RevisionId::new("rev-next"),
+        ..conformance_revision_manifest()
+    };
+    let entry = ExperimentDirectoryProjectionBuilder::from_revision(
+        NetworkId::new("net-browser"),
+        StudyId::new("study-browser"),
+        "Browser Demo",
+        &next_revision,
+    )
+    .with_visibility(ExperimentVisibility::Public)
+    .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_scope(ExperimentScope::Connect)
+    .with_scope(ExperimentScope::Train {
+        experiment_id: next_revision.experiment_id.clone(),
+    })
+    .build();
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![entry]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+
+    let model = BrowserAppModel::from_runtime(runtime);
+    let view = model.view(&BrowserUiBindings::new("https://edge.example"));
+
+    assert_eq!(
+        view.selected_experiment
+            .as_ref()
+            .map(|selected| selected.revision_id.as_str()),
+        Some("rev-next")
+    );
+    assert_eq!(view.training.slice_status, "waiting for revision rev-next");
+}
+
+#[test]
 fn browser_app_model_applies_worker_events_to_local_state() {
     let runtime = BrowserWorkerRuntime {
         config: Some(BrowserRuntimeConfig::new(
@@ -4522,6 +4648,106 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn browser_portal_client_clears_stale_replay_state_before_syncing_superseded_revision() {
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new("https://edge.example"),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![
+            ExperimentDirectoryProjectionBuilder::from_revision(
+                NetworkId::new("net-browser"),
+                StudyId::new("study-browser"),
+                "Browser Demo",
+                &burn_p2p::RevisionManifest {
+                    revision_id: RevisionId::new("rev-next"),
+                    ..conformance_revision_manifest()
+                },
+            )
+            .with_visibility(ExperimentVisibility::Public)
+            .with_opt_in_policy(ExperimentOptInPolicy::Open)
+            .with_scope(ExperimentScope::Connect)
+            .build(),
+        ]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    runtime
+        .storage
+        .remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            run_id: RunId::new("run-browser"),
+            head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            artifact_profile: ArtifactProfile::BrowserSnapshot,
+            publication_target_id: PublicationTargetId::new("browser-target"),
+            publication_content_hash: Some(ContentId::new("content-browser-old")),
+            publication_content_length: Some(8),
+            provider_peer_ids: vec![PeerId::new("peer-browser-provider-b")],
+            artifact_descriptor: None,
+            completed_chunks: Vec::new(),
+            edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
+            completed_bytes: 0,
+            last_attempted_at: Utc::now(),
+            attempt_count: 1,
+        });
+    let session = sample_browser_session_state("principal-browser");
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("stale revision should be cleared without network fetch")
+        });
+
+    let storage = events
+        .iter()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert_eq!(storage.last_head_id, None);
+    assert!(storage.artifact_replay_checkpoint.is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_on_success() {
     #[derive(Clone)]
     struct StaticPeerArtifactFetcher {
@@ -4626,6 +4852,8 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
             artifact_id: ArtifactId::new("artifact-browser"),
             artifact_profile: ArtifactProfile::BrowserSnapshot,
             publication_target_id: PublicationTargetId::new("browser-target"),
+            publication_content_hash: Some(ContentId::new("content-browser")),
+            publication_content_length: Some(4),
             provider_peer_ids: vec![PeerId::new("peer-browser-provider-b")],
             artifact_descriptor: None,
             completed_chunks: Vec::new(),
@@ -4669,6 +4897,169 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
             _ => None,
         })
         .expect("storage update");
+    assert!(storage.artifact_replay_checkpoint.is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_does_not_reuse_checkpoint_when_publication_metadata_changes() {
+    #[derive(Clone)]
+    struct StaticPeerArtifactFetcher {
+        requests: Arc<Mutex<Vec<BrowserPeerArtifactRequest>>>,
+    }
+
+    impl BrowserPeerArtifactFetcher for StaticPeerArtifactFetcher {
+        fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+            self.requests
+                .lock()
+                .expect("peer artifact requests should not be poisoned")
+                .push(request);
+            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+        }
+    }
+
+    let published = PublishedArtifactRecord {
+        published_artifact_id: PublishedArtifactId::new("published-browser"),
+        artifact_alias_id: None,
+        experiment_id: ExperimentId::new("exp-browser"),
+        run_id: Some(RunId::new("run-browser")),
+        head_id: HeadId::new("head-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        object_key: "browser/head-browser.snapshot".into(),
+        content_hash: ContentId::new("content-browser-new"),
+        content_length: 4,
+        created_at: Utc::now(),
+        expires_at: None,
+        status: PublishedArtifactStatus::Ready,
+    };
+    let head_view = burn_p2p_publish::HeadArtifactView {
+        head: burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        },
+        run_id: RunId::new("run-browser"),
+        eval_reports: Vec::new(),
+        aliases: Vec::new(),
+        published_artifacts: vec![published],
+        available_profiles: BTreeSet::from([ArtifactProfile::BrowserSnapshot]),
+        alias_history: Vec::new(),
+        provider_peer_ids: vec![
+            PeerId::new("peer-browser-provider-a"),
+            PeerId::new("peer-browser-provider-b"),
+        ],
+    };
+    let (base_url, handle) = spawn_head_artifact_view_server(head_view);
+    let requests = Arc::new(Mutex::new(Vec::<BrowserPeerArtifactRequest>::new()));
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(base_url),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_peer_artifact_fetcher(StaticPeerArtifactFetcher {
+        requests: Arc::clone(&requests),
+    });
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    runtime
+        .storage
+        .remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            run_id: RunId::new("run-browser"),
+            head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            artifact_profile: ArtifactProfile::BrowserSnapshot,
+            publication_target_id: PublicationTargetId::new("browser-target"),
+            publication_content_hash: Some(ContentId::new("content-browser-old")),
+            publication_content_length: Some(8),
+            provider_peer_ids: vec![PeerId::new("peer-browser-provider-b")],
+            artifact_descriptor: None,
+            completed_chunks: Vec::new(),
+            edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
+            completed_bytes: 0,
+            last_attempted_at: Utc::now(),
+            attempt_count: 1,
+        });
+    let session = sample_browser_session_state("principal-browser");
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("peer-native active head artifact sync")
+        });
+
+    handle.join().expect("join head artifact thread");
+    let requests = requests
+        .lock()
+        .expect("peer artifact requests should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].provider_peer_ids,
+        vec![
+            PeerId::new("peer-browser-provider-a"),
+            PeerId::new("peer-browser-provider-b"),
+        ]
+    );
+    assert_eq!(
+        requests[0].publication_content_hash,
+        Some(ContentId::new("content-browser-new"))
+    );
+    assert_eq!(requests[0].publication_content_length, Some(4));
+    let storage = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert_eq!(
+        storage.last_head_artifact_transport.as_deref(),
+        Some("peer-native")
+    );
     assert!(storage.artifact_replay_checkpoint.is_none());
 }
 
