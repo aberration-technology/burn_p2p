@@ -2084,7 +2084,10 @@ mod tests {
         let outcome = runner.run(spec).expect("simulation");
 
         assert_eq!(outcome.windows.len(), outcome.spec.window_count as usize);
-        assert_eq!(outcome.diagnostics.swarm.connected_peers, outcome.spec.peer_count);
+        assert_eq!(
+            outcome.diagnostics.swarm.connected_peers,
+            outcome.spec.peer_count
+        );
         assert_eq!(
             outcome.participant_portals.len(),
             outcome.spec.peer_count as usize

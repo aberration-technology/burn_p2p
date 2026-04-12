@@ -251,8 +251,13 @@ fn operator_replay_snapshot_and_retention_pages_render_details() {
         eval_protocol_manifest_count: 1,
         replay_page_path: "/operator/replay".into(),
         json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
-        audit_scope_path: Some("/operator/audit?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&head_id=head-b".into()),
-        control_scope_path: Some("/operator/control?study_id=study-a&experiment_id=exp-b&revision_id=rev-b".into()),
+        audit_scope_path: Some(
+            "/operator/audit?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&head_id=head-b"
+                .into(),
+        ),
+        control_scope_path: Some(
+            "/operator/control?study_id=study-a&experiment_id=exp-b&revision_id=rev-b".into(),
+        ),
     });
     assert!(replay_html.contains("Retained replay snapshot"));
     assert!(replay_html.contains("View JSON snapshot"));

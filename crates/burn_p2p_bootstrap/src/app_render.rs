@@ -929,27 +929,36 @@ fn app_operator_replay_snapshot_detail_view(
         experiment_ids.insert(head.experiment_id.as_str().to_owned());
         revision_ids.insert(head.revision_id.as_str().to_owned());
     }
-    let typed_study_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.study_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::StudyId::new)
-        .collect::<Vec<_>>();
-    let typed_experiment_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.experiment_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::ExperimentId::new)
-        .collect::<Vec<_>>();
-    let typed_revision_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.revision_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::RevisionId::new)
-        .collect::<Vec<_>>();
+    let typed_study_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.study_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::StudyId::new)
+            .collect::<Vec<_>>();
+    let typed_experiment_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.experiment_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::ExperimentId::new)
+            .collect::<Vec<_>>();
+    let typed_revision_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.revision_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::RevisionId::new)
+            .collect::<Vec<_>>();
     let typed_head_ids = snapshot
         .heads
         .iter()
@@ -1295,27 +1304,36 @@ pub fn render_operator_replay_snapshot_html(
     snapshot: &crate::OperatorReplaySnapshot,
 ) -> String {
     let captured_at = captured_at.unwrap_or(snapshot.captured_at).to_rfc3339();
-    let typed_study_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.study_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::StudyId::new)
-        .collect::<Vec<_>>();
-    let typed_experiment_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.experiment_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::ExperimentId::new)
-        .collect::<Vec<_>>();
-    let typed_revision_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
-        .into_iter()
-        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.revision_id.as_str())))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(burn_p2p_core::RevisionId::new)
-        .collect::<Vec<_>>();
+    let typed_study_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.study_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::StudyId::new)
+            .collect::<Vec<_>>();
+    let typed_experiment_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.experiment_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::ExperimentId::new)
+            .collect::<Vec<_>>();
+    let typed_revision_ids =
+        snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
+            .into_iter()
+            .chain(snapshot_scope_ids(&snapshot.heads, |item| {
+                Some(item.revision_id.as_str())
+            }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(burn_p2p_core::RevisionId::new)
+            .collect::<Vec<_>>();
     let typed_head_ids = snapshot
         .heads
         .iter()
@@ -1329,7 +1347,9 @@ pub fn render_operator_replay_snapshot_html(
     );
     let scope_links = match (audit_scope_path, control_scope_path) {
         (Some(audit_scope_path), Some(control_scope_path)) => {
-            format!(" | <a href=\"{audit_scope_path}\">Audit scope</a> | <a href=\"{control_scope_path}\">Control scope</a>")
+            format!(
+                " | <a href=\"{audit_scope_path}\">Audit scope</a> | <a href=\"{control_scope_path}\">Control scope</a>"
+            )
         }
         (Some(audit_scope_path), None) => {
             format!(" | <a href=\"{audit_scope_path}\">Audit scope</a>")
