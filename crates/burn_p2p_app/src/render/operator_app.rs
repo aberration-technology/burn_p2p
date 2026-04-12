@@ -1,6 +1,7 @@
 use crate::models::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
-    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppPublishedArtifactRow,
+    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorControlReplayPageView,
+    AppOperatorControlReplayRow, AppPublishedArtifactRow,
 };
 use dioxus::prelude::*;
 use dioxus::ssr::render_element;
@@ -116,6 +117,16 @@ pub(super) fn render_head_artifact_view_html(view: &AppHeadArtifactView) -> Stri
     )
 }
 
+pub(super) fn render_operator_control_replay_html(
+    view: &AppOperatorControlReplayPageView,
+) -> String {
+    render_document(
+        "Operator control replay".into(),
+        rsx! { OperatorControlReplayPage { view: view.clone() } },
+        None,
+    )
+}
+
 fn render_document(title: String, page: Element, script: Option<&str>) -> String {
     let title = escape_html_text(&title);
     let body = render_element(rsx! {
@@ -194,8 +205,7 @@ fn DashboardPage(network_id: String) -> Element {
                     LinkPill { href: "/reducers/load", label: "/reducers/load" }
                     LinkPill { href: "/operator/audit/summary", label: "/operator/audit/summary" }
                     LinkPill { href: "/operator/replay/page", label: "/operator/replay/page" }
-                    LinkPill { href: "/operator/control/summary", label: "/operator/control/summary" }
-                    LinkPill { href: "/operator/control/page", label: "/operator/control/page" }
+                    LinkPill { href: "/operator/control", label: "/operator/control" }
                     LinkPill { href: "/operator/retention", label: "/operator/retention" }
                 }
             }
@@ -437,6 +447,219 @@ fn ArtifactHeadPage(view: AppHeadArtifactView) -> Element {
             AliasHistorySection { rows: view.alias_history.clone(), empty: "No alias transition history is currently visible for this head." }
             EvalSection { rows: view.eval_reports.clone(), empty: "No evaluation reports are currently attached to this head." }
             PublicationSection { rows: view.publications.clone(), empty: "No published artifacts are currently attached to this head." }
+        }
+    }
+}
+
+#[component]
+fn OperatorControlReplayPage(view: AppOperatorControlReplayPageView) -> Element {
+    let filter_count = view.filter_tags.len().to_string();
+    rsx! {
+        main { class: "operator-main",
+            section { class: "panel hero-shell hero",
+                div { class: "hero-top",
+                    div { class: "hero-copy",
+                        div { class: "eyebrow", "operator replay" }
+                        h1 { "Lifecycle and schedule history" }
+                        p { class: "hero-lead",
+                            "Typed control-plane replay for authoritative lifecycle plans and fleet schedule epochs."
+                        }
+                        div { class: "service-pill-stack",
+                            span { class: "pill", "backend {view.summary.backend}" }
+                            span { class: "pill", "{view.total} matching row(s)" }
+                            span { class: "pill", "{filter_count} active filter(s)" }
+                        }
+                    }
+                    div { class: "hero-meta-grid",
+                        MetaCard { label: "json page", value: view.json_page_path.clone(), detail: "paged api export" }
+                        MetaCard { label: "json summary", value: view.json_summary_path.clone(), detail: "aggregate counts" }
+                    }
+                }
+                div { class: "summary-grid hero-summary-grid",
+                    LiveSummaryCard { label: "records", value: view.summary.record_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "experiments", value: view.summary.distinct_experiment_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "peers", value: view.summary.distinct_peer_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "windows", value: view.summary.distinct_window_count.to_string(), element_id: None }
+                }
+                div { class: "operator-link-row",
+                    LinkPill { href: "/".to_owned(), label: "Dashboard" }
+                    LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
+                    LinkPill { href: view.json_summary_path.clone(), label: "View JSON summary" }
+                    if let Some(prev_page_path) = view.prev_page_path.clone() {
+                        a { class: "pill", href: prev_page_path, "Prev page" }
+                    }
+                    if let Some(next_page_path) = view.next_page_path.clone() {
+                        a { class: "pill", href: next_page_path, "Next page" }
+                    }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "query" }
+                h2 { "Current query" }
+                if view.filter_tags.is_empty() {
+                    p { class: "muted", "No filters are active. Showing the newest retained control replay rows." }
+                } else {
+                    div { class: "service-pill-stack",
+                        for tag in view.filter_tags.iter() {
+                            span { class: "pill", "{tag}" }
+                        }
+                    }
+                }
+                div { class: "info-list",
+                    InfoMetric { label: "offset", value: view.offset.to_string(), element_id: None }
+                    InfoMetric { label: "limit", value: view.limit.to_string(), element_id: None }
+                    InfoMetric { label: "total", value: view.total.to_string(), element_id: None }
+                    InfoMetric {
+                        label: "capture range",
+                        value: format!(
+                            "{} -> {}",
+                            view.summary
+                                .earliest_captured_at
+                                .clone()
+                                .unwrap_or_else(|| "n/a".into()),
+                            view.summary
+                                .latest_captured_at
+                                .clone()
+                                .unwrap_or_else(|| "n/a".into())
+                        ),
+                        element_id: None,
+                    }
+                }
+                if !view.summary.kind_counts.is_empty() {
+                    div { class: "service-pill-stack",
+                        for kind in view.summary.kind_counts.iter() {
+                            span { class: "pill", "{kind}" }
+                        }
+                    }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "records" }
+                h2 { "Replay rows" }
+                if view.rows.is_empty() {
+                    p { class: "muted", "No lifecycle or schedule rows matched the current query." }
+                } else {
+                    div { class: "scroll-table",
+                        table {
+                            thead {
+                                tr {
+                                    th { "Kind" }
+                                    th { "Scope" }
+                                    th { "Peer / slot" }
+                                    th { "Window / epoch" }
+                                    th { "Captured" }
+                                    th { "Summary" }
+                                }
+                            }
+                            tbody {
+                                for row in view.rows.iter() {
+                                    OperatorControlReplayRowView { row: row.clone() }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mobile-card-list",
+                        for row in view.rows {
+                            OperatorControlReplayCard { row: row.clone() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn OperatorControlReplayRowView(row: AppOperatorControlReplayRow) -> Element {
+    let scope = match (
+        row.source_experiment_id.as_deref(),
+        row.source_revision_id.as_deref(),
+    ) {
+        (Some(source_experiment_id), Some(source_revision_id)) => format!(
+            "{} / {} -> {} / {}",
+            source_experiment_id, source_revision_id, row.experiment_id, row.revision_id
+        ),
+        (Some(source_experiment_id), None) => format!(
+            "{} -> {} / {}",
+            source_experiment_id, row.experiment_id, row.revision_id
+        ),
+        _ => format!("{} / {}", row.experiment_id, row.revision_id),
+    };
+    let peer_slot = match (row.peer_id.as_deref(), row.slot_index) {
+        (Some(peer_id), Some(slot_index)) => format!("{peer_id} · slot {slot_index}"),
+        (Some(peer_id), None) => peer_id.to_owned(),
+        (None, Some(slot_index)) => format!("slot {slot_index}"),
+        (None, None) => "n/a".into(),
+    };
+    let window_epoch = match row.ends_before_window {
+        Some(ends_before_window) => format!(
+            "window {} .. < {} · epoch {}",
+            row.window_id, ends_before_window, row.plan_epoch
+        ),
+        None => format!("window {} · epoch {}", row.window_id, row.plan_epoch),
+    };
+    rsx! {
+        tr {
+            td {
+                div { class: "table-cell-stack",
+                    strong { "{row.kind}" }
+                    span { class: "muted", "{row.record_id}" }
+                }
+            }
+            td {
+                div { class: "table-cell-stack",
+                    code { "{row.network_id}" }
+                    span { class: "muted", "{row.study_id}" }
+                    span { class: "muted", "{scope}" }
+                }
+            }
+            td { "{peer_slot}" }
+            td { "{window_epoch}" }
+            td { "{row.captured_at}" }
+            td { "{row.summary}" }
+        }
+    }
+}
+
+#[component]
+fn OperatorControlReplayCard(row: AppOperatorControlReplayRow) -> Element {
+    let scope = match (
+        row.source_experiment_id.as_deref(),
+        row.source_revision_id.as_deref(),
+    ) {
+        (Some(source_experiment_id), Some(source_revision_id)) => format!(
+            "{} / {} -> {} / {}",
+            source_experiment_id, source_revision_id, row.experiment_id, row.revision_id
+        ),
+        (Some(source_experiment_id), None) => format!(
+            "{} -> {} / {}",
+            source_experiment_id, row.experiment_id, row.revision_id
+        ),
+        _ => format!("{} / {}", row.experiment_id, row.revision_id),
+    };
+    let peer_slot = match (row.peer_id.as_deref(), row.slot_index) {
+        (Some(peer_id), Some(slot_index)) => format!("{peer_id} · slot {slot_index}"),
+        (Some(peer_id), None) => peer_id.to_owned(),
+        (None, Some(slot_index)) => format!("slot {slot_index}"),
+        (None, None) => "n/a".into(),
+    };
+    let window_epoch = match row.ends_before_window {
+        Some(ends_before_window) => format!(
+            "window {} .. < {} · epoch {}",
+            row.window_id, ends_before_window, row.plan_epoch
+        ),
+        None => format!("window {} · epoch {}", row.window_id, row.plan_epoch),
+    };
+    rsx! {
+        article { class: "mobile-card",
+            div { strong { "{row.kind}" } }
+            div { class: "mobile-meta", "{row.record_id}" }
+            div { class: "mobile-meta", "{row.network_id} · {row.study_id}" }
+            div { class: "mobile-meta", "{scope}" }
+            div { class: "mobile-meta", "{peer_slot}" }
+            div { class: "mobile-meta", "{window_epoch}" }
+            div { class: "mobile-meta", "{row.captured_at}" }
+            div { class: "muted", "{row.summary}" }
         }
     }
 }

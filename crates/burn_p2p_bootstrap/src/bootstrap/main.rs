@@ -36,6 +36,7 @@ use burn_p2p_bootstrap::{
     BrowserEdgeSnapshotConfig, BrowserLoginProvider, BrowserReceiptSubmissionResponse,
     BrowserTransportSurface, OperatorStateBackendConfig, ReceiptQuery, ReenrollmentStatus,
     TrustBundleExport, TrustedIssuerStatus, render_dashboard_html, render_openmetrics,
+    render_operator_control_replay_html,
 };
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
 use burn_p2p_bootstrap::{

@@ -129,6 +129,25 @@ pub(crate) fn handle_get_route(
 
     if request.method == "GET"
         && let Some((page, query)) =
+            operator_control_replay_page_request_from_path(&request.path, "/operator/control")?
+    {
+        let state = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned");
+        let control_summary = state.export_operator_control_replay_summary(&query)?;
+        let control_page = state.export_operator_control_replay_page(&query, page)?;
+        write_response(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            render_operator_control_replay_html(&query, &control_page, &control_summary)
+                .into_bytes(),
+        )?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
             operator_control_replay_page_request_from_path(&request.path, "/operator/control/page")?
     {
         let control_page = state

@@ -389,6 +389,93 @@ pub struct AppHeadArtifactView {
     pub json_view_path: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Aggregate summary shown above the operator control replay page.
+pub struct AppOperatorControlReplaySummaryView {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Total matching record count.
+    pub record_count: usize,
+    /// Rendered per-kind counts.
+    pub kind_counts: Vec<String>,
+    /// Distinct networks surfaced by the current query.
+    pub distinct_network_count: usize,
+    /// Distinct studies surfaced by the current query.
+    pub distinct_study_count: usize,
+    /// Distinct experiments surfaced by the current query.
+    pub distinct_experiment_count: usize,
+    /// Distinct revisions surfaced by the current query.
+    pub distinct_revision_count: usize,
+    /// Distinct peers surfaced by the current query.
+    pub distinct_peer_count: usize,
+    /// Distinct windows surfaced by the current query.
+    pub distinct_window_count: usize,
+    /// Earliest matching capture timestamp, when available.
+    pub earliest_captured_at: Option<String>,
+    /// Latest matching capture timestamp, when available.
+    pub latest_captured_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One operator-facing lifecycle/schedule replay row.
+pub struct AppOperatorControlReplayRow {
+    /// Stable record identifier.
+    pub record_id: String,
+    /// Human-readable record kind.
+    pub kind: String,
+    /// Network scope.
+    pub network_id: String,
+    /// Study scope.
+    pub study_id: String,
+    /// Effective experiment scope.
+    pub experiment_id: String,
+    /// Effective revision scope.
+    pub revision_id: String,
+    /// Source experiment scope for cross-experiment lifecycle plans.
+    pub source_experiment_id: Option<String>,
+    /// Source revision scope when the plan expects one before activation.
+    pub source_revision_id: Option<String>,
+    /// Peer scope carried by schedule assignments, when available.
+    pub peer_id: Option<String>,
+    /// Activation window.
+    pub window_id: u64,
+    /// Exclusive upper bound for a schedule epoch, when available.
+    pub ends_before_window: Option<u64>,
+    /// Authoritative slot index, when available.
+    pub slot_index: Option<usize>,
+    /// Monotonic operator epoch.
+    pub plan_epoch: u64,
+    /// RFC3339 capture timestamp.
+    pub captured_at: String,
+    /// Flattened human-readable summary.
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One rendered operator control replay page.
+pub struct AppOperatorControlReplayPageView {
+    /// Current summary block for the filtered query.
+    pub summary: AppOperatorControlReplaySummaryView,
+    /// Rows rendered in the current page.
+    pub rows: Vec<AppOperatorControlReplayRow>,
+    /// Human-readable active filter tags.
+    pub filter_tags: Vec<String>,
+    /// Current page offset.
+    pub offset: usize,
+    /// Current page limit.
+    pub limit: usize,
+    /// Total matching rows across all pages.
+    pub total: usize,
+    /// JSON page API path for the current query.
+    pub json_page_path: String,
+    /// JSON summary API path for the current query.
+    pub json_summary_path: String,
+    /// Previous-page HTML path when one exists.
+    pub prev_page_path: Option<String>,
+    /// Next-page HTML path when one exists.
+    pub next_page_path: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents the full reference app snapshot consumed by the renderer.
 pub struct AppSnapshotView {

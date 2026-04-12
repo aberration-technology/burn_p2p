@@ -1,7 +1,10 @@
 mod browser_app;
 mod operator_app;
 
-use crate::{AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView};
+use crate::{
+    AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView,
+    AppOperatorControlReplayPageView,
+};
 
 /// Renders the operator-facing bootstrap dashboard HTML.
 pub fn render_dashboard_html(network_id: &str) -> String {
@@ -59,4 +62,9 @@ pub fn render_artifact_run_view_html(view: &AppArtifactRunView) -> String {
 /// Renders one head-scoped artifact detail page.
 pub fn render_head_artifact_view_html(view: &AppHeadArtifactView) -> String {
     operator_app::render_head_artifact_view_html(view)
+}
+
+/// Renders one operator-facing lifecycle and schedule replay page.
+pub fn render_operator_control_replay_html(view: &AppOperatorControlReplayPageView) -> String {
+    operator_app::render_operator_control_replay_html(view)
 }

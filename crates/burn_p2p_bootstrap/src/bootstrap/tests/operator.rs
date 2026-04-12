@@ -203,3 +203,52 @@ fn operator_control_routes_expose_typed_control_replay_filters() {
     assert_eq!(control_summary["distinct_network_count"], 1);
     assert_eq!(control_summary["counts_by_kind"]["lifecycle-plan"], 1);
 }
+
+#[test]
+fn operator_control_html_route_renders_human_facing_page() {
+    let temp = tempdir().expect("temp dir");
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(sample_runtime_snapshot()),
+            ..BootstrapAdminState::default()
+        })),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("operator-control-view.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: None,
+    };
+
+    let html = issue_request(
+        context,
+        IssueRequestSpec {
+            method: "GET",
+            path: "/operator/control?kind=schedule-epoch&network_id=secure-demo&window_id=8&peer_id=trainer-a",
+            body: None,
+            headers: &[],
+        },
+    );
+    assert!(html.starts_with("HTTP/1.1 200 OK"));
+    let body = response_body(&html);
+    assert!(body.contains("Lifecycle and schedule history"));
+    assert!(body.contains("trainer-a"));
+    assert!(body.contains("/operator/control/page?kind=schedule-epoch"));
+    assert!(body.contains("/operator/control/summary?kind=schedule-epoch"));
+}

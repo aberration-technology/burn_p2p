@@ -1,6 +1,7 @@
 use crate::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
-    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppPublishedArtifactRow,
+    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorControlReplayPageView,
+    AppOperatorControlReplayRow, AppOperatorControlReplaySummaryView, AppPublishedArtifactRow,
     AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,
     LifecycleAssignmentStatusCard, RuntimeCapabilityCard, TrainingResultPanel,
     TransportHealthPanel, assert_browser_client_selected_experiment,
@@ -8,7 +9,7 @@ use crate::{
     assert_participant_has_receipts, assert_training_result_complete,
     assert_transport_health_ready, render_artifact_run_summaries_html,
     render_artifact_run_view_html, render_browser_app_static_html, render_dashboard_html,
-    render_head_artifact_view_html,
+    render_head_artifact_view_html, render_operator_control_replay_html,
 };
 use burn_p2p_core::{
     ArtifactId, ContributionReceipt, ContributionReceiptId, ExperimentId, ExperimentScope, HeadId,
@@ -31,9 +32,58 @@ fn dashboard_html_mentions_bootstrap_routes() {
     let html = render_dashboard_html("mainnet");
     assert!(html.contains("/portal/snapshot"));
     assert!(html.contains("/diagnostics/bundle"));
-    assert!(html.contains("/operator/control/summary"));
-    assert!(html.contains("/operator/control/page"));
+    assert!(html.contains("/operator/control"));
     assert!(html.contains("/operator/retention"));
+}
+
+#[test]
+fn operator_control_replay_page_renders_filters_and_rows() {
+    let html = render_operator_control_replay_html(&AppOperatorControlReplayPageView {
+        summary: AppOperatorControlReplaySummaryView {
+            backend: "file".into(),
+            record_count: 2,
+            kind_counts: vec!["schedule-epoch: 1".into(), "lifecycle-plan: 1".into()],
+            distinct_network_count: 1,
+            distinct_study_count: 1,
+            distinct_experiment_count: 2,
+            distinct_revision_count: 2,
+            distinct_peer_count: 1,
+            distinct_window_count: 2,
+            earliest_captured_at: Some("2026-04-12T00:00:00Z".into()),
+            latest_captured_at: Some("2026-04-12T00:05:00Z".into()),
+        },
+        rows: vec![AppOperatorControlReplayRow {
+            record_id: "cert:trainer-a:0".into(),
+            kind: "schedule-epoch".into(),
+            network_id: "mainnet".into(),
+            study_id: "study".into(),
+            experiment_id: "exp-a".into(),
+            revision_id: "rev-a".into(),
+            source_experiment_id: None,
+            source_revision_id: None,
+            peer_id: Some("trainer-a".into()),
+            window_id: 8,
+            ends_before_window: Some(12),
+            slot_index: Some(0),
+            plan_epoch: 4,
+            captured_at: "2026-04-12T00:05:00Z".into(),
+            summary: "activation_window=8 · slot_index=0".into(),
+        }],
+        filter_tags: vec!["kind=schedule-epoch".into(), "peer_id=trainer-a".into()],
+        offset: 0,
+        limit: 50,
+        total: 2,
+        json_page_path: "/operator/control/page?kind=schedule-epoch".into(),
+        json_summary_path: "/operator/control/summary?kind=schedule-epoch".into(),
+        prev_page_path: None,
+        next_page_path: Some("/operator/control?kind=schedule-epoch&offset=50&limit=50".into()),
+    });
+
+    assert!(html.contains("Lifecycle and schedule history"));
+    assert!(html.contains("kind=schedule-epoch"));
+    assert!(html.contains("trainer-a"));
+    assert!(html.contains("/operator/control/page?kind=schedule-epoch"));
+    assert!(html.contains("epoch 4"));
 }
 
 #[test]

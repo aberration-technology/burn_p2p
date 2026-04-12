@@ -263,6 +263,173 @@ fn app_head_artifact_view(view: &crate::HeadArtifactView) -> burn_p2p_app::AppHe
 }
 
 #[cfg(feature = "browser-edge")]
+#[allow(dead_code)]
+fn control_summary_count_rows(summary: &crate::OperatorControlReplaySummary) -> Vec<String> {
+    summary
+        .counts_by_kind
+        .iter()
+        .map(|(kind, count)| format!("{kind}: {count}"))
+        .collect()
+}
+
+fn control_summary_text(summary: &std::collections::BTreeMap<String, String>) -> String {
+    let parts = summary
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "n/a".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn control_query_pairs(query: &crate::OperatorControlReplayQuery) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if let Some(kind) = query.kind.as_ref() {
+        pairs.push(("kind".into(), kind.as_slug().into()));
+    }
+    if let Some(network_id) = query.network_id.as_ref() {
+        pairs.push(("network_id".into(), network_id.as_str().to_owned()));
+    }
+    if let Some(study_id) = query.study_id.as_ref() {
+        pairs.push(("study_id".into(), study_id.as_str().to_owned()));
+    }
+    if let Some(experiment_id) = query.experiment_id.as_ref() {
+        pairs.push(("experiment_id".into(), experiment_id.as_str().to_owned()));
+    }
+    if let Some(revision_id) = query.revision_id.as_ref() {
+        pairs.push(("revision_id".into(), revision_id.as_str().to_owned()));
+    }
+    if let Some(peer_id) = query.peer_id.as_ref() {
+        pairs.push(("peer_id".into(), peer_id.as_str().to_owned()));
+    }
+    if let Some(window_id) = query.window_id {
+        pairs.push(("window_id".into(), window_id.0.to_string()));
+    }
+    if let Some(since) = query.since {
+        pairs.push(("since".into(), since.to_rfc3339()));
+    }
+    if let Some(until) = query.until {
+        pairs.push(("until".into(), until.to_rfc3339()));
+    }
+    if let Some(text) = query.text.as_ref() {
+        pairs.push(("text".into(), text.clone()));
+    }
+    pairs
+}
+
+fn control_query_tags(query: &crate::OperatorControlReplayQuery) -> Vec<String> {
+    control_query_pairs(query)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect()
+}
+
+fn page_path_with_query(
+    base_path: &str,
+    query: &crate::OperatorControlReplayQuery,
+    page: Option<burn_p2p_core::PageRequest>,
+) -> String {
+    let mut pairs = control_query_pairs(query);
+    if let Some(page) = page {
+        pairs.push(("offset".into(), page.offset.to_string()));
+        pairs.push(("limit".into(), page.limit.to_string()));
+    }
+    if pairs.is_empty() {
+        return base_path.to_owned();
+    }
+    let query = pairs
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, value.replace(' ', "+")))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base_path}?{query}")
+}
+
+#[cfg(feature = "browser-edge")]
+fn app_operator_control_replay_view(
+    query: &crate::OperatorControlReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorControlReplayRecord>,
+    summary: &crate::OperatorControlReplaySummary,
+) -> burn_p2p_app::AppOperatorControlReplayPageView {
+    let normalized = burn_p2p_core::PageRequest::new(page.offset, page.limit).normalized();
+    let next_offset = normalized.offset + normalized.limit;
+    let prev_offset = normalized.offset.saturating_sub(normalized.limit);
+    burn_p2p_app::AppOperatorControlReplayPageView {
+        summary: burn_p2p_app::AppOperatorControlReplaySummaryView {
+            backend: summary.backend.clone(),
+            record_count: summary.record_count,
+            kind_counts: control_summary_count_rows(summary),
+            distinct_network_count: summary.distinct_network_count,
+            distinct_study_count: summary.distinct_study_count,
+            distinct_experiment_count: summary.distinct_experiment_count,
+            distinct_revision_count: summary.distinct_revision_count,
+            distinct_peer_count: summary.distinct_peer_count,
+            distinct_window_count: summary.distinct_window_count,
+            earliest_captured_at: summary
+                .earliest_captured_at
+                .map(|timestamp| timestamp.to_rfc3339()),
+            latest_captured_at: summary
+                .latest_captured_at
+                .map(|timestamp| timestamp.to_rfc3339()),
+        },
+        rows: page
+            .items
+            .iter()
+            .map(|row| burn_p2p_app::AppOperatorControlReplayRow {
+                record_id: row.record_id.clone(),
+                kind: row.kind.as_slug().to_owned(),
+                network_id: row.network_id.as_str().to_owned(),
+                study_id: row.study_id.as_str().to_owned(),
+                experiment_id: row.experiment_id.as_str().to_owned(),
+                revision_id: row.revision_id.as_str().to_owned(),
+                source_experiment_id: row
+                    .source_experiment_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                source_revision_id: row
+                    .source_revision_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                peer_id: row.peer_id.as_ref().map(|value| value.as_str().to_owned()),
+                window_id: row.window_id.0,
+                ends_before_window: row.ends_before_window.map(|value| value.0),
+                slot_index: row.slot_index,
+                plan_epoch: row.plan_epoch,
+                captured_at: row.captured_at.to_rfc3339(),
+                summary: control_summary_text(&row.summary),
+            })
+            .collect(),
+        filter_tags: control_query_tags(query),
+        offset: page.offset,
+        limit: page.limit,
+        total: page.total,
+        json_page_path: page_path_with_query(
+            "/operator/control/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+        ),
+        json_summary_path: page_path_with_query("/operator/control/summary", query, None),
+        prev_page_path: (page.offset > 0).then(|| {
+            page_path_with_query(
+                "/operator/control",
+                query,
+                Some(burn_p2p_core::PageRequest::new(prev_offset, page.limit)),
+            )
+        }),
+        next_page_path: (next_offset < page.total).then(|| {
+            page_path_with_query(
+                "/operator/control",
+                query,
+                Some(burn_p2p_core::PageRequest::new(next_offset, page.limit)),
+            )
+        }),
+    }
+}
+
+#[cfg(feature = "browser-edge")]
 /// Performs the render dashboard html operation.
 pub fn render_dashboard_html(network_id: &NetworkId) -> String {
     burn_p2p_app::render_dashboard_html(network_id.as_str())
@@ -273,6 +440,79 @@ pub fn render_dashboard_html(network_id: &NetworkId) -> String {
     format!(
         "<!doctype html><html lang=\"en\"><body><main><h1>burn_p2p bootstrap</h1><p>Network <strong>{}</strong>. Portal support was not compiled into this build.</p></main></body></html>",
         network_id.as_str()
+    )
+}
+
+#[cfg(feature = "browser-edge")]
+/// Performs the render operator control replay html operation.
+pub fn render_operator_control_replay_html(
+    query: &crate::OperatorControlReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorControlReplayRecord>,
+    summary: &crate::OperatorControlReplaySummary,
+) -> String {
+    burn_p2p_app::render_operator_control_replay_html(&app_operator_control_replay_view(
+        query, page, summary,
+    ))
+}
+
+#[cfg(not(feature = "browser-edge"))]
+pub fn render_operator_control_replay_html(
+    query: &crate::OperatorControlReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorControlReplayRecord>,
+    summary: &crate::OperatorControlReplaySummary,
+) -> String {
+    let filters = control_query_tags(query);
+    let filter_html = if filters.is_empty() {
+        "<p>No filters are active.</p>".to_owned()
+    } else {
+        format!("<p>{}</p>", filters.join(" | "))
+    };
+    let rows_html = if page.items.is_empty() {
+        "<p>No lifecycle or schedule rows matched the current query.</p>".to_owned()
+    } else {
+        let rows = page
+            .items
+            .iter()
+            .map(|row| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    row.kind.as_slug(),
+                    row.record_id,
+                    row.peer_id
+                        .as_ref()
+                        .map(|peer_id| peer_id.as_str())
+                        .unwrap_or("n/a"),
+                    row.window_id.0,
+                    row.captured_at.to_rfc3339(),
+                    control_summary_text(&row.summary),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            "<table><thead><tr><th>Kind</th><th>Record</th><th>Peer</th><th>Window</th><th>Captured</th><th>Summary</th></tr></thead><tbody>{rows}</tbody></table>"
+        )
+    };
+    format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><body><main>",
+            "<h1>Lifecycle and schedule history</h1>",
+            "<p>Backend: <strong>{backend}</strong> | records: <strong>{record_count}</strong></p>",
+            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a></p>",
+            "{filters}",
+            "{rows}",
+            "</main></body></html>"
+        ),
+        backend = summary.backend,
+        record_count = summary.record_count,
+        json_page = page_path_with_query(
+            "/operator/control/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+        ),
+        json_summary = page_path_with_query("/operator/control/summary", query, None),
+        filters = filter_html,
+        rows = rows_html,
     )
 }
 

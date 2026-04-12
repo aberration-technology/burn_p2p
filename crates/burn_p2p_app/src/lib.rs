@@ -32,16 +32,17 @@ pub use assertions::{
 pub use models::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
     AppDiagnosticsView, AppExperimentRow, AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow,
-    AppLeaderboardRow, AppLoginProvider, AppMetricRow, AppMetricsPanel, AppPaths, AppPeerStatusRow,
-    AppPublishedArtifactRow, AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView,
-    AppTransportSurface, AppTrustView,
+    AppLeaderboardRow, AppLoginProvider, AppMetricRow, AppMetricsPanel,
+    AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
+    AppOperatorControlReplaySummaryView, AppPaths, AppPeerStatusRow, AppPublishedArtifactRow,
+    AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView, AppTransportSurface, AppTrustView,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop-client"))]
 pub use native_client::{NodeAppHostConfig, NodeAppHostSource, launch_node_app};
 pub use render::{
     browser_app_stylesheet, render_artifact_run_summaries_html, render_artifact_run_view_html,
     render_browser_app_static_html, render_browser_app_static_html_with_config,
-    render_dashboard_html, render_head_artifact_view_html,
+    render_dashboard_html, render_head_artifact_view_html, render_operator_control_replay_html,
 };
 pub use widgets::{
     AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,
