@@ -82,6 +82,7 @@ fn worker_bridge_messages_round_trip_through_json() {
         revision_id: RevisionId::new("rev-browser"),
         workload_id: WorkloadId::new("wgpu-demo"),
         budget: BrowserTrainingBudget::default(),
+        lease: None,
     });
     let bytes = serde_json::to_vec(&command).expect("serialize command");
     let decoded: BrowserWorkerCommand =
@@ -160,6 +161,7 @@ fn browser_conformance_harness_executes_authenticated_training_and_validation() 
             revision_id: RevisionId::new("rev-browser"),
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
+            lease: None,
         })
         .expect("training result");
 
@@ -517,6 +519,22 @@ fn browser_receipt_outbox_supports_structured_durable_backend() {
         BrowserReceiptOutboxBackend::IndexedDb
     );
     assert_eq!(decoded.pending_receipts.len(), 1);
+}
+
+#[test]
+fn browser_storage_round_trips_active_training_lease() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.active_training_lease = Some(sample_training_lease());
+
+    let encoded = serde_json::to_value(&storage).expect("serialize storage");
+    assert_eq!(
+        encoded["active_training_lease"]["lease_id"],
+        serde_json::Value::String("lease-browser".into())
+    );
+
+    let decoded: BrowserStorageSnapshot =
+        serde_json::from_value(encoded).expect("deserialize storage");
+    assert_eq!(decoded.active_training_lease, Some(sample_training_lease()));
 }
 
 #[test]
@@ -1897,6 +1915,7 @@ fn worker_runtime_apply_command_completes_validation_and_training_locally() {
             revision_id: RevisionId::new("rev-browser"),
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
+            lease: None,
         }),
         None,
         None,
@@ -2278,6 +2297,7 @@ fn worker_runtime_flushes_and_acknowledges_receipt_outbox() {
             revision_id: RevisionId::new("rev-browser"),
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
+            lease: None,
         }),
         None,
         None,
@@ -2419,6 +2439,7 @@ fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
             revision_id: RevisionId::new("rev-browser"),
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
+            lease: None,
         }),
         None,
         None,
@@ -3552,6 +3573,86 @@ fn sample_browser_session_state(principal_id: &str) -> BrowserSessionState {
     }
 }
 
+fn sample_training_lease() -> WorkloadTrainingLease {
+    WorkloadTrainingLease {
+        lease_id: LeaseId::new("lease-browser"),
+        window_id: WindowId(7),
+        dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+        assignment_hash: ContentId::new("assignment-browser"),
+        microshards: vec![
+            burn_p2p::MicroShardId::new("micro-browser-a"),
+            burn_p2p::MicroShardId::new("micro-browser-b"),
+        ],
+    }
+}
+
+fn browser_directory_entry_for_assignment(
+    experiment_id: &str,
+    revision_id: &str,
+    dataset_view_id: &str,
+) -> ExperimentDirectoryEntry {
+    ExperimentDirectoryEntry {
+        network_id: NetworkId::new("net-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new(experiment_id),
+        workload_id: WorkloadId::new("browser-demo"),
+        display_name: "Browser Demo".into(),
+        model_schema_hash: ContentId::new("model-browser"),
+        dataset_view_id: burn_p2p::DatasetViewId::new(dataset_view_id),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::new(),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 1024,
+            estimated_window_seconds: 15,
+        },
+        visibility: ExperimentVisibility::Public,
+        opt_in_policy: ExperimentOptInPolicy::Open,
+        current_revision_id: RevisionId::new(revision_id),
+        current_head_id: Some(HeadId::new("head-browser")),
+        allowed_roles: PeerRoleSet::default(),
+        allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        metadata: Default::default(),
+    }
+}
+
+fn trainer_runtime_with_assignment(
+    experiment_id: &str,
+    revision_id: &str,
+    dataset_view_id: &str,
+) -> BrowserWorkerRuntime {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime.remember_session(sample_browser_session_state("principal-browser"));
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![
+            browser_directory_entry_for_assignment(experiment_id, revision_id, dataset_view_id),
+        ]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new(experiment_id),
+            revision_id: RevisionId::new(revision_id),
+        });
+    runtime.state = Some(BrowserRuntimeState::Trainer);
+    runtime
+}
+
 fn signed_browser_directory_snapshot(
     entries: Vec<ExperimentDirectoryEntry>,
 ) -> SignedPayload<SchemaEnvelope<BrowserDirectorySnapshot>> {
@@ -3865,6 +3966,180 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     );
     assert!(!view.viewer.experiments_preview.is_empty());
     assert!(!view.viewer.leaderboard_preview.is_empty());
+}
+
+#[test]
+fn worker_runtime_training_with_lease_persists_active_training_lease() {
+    let mut runtime = trainer_runtime_with_assignment("exp-browser", "rev-browser", "view-browser");
+    let lease = sample_training_lease();
+
+    let events = runtime.apply_command(
+        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            workload_id: WorkloadId::new("browser-demo"),
+            budget: BrowserTrainingBudget::default(),
+            lease: Some(lease.clone()),
+        }),
+        None,
+        None,
+    );
+
+    assert_eq!(runtime.storage.active_training_lease, Some(lease.clone()));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::StorageUpdated(storage)
+            if storage.active_training_lease == Some(lease.clone())
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, BrowserWorkerEvent::TrainingCompleted(_)))
+    );
+}
+
+#[test]
+fn worker_runtime_training_without_lease_clears_previous_active_training_lease() {
+    let mut runtime = trainer_runtime_with_assignment("exp-browser", "rev-browser", "view-browser");
+    runtime
+        .storage
+        .remember_active_training_lease(sample_training_lease());
+
+    let events = runtime.apply_command(
+        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            workload_id: WorkloadId::new("browser-demo"),
+            budget: BrowserTrainingBudget::default(),
+            lease: None,
+        }),
+        None,
+        None,
+    );
+
+    assert_eq!(runtime.storage.active_training_lease, None);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::StorageUpdated(storage) if storage.active_training_lease.is_none()
+    )));
+}
+
+#[test]
+fn worker_runtime_selecting_new_experiment_clears_active_training_lease() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime
+        .storage
+        .remember_active_training_lease(sample_training_lease());
+
+    runtime.select_experiment(
+        ExperimentId::new("exp-other"),
+        Some(RevisionId::new("rev-other")),
+        None,
+        None,
+    );
+
+    assert_eq!(runtime.storage.active_training_lease, None);
+}
+
+#[test]
+fn browser_storage_clears_active_training_lease_when_session_changes() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_session(sample_browser_session_state("principal-browser"));
+    storage.remember_active_training_lease(sample_training_lease());
+
+    storage.remember_session(BrowserSessionState::default());
+    assert_eq!(storage.active_training_lease, None);
+
+    storage.remember_session(sample_browser_session_state("principal-browser"));
+    storage.remember_active_training_lease(sample_training_lease());
+    storage.remember_session(sample_browser_session_state("principal-other"));
+    assert_eq!(storage.active_training_lease, None);
+}
+
+#[test]
+fn browser_conformance_harness_exposes_persisted_active_training_lease() {
+    let revision = conformance_revision_manifest();
+    let entry = ExperimentDirectoryProjectionBuilder::from_revision(
+        NetworkId::new("net-browser"),
+        StudyId::new("study-browser"),
+        "Browser Demo",
+        &revision,
+    )
+    .with_visibility(ExperimentVisibility::Public)
+    .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_scope(ExperimentScope::Connect)
+    .with_scope(ExperimentScope::Train {
+        experiment_id: revision.experiment_id.clone(),
+    })
+    .build();
+    let directory =
+        browser_conformance_directory(NetworkId::new("net-browser"), vec![entry.clone()]);
+    let session = browser_conformance_session(
+        NetworkId::new("net-browser"),
+        PrincipalId::new("browser-principal"),
+        BTreeSet::from([
+            ExperimentScope::Connect,
+            ExperimentScope::Train {
+                experiment_id: revision.experiment_id.clone(),
+            },
+        ]),
+    );
+    let mut harness = BrowserConformanceHarness::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        browser_conformance_capability_for_role(BrowserRuntimeRole::BrowserTrainerWgpu),
+        browser_conformance_transport(),
+        directory,
+        session,
+    );
+    harness.apply_heads(&[burn_p2p::HeadDescriptor {
+        head_id: HeadId::new("head-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        artifact_id: ArtifactId::new("artifact-browser-head"),
+        parent_head_id: None,
+        global_step: 1,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    }]);
+
+    let lease = sample_training_lease();
+    harness
+        .run_training(browser_conformance_training_plan_with_lease(
+            StudyId::new("study-browser"),
+            ExperimentId::new("exp-browser"),
+            RevisionId::new("rev-browser"),
+            WorkloadId::new("browser-demo"),
+            lease.clone(),
+        ))
+        .expect("training result");
+
+    assert_eq!(harness.active_training_lease(), Some(&lease));
 }
 
 #[test]

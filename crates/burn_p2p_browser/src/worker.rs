@@ -44,6 +44,29 @@ pub struct BrowserWorkerRuntime {
 impl BrowserWorkerRuntime {
     const MAX_RECEIPT_SUBMISSION_BATCH: usize = 64;
 
+    fn validate_training_lease(
+        &self,
+        lease: &burn_p2p::WorkloadTrainingLease,
+        assignment: &BrowserStoredAssignment,
+    ) -> Result<(), String> {
+        let Some(active_assignment) = self.storage.active_assignment.as_ref() else {
+            return Err("browser training lease requires an active assignment".into());
+        };
+        if active_assignment != assignment {
+            return Err("browser training lease no longer matches the active assignment".into());
+        }
+        if let Some(dataset_view_id) = self.storage.active_assignment_dataset_view_id()
+            && dataset_view_id != &lease.dataset_view_id
+        {
+            return Err(format!(
+                "browser training lease dataset view {} does not match active assignment dataset view {}",
+                lease.dataset_view_id.as_str(),
+                dataset_view_id.as_str()
+            ));
+        }
+        Ok(())
+    }
+
     fn is_duplicate_metrics_event(&self, event: &MetricsLiveEvent) -> bool {
         self.storage
             .last_metrics_live_event
@@ -267,6 +290,13 @@ impl BrowserWorkerRuntime {
             || assignment.revision_id != plan.revision_id
         {
             return Err("browser training plan does not match the active assignment".into());
+        }
+        match plan.lease.as_ref() {
+            Some(lease) => {
+                self.validate_training_lease(lease, assignment)?;
+                self.storage.remember_active_training_lease(lease.clone());
+            }
+            None => self.storage.clear_active_training_lease(),
         }
 
         let artifact_id = ArtifactId::new(format!(

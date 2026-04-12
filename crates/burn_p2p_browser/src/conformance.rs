@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
 
 use burn_p2p::{
-    ContributionReceipt, ExperimentDirectoryEntry, ExperimentScope, ExperimentVisibility, HeadId,
-    NetworkId, PrincipalClaims, PrincipalId, PrincipalSession,
+    ContributionReceipt, ExperimentDirectoryEntry, ExperimentId, ExperimentScope,
+    ExperimentVisibility, HeadId, NetworkId, PrincipalClaims, PrincipalId, PrincipalSession,
+    RevisionId, StudyId, WorkloadId, WorkloadTrainingLease,
 };
 use burn_p2p_core::{BrowserDirectorySnapshot, ContentId, HeadDescriptor};
 use chrono::Utc;
 
 use crate::{
     BrowserCapabilityReport, BrowserGpuSupport, BrowserRuntimeConfig, BrowserRuntimeRole,
-    BrowserSessionState, BrowserTrainingPlan, BrowserTrainingResult, BrowserTransportKind,
-    BrowserTransportStatus, BrowserValidationPlan, BrowserValidationResult, BrowserWorkerCommand,
-    BrowserWorkerEvent, BrowserWorkerRuntime,
+    BrowserSessionState, BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingResult,
+    BrowserTransportKind, BrowserTransportStatus, BrowserValidationPlan, BrowserValidationResult,
+    BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
 
 /// Builds a conservative default transport snapshot for conformance exercises.
@@ -89,6 +90,25 @@ pub fn browser_conformance_session(
         trust_bundle: None,
         enrolled_at: Some(Utc::now()),
         reenrollment_required: false,
+    }
+}
+
+/// Builds one shared training plan carrying an exact execution lease for browser conformance
+/// exercises.
+pub fn browser_conformance_training_plan_with_lease(
+    study_id: StudyId,
+    experiment_id: ExperimentId,
+    revision_id: RevisionId,
+    workload_id: WorkloadId,
+    lease: WorkloadTrainingLease,
+) -> BrowserTrainingPlan {
+    BrowserTrainingPlan {
+        study_id,
+        experiment_id,
+        revision_id,
+        workload_id,
+        budget: BrowserTrainingBudget::default(),
+        lease: Some(lease),
     }
 }
 
@@ -183,6 +203,11 @@ impl BrowserConformanceHarness {
     /// Returns the receipts currently queued in durable browser storage.
     pub fn pending_receipts(&self) -> Vec<ContributionReceipt> {
         self.runtime.storage.receipt_submission_batch(usize::MAX)
+    }
+
+    /// Returns the currently persisted active training lease, when present.
+    pub fn active_training_lease(&self) -> Option<&WorkloadTrainingLease> {
+        self.runtime.storage.active_training_lease.as_ref()
     }
 }
 

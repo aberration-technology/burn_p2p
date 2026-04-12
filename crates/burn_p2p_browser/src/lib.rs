@@ -36,6 +36,7 @@ pub use auth::{
     BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};
+pub use burn_p2p::WorkloadTrainingLease;
 pub use burn_p2p::{
     EdgeAuthClient, EdgeAuthClientError, EdgeEnrollmentConfig, EdgeEnrollmentResult,
     EdgeLogoutResponse, EdgePeerEnrollmentRequest, EdgePeerIdentity, EdgeSessionState,
@@ -49,7 +50,8 @@ pub use burn_p2p_core::{
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
 pub use conformance::{
     BrowserConformanceHarness, browser_conformance_capability_for_role,
-    browser_conformance_directory, browser_conformance_session, browser_conformance_transport,
+    browser_conformance_directory, browser_conformance_session,
+    browser_conformance_training_plan_with_lease, browser_conformance_transport,
 };
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,

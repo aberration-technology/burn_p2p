@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use burn_p2p::{
     ArtifactDescriptor, ArtifactId, ChunkId, ContributionReceipt, ContributionReceiptId,
     ExperimentDirectoryEntry, ExperimentId, HeadId, MicroShardId, PeerId, RevisionId, StudyId,
+    WorkloadTrainingLease,
 };
 use burn_p2p_core::{
     ArtifactProfile, MetricsLiveEvent, PublicationTargetId, RunId, SchemaEnvelope, SignedPayload,
@@ -329,6 +330,9 @@ pub struct BrowserStorageSnapshot {
     pub stored_certificate_peer_id: Option<PeerId>,
     /// The active assignment.
     pub active_assignment: Option<BrowserStoredAssignment>,
+    /// The active training lease accepted for the current assignment.
+    #[serde(default)]
+    pub active_training_lease: Option<WorkloadTrainingLease>,
     /// The updated at.
     pub updated_at: DateTime<Utc>,
 }
@@ -357,6 +361,7 @@ impl Default for BrowserStorageSnapshot {
             artifact_replay_checkpoint: None,
             stored_certificate_peer_id: None,
             active_assignment: None,
+            active_training_lease: None,
             updated_at: Utc::now(),
         }
     }
@@ -369,6 +374,11 @@ impl BrowserStorageSnapshot {
 
     /// Performs the remember session operation.
     pub fn remember_session(&mut self, session: BrowserSessionState) {
+        let session_changed = self.session.session_id() != session.session_id()
+            || self.session.principal_id() != session.principal_id();
+        if session_changed {
+            self.active_training_lease = None;
+        }
         self.stored_certificate_peer_id = session.peer_id().cloned();
         self.session = session;
         self.updated_at = Utc::now();
@@ -423,12 +433,14 @@ impl BrowserStorageSnapshot {
         if self.artifact_replay_checkpoint.is_none()
             && self.last_head_id.is_none()
             && self.last_head_artifact_transport.is_none()
+            && self.active_training_lease.is_none()
         {
             return false;
         }
         self.artifact_replay_checkpoint = None;
         self.last_head_id = None;
         self.last_head_artifact_transport = None;
+        self.active_training_lease = None;
         self.updated_at = Utc::now();
         true
     }
@@ -492,6 +504,7 @@ impl BrowserStorageSnapshot {
         if assignment_changed {
             self.clear_artifact_replay_checkpoint();
             self.last_head_id = None;
+            self.active_training_lease = None;
         }
         self.active_assignment = Some(assignment);
         self.updated_at = Utc::now();
@@ -500,7 +513,30 @@ impl BrowserStorageSnapshot {
     /// Performs the clear assignment operation.
     pub fn clear_assignment(&mut self) {
         self.active_assignment = None;
+        self.active_training_lease = None;
         self.updated_at = Utc::now();
+    }
+
+    /// Returns the dataset view ID for the active assignment when it is present in the latest
+    /// signed directory snapshot.
+    pub fn active_assignment_dataset_view_id(&self) -> Option<&burn_p2p::DatasetViewId> {
+        let assignment = self.active_assignment.as_ref()?;
+        self.directory_entry_for_assignment(assignment)
+            .map(|entry| &entry.dataset_view_id)
+    }
+
+    /// Persists the active training lease accepted by the browser worker.
+    pub fn remember_active_training_lease(&mut self, lease: WorkloadTrainingLease) {
+        self.active_training_lease = Some(lease);
+        self.updated_at = Utc::now();
+    }
+
+    /// Clears the persisted active training lease.
+    pub fn clear_active_training_lease(&mut self) {
+        if self.active_training_lease.is_some() {
+            self.active_training_lease = None;
+            self.updated_at = Utc::now();
+        }
     }
 
     /// Performs the remember head operation.

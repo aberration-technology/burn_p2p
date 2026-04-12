@@ -1,6 +1,6 @@
 use burn_p2p_core::{
-    ArtifactId, ContributionReceiptId, ExperimentId, HeadId, Precision, RevisionId, StudyId,
-    WorkloadId,
+    ArtifactId, AssignmentLease, ContentId, ContributionReceiptId, DatasetViewId, ExperimentId,
+    HeadId, LeaseId, MicroShardId, Precision, RevisionId, StudyId, WindowId, WorkloadId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +49,39 @@ impl Default for WorkloadTrainingBudget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents the exact assigned training lease used by one workload execution.
+pub struct WorkloadTrainingLease {
+    /// The lease ID.
+    pub lease_id: LeaseId,
+    /// The window ID.
+    pub window_id: WindowId,
+    /// The dataset view ID.
+    pub dataset_view_id: DatasetViewId,
+    /// The assignment hash.
+    pub assignment_hash: ContentId,
+    /// The exact microshards assigned to the host.
+    pub microshards: Vec<MicroShardId>,
+}
+
+impl From<&AssignmentLease> for WorkloadTrainingLease {
+    fn from(value: &AssignmentLease) -> Self {
+        Self {
+            lease_id: value.lease_id.clone(),
+            window_id: value.window_id,
+            dataset_view_id: value.dataset_view_id.clone(),
+            assignment_hash: value.assignment_hash.clone(),
+            microshards: value.microshards.clone(),
+        }
+    }
+}
+
+impl From<AssignmentLease> for WorkloadTrainingLease {
+    fn from(value: AssignmentLease) -> Self {
+        Self::from(&value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents one host-neutral training plan.
 pub struct WorkloadTrainingPlan {
     /// The study ID.
@@ -61,6 +94,9 @@ pub struct WorkloadTrainingPlan {
     pub workload_id: WorkloadId,
     /// The execution budget.
     pub budget: WorkloadTrainingBudget,
+    /// The exact assigned lease when one was provided by the runtime.
+    #[serde(default)]
+    pub lease: Option<WorkloadTrainingLease>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +183,13 @@ mod tests {
             revision_id: RevisionId::new("revision"),
             workload_id: WorkloadId::new("workload"),
             budget: WorkloadTrainingBudget::default(),
+            lease: Some(WorkloadTrainingLease {
+                lease_id: LeaseId::new("lease"),
+                window_id: WindowId(7),
+                dataset_view_id: DatasetViewId::new("view"),
+                assignment_hash: ContentId::new("assign-hash"),
+                microshards: vec![MicroShardId::new("micro-a"), MicroShardId::new("micro-b")],
+            }),
         };
         let validation = WorkloadValidationPlan {
             head_id: HeadId::new("head"),
@@ -165,5 +208,27 @@ mod tests {
 
         assert_eq!(decoded_training, training);
         assert_eq!(decoded_validation, validation);
+    }
+
+    #[test]
+    fn workload_training_plan_deserializes_without_lease() {
+        let training = serde_json::json!({
+            "study_id": "study",
+            "experiment_id": "experiment",
+            "revision_id": "revision",
+            "workload_id": "workload",
+            "budget": {
+                "max_window_secs": 30,
+                "max_checkpoint_bytes": 16777216,
+                "max_shard_bytes": 8388608,
+                "requires_webgpu": true,
+                "max_batch_size": 4,
+                "precision": "Fp16"
+            }
+        });
+
+        let decoded: WorkloadTrainingPlan =
+            serde_json::from_value(training).expect("deserialize training without lease");
+        assert_eq!(decoded.lease, None);
     }
 }

@@ -319,6 +319,7 @@ async fn finish_live_browser_participant(
             revision_id: RevisionId::new(handle.config.revision_id.clone()),
             workload_id: WorkloadId::new(handle.config.workload_id.clone()),
             budget: training_budget.clone(),
+            lease: None,
         }),
         None,
         None,

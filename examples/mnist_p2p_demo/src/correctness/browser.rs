@@ -226,6 +226,7 @@ pub fn exercise_browser_roles(
                     requires_webgpu: true,
                     ..BrowserTrainingBudget::default()
                 },
+                lease: None,
             })),
             Some("browser trainer exercises capability, assignment, transport, and receipt flow in the runtime drill; the e2e mnist harness pairs it with live burn/webgpu wasm execution against the same leased shards".into()),
         ),
