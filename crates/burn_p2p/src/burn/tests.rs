@@ -301,6 +301,18 @@ fn tiny_sharded_dataset(
     )
 }
 
+#[test]
+fn burn_sharded_dataset_roundtrips_local_metadata() {
+    let dataset_root = tempdir().expect("dataset root");
+    let dataset = tiny_sharded_dataset(dataset_root.path(), 3).expect("sharded dataset");
+    let reloaded =
+        BurnShardedDataset::<TinyLearnerItem>::read_local(dataset_root.path()).expect("reload");
+
+    assert_eq!(reloaded.registration(), dataset.registration());
+    assert_eq!(reloaded.microshard_plan(), dataset.microshard_plan());
+    assert_eq!(reloaded.shard_examples(), dataset.shard_examples());
+}
+
 fn tiny_assignment_lease() -> AssignmentLease {
     AssignmentLease {
         lease_id: crate::LeaseId::new("lease-1"),

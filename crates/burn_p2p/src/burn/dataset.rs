@@ -6,6 +6,15 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::*;
 
+const SHARDED_DATASET_METADATA_FILE: &str = "burn-sharded-dataset.json";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct BurnShardedDatasetMetadata {
+    registration: crate::DatasetRegistration,
+    microshard_plan: crate::MicroShardPlan,
+    shard_examples: BTreeMap<crate::MicroShardId, usize>,
+}
+
 #[derive(Clone, Debug)]
 /// Configures a shard-backed dataset prepared for burn_p2p training windows.
 ///
@@ -204,11 +213,50 @@ impl<Record> BurnShardedDataset<Record> {
                 )
             })?;
         }
+        fs::write(
+            root.join(SHARDED_DATASET_METADATA_FILE),
+            serde_json::to_vec_pretty(&BurnShardedDatasetMetadata {
+                registration: registration.clone(),
+                microshard_plan: microshard_plan.clone(),
+                shard_examples: shard_examples.clone(),
+            })?,
+        )
+        .with_context(|| {
+            format!(
+                "failed to write {}",
+                root.join(SHARDED_DATASET_METADATA_FILE).display()
+            )
+        })?;
 
         Ok(Self {
             registration,
             microshard_plan,
             shard_examples,
+            _record: PhantomData,
+        })
+    }
+
+    /// Reloads a shard-backed dataset previously materialized with
+    /// [`Self::write_local`].
+    pub fn read_local(root: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let root = root.as_ref();
+        let bytes = fs::read(root.join(SHARDED_DATASET_METADATA_FILE)).with_context(|| {
+            format!(
+                "failed to read {}",
+                root.join(SHARDED_DATASET_METADATA_FILE).display()
+            )
+        })?;
+        let metadata: BurnShardedDatasetMetadata =
+            serde_json::from_slice(&bytes).with_context(|| {
+                format!(
+                    "failed to decode {}",
+                    root.join(SHARDED_DATASET_METADATA_FILE).display()
+                )
+            })?;
+        Ok(Self {
+            registration: metadata.registration,
+            microshard_plan: metadata.microshard_plan,
+            shard_examples: metadata.shard_examples,
             _record: PhantomData,
         })
     }
