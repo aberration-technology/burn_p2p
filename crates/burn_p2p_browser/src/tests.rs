@@ -3791,6 +3791,10 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     runtime
         .storage
         .remember_microshard(burn_p2p::MicroShardId::new("micro-browser"));
+    let lease = sample_training_lease();
+    runtime
+        .storage
+        .remember_active_training_lease(lease.clone());
     runtime
         .storage
         .queue_receipt(burn_p2p::ContributionReceipt {
@@ -3922,6 +3926,41 @@ fn browser_app_model_projects_trainer_focused_client_view() {
         Some("exp-browser/rev-browser")
     );
     assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.lease_id.as_str()),
+        Some("lease-browser")
+    );
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.window_id),
+        Some(7)
+    );
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.dataset_view_id.as_str()),
+        Some("view-browser")
+    );
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.assignment_hash.as_str()),
+        Some("assignment-browser")
+    );
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.microshard_count),
+        Some(2)
+    );
+    assert_eq!(
         view.selected_experiment
             .as_ref()
             .map(|selected| selected.display_name.as_str()),
@@ -3966,6 +4005,7 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     );
     assert!(!view.viewer.experiments_preview.is_empty());
     assert!(!view.viewer.leaderboard_preview.is_empty());
+    assert_eq!(model.active_training_lease(), Some(&lease));
 }
 
 #[test]
@@ -4140,6 +4180,59 @@ fn browser_conformance_harness_exposes_persisted_active_training_lease() {
         .expect("training result");
 
     assert_eq!(harness.active_training_lease(), Some(&lease));
+}
+
+#[test]
+fn browser_app_controller_exposes_persisted_active_training_lease() {
+    let snapshot = BrowserEdgeSnapshot {
+        network_id: NetworkId::new("net-browser"),
+        edge_mode: BrowserEdgeMode::Peer,
+        browser_mode: burn_p2p::BrowserMode::Trainer,
+        social_mode: burn_p2p::SocialMode::Public,
+        profile_mode: burn_p2p::ProfileMode::Public,
+        transports: BrowserTransportSurface {
+            webrtc_direct: true,
+            webtransport_gateway: true,
+            wss_fallback: true,
+        },
+        paths: BrowserEdgePaths::default(),
+        auth_enabled: false,
+        login_providers: Vec::new(),
+        required_release_train_hash: Some(ContentId::new("train-browser")),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-browser")]),
+        directory: BrowserDirectorySnapshot {
+            network_id: NetworkId::new("net-browser"),
+            generated_at: Utc::now(),
+            entries: Vec::new(),
+        },
+        heads: Vec::new(),
+        leaderboard: BrowserLeaderboardSnapshot {
+            network_id: NetworkId::new("net-browser"),
+            score_version: "leaderboard_score_v1".into(),
+            entries: Vec::new(),
+            captured_at: Utc::now(),
+        },
+        trust_bundle: None,
+        captured_at: Utc::now(),
+    };
+    let mut runtime = BrowserWorkerRuntime::default();
+    runtime
+        .storage
+        .remember_active_training_lease(sample_training_lease());
+    let controller = BrowserAppController::for_tests(
+        BrowserEdgeClient::new(
+            BrowserUiBindings::new("https://edge.example"),
+            BrowserEnrollmentConfig::for_runtime_sync(&snapshot),
+        ),
+        BrowserAppModel::from_runtime(runtime),
+    );
+
+    assert_eq!(
+        controller
+            .active_training_lease()
+            .map(|lease| lease.lease_id.as_str()),
+        Some("lease-browser")
+    );
 }
 
 #[test]

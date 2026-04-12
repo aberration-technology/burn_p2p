@@ -22,11 +22,11 @@ pub use browser_app::{
     BrowserAppFocusPanel, BrowserAppLeaderboardPreview, BrowserAppLiveView,
     BrowserAppMetricPreview, BrowserAppNetworkView, BrowserAppPerformanceView, BrowserAppRouteLink,
     BrowserAppShellView, BrowserAppStaticBootstrap, BrowserAppSummaryCard, BrowserAppSurface,
-    BrowserAppSurfaceTab, BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
-    NodeAppClientView, NodeAppDiffusionView, NodeAppExperimentSummary, NodeAppLeaderboardPreview,
-    NodeAppMetricPreview, NodeAppNetworkView, NodeAppPerformanceView, NodeAppShellView,
-    NodeAppStaticBootstrap, NodeAppSurface, NodeAppTrainingView, NodeAppValidationView,
-    NodeAppViewerView,
+    BrowserAppSurfaceTab, BrowserAppTrainingLeaseView, BrowserAppTrainingView,
+    BrowserAppValidationView, BrowserAppViewerView, NodeAppClientView, NodeAppDiffusionView,
+    NodeAppExperimentSummary, NodeAppLeaderboardPreview, NodeAppMetricPreview, NodeAppNetworkView,
+    NodeAppPerformanceView, NodeAppShellView, NodeAppStaticBootstrap, NodeAppSurface,
+    NodeAppTrainingLeaseView, NodeAppTrainingView, NodeAppValidationView, NodeAppViewerView,
 };
 pub use dashboard::{
     AggregateDagEdge, AggregateDagNode, AggregateDagView, AuthorityActionRecord, CheckpointDagEdge,

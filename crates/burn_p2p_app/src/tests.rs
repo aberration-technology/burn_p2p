@@ -658,6 +658,7 @@ fn snapshot_assertions_cover_non_portal_downstream_smoke_checks() {
             train_available: true,
             can_train: true,
             active_assignment: Some("exp-auth/rev-auth".into()),
+            active_training_lease: None,
             slice_status: "active".into(),
             latest_head_id: Some("head-auth".into()),
             cached_chunk_artifacts: 1,

@@ -101,6 +101,7 @@ pub fn build_node_app_view(
             train_available,
             can_train,
             active_assignment,
+            active_training_lease: None,
             slice_status: training_slice_status(snapshot),
             latest_head_id,
             cached_chunk_artifacts: snapshot.in_flight_transfers.len(),

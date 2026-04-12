@@ -8,8 +8,8 @@ use burn_p2p_metrics::{
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
     BrowserAppLeaderboardPreview, BrowserAppMetricPreview, BrowserAppNetworkView,
-    BrowserAppPerformanceView, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
-    BrowserAppViewerView,
+    BrowserAppPerformanceView, BrowserAppSurface, BrowserAppTrainingLeaseView,
+    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,11 @@ impl BrowserAppModel {
         }
     }
 
+    /// Returns the currently persisted active training lease, when available.
+    pub fn active_training_lease(&self) -> Option<&crate::WorkloadTrainingLease> {
+        self.runtime.storage.active_training_lease.as_ref()
+    }
+
     /// Builds the static-browser-app client view from local browser state.
     pub fn view(&self, bindings: &BrowserUiBindings) -> BrowserAppClientView {
         let network_id = self
@@ -336,6 +341,7 @@ impl BrowserAppModel {
                         assignment.revision_id.as_str()
                     )
                 }),
+                active_training_lease: active_training_lease_summary(storage),
                 slice_status: training_slice_status(&runtime_state, storage, latest_peer_window),
                 latest_head_id: storage
                     .last_head_id
@@ -415,6 +421,11 @@ pub struct BrowserAppController {
 }
 
 impl BrowserAppController {
+    #[cfg(test)]
+    pub(crate) fn for_tests(edge_client: BrowserEdgeClient, model: BrowserAppModel) -> Self {
+        Self { edge_client, model }
+    }
+
     /// Connects the browser app using the target-based connect config.
     pub async fn connect_with(
         config: BrowserAppConnectConfig,
@@ -592,6 +603,11 @@ impl BrowserAppController {
     /// Returns the current browser-app client view derived from the local runtime.
     pub fn view(&self) -> BrowserAppClientView {
         self.model.view(self.edge_client.bindings())
+    }
+
+    /// Returns the currently persisted active training lease, when available.
+    pub fn active_training_lease(&self) -> Option<&crate::WorkloadTrainingLease> {
+        self.model.active_training_lease()
     }
 }
 
@@ -1286,6 +1302,21 @@ fn training_slice_status(
             plural_suffix(microshards_ready)
         ),
     }
+}
+
+fn active_training_lease_summary(
+    storage: &BrowserStorageSnapshot,
+) -> Option<BrowserAppTrainingLeaseView> {
+    storage
+        .active_training_lease
+        .as_ref()
+        .map(|lease| BrowserAppTrainingLeaseView {
+            lease_id: lease.lease_id.as_str().to_owned(),
+            window_id: lease.window_id.0,
+            dataset_view_id: lease.dataset_view_id.as_str().to_owned(),
+            assignment_hash: lease.assignment_hash.as_str().to_owned(),
+            microshard_count: lease.microshards.len(),
+        })
 }
 
 fn plural_suffix(count: usize) -> &'static str {

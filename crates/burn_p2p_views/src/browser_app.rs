@@ -294,6 +294,21 @@ pub struct BrowserAppDiffusionView {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Training-focused summary derived entirely on the browser client.
+pub struct BrowserAppTrainingLeaseView {
+    /// Active training lease identifier.
+    pub lease_id: String,
+    /// Lease window id currently assigned to the browser trainer.
+    pub window_id: u64,
+    /// Dataset view id bound to the current training lease.
+    pub dataset_view_id: String,
+    /// Assignment hash backing the current training lease.
+    pub assignment_hash: String,
+    /// Count of exact microshards leased to the browser trainer.
+    pub microshard_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Training-focused summary derived entirely on the browser client.
 pub struct BrowserAppTrainingView {
     /// Whether training is available for the selected experiment.
     pub train_available: bool,
@@ -302,6 +317,9 @@ pub struct BrowserAppTrainingView {
     /// Human-readable active assignment summary, when available.
     #[serde(default)]
     pub active_assignment: Option<String>,
+    /// Compact summary of the active persisted training lease, when available.
+    #[serde(default)]
+    pub active_training_lease: Option<BrowserAppTrainingLeaseView>,
     /// Human-readable status for the current assignment or slice lifecycle.
     pub slice_status: String,
     /// The freshest visible head ID from the current browser runtime state.
@@ -450,6 +468,9 @@ pub type NodeAppValidationView = BrowserAppValidationView;
 
 /// Platform-agnostic alias for one training summary.
 pub type NodeAppTrainingView = BrowserAppTrainingView;
+
+/// Platform-agnostic alias for one active training-lease summary.
+pub type NodeAppTrainingLeaseView = BrowserAppTrainingLeaseView;
 
 /// Platform-agnostic alias for one network summary.
 pub type NodeAppNetworkView = BrowserAppNetworkView;
