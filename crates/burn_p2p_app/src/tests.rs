@@ -95,6 +95,8 @@ fn operator_audit_page_renders_filters_facets_and_rows() {
             head_id: Some("head-b".into()),
             captured_at: "2026-04-12T00:05:00Z".into(),
             summary: "activation_window=7 · target=exp-b".into(),
+            control_path: Some("/operator/control?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&peer_id=trainer-a".into()),
+            replay_path: Some("/operator/replay?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&head_id=head-b".into()),
         }],
         filter_tags: vec!["kind=lifecycle-plan".into(), "experiment_id=exp-b".into()],
         offset: 0,
@@ -103,6 +105,7 @@ fn operator_audit_page_renders_filters_facets_and_rows() {
         json_page_path: "/operator/audit/page?kind=lifecycle-plan".into(),
         json_summary_path: "/operator/audit/summary?kind=lifecycle-plan".into(),
         json_facets_path: "/operator/audit/facets?kind=lifecycle-plan&limit=8".into(),
+        clear_filters_path: Some("/operator/audit".into()),
         prev_page_path: None,
         next_page_path: Some("/operator/audit?kind=lifecycle-plan&offset=50&limit=50".into()),
     });
@@ -112,6 +115,13 @@ fn operator_audit_page_renders_filters_facets_and_rows() {
     assert!(html.contains("schedule-epoch (2)"));
     assert!(html.contains("trainer-a"));
     assert!(html.contains("/operator/audit/facets?kind=lifecycle-plan"));
+    assert!(html.contains("/operator/control?study_id=study-a"));
+    assert!(html.contains("experiment_id=exp-b"));
+    assert!(html.contains("revision_id=rev-b"));
+    assert!(html.contains("peer_id=trainer-a"));
+    assert!(html.contains("/operator/replay?study_id=study-a"));
+    assert!(html.contains("head_id=head-b"));
+    assert!(html.contains(">Reset query<"));
 }
 
 #[test]
@@ -146,6 +156,8 @@ fn operator_control_replay_page_renders_filters_and_rows() {
             plan_epoch: 4,
             captured_at: "2026-04-12T00:05:00Z".into(),
             summary: "activation_window=8 · slot_index=0".into(),
+            audit_path: "/operator/audit?study_id=study&experiment_id=exp-a&revision_id=rev-a&peer_id=trainer-a".into(),
+            replay_path: "/operator/replay?study_id=study&experiment_id=exp-a&revision_id=rev-a".into(),
         }],
         filter_tags: vec!["kind=schedule-epoch".into(), "peer_id=trainer-a".into()],
         offset: 0,
@@ -153,6 +165,7 @@ fn operator_control_replay_page_renders_filters_and_rows() {
         total: 2,
         json_page_path: "/operator/control/page?kind=schedule-epoch".into(),
         json_summary_path: "/operator/control/summary?kind=schedule-epoch".into(),
+        clear_filters_path: Some("/operator/control".into()),
         prev_page_path: None,
         next_page_path: Some("/operator/control?kind=schedule-epoch&offset=50&limit=50".into()),
     });
@@ -162,6 +175,12 @@ fn operator_control_replay_page_renders_filters_and_rows() {
     assert!(html.contains("trainer-a"));
     assert!(html.contains("/operator/control/page?kind=schedule-epoch"));
     assert!(html.contains("epoch 4"));
+    assert!(html.contains("/operator/audit?study_id=study"));
+    assert!(html.contains("experiment_id=exp-a"));
+    assert!(html.contains("revision_id=rev-a"));
+    assert!(html.contains("peer_id=trainer-a"));
+    assert!(html.contains("/operator/replay?study_id=study"));
+    assert!(html.contains(">Reset query<"));
 }
 
 #[test]
@@ -185,6 +204,8 @@ fn operator_replay_page_renders_filters_and_rows() {
             snapshot_view_path: "/operator/replay/snapshot/view?captured_at=2026-04-12T00:05:00Z"
                 .into(),
             json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
+            audit_scope_path: Some("/operator/audit?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&head_id=head-b".into()),
+            control_scope_path: Some("/operator/control?study_id=study-a&experiment_id=exp-b&revision_id=rev-b".into()),
         }],
         filter_tags: vec!["experiment_id=exp-b".into()],
         offset: 0,
@@ -194,6 +215,7 @@ fn operator_replay_page_renders_filters_and_rows() {
         visible_lifecycle_plan_count: 1,
         visible_schedule_epoch_count: 1,
         json_page_path: "/operator/replay/page?experiment_id=exp-b".into(),
+        clear_filters_path: Some("/operator/replay".into()),
         prev_page_path: None,
         next_page_path: None,
     });
@@ -202,6 +224,12 @@ fn operator_replay_page_renders_filters_and_rows() {
     assert!(html.contains("experiment_id=exp-b"));
     assert!(html.contains("receipts 8"));
     assert!(html.contains("/operator/replay/snapshot/view?captured_at=2026-04-12T00:05:00Z"));
+    assert!(html.contains("/operator/audit?study_id=study-a"));
+    assert!(html.contains("experiment_id=exp-b"));
+    assert!(html.contains("revision_id=rev-b"));
+    assert!(html.contains("head_id=head-b"));
+    assert!(html.contains("/operator/control?study_id=study-a"));
+    assert!(html.contains(">Reset query<"));
 }
 
 #[test]
@@ -223,10 +251,14 @@ fn operator_replay_snapshot_and_retention_pages_render_details() {
         eval_protocol_manifest_count: 1,
         replay_page_path: "/operator/replay".into(),
         json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
+        audit_scope_path: Some("/operator/audit?study_id=study-a&experiment_id=exp-b&revision_id=rev-b&head_id=head-b".into()),
+        control_scope_path: Some("/operator/control?study_id=study-a&experiment_id=exp-b&revision_id=rev-b".into()),
     });
     assert!(replay_html.contains("Retained replay snapshot"));
     assert!(replay_html.contains("View JSON snapshot"));
     assert!(replay_html.contains("peer window metrics"));
+    assert!(replay_html.contains("Audit scope"));
+    assert!(replay_html.contains("Control scope"));
 
     let retention_html = render_operator_retention_html(&AppOperatorRetentionView {
         backend: "postgres".into(),

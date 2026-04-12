@@ -523,6 +523,9 @@ fn OperatorAuditPage(view: AppOperatorAuditPageView) -> Element {
                     LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
                     LinkPill { href: view.json_summary_path.clone(), label: "View JSON summary" }
                     LinkPill { href: view.json_facets_path.clone(), label: "View JSON facets" }
+                    if let Some(clear_filters_path) = view.clear_filters_path.clone() {
+                        a { class: "pill", href: clear_filters_path, "Reset query" }
+                    }
                     if let Some(prev_page_path) = view.prev_page_path.clone() {
                         a { class: "pill", href: prev_page_path, "Prev page" }
                     }
@@ -653,6 +656,9 @@ fn OperatorControlReplayPage(view: AppOperatorControlReplayPageView) -> Element 
                     LinkPill { href: "/".to_owned(), label: "Dashboard" }
                     LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
                     LinkPill { href: view.json_summary_path.clone(), label: "View JSON summary" }
+                    if let Some(clear_filters_path) = view.clear_filters_path.clone() {
+                        a { class: "pill", href: clear_filters_path, "Reset query" }
+                    }
                     if let Some(prev_page_path) = view.prev_page_path.clone() {
                         a { class: "pill", href: prev_page_path, "Prev page" }
                     }
@@ -778,6 +784,9 @@ fn OperatorReplayPage(view: AppOperatorReplayPageView) -> Element {
                 div { class: "operator-link-row",
                     LinkPill { href: "/".to_owned(), label: "Dashboard" }
                     LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
+                    if let Some(clear_filters_path) = view.clear_filters_path.clone() {
+                        a { class: "pill", href: clear_filters_path, "Reset query" }
+                    }
                     if let Some(prev_page_path) = view.prev_page_path.clone() {
                         a { class: "pill", href: prev_page_path, "Prev page" }
                     }
@@ -871,6 +880,12 @@ fn OperatorReplaySnapshotDetailPage(view: AppOperatorReplaySnapshotDetailView) -
                 div { class: "operator-link-row",
                     LinkPill { href: view.replay_page_path.clone(), label: "Replay history" }
                     LinkPill { href: view.json_snapshot_path.clone(), label: "View JSON snapshot" }
+                    if let Some(audit_scope_path) = view.audit_scope_path.clone() {
+                        a { class: "pill", href: audit_scope_path, "Audit scope" }
+                    }
+                    if let Some(control_scope_path) = view.control_scope_path.clone() {
+                        a { class: "pill", href: control_scope_path, "Control scope" }
+                    }
                 }
             }
             section { class: "panel",
@@ -992,7 +1007,21 @@ fn OperatorAuditRowView(row: AppOperatorAuditRow) -> Element {
             td { "{scope}" }
             td { "{peer_head}" }
             td { "{row.captured_at}" }
-            td { "{row.summary}" }
+            td {
+                div { class: "table-cell-stack",
+                    span { "{row.summary}" }
+                    if row.control_path.is_some() || row.replay_path.is_some() {
+                        div { class: "operator-link-row", style: "margin-top: 8px;",
+                            if let Some(control_path) = row.control_path.clone() {
+                                a { class: "table-link", href: control_path, "control" }
+                            }
+                            if let Some(replay_path) = row.replay_path.clone() {
+                                a { class: "table-link", href: replay_path, "replay" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1013,6 +1042,16 @@ fn OperatorAuditCard(row: AppOperatorAuditRow) -> Element {
             div { class: "mobile-meta", "{peer_head}" }
             div { class: "mobile-meta", "{row.captured_at}" }
             div { class: "muted", "{row.summary}" }
+            if row.control_path.is_some() || row.replay_path.is_some() {
+                div { class: "operator-link-row", style: "margin-top: 10px;",
+                    if let Some(control_path) = row.control_path.clone() {
+                        a { href: control_path, "Control history" }
+                    }
+                    if let Some(replay_path) = row.replay_path.clone() {
+                        a { href: replay_path, "Replay history" }
+                    }
+                }
+            }
         }
     }
 }
@@ -1064,7 +1103,15 @@ fn OperatorControlReplayRowView(row: AppOperatorControlReplayRow) -> Element {
             td { "{peer_slot}" }
             td { "{window_epoch}" }
             td { "{row.captured_at}" }
-            td { "{row.summary}" }
+            td {
+                div { class: "table-cell-stack",
+                    span { "{row.summary}" }
+                    div { class: "operator-link-row", style: "margin-top: 8px;",
+                        a { class: "table-link", href: row.audit_path.clone(), "audit" }
+                        a { class: "table-link", href: row.replay_path.clone(), "replay" }
+                    }
+                }
+            }
         }
     }
 }
@@ -1108,6 +1155,10 @@ fn OperatorControlReplayCard(row: AppOperatorControlReplayRow) -> Element {
             div { class: "mobile-meta", "{window_epoch}" }
             div { class: "mobile-meta", "{row.captured_at}" }
             div { class: "muted", "{row.summary}" }
+            div { class: "operator-link-row", style: "margin-top: 10px;",
+                a { href: row.audit_path.clone(), "Audit history" }
+                a { href: row.replay_path.clone(), "Replay history" }
+            }
         }
     }
 }
@@ -1126,6 +1177,12 @@ fn OperatorReplayRowView(row: AppOperatorReplaySnapshotRow) -> Element {
                 div { class: "table-cell-stack",
                     a { class: "table-link", href: row.snapshot_view_path.clone(), "view" }
                     a { class: "table-link", href: row.json_snapshot_path.clone(), "json" }
+                    if let Some(audit_scope_path) = row.audit_scope_path.clone() {
+                        a { class: "table-link", href: audit_scope_path, "audit" }
+                    }
+                    if let Some(control_scope_path) = row.control_scope_path.clone() {
+                        a { class: "table-link", href: control_scope_path, "control" }
+                    }
                 }
             }
         }
@@ -1145,6 +1202,12 @@ fn OperatorReplayCard(row: AppOperatorReplaySnapshotRow) -> Element {
             div { class: "operator-link-row", style: "margin-top: 10px;",
                 a { href: row.snapshot_view_path.clone(), "Open snapshot" }
                 a { href: row.json_snapshot_path.clone(), "JSON snapshot" }
+                if let Some(audit_scope_path) = row.audit_scope_path.clone() {
+                    a { href: audit_scope_path, "Audit scope" }
+                }
+                if let Some(control_scope_path) = row.control_scope_path.clone() {
+                    a { href: control_scope_path, "Control scope" }
+                }
             }
         }
     }

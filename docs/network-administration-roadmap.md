@@ -29,11 +29,14 @@ as of `2026-04-12`, the repo now has:
   control replay records
 - typed json and human-facing html views for operator audit, retained replay,
   replay snapshot detail, control replay history, and retention status
+- task-oriented operator drilldowns between audit, control, and replay history
+  for singular retained scopes
 - browser replay invalidation and stale-revision handling tied to assignment and
   publication state
+- larger synthetic fleet coverage for operator history coherence under pressure
 
-the remaining work is now mostly incremental hardening, scale tuning, and
-downstream adoption pressure rather than missing administration primitives.
+the remaining work is now mostly real-world production pressure and downstream
+adoption pressure rather than missing administration primitives.
 
 ## current state
 

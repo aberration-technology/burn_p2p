@@ -463,6 +463,10 @@ pub struct AppOperatorAuditRow {
     pub captured_at: String,
     /// Flattened human-readable summary.
     pub summary: String,
+    /// Related control-history path for the row scope, when one exists.
+    pub control_path: Option<String>,
+    /// Related replay-history path for the row scope, when one exists.
+    pub replay_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -488,6 +492,8 @@ pub struct AppOperatorAuditPageView {
     pub json_summary_path: String,
     /// JSON facets API path for the current query.
     pub json_facets_path: String,
+    /// Reset-query HTML path when one exists.
+    pub clear_filters_path: Option<String>,
     /// Previous-page HTML path when one exists.
     pub prev_page_path: Option<String>,
     /// Next-page HTML path when one exists.
@@ -554,6 +560,10 @@ pub struct AppOperatorControlReplayRow {
     pub captured_at: String,
     /// Flattened human-readable summary.
     pub summary: String,
+    /// Related audit-history path for the row scope.
+    pub audit_path: String,
+    /// Related replay-history path for the row scope.
+    pub replay_path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -575,6 +585,8 @@ pub struct AppOperatorControlReplayPageView {
     pub json_page_path: String,
     /// JSON summary API path for the current query.
     pub json_summary_path: String,
+    /// Reset-query HTML path when one exists.
+    pub clear_filters_path: Option<String>,
     /// Previous-page HTML path when one exists.
     pub prev_page_path: Option<String>,
     /// Next-page HTML path when one exists.
@@ -616,6 +628,10 @@ pub struct AppOperatorReplaySnapshotRow {
     pub snapshot_view_path: String,
     /// JSON API path for the snapshot detail payload.
     pub json_snapshot_path: String,
+    /// Related audit-history path for the retained scope, when singular.
+    pub audit_scope_path: Option<String>,
+    /// Related control-history path for the retained scope, when singular.
+    pub control_scope_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -639,6 +655,8 @@ pub struct AppOperatorReplayPageView {
     pub visible_schedule_epoch_count: usize,
     /// JSON page API path for the current query.
     pub json_page_path: String,
+    /// Reset-query HTML path when one exists.
+    pub clear_filters_path: Option<String>,
     /// Previous-page HTML path when one exists.
     pub prev_page_path: Option<String>,
     /// Next-page HTML path when one exists.
@@ -680,6 +698,10 @@ pub struct AppOperatorReplaySnapshotDetailView {
     pub replay_page_path: String,
     /// JSON API path for the snapshot detail payload.
     pub json_snapshot_path: String,
+    /// Related audit-history path for the retained scope, when singular.
+    pub audit_scope_path: Option<String>,
+    /// Related control-history path for the retained scope, when singular.
+    pub control_scope_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

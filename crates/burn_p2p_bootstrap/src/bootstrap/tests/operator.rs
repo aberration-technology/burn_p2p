@@ -251,6 +251,12 @@ fn operator_control_html_route_renders_human_facing_page() {
     assert!(body.contains("trainer-a"));
     assert!(body.contains("/operator/control/page?kind=schedule-epoch"));
     assert!(body.contains("/operator/control/summary?kind=schedule-epoch"));
+    assert!(body.contains("/operator/audit?study_id=study-a"));
+    assert!(body.contains("experiment_id=exp-a"));
+    assert!(body.contains("revision_id=rev-a"));
+    assert!(body.contains("peer_id=trainer-a"));
+    assert!(body.contains("/operator/replay?study_id=study-a"));
+    assert!(body.contains("Reset query"));
 }
 
 #[test]
@@ -300,6 +306,8 @@ fn operator_audit_html_route_renders_human_facing_page() {
     assert!(body.contains("kind=lifecycle-plan"));
     assert!(body.contains("/operator/audit/page?kind=lifecycle-plan"));
     assert!(body.contains("/operator/audit/facets?kind=lifecycle-plan"));
+    assert!(body.contains("No audit rows matched the current query."));
+    assert!(body.contains("Reset query"));
 }
 
 #[test]
@@ -348,6 +356,8 @@ fn operator_replay_html_route_renders_human_facing_page() {
     assert!(body.contains("Retained replay snapshots"));
     assert!(body.contains("experiment_id=exp-b"));
     assert!(body.contains("/operator/replay/page?experiment_id=exp-b"));
+    assert!(body.contains("No replay snapshots matched the current query."));
+    assert!(body.contains("Reset query"));
 }
 
 #[test]

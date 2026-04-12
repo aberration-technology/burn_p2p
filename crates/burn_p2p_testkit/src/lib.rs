@@ -2047,6 +2047,82 @@ mod tests {
     }
 
     #[test]
+    fn simulation_runner_keeps_operator_history_coherent_under_large_fleet_pressure() {
+        let runner = SimulationRunner::default();
+        let mut spec = SimulationSpec {
+            peer_count: 40,
+            browser_peer_count: 10,
+            window_count: 6,
+            chaos_events: vec![
+                ChaosEvent {
+                    window_id: WindowId(2),
+                    fault: FaultType::PeerChurn,
+                    peer_id: Some(PeerId::new("peer-3")),
+                },
+                ChaosEvent {
+                    window_id: WindowId(4),
+                    fault: FaultType::RelayLoss,
+                    peer_id: Some(PeerId::new("peer-11")),
+                },
+                ChaosEvent {
+                    window_id: WindowId(5),
+                    fault: FaultType::SlowPeer,
+                    peer_id: Some(PeerId::new("peer-19")),
+                },
+            ],
+            ..SimulationSpec::default()
+        };
+        spec.artifact_scale.bytes_len = 8 * 1024;
+        spec.artifact_scale.chunk_size_bytes = 2 * 1024;
+        spec.malicious_peers
+            .insert(PeerId::new("peer-7"), MaliciousBehavior::OutOfLeaseWork);
+        spec.malicious_peers
+            .insert(PeerId::new("peer-13"), MaliciousBehavior::WrongBaseHead);
+        spec.malicious_peers
+            .insert(PeerId::new("peer-29"), MaliciousBehavior::NonFiniteMetric);
+
+        let outcome = runner.run(spec).expect("simulation");
+
+        assert_eq!(outcome.windows.len(), outcome.spec.window_count as usize);
+        assert_eq!(outcome.diagnostics.swarm.connected_peers, outcome.spec.peer_count);
+        assert_eq!(
+            outcome.participant_portals.len(),
+            outcome.spec.peer_count as usize
+        );
+        assert!(
+            outcome
+                .windows
+                .iter()
+                .all(|window| window.merge_certificate.is_some())
+        );
+        assert!(!outcome.operator_console.overlays.is_empty());
+        assert!(!outcome.operator_console.alerts.is_empty());
+        assert!(
+            outcome
+                .benchmark_samples
+                .iter()
+                .any(|sample| sample.name == "configured_peer_count"
+                    && sample.value == outcome.spec.peer_count as f64)
+        );
+        assert!(
+            outcome
+                .study_board
+                .variants
+                .iter()
+                .flat_map(|variant| variant.metrics.iter())
+                .count()
+                >= outcome.spec.window_count as usize
+        );
+        assert!(
+            outcome
+                .windows
+                .iter()
+                .flat_map(|window| &window.rejected_updates)
+                .any(|rejection| rejection.peer_id == PeerId::new("peer-13"))
+        );
+    }
+
+    #[test]
     fn metrics_indexer_surfaces_lag_and_desync_signals_for_branchy_windows() {
         let mut indexer = MetricsIndexer::new(MetricsIndexerConfig {
             stale_head_lag_threshold_steps: 4,

@@ -400,6 +400,35 @@ fn app_operator_control_replay_view(
                 plan_epoch: row.plan_epoch,
                 captured_at: row.captured_at.to_rfc3339(),
                 summary: control_summary_text(&row.summary),
+                audit_path: audit_page_path_with_query(
+                    "/operator/audit",
+                    &crate::OperatorAuditQuery {
+                        kind: None,
+                        study_id: Some(row.study_id.clone()),
+                        experiment_id: Some(row.experiment_id.clone()),
+                        revision_id: Some(row.revision_id.clone()),
+                        peer_id: row.peer_id.clone(),
+                        head_id: None,
+                        since: None,
+                        until: None,
+                        text: None,
+                    },
+                    None,
+                    None,
+                ),
+                replay_path: replay_page_path_with_query(
+                    "/operator/replay",
+                    &crate::OperatorReplayQuery {
+                        study_id: Some(row.study_id.clone()),
+                        experiment_id: Some(row.experiment_id.clone()),
+                        revision_id: Some(row.revision_id.clone()),
+                        head_id: None,
+                        since: None,
+                        until: None,
+                        text: None,
+                    },
+                    None,
+                ),
             })
             .collect(),
         filter_tags: control_query_tags(query),
@@ -412,6 +441,8 @@ fn app_operator_control_replay_view(
             Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
         ),
         json_summary_path: page_path_with_query("/operator/control/summary", query, None),
+        clear_filters_path: (!control_query_tags(query).is_empty() || page.offset > 0)
+            .then(|| "/operator/control".to_owned()),
         prev_page_path: (page.offset > 0).then(|| {
             page_path_with_query(
                 "/operator/control",
@@ -570,6 +601,39 @@ fn app_operator_audit_view(
                 head_id: row.head_id.as_ref().map(|value| value.as_str().to_owned()),
                 captured_at: row.captured_at.to_rfc3339(),
                 summary: control_summary_text(&row.summary),
+                control_path: row.experiment_id.as_ref().map(|experiment_id| {
+                    page_path_with_query(
+                        "/operator/control",
+                        &crate::OperatorControlReplayQuery {
+                            kind: None,
+                            network_id: None,
+                            study_id: row.study_id.clone(),
+                            experiment_id: Some(experiment_id.clone()),
+                            revision_id: row.revision_id.clone(),
+                            peer_id: row.peer_id.clone(),
+                            window_id: None,
+                            since: None,
+                            until: None,
+                            text: None,
+                        },
+                        None,
+                    )
+                }),
+                replay_path: row.experiment_id.as_ref().map(|experiment_id| {
+                    replay_page_path_with_query(
+                        "/operator/replay",
+                        &crate::OperatorReplayQuery {
+                            study_id: row.study_id.clone(),
+                            experiment_id: Some(experiment_id.clone()),
+                            revision_id: row.revision_id.clone(),
+                            head_id: row.head_id.clone(),
+                            since: None,
+                            until: None,
+                            text: None,
+                        },
+                        None,
+                    )
+                }),
             })
             .collect(),
         filter_tags: audit_query_tags(query),
@@ -589,6 +653,8 @@ fn app_operator_audit_view(
             None,
             Some(facets.limit),
         ),
+        clear_filters_path: (!audit_query_tags(query).is_empty() || page.offset > 0)
+            .then(|| "/operator/audit".to_owned()),
         prev_page_path: (page.offset > 0).then(|| {
             audit_page_path_with_query(
                 "/operator/audit",
@@ -691,6 +757,52 @@ fn replay_snapshot_summary_text(summary: &crate::OperatorReplaySnapshotSummary) 
     text.trim().to_owned()
 }
 
+fn replay_scope_history_paths(
+    study_ids: &[burn_p2p_core::StudyId],
+    experiment_ids: &[burn_p2p_core::ExperimentId],
+    revision_ids: &[burn_p2p_core::RevisionId],
+    head_ids: &[burn_p2p_core::HeadId],
+) -> (Option<String>, Option<String>) {
+    if study_ids.len() != 1 || experiment_ids.len() != 1 || revision_ids.len() != 1 {
+        return (None, None);
+    }
+
+    let audit_path = audit_page_path_with_query(
+        "/operator/audit",
+        &crate::OperatorAuditQuery {
+            kind: None,
+            study_id: Some(study_ids[0].clone()),
+            experiment_id: Some(experiment_ids[0].clone()),
+            revision_id: Some(revision_ids[0].clone()),
+            peer_id: None,
+            head_id: (head_ids.len() == 1).then(|| head_ids[0].clone()),
+            since: None,
+            until: None,
+            text: None,
+        },
+        None,
+        None,
+    );
+    let control_path = page_path_with_query(
+        "/operator/control",
+        &crate::OperatorControlReplayQuery {
+            kind: None,
+            network_id: None,
+            study_id: Some(study_ids[0].clone()),
+            experiment_id: Some(experiment_ids[0].clone()),
+            revision_id: Some(revision_ids[0].clone()),
+            peer_id: None,
+            window_id: None,
+            since: None,
+            until: None,
+            text: None,
+        },
+        None,
+    );
+
+    (Some(audit_path), Some(control_path))
+}
+
 #[cfg(feature = "browser-edge")]
 fn app_operator_replay_view(
     query: &crate::OperatorReplayQuery,
@@ -703,45 +815,55 @@ fn app_operator_replay_view(
         rows: page
             .items
             .iter()
-            .map(|row| burn_p2p_app::AppOperatorReplaySnapshotRow {
-                captured_at: row.captured_at.to_rfc3339(),
-                study_ids: row
-                    .study_ids
-                    .iter()
-                    .map(|value| value.as_str().to_owned())
-                    .collect(),
-                experiment_ids: row
-                    .experiment_ids
-                    .iter()
-                    .map(|value| value.as_str().to_owned())
-                    .collect(),
-                revision_ids: row
-                    .revision_ids
-                    .iter()
-                    .map(|value| value.as_str().to_owned())
-                    .collect(),
-                head_ids: row
-                    .head_ids
-                    .iter()
-                    .map(|value| value.as_str().to_owned())
-                    .collect(),
-                receipt_count: row.receipt_count,
-                head_count: row.head_count,
-                merge_count: row.merge_count,
-                lifecycle_plan_count: row.lifecycle_plan_count,
-                schedule_epoch_count: row.schedule_epoch_count,
-                peer_window_metric_count: row.peer_window_metric_count,
-                reducer_cohort_metric_count: row.reducer_cohort_metric_count,
-                head_eval_report_count: row.head_eval_report_count,
-                summary: replay_snapshot_summary_text(row),
-                snapshot_view_path: format!(
-                    "/operator/replay/snapshot/view?captured_at={}",
-                    row.captured_at.to_rfc3339()
-                ),
-                json_snapshot_path: format!(
-                    "/operator/replay/snapshot?captured_at={}",
-                    row.captured_at.to_rfc3339()
-                ),
+            .map(|row| {
+                let (audit_scope_path, control_scope_path) = replay_scope_history_paths(
+                    &row.study_ids,
+                    &row.experiment_ids,
+                    &row.revision_ids,
+                    &row.head_ids,
+                );
+                burn_p2p_app::AppOperatorReplaySnapshotRow {
+                    captured_at: row.captured_at.to_rfc3339(),
+                    study_ids: row
+                        .study_ids
+                        .iter()
+                        .map(|value| value.as_str().to_owned())
+                        .collect(),
+                    experiment_ids: row
+                        .experiment_ids
+                        .iter()
+                        .map(|value| value.as_str().to_owned())
+                        .collect(),
+                    revision_ids: row
+                        .revision_ids
+                        .iter()
+                        .map(|value| value.as_str().to_owned())
+                        .collect(),
+                    head_ids: row
+                        .head_ids
+                        .iter()
+                        .map(|value| value.as_str().to_owned())
+                        .collect(),
+                    receipt_count: row.receipt_count,
+                    head_count: row.head_count,
+                    merge_count: row.merge_count,
+                    lifecycle_plan_count: row.lifecycle_plan_count,
+                    schedule_epoch_count: row.schedule_epoch_count,
+                    peer_window_metric_count: row.peer_window_metric_count,
+                    reducer_cohort_metric_count: row.reducer_cohort_metric_count,
+                    head_eval_report_count: row.head_eval_report_count,
+                    summary: replay_snapshot_summary_text(row),
+                    snapshot_view_path: format!(
+                        "/operator/replay/snapshot/view?captured_at={}",
+                        row.captured_at.to_rfc3339()
+                    ),
+                    json_snapshot_path: format!(
+                        "/operator/replay/snapshot?captured_at={}",
+                        row.captured_at.to_rfc3339()
+                    ),
+                    audit_scope_path,
+                    control_scope_path,
+                }
             })
             .collect(),
         filter_tags: replay_query_tags(query),
@@ -756,6 +878,8 @@ fn app_operator_replay_view(
             query,
             Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
         ),
+        clear_filters_path: (!replay_query_tags(query).is_empty() || page.offset > 0)
+            .then(|| "/operator/replay".to_owned()),
         prev_page_path: (page.offset > 0).then(|| {
             replay_page_path_with_query(
                 "/operator/replay",
@@ -773,7 +897,6 @@ fn app_operator_replay_view(
     }
 }
 
-#[cfg(feature = "browser-edge")]
 fn snapshot_scope_ids<T, F>(items: &[T], project: F) -> Vec<String>
 where
     F: Fn(&T) -> Option<&str>,
@@ -806,6 +929,38 @@ fn app_operator_replay_snapshot_detail_view(
         experiment_ids.insert(head.experiment_id.as_str().to_owned());
         revision_ids.insert(head.revision_id.as_str().to_owned());
     }
+    let typed_study_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.study_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::StudyId::new)
+        .collect::<Vec<_>>();
+    let typed_experiment_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.experiment_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::ExperimentId::new)
+        .collect::<Vec<_>>();
+    let typed_revision_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.revision_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::RevisionId::new)
+        .collect::<Vec<_>>();
+    let typed_head_ids = snapshot
+        .heads
+        .iter()
+        .map(|head| head.head_id.clone())
+        .collect::<Vec<_>>();
+    let (audit_scope_path, control_scope_path) = replay_scope_history_paths(
+        &typed_study_ids,
+        &typed_experiment_ids,
+        &typed_revision_ids,
+        &typed_head_ids,
+    );
     burn_p2p_app::AppOperatorReplaySnapshotDetailView {
         captured_at: snapshot.captured_at.to_rfc3339(),
         study_ids: study_ids.into_iter().collect(),
@@ -826,6 +981,8 @@ fn app_operator_replay_snapshot_detail_view(
             "/operator/replay/snapshot?captured_at={}",
             captured_at_value.to_rfc3339()
         ),
+        audit_scope_path,
+        control_scope_path,
     }
 }
 
@@ -908,6 +1065,9 @@ pub fn render_operator_audit_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
+    let reset_html = (!filters.is_empty() || page.offset > 0)
+        .then_some(" | <a href=\"/operator/audit\">Reset query</a>")
+        .unwrap_or("");
     let facet_html = [
         ("kinds", &facets.kinds),
         ("studies", &facets.studies),
@@ -938,8 +1098,53 @@ pub fn render_operator_audit_html(
             .items
             .iter()
             .map(|row| {
+                let control_path = row.experiment_id.as_ref().map(|experiment_id| {
+                    page_path_with_query(
+                        "/operator/control",
+                        &crate::OperatorControlReplayQuery {
+                            kind: None,
+                            network_id: None,
+                            study_id: row.study_id.clone(),
+                            experiment_id: Some(experiment_id.clone()),
+                            revision_id: row.revision_id.clone(),
+                            peer_id: row.peer_id.clone(),
+                            window_id: None,
+                            since: None,
+                            until: None,
+                            text: None,
+                        },
+                        None,
+                    )
+                });
+                let replay_path = row.experiment_id.as_ref().map(|experiment_id| {
+                    replay_page_path_with_query(
+                        "/operator/replay",
+                        &crate::OperatorReplayQuery {
+                            study_id: row.study_id.clone(),
+                            experiment_id: Some(experiment_id.clone()),
+                            revision_id: row.revision_id.clone(),
+                            head_id: row.head_id.clone(),
+                            since: None,
+                            until: None,
+                            text: None,
+                        },
+                        None,
+                    )
+                });
+                let links_html = match (control_path, replay_path) {
+                    (Some(control_path), Some(replay_path)) => {
+                        format!("<div><a href=\"{control_path}\">control</a> | <a href=\"{replay_path}\">replay</a></div>")
+                    }
+                    (Some(control_path), None) => {
+                        format!("<div><a href=\"{control_path}\">control</a></div>")
+                    }
+                    (None, Some(replay_path)) => {
+                        format!("<div><a href=\"{replay_path}\">replay</a></div>")
+                    }
+                    (None, None) => String::new(),
+                };
                 format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><div>{}</div>{}</td></tr>",
                     row.kind.as_slug(),
                     row.record_id,
                     row.peer_id
@@ -948,6 +1153,7 @@ pub fn render_operator_audit_html(
                         .unwrap_or("n/a"),
                     row.captured_at.to_rfc3339(),
                     control_summary_text(&row.summary),
+                    links_html,
                 )
             })
             .collect::<Vec<_>>()
@@ -961,7 +1167,7 @@ pub fn render_operator_audit_html(
             "<!doctype html><html lang=\"en\"><body><main>",
             "<h1>Operator audit history</h1>",
             "<p>Backend: <strong>{backend}</strong> | records: <strong>{record_count}</strong></p>",
-            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a> | <a href=\"{json_facets}\">json facets</a></p>",
+            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a> | <a href=\"{json_facets}\">json facets</a>{reset}</p>",
             "{filters}",
             "{facets}",
             "{rows}",
@@ -978,6 +1184,7 @@ pub fn render_operator_audit_html(
         json_summary = audit_page_path_with_query("/operator/audit/summary", query, None, None),
         json_facets =
             audit_page_path_with_query("/operator/audit/facets", query, None, Some(facets.limit),),
+        reset = reset_html,
         filters = filter_html,
         facets = facet_html,
         rows = rows_html,
@@ -1014,6 +1221,9 @@ pub fn render_operator_replay_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
+    let reset_html = (!filters.is_empty() || page.offset > 0)
+        .then_some(" | <a href=\"/operator/replay\">Reset query</a>")
+        .unwrap_or("");
     let rows_html = if page.items.is_empty() {
         "<p>No replay snapshots matched the current query.</p>".to_owned()
     } else {
@@ -1021,18 +1231,40 @@ pub fn render_operator_replay_html(
             .items
             .iter()
             .map(|row| {
+                let (audit_scope_path, control_scope_path) = replay_scope_history_paths(
+                    &row.study_ids,
+                    &row.experiment_ids,
+                    &row.revision_ids,
+                    &row.head_ids,
+                );
+                let mut links = vec![
+                    format!(
+                        "<a href=\"/operator/replay/snapshot/view?captured_at={}\">view</a>",
+                        row.captured_at.to_rfc3339()
+                    ),
+                    format!(
+                        "<a href=\"/operator/replay/snapshot?captured_at={}\">json</a>",
+                        row.captured_at.to_rfc3339()
+                    ),
+                ];
+                if let Some(audit_scope_path) = audit_scope_path {
+                    links.push(format!("<a href=\"{audit_scope_path}\">audit</a>"));
+                }
+                if let Some(control_scope_path) = control_scope_path {
+                    links.push(format!("<a href=\"{control_scope_path}\">control</a>"));
+                }
                 format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/operator/replay/snapshot?captured_at={}\">json</a></td></tr>",
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                     row.captured_at.to_rfc3339(),
                     row.receipt_count,
                     replay_snapshot_summary_text(row),
-                    row.captured_at.to_rfc3339(),
+                    links.join(" | "),
                 )
             })
             .collect::<Vec<_>>()
             .join("");
         format!(
-            "<table><thead><tr><th>Captured</th><th>Receipts</th><th>Summary</th><th>API</th></tr></thead><tbody>{rows}</tbody></table>"
+            "<table><thead><tr><th>Captured</th><th>Receipts</th><th>Summary</th><th>Links</th></tr></thead><tbody>{rows}</tbody></table>"
         )
     };
     format!(
@@ -1040,7 +1272,7 @@ pub fn render_operator_replay_html(
             "<!doctype html><html lang=\"en\"><body><main>",
             "<h1>Retained replay snapshots</h1>",
             "<p>Snapshots: <strong>{total}</strong></p>",
-            "<p><a href=\"{json_page}\">json page</a></p>",
+            "<p><a href=\"{json_page}\">json page</a>{reset}</p>",
             "{filters}",
             "{rows}",
             "</main></body></html>"
@@ -1051,6 +1283,7 @@ pub fn render_operator_replay_html(
             query,
             Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
         ),
+        reset = reset_html,
         filters = filter_html,
         rows = rows_html,
     )
@@ -1062,13 +1295,57 @@ pub fn render_operator_replay_snapshot_html(
     snapshot: &crate::OperatorReplaySnapshot,
 ) -> String {
     let captured_at = captured_at.unwrap_or(snapshot.captured_at).to_rfc3339();
+    let typed_study_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.study_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.study_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::StudyId::new)
+        .collect::<Vec<_>>();
+    let typed_experiment_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.experiment_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.experiment_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::ExperimentId::new)
+        .collect::<Vec<_>>();
+    let typed_revision_ids = snapshot_scope_ids(&snapshot.receipts, |item| Some(item.revision_id.as_str()))
+        .into_iter()
+        .chain(snapshot_scope_ids(&snapshot.heads, |item| Some(item.revision_id.as_str())))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(burn_p2p_core::RevisionId::new)
+        .collect::<Vec<_>>();
+    let typed_head_ids = snapshot
+        .heads
+        .iter()
+        .map(|head| head.head_id.clone())
+        .collect::<Vec<_>>();
+    let (audit_scope_path, control_scope_path) = replay_scope_history_paths(
+        &typed_study_ids,
+        &typed_experiment_ids,
+        &typed_revision_ids,
+        &typed_head_ids,
+    );
+    let scope_links = match (audit_scope_path, control_scope_path) {
+        (Some(audit_scope_path), Some(control_scope_path)) => {
+            format!(" | <a href=\"{audit_scope_path}\">Audit scope</a> | <a href=\"{control_scope_path}\">Control scope</a>")
+        }
+        (Some(audit_scope_path), None) => {
+            format!(" | <a href=\"{audit_scope_path}\">Audit scope</a>")
+        }
+        (None, Some(control_scope_path)) => {
+            format!(" | <a href=\"{control_scope_path}\">Control scope</a>")
+        }
+        (None, None) => String::new(),
+    };
     format!(
         concat!(
             "<!doctype html><html lang=\"en\"><body><main>",
             "<h1>Retained replay snapshot</h1>",
             "<p>Captured: <strong>{captured_at}</strong></p>",
             "<p>receipts={receipts} heads={heads} merges={merges} lifecycle={lifecycle} schedule={schedule}</p>",
-            "<p><a href=\"/operator/replay\">replay history</a> | <a href=\"/operator/replay/snapshot?captured_at={captured_at}\">json snapshot</a></p>",
+            "<p><a href=\"/operator/replay\">replay history</a> | <a href=\"/operator/replay/snapshot?captured_at={captured_at}\">json snapshot</a>{scope_links}</p>",
             "</main></body></html>"
         ),
         captured_at = captured_at,
@@ -1077,6 +1354,7 @@ pub fn render_operator_replay_snapshot_html(
         merges = snapshot.merges.len(),
         lifecycle = snapshot.lifecycle_announcements.len(),
         schedule = snapshot.schedule_announcements.len(),
+        scope_links = scope_links,
     )
 }
 
@@ -1116,6 +1394,9 @@ pub fn render_operator_control_replay_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
+    let reset_html = (!filters.is_empty() || page.offset > 0)
+        .then_some(" | <a href=\"/operator/control\">Reset query</a>")
+        .unwrap_or("");
     let rows_html = if page.items.is_empty() {
         "<p>No lifecycle or schedule rows matched the current query.</p>".to_owned()
     } else {
@@ -1123,8 +1404,37 @@ pub fn render_operator_control_replay_html(
             .items
             .iter()
             .map(|row| {
+                let audit_path = audit_page_path_with_query(
+                    "/operator/audit",
+                    &crate::OperatorAuditQuery {
+                        kind: None,
+                        study_id: Some(row.study_id.clone()),
+                        experiment_id: Some(row.experiment_id.clone()),
+                        revision_id: Some(row.revision_id.clone()),
+                        peer_id: row.peer_id.clone(),
+                        head_id: None,
+                        since: None,
+                        until: None,
+                        text: None,
+                    },
+                    None,
+                    None,
+                );
+                let replay_path = replay_page_path_with_query(
+                    "/operator/replay",
+                    &crate::OperatorReplayQuery {
+                        study_id: Some(row.study_id.clone()),
+                        experiment_id: Some(row.experiment_id.clone()),
+                        revision_id: Some(row.revision_id.clone()),
+                        head_id: None,
+                        since: None,
+                        until: None,
+                        text: None,
+                    },
+                    None,
+                );
                 format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><div>{}</div><div><a href=\"{audit_path}\">audit</a> | <a href=\"{replay_path}\">replay</a></div></td></tr>",
                     row.kind.as_slug(),
                     row.record_id,
                     row.peer_id
@@ -1147,7 +1457,7 @@ pub fn render_operator_control_replay_html(
             "<!doctype html><html lang=\"en\"><body><main>",
             "<h1>Lifecycle and schedule history</h1>",
             "<p>Backend: <strong>{backend}</strong> | records: <strong>{record_count}</strong></p>",
-            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a></p>",
+            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a>{reset}</p>",
             "{filters}",
             "{rows}",
             "</main></body></html>"
@@ -1160,6 +1470,7 @@ pub fn render_operator_control_replay_html(
             Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
         ),
         json_summary = page_path_with_query("/operator/control/summary", query, None),
+        reset = reset_html,
         filters = filter_html,
         rows = rows_html,
     )
