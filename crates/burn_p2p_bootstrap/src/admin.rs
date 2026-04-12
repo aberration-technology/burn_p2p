@@ -12,7 +12,7 @@ use burn_p2p_core::{
 };
 use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
-    ExperimentLifecyclePlan,
+    ExperimentLifecyclePlan, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,8 @@ pub enum AdminAction {
     Control(ExperimentControlCommand),
     /// Uses the lifecycle variant.
     Lifecycle(Box<ExperimentLifecyclePlan>),
+    /// Uses the schedule variant.
+    Schedule(Box<FleetScheduleEpoch>),
     /// Uses the ban peer variant.
     BanPeer {
         /// The peer ID.
@@ -82,7 +84,7 @@ impl AdminAction {
     /// Performs the capability operation.
     pub fn capability(&self) -> AdminCapability {
         match self {
-            Self::Control(_) | Self::Lifecycle(_) => AdminCapability::Control,
+            Self::Control(_) | Self::Lifecycle(_) | Self::Schedule(_) => AdminCapability::Control,
             Self::BanPeer { .. } => AdminCapability::BanPeer,
             Self::ExportDiagnostics => AdminCapability::ExportDiagnostics,
             Self::ExportDiagnosticsBundle => AdminCapability::ExportDiagnosticsBundle,
@@ -105,6 +107,8 @@ pub enum AdminResult {
     Control(Box<ControlCertificate<ExperimentControlEnvelope>>),
     /// Uses the lifecycle variant.
     Lifecycle(Box<ControlCertificate<ExperimentLifecycleEnvelope>>),
+    /// Uses the schedule variant.
+    Schedule(Box<ControlCertificate<FleetScheduleEpochEnvelope>>),
     /// Uses the peer banned variant.
     PeerBanned {
         /// The peer ID.
@@ -205,6 +209,23 @@ impl BootstrapPlan {
         .into_signed_cert(signer, self.genesis.protocol_version.clone())?)
     }
 
+    /// Issues the schedule certificate.
+    pub fn issue_schedule_certificate(
+        &self,
+        epoch: FleetScheduleEpoch,
+        signer: SignatureMetadata,
+    ) -> Result<ControlCertificate<FleetScheduleEpochEnvelope>, BootstrapError> {
+        if !self.supports_service(&crate::BootstrapService::Authority) {
+            return Err(BootstrapError::AuthorityServiceRequired);
+        }
+
+        Ok(FleetScheduleEpochEnvelope {
+            network_id: self.genesis.network_id.clone(),
+            epoch,
+        }
+        .into_signed_cert(signer, self.genesis.protocol_version.clone())?)
+    }
+
     /// Performs the execute admin action operation.
     pub fn execute_admin_action(
         &self,
@@ -229,6 +250,11 @@ impl BootstrapPlan {
                 let signer = signer.ok_or(BootstrapError::MissingSigner)?;
                 let certificate = self.issue_lifecycle_certificate(*plan, signer)?;
                 Ok(AdminResult::Lifecycle(Box::new(certificate)))
+            }
+            AdminAction::Schedule(epoch) => {
+                let signer = signer.ok_or(BootstrapError::MissingSigner)?;
+                let certificate = self.issue_schedule_certificate(*epoch, signer)?;
+                Ok(AdminResult::Schedule(Box::new(certificate)))
             }
             AdminAction::BanPeer { peer_id, reason } => {
                 state.quarantined_peers.insert(peer_id.clone());

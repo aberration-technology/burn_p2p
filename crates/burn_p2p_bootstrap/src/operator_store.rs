@@ -8,7 +8,10 @@ use crate::state::{
 };
 #[cfg(feature = "artifact-publish")]
 use burn_p2p::FsArtifactStore;
-use burn_p2p::{ContributionReceipt, HeadDescriptor, MetricsRetentionBudget, StorageConfig};
+use burn_p2p::{
+    ContributionReceipt, ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement,
+    HeadDescriptor, MetricsRetentionBudget, StorageConfig,
+};
 use burn_p2p_core::{
     BrowserLeaderboardSnapshot, ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId,
     Page, PageRequest, PeerId, PeerWindowMetrics, PrincipalId, PublicationTarget,
@@ -94,6 +97,10 @@ pub(crate) struct FileOperatorStorePreview {
     pub(crate) receipts: Vec<ContributionReceipt>,
     pub(crate) heads: Vec<HeadDescriptor>,
     pub(crate) merges: Vec<MergeCertificate>,
+    #[serde(default)]
+    pub(crate) lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
+    #[serde(default)]
+    pub(crate) schedule_announcements: Vec<FleetScheduleAnnouncement>,
     pub(crate) peer_window_metrics: Vec<PeerWindowMetrics>,
     pub(crate) reducer_cohort_metrics: Vec<ReducerCohortMetrics>,
     pub(crate) head_eval_reports: Vec<HeadEvalReport>,
@@ -150,6 +157,8 @@ fn replay_snapshot_from_preview(
         receipts: preview.receipts,
         heads: preview.heads,
         merges: preview.merges,
+        lifecycle_announcements: preview.lifecycle_announcements,
+        schedule_announcements: preview.schedule_announcements,
         peer_window_metrics: preview.peer_window_metrics,
         reducer_cohort_metrics: preview.reducer_cohort_metrics,
         head_eval_reports: preview.head_eval_reports,
@@ -192,6 +201,23 @@ fn preview_scope_ids(
         head_ids.insert(merge.base_head_id.clone(), ());
         head_ids.insert(merge.merged_head_id.clone(), ());
     }
+    for announcement in &preview.lifecycle_announcements {
+        let plan = &announcement.certificate.body.payload.payload.plan;
+        study_ids.insert(plan.study_id.clone(), ());
+        experiment_ids.insert(plan.experiment_id.clone(), ());
+        if let Some(base_revision_id) = plan.base_revision_id.as_ref() {
+            revision_ids.insert(base_revision_id.clone(), ());
+        }
+        revision_ids.insert(plan.target_entry.current_revision_id.clone(), ());
+    }
+    for announcement in &preview.schedule_announcements {
+        let epoch = &announcement.certificate.body.payload.payload.epoch;
+        for assignment in &epoch.assignments {
+            study_ids.insert(assignment.study_id.clone(), ());
+            experiment_ids.insert(assignment.experiment_id.clone(), ());
+            revision_ids.insert(assignment.revision_id.clone(), ());
+        }
+    }
     for metrics in &preview.peer_window_metrics {
         experiment_ids.insert(metrics.experiment_id.clone(), ());
         revision_ids.insert(metrics.revision_id.clone(), ());
@@ -233,6 +259,14 @@ fn build_replay_snapshot_summary(
         ("receipts".into(), preview.receipts.len().to_string()),
         ("merges".into(), preview.merges.len().to_string()),
         (
+            "lifecycle_plans".into(),
+            preview.lifecycle_announcements.len().to_string(),
+        ),
+        (
+            "schedule_epochs".into(),
+            preview.schedule_announcements.len().to_string(),
+        ),
+        (
             "peer_window_metrics".into(),
             preview.peer_window_metrics.len().to_string(),
         ),
@@ -255,6 +289,8 @@ fn build_replay_snapshot_summary(
         receipt_count: preview.receipts.len(),
         head_count: preview.heads.len(),
         merge_count: preview.merges.len(),
+        lifecycle_plan_count: preview.lifecycle_announcements.len(),
+        schedule_epoch_count: preview.schedule_announcements.len(),
         peer_window_metric_count: preview.peer_window_metrics.len(),
         reducer_cohort_metric_count: preview.reducer_cohort_metrics.len(),
         head_eval_report_count: preview.head_eval_reports.len(),
@@ -329,6 +365,90 @@ fn build_audit_records_from_preview(
                 ("policy".into(), format!("{:?}", merge.policy)),
             ]),
         });
+    }
+
+    for announcement in &preview.lifecycle_announcements {
+        let plan = &announcement.certificate.body.payload.payload.plan;
+        records.push(OperatorAuditRecord {
+            kind: OperatorAuditKind::LifecyclePlan,
+            record_id: announcement.certificate.control_cert_id.as_str().to_owned(),
+            study_id: Some(plan.study_id.clone()),
+            experiment_id: Some(plan.experiment_id.clone()),
+            revision_id: Some(plan.target_entry.current_revision_id.clone()),
+            peer_id: None,
+            head_id: plan.target_entry.current_head_id.clone(),
+            captured_at: announcement.announced_at,
+            summary: BTreeMap::from([
+                ("kind".into(), "lifecycle_plan".into()),
+                ("phase".into(), format!("{:?}", plan.phase)),
+                (
+                    "activation_window".into(),
+                    plan.target.activation.activation_window.0.to_string(),
+                ),
+                ("plan_epoch".into(), plan.plan_epoch.to_string()),
+                (
+                    "target_experiment_id".into(),
+                    plan.target_entry.experiment_id.as_str().to_owned(),
+                ),
+                (
+                    "target_revision_id".into(),
+                    plan.target_entry.current_revision_id.as_str().to_owned(),
+                ),
+                ("reason".into(), plan.reason.clone().unwrap_or_default()),
+            ]),
+        });
+    }
+
+    for announcement in &preview.schedule_announcements {
+        let epoch = &announcement.certificate.body.payload.payload.epoch;
+        for assignment in &epoch.assignments {
+            records.push(OperatorAuditRecord {
+                kind: OperatorAuditKind::ScheduleEpoch,
+                record_id: format!(
+                    "{}:{}:{}",
+                    announcement.certificate.control_cert_id.as_str(),
+                    assignment.peer_id.as_str(),
+                    assignment.slot_index
+                ),
+                study_id: Some(assignment.study_id.clone()),
+                experiment_id: Some(assignment.experiment_id.clone()),
+                revision_id: Some(assignment.revision_id.clone()),
+                peer_id: Some(assignment.peer_id.clone()),
+                head_id: None,
+                captured_at: announcement.announced_at,
+                summary: BTreeMap::from([
+                    ("kind".into(), "schedule_epoch".into()),
+                    (
+                        "activation_window".into(),
+                        epoch.target.activation.activation_window.0.to_string(),
+                    ),
+                    (
+                        "ends_before_window".into(),
+                        epoch
+                            .ends_before_window
+                            .map(|window| window.0.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    ("plan_epoch".into(), epoch.plan_epoch.to_string()),
+                    ("slot_index".into(), assignment.slot_index.to_string()),
+                    (
+                        "budget_scale".into(),
+                        assignment
+                            .budget_scale
+                            .map(|value| format!("{value:.4}"))
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "microshard_scale".into(),
+                        assignment
+                            .microshard_scale
+                            .map(|value| format!("{value:.4}"))
+                            .unwrap_or_default(),
+                    ),
+                    ("reason".into(), epoch.reason.clone().unwrap_or_default()),
+                ]),
+            });
+        }
     }
 
     for metrics in &preview.peer_window_metrics {
@@ -437,6 +557,8 @@ pub(crate) struct FileOperatorStore {
     receipt_preview: Vec<ContributionReceipt>,
     head_preview: Vec<HeadDescriptor>,
     merge_preview: Vec<MergeCertificate>,
+    lifecycle_preview: Vec<ExperimentLifecycleAnnouncement>,
+    schedule_preview: Vec<FleetScheduleAnnouncement>,
     #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
     peer_window_preview: Vec<PeerWindowMetrics>,
     #[cfg_attr(not(feature = "metrics-indexer"), allow(dead_code))]
@@ -459,6 +581,8 @@ impl FileOperatorStore {
             receipt_preview: preview.receipts,
             head_preview: preview.heads,
             merge_preview: preview.merges,
+            lifecycle_preview: preview.lifecycle_announcements,
+            schedule_preview: preview.schedule_announcements,
             peer_window_preview: preview.peer_window_metrics,
             reducer_cohort_preview: preview.reducer_cohort_metrics,
             head_eval_preview: preview.head_eval_reports,
@@ -612,6 +736,8 @@ impl FileOperatorStore {
             receipts: self.receipts(&ReceiptQuery::default())?,
             heads: self.heads(&HeadQuery::default())?,
             merges: self.merges()?,
+            lifecycle_announcements: self.lifecycle_preview.clone(),
+            schedule_announcements: self.schedule_preview.clone(),
             peer_window_metrics: self.all_peer_window_metrics()?,
             reducer_cohort_metrics: self.all_reducer_cohort_metrics()?,
             head_eval_reports: self.all_head_eval_reports()?,
@@ -669,10 +795,16 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     receipt_count BIGINT NOT NULL DEFAULT 0,
     head_count BIGINT NOT NULL DEFAULT 0,
     merge_count BIGINT NOT NULL DEFAULT 0,
+    lifecycle_plan_count BIGINT NOT NULL DEFAULT 0,
+    schedule_epoch_count BIGINT NOT NULL DEFAULT 0,
     peer_window_metric_count BIGINT NOT NULL DEFAULT 0,
     reducer_cohort_metric_count BIGINT NOT NULL DEFAULT 0,
     head_eval_report_count BIGINT NOT NULL DEFAULT 0
 );
+ALTER TABLE {table_name}
+    ADD COLUMN IF NOT EXISTS lifecycle_plan_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE {table_name}
+    ADD COLUMN IF NOT EXISTS schedule_epoch_count BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS {table_name}_snapshot_lookup
     ON {table_name} (snapshot_key, captured_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS {table_name}_captured_lookup
@@ -1516,7 +1648,7 @@ fn load_postgres_operator_replay_page(
     let rows = client.query(
         &format!(
             "SELECT captured_at, study_ids, experiment_ids, revision_ids, head_ids, \
-                    receipt_count, head_count, merge_count, peer_window_metric_count, \
+                    receipt_count, head_count, merge_count, lifecycle_plan_count, schedule_epoch_count, peer_window_metric_count, \
                     reducer_cohort_metric_count, head_eval_report_count, summary_json::text \
              FROM {table_name} \
              WHERE {where_sql} \
@@ -1554,10 +1686,12 @@ fn load_postgres_operator_replay_page(
                 receipt_count: row.get::<_, i64>(5).max(0) as usize,
                 head_count: row.get::<_, i64>(6).max(0) as usize,
                 merge_count: row.get::<_, i64>(7).max(0) as usize,
-                peer_window_metric_count: row.get::<_, i64>(8).max(0) as usize,
-                reducer_cohort_metric_count: row.get::<_, i64>(9).max(0) as usize,
-                head_eval_report_count: row.get::<_, i64>(10).max(0) as usize,
-                summary: serde_json::from_str(&row.get::<_, String>(11))?,
+                lifecycle_plan_count: row.get::<_, i64>(8).max(0) as usize,
+                schedule_epoch_count: row.get::<_, i64>(9).max(0) as usize,
+                peer_window_metric_count: row.get::<_, i64>(10).max(0) as usize,
+                reducer_cohort_metric_count: row.get::<_, i64>(11).max(0) as usize,
+                head_eval_report_count: row.get::<_, i64>(12).max(0) as usize,
+                summary: serde_json::from_str(&row.get::<_, String>(13))?,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1747,8 +1881,8 @@ pub(crate) fn persist_operator_state_snapshot(
             client.execute(
                 &format!(
                     "INSERT INTO {table_name} \
-                     (snapshot_key, captured_at, preview_json, summary_json, summary_text, study_ids, experiment_ids, revision_ids, head_ids, receipt_count, head_count, merge_count, peer_window_metric_count, reducer_cohort_metric_count, head_eval_report_count) \
-                     VALUES ($1, $2, CAST($3 AS text)::jsonb, CAST($4 AS text)::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+                     (snapshot_key, captured_at, preview_json, summary_json, summary_text, study_ids, experiment_ids, revision_ids, head_ids, receipt_count, head_count, merge_count, lifecycle_plan_count, schedule_epoch_count, peer_window_metric_count, reducer_cohort_metric_count, head_eval_report_count) \
+                     VALUES ($1, $2, CAST($3 AS text)::jsonb, CAST($4 AS text)::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
                 ),
                 &[
                     &snapshot_key,
@@ -1763,6 +1897,8 @@ pub(crate) fn persist_operator_state_snapshot(
                     &i64::try_from(replay_summary.receipt_count).unwrap_or(i64::MAX),
                     &i64::try_from(replay_summary.head_count).unwrap_or(i64::MAX),
                     &i64::try_from(replay_summary.merge_count).unwrap_or(i64::MAX),
+                    &i64::try_from(replay_summary.lifecycle_plan_count).unwrap_or(i64::MAX),
+                    &i64::try_from(replay_summary.schedule_epoch_count).unwrap_or(i64::MAX),
                     &i64::try_from(replay_summary.peer_window_metric_count).unwrap_or(i64::MAX),
                     &i64::try_from(replay_summary.reducer_cohort_metric_count)
                         .unwrap_or(i64::MAX),
@@ -2019,6 +2155,8 @@ impl OperatorStore for FileOperatorStore {
                 receipts: self.receipt_preview.clone(),
                 heads: self.head_preview.clone(),
                 merges: self.merge_preview.clone(),
+                lifecycle_announcements: self.lifecycle_preview.clone(),
+                schedule_announcements: self.schedule_preview.clone(),
                 peer_window_metrics: self.peer_window_preview.clone(),
                 reducer_cohort_metrics: self.reducer_cohort_preview.clone(),
                 head_eval_reports: self.head_eval_preview.clone(),
@@ -2053,6 +2191,8 @@ impl OperatorStore for FileOperatorStore {
                     receipts: self.receipt_preview.clone(),
                     heads: self.head_preview.clone(),
                     merges: self.merge_preview.clone(),
+                    lifecycle_announcements: self.lifecycle_preview.clone(),
+                    schedule_announcements: self.schedule_preview.clone(),
                     peer_window_metrics: self.peer_window_preview.clone(),
                     reducer_cohort_metrics: self.reducer_cohort_preview.clone(),
                     head_eval_reports: self.head_eval_preview.clone(),
@@ -2200,7 +2340,7 @@ impl OperatorStore for FileOperatorStore {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         net::TcpListener,
         process::{Child, Command, Stdio},
         thread,
@@ -2212,8 +2352,14 @@ mod tests {
     use burn_p2p::{HeadDescriptor, MetricValue, PeerRole, PeerWindowStatus};
     use burn_p2p_core::{
         ArtifactId, ContentId, DatasetViewId, ExperimentId, HeadEvalStatus, MetricTrustClass,
-        NetworkId, RevisionId, StudyId, WorkloadId,
+        NetworkId, PeerId, RevisionId, SignatureAlgorithm, SignatureMetadata, StudyId,
+        WindowActivation, WindowId, WorkloadId,
     };
+    use burn_p2p_experiment::{
+        ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
+        ExperimentLifecyclePlan, FleetScheduleEpochBuilder, FleetScheduleEpochEnvelope,
+    };
+    use semver::Version;
     use tempfile::{TempDir, tempdir};
 
     struct RedisTestServer {
@@ -2532,6 +2678,8 @@ mod tests {
             receipts: vec![receipt],
             heads: vec![head],
             merges: vec![merge],
+            lifecycle_announcements: Vec::new(),
+            schedule_announcements: Vec::new(),
             peer_window_metrics: vec![peer_window_metrics],
             reducer_cohort_metrics: vec![reducer_cohort_metrics],
             head_eval_reports: vec![report],
@@ -2657,10 +2805,102 @@ mod tests {
             receipts: vec![receipt],
             heads: vec![head],
             merges: vec![merge],
+            lifecycle_announcements: Vec::new(),
+            schedule_announcements: Vec::new(),
             peer_window_metrics: vec![peer_window_metrics],
             reducer_cohort_metrics: vec![reducer_cohort_metrics],
             head_eval_reports: vec![report],
             eval_protocol_manifests: Vec::new(),
+        }
+    }
+
+    fn sample_lifecycle_and_schedule_preview(now: DateTime<Utc>) -> FileOperatorStorePreview {
+        let signer = SignatureMetadata {
+            signer: PeerId::new("authority"),
+            key_id: "authority-key".into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: now,
+            signature_hex: "abcd".into(),
+        };
+        let lifecycle = ExperimentLifecycleEnvelope {
+            network_id: NetworkId::new("mainnet"),
+            plan: ExperimentLifecyclePlan {
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp-a"),
+                base_revision_id: Some(RevisionId::new("rev-a")),
+                target_entry: burn_p2p::ExperimentDirectoryEntry {
+                    network_id: NetworkId::new("mainnet"),
+                    study_id: StudyId::new("study"),
+                    experiment_id: ExperimentId::new("exp-b"),
+                    workload_id: WorkloadId::new("alternate"),
+                    display_name: "exp-b rev-b".into(),
+                    model_schema_hash: ContentId::new("schema-b"),
+                    dataset_view_id: DatasetViewId::new("view-b"),
+                    resource_requirements: burn_p2p::ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::from([PeerRole::TrainerCpu]),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 0,
+                        estimated_window_seconds: 60,
+                    },
+                    visibility: burn_p2p::ExperimentVisibility::Public,
+                    opt_in_policy: burn_p2p::ExperimentOptInPolicy::Open,
+                    current_revision_id: RevisionId::new("rev-b"),
+                    current_head_id: Some(HeadId::new("head-b")),
+                    allowed_roles: burn_p2p_core::PeerRoleSet::default_trainer(),
+                    allowed_scopes: BTreeSet::new(),
+                    metadata: BTreeMap::new(),
+                },
+                phase: ExperimentLifecyclePhase::Activating,
+                target: ActivationTarget {
+                    activation: WindowActivation {
+                        activation_window: WindowId(7),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                plan_epoch: 3,
+                reason: Some("roll exp-b".into()),
+            },
+        }
+        .into_signed_cert(signer.clone(), Version::new(0, 1, 0))
+        .expect("lifecycle cert");
+        let schedule = FleetScheduleEpochEnvelope {
+            network_id: NetworkId::new("mainnet"),
+            epoch: FleetScheduleEpochBuilder::new()
+                .with_activation(WindowActivation {
+                    activation_window: WindowId(8),
+                    grace_windows: 0,
+                })
+                .ending_before(WindowId(12))
+                .with_plan_epoch(4)
+                .with_reason("planner reshuffle")
+                .assign_peer_slot_scaled(
+                    PeerId::new("trainer-a"),
+                    0,
+                    StudyId::new("study"),
+                    ExperimentId::new("exp-a"),
+                    RevisionId::new("rev-a"),
+                    Some(0.5),
+                    Some(0.25),
+                )
+                .build(),
+        }
+        .into_signed_cert(signer, Version::new(0, 1, 0))
+        .expect("schedule cert");
+
+        FileOperatorStorePreview {
+            lifecycle_announcements: vec![ExperimentLifecycleAnnouncement {
+                overlay: burn_p2p::OverlayTopic::control(NetworkId::new("mainnet")),
+                certificate: lifecycle,
+                announced_at: now - chrono::Duration::seconds(2),
+            }],
+            schedule_announcements: vec![FleetScheduleAnnouncement {
+                overlay: burn_p2p::OverlayTopic::control(NetworkId::new("mainnet")),
+                certificate: schedule,
+                announced_at: now - chrono::Duration::seconds(1),
+            }],
+            ..FileOperatorStorePreview::default()
         }
     }
 
@@ -2691,6 +2931,43 @@ mod tests {
         assert_eq!(snapshot.summary.get("heads"), Some(&"1".to_string()));
         assert_eq!(
             snapshot.summary.get("peer_window_metrics"),
+            Some(&"1".to_string())
+        );
+    }
+
+    #[test]
+    fn build_audit_records_from_preview_flattens_lifecycle_and_schedule_rows() {
+        let now = Utc::now();
+        let preview = sample_lifecycle_and_schedule_preview(now);
+        let records = build_audit_records_from_preview(&preview, Some(now));
+
+        assert!(
+            records.iter().any(|record| {
+                record.kind == OperatorAuditKind::LifecyclePlan
+                    && record.experiment_id.as_ref() == Some(&ExperimentId::new("exp-a"))
+                    && record.revision_id.as_ref() == Some(&RevisionId::new("rev-b"))
+                    && record.summary.get("target_experiment_id") == Some(&"exp-b".to_string())
+            }),
+            "expected lifecycle audit row"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.kind == OperatorAuditKind::ScheduleEpoch
+                    && record.peer_id.as_ref() == Some(&PeerId::new("trainer-a"))
+                    && record.summary.get("slot_index") == Some(&"0".to_string())
+            }),
+            "expected schedule audit row"
+        );
+        let snapshot = records
+            .iter()
+            .find(|record| record.kind == OperatorAuditKind::Snapshot)
+            .expect("snapshot record");
+        assert_eq!(
+            snapshot.summary.get("lifecycle_plans"),
+            Some(&"1".to_string())
+        );
+        assert_eq!(
+            snapshot.summary.get("schedule_epochs"),
             Some(&"1".to_string())
         );
     }

@@ -185,7 +185,7 @@ mod tests {
     };
     use burn_p2p_experiment::{
         ActivationTarget, ExperimentControlCommand, ExperimentLifecyclePhase,
-        ExperimentLifecyclePlan,
+        ExperimentLifecyclePlan, FleetScheduleEpochBuilder,
     };
     use burn_p2p_security::{
         MergeEvidenceRequirement, PeerAdmissionReport, PeerTrustLevel, ReleasePolicy,
@@ -782,6 +782,57 @@ mod tests {
                 assert_eq!(cert.network_id.as_str(), "mainnet");
                 assert_eq!(cert.activation.activation_window, WindowId(7));
                 assert_eq!(cert.body.payload.payload.plan.plan_epoch, 3);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schedule_action_issues_signed_schedule_certificate() {
+        let plan = plan(BootstrapPreset::AuthorityValidator);
+        let mut state = BootstrapAdminState::default();
+
+        let result = plan
+            .execute_admin_action(
+                AdminAction::Schedule(Box::new(
+                    FleetScheduleEpochBuilder::new()
+                        .with_activation(WindowActivation {
+                            activation_window: WindowId(8),
+                            grace_windows: 0,
+                        })
+                        .ending_before(WindowId(12))
+                        .with_plan_epoch(4)
+                        .with_reason("rebalance trainer slots")
+                        .assign_peer_slot_scaled(
+                            PeerId::new("trainer-a"),
+                            0,
+                            StudyId::new("study"),
+                            ExperimentId::new("exp"),
+                            RevisionId::new("rev-a"),
+                            Some(0.5),
+                            Some(0.25),
+                        )
+                        .build(),
+                )),
+                &mut state,
+                Some(burn_p2p_core::SignatureMetadata {
+                    signer: PeerId::new("authority"),
+                    key_id: "authority-key".into(),
+                    algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                    signed_at: Utc::now(),
+                    signature_hex: "abcd".into(),
+                }),
+                Utc::now(),
+                None,
+            )
+            .expect("result");
+
+        match result {
+            AdminResult::Schedule(cert) => {
+                assert_eq!(cert.network_id.as_str(), "mainnet");
+                assert_eq!(cert.activation.activation_window, WindowId(8));
+                assert_eq!(cert.body.payload.payload.epoch.plan_epoch, 4);
+                assert_eq!(cert.body.payload.payload.epoch.assignments.len(), 1);
             }
             other => panic!("unexpected result: {other:?}"),
         }

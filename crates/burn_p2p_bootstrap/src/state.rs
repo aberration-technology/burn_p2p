@@ -12,7 +12,8 @@ use crate::{
     },
 };
 use burn_p2p::{
-    ArtifactTransferState, ContributionReceipt, ContributionReceiptId, HeadDescriptor,
+    ArtifactTransferState, ContributionReceipt, ContributionReceiptId,
+    ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
     RevocationEpoch, SlotRuntimeState,
 };
@@ -136,6 +137,8 @@ pub enum OperatorAuditKind {
     Receipt,
     Head,
     Merge,
+    LifecyclePlan,
+    ScheduleEpoch,
     PeerWindowMetric,
     ReducerCohortMetric,
     HeadEvalReport,
@@ -149,6 +152,8 @@ impl OperatorAuditKind {
             Self::Receipt => "receipt",
             Self::Head => "head",
             Self::Merge => "merge",
+            Self::LifecyclePlan => "lifecycle-plan",
+            Self::ScheduleEpoch => "schedule-epoch",
             Self::PeerWindowMetric => "peer-window-metric",
             Self::ReducerCohortMetric => "reducer-cohort-metric",
             Self::HeadEvalReport => "head-eval-report",
@@ -162,6 +167,8 @@ impl OperatorAuditKind {
             "receipt" => Some(Self::Receipt),
             "head" => Some(Self::Head),
             "merge" => Some(Self::Merge),
+            "lifecycle-plan" => Some(Self::LifecyclePlan),
+            "schedule-epoch" => Some(Self::ScheduleEpoch),
             "peer-window-metric" => Some(Self::PeerWindowMetric),
             "reducer-cohort-metric" => Some(Self::ReducerCohortMetric),
             "head-eval-report" => Some(Self::HeadEvalReport),
@@ -310,6 +317,10 @@ pub struct OperatorReplaySnapshotSummary {
     pub head_count: usize,
     /// Count of retained merges.
     pub merge_count: usize,
+    /// Count of retained lifecycle plans.
+    pub lifecycle_plan_count: usize,
+    /// Count of retained schedule epochs.
+    pub schedule_epoch_count: usize,
     /// Count of retained peer-window metrics.
     pub peer_window_metric_count: usize,
     /// Count of retained reducer-cohort metrics.
@@ -367,6 +378,10 @@ pub struct OperatorReplaySnapshot {
     pub heads: Vec<HeadDescriptor>,
     /// Retained merge certificates.
     pub merges: Vec<MergeCertificate>,
+    /// Retained lifecycle announcements.
+    pub lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
+    /// Retained fleet schedule announcements.
+    pub schedule_announcements: Vec<FleetScheduleAnnouncement>,
     /// Retained peer-window metrics.
     pub peer_window_metrics: Vec<PeerWindowMetrics>,
     /// Retained reducer cohort metrics.
@@ -883,6 +898,16 @@ impl BootstrapAdminState {
             receipts: self.contribution_receipts.clone(),
             heads: self.head_descriptors.clone(),
             merges: self.merge_certificates.clone(),
+            lifecycle_announcements: self
+                .runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.control_plane.lifecycle_announcements.clone())
+                .unwrap_or_default(),
+            schedule_announcements: self
+                .runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.control_plane.schedule_announcements.clone())
+                .unwrap_or_default(),
             peer_window_metrics: self.peer_window_metrics.clone(),
             reducer_cohort_metrics: self.reducer_cohort_metrics.clone(),
             head_eval_reports: self.head_eval_reports.clone(),
