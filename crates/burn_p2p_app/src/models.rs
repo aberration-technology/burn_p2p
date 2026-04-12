@@ -612,6 +612,8 @@ pub struct AppOperatorReplaySnapshotRow {
     pub head_eval_report_count: usize,
     /// Flattened human-readable summary.
     pub summary: String,
+    /// HTML path for the snapshot detail page.
+    pub snapshot_view_path: String,
     /// JSON API path for the snapshot detail payload.
     pub json_snapshot_path: String,
 }
@@ -641,6 +643,72 @@ pub struct AppOperatorReplayPageView {
     pub prev_page_path: Option<String>,
     /// Next-page HTML path when one exists.
     pub next_page_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One human-facing retained replay snapshot detail page.
+pub struct AppOperatorReplaySnapshotDetailView {
+    /// Snapshot timestamp.
+    pub captured_at: String,
+    /// Distinct studies retained in the snapshot.
+    pub study_ids: Vec<String>,
+    /// Distinct experiments retained in the snapshot.
+    pub experiment_ids: Vec<String>,
+    /// Distinct revisions retained in the snapshot.
+    pub revision_ids: Vec<String>,
+    /// Distinct heads retained in the snapshot.
+    pub head_ids: Vec<String>,
+    /// Count of retained receipts.
+    pub receipt_count: usize,
+    /// Count of retained heads.
+    pub head_count: usize,
+    /// Count of retained merges.
+    pub merge_count: usize,
+    /// Count of retained lifecycle plans.
+    pub lifecycle_plan_count: usize,
+    /// Count of retained schedule epochs.
+    pub schedule_epoch_count: usize,
+    /// Count of retained peer-window metrics.
+    pub peer_window_metric_count: usize,
+    /// Count of retained reducer-cohort metrics.
+    pub reducer_cohort_metric_count: usize,
+    /// Count of retained head-eval reports.
+    pub head_eval_report_count: usize,
+    /// Count of retained eval protocol manifests.
+    pub eval_protocol_manifest_count: usize,
+    /// HTML path for the parent replay page.
+    pub replay_page_path: String,
+    /// JSON API path for the snapshot detail payload.
+    pub json_snapshot_path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One human-facing operator retention summary page.
+pub struct AppOperatorRetentionView {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Maximum retained replay snapshots for the backend snapshot table.
+    pub snapshot_retention_limit: usize,
+    /// Maximum retained audit rows for the backend audit table.
+    pub audit_retention_limit: usize,
+    /// Persisted retained replay snapshots currently available.
+    pub persisted_snapshot_count: usize,
+    /// Persisted retained audit rows currently available.
+    pub persisted_audit_record_count: usize,
+    /// Latest retained replay snapshot timestamp.
+    pub latest_snapshot_at: Option<String>,
+    /// Maximum retained peer-window records per experiment revision.
+    pub max_peer_window_entries_per_revision: usize,
+    /// Maximum retained reducer cohort records per experiment revision.
+    pub max_reducer_cohort_entries_per_revision: usize,
+    /// Maximum retained head evaluation reports per experiment revision.
+    pub max_head_eval_reports_per_revision: usize,
+    /// Maximum recent revisions with raw metrics detail retained per experiment.
+    pub max_metric_revisions_per_experiment: usize,
+    /// Maximum peer-window rows returned by a single drilldown payload.
+    pub max_peer_window_detail_windows: usize,
+    /// JSON API path for the retention summary payload.
+    pub json_summary_path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

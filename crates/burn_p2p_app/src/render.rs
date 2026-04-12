@@ -4,6 +4,7 @@ mod operator_app;
 use crate::{
     AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView, AppOperatorAuditPageView,
     AppOperatorControlReplayPageView, AppOperatorReplayPageView,
+    AppOperatorReplaySnapshotDetailView, AppOperatorRetentionView,
 };
 
 /// Renders the operator-facing bootstrap dashboard HTML.
@@ -77,4 +78,14 @@ pub fn render_operator_audit_html(view: &AppOperatorAuditPageView) -> String {
 /// Renders one operator-facing retained replay page.
 pub fn render_operator_replay_html(view: &AppOperatorReplayPageView) -> String {
     operator_app::render_operator_replay_html(view)
+}
+
+/// Renders one operator-facing retained replay snapshot detail page.
+pub fn render_operator_replay_snapshot_html(view: &AppOperatorReplaySnapshotDetailView) -> String {
+    operator_app::render_operator_replay_snapshot_html(view)
+}
+
+/// Renders one operator-facing retention summary page.
+pub fn render_operator_retention_html(view: &AppOperatorRetentionView) -> String {
+    operator_app::render_operator_retention_html(view)
 }

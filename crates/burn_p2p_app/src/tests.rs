@@ -4,15 +4,17 @@ use crate::{
     AppOperatorAuditPageView, AppOperatorAuditRow, AppOperatorAuditSummaryView,
     AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
     AppOperatorControlReplaySummaryView, AppOperatorFacetBucketView, AppOperatorReplayPageView,
-    AppOperatorReplaySnapshotRow, AppPublishedArtifactRow, AuthSessionCard,
-    ContributionReceiptSummaryPanel, ExperimentRevisionSelector, LifecycleAssignmentStatusCard,
-    RuntimeCapabilityCard, TrainingResultPanel, TransportHealthPanel,
-    assert_browser_client_selected_experiment, assert_experiment_picker_contains_allowed_revision,
-    assert_lifecycle_assignment_matches, assert_participant_has_receipts,
-    assert_training_result_complete, assert_transport_health_ready,
-    render_artifact_run_summaries_html, render_artifact_run_view_html,
-    render_browser_app_static_html, render_dashboard_html, render_head_artifact_view_html,
-    render_operator_audit_html, render_operator_control_replay_html, render_operator_replay_html,
+    AppOperatorReplaySnapshotDetailView, AppOperatorReplaySnapshotRow, AppOperatorRetentionView,
+    AppPublishedArtifactRow, AuthSessionCard, ContributionReceiptSummaryPanel,
+    ExperimentRevisionSelector, LifecycleAssignmentStatusCard, RuntimeCapabilityCard,
+    TrainingResultPanel, TransportHealthPanel, assert_browser_client_selected_experiment,
+    assert_experiment_picker_contains_allowed_revision, assert_lifecycle_assignment_matches,
+    assert_participant_has_receipts, assert_training_result_complete,
+    assert_transport_health_ready, render_artifact_run_summaries_html,
+    render_artifact_run_view_html, render_browser_app_static_html, render_dashboard_html,
+    render_head_artifact_view_html, render_operator_audit_html,
+    render_operator_control_replay_html, render_operator_replay_html,
+    render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 use burn_p2p_core::{
     ArtifactId, ContributionReceipt, ContributionReceiptId, ExperimentId, ExperimentScope, HeadId,
@@ -38,7 +40,7 @@ fn dashboard_html_mentions_bootstrap_routes() {
     assert!(html.contains("/operator/audit"));
     assert!(html.contains("/operator/replay"));
     assert!(html.contains("/operator/control"));
-    assert!(html.contains("/operator/retention"));
+    assert!(html.contains("/operator/retention/view"));
 }
 
 #[test]
@@ -180,6 +182,8 @@ fn operator_replay_page_renders_filters_and_rows() {
             reducer_cohort_metric_count: 2,
             head_eval_report_count: 1,
             summary: "study-a exp-b rev-b head-b receipt_count=8".into(),
+            snapshot_view_path: "/operator/replay/snapshot/view?captured_at=2026-04-12T00:05:00Z"
+                .into(),
             json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
         }],
         filter_tags: vec!["experiment_id=exp-b".into()],
@@ -197,7 +201,50 @@ fn operator_replay_page_renders_filters_and_rows() {
     assert!(html.contains("Retained replay snapshots"));
     assert!(html.contains("experiment_id=exp-b"));
     assert!(html.contains("receipts 8"));
-    assert!(html.contains("/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z"));
+    assert!(html.contains("/operator/replay/snapshot/view?captured_at=2026-04-12T00:05:00Z"));
+}
+
+#[test]
+fn operator_replay_snapshot_and_retention_pages_render_details() {
+    let replay_html = render_operator_replay_snapshot_html(&AppOperatorReplaySnapshotDetailView {
+        captured_at: "2026-04-12T00:05:00Z".into(),
+        study_ids: vec!["study-a".into()],
+        experiment_ids: vec!["exp-b".into()],
+        revision_ids: vec!["rev-b".into()],
+        head_ids: vec!["head-b".into()],
+        receipt_count: 8,
+        head_count: 2,
+        merge_count: 1,
+        lifecycle_plan_count: 1,
+        schedule_epoch_count: 1,
+        peer_window_metric_count: 4,
+        reducer_cohort_metric_count: 2,
+        head_eval_report_count: 1,
+        eval_protocol_manifest_count: 1,
+        replay_page_path: "/operator/replay".into(),
+        json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
+    });
+    assert!(replay_html.contains("Retained replay snapshot"));
+    assert!(replay_html.contains("View JSON snapshot"));
+    assert!(replay_html.contains("peer window metrics"));
+
+    let retention_html = render_operator_retention_html(&AppOperatorRetentionView {
+        backend: "postgres".into(),
+        snapshot_retention_limit: 128,
+        audit_retention_limit: 2048,
+        persisted_snapshot_count: 32,
+        persisted_audit_record_count: 512,
+        latest_snapshot_at: Some("2026-04-12T00:05:00Z".into()),
+        max_peer_window_entries_per_revision: 256,
+        max_reducer_cohort_entries_per_revision: 128,
+        max_head_eval_reports_per_revision: 192,
+        max_metric_revisions_per_experiment: 8,
+        max_peer_window_detail_windows: 64,
+        json_summary_path: "/operator/retention".into(),
+    });
+    assert!(retention_html.contains("Retention policy"));
+    assert!(retention_html.contains("backend postgres"));
+    assert!(retention_html.contains("View JSON summary"));
 }
 
 #[test]

@@ -37,6 +37,7 @@ pub use crate::app_render::{
     render_artifact_run_summaries_html, render_artifact_run_view_html, render_dashboard_html,
     render_head_artifact_view_html, render_operator_audit_html,
     render_operator_control_replay_html, render_operator_replay_html,
+    render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 pub use crate::browser_edge::{BrowserEdgeSnapshot, BrowserEdgeSnapshotConfig};
 pub use crate::daemon::{

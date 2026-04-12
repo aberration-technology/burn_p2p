@@ -2,6 +2,7 @@ use super::*;
 use burn_p2p_bootstrap::{
     OperatorAuditKind, OperatorAuditQuery, OperatorControlReplayKind, OperatorControlReplayQuery,
     OperatorReplayQuery, render_operator_audit_html, render_operator_replay_html,
+    render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 use burn_p2p_core::{ExperimentId, HeadId, NetworkId, RevisionId, StudyId, WindowId};
 
@@ -125,6 +126,32 @@ pub(crate) fn handle_get_route(
 
     if request.method == "GET"
         && let Some(captured_at) =
+            operator_replay_request_from_path(&request.path, "/operator/replay/snapshot/view")?
+    {
+        let replay_snapshot = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_replay_snapshot(captured_at)?;
+        if let Some(snapshot) = replay_snapshot {
+            write_response(
+                stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                render_operator_replay_snapshot_html(captured_at, &snapshot).into_bytes(),
+            )?;
+        } else {
+            write_response(
+                stream,
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"operator replay snapshot not found".to_vec(),
+            )?;
+        }
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot")?
     {
         let replay_snapshot = state
@@ -215,6 +242,20 @@ pub(crate) fn handle_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_operator_retention_summary()?;
         write_json(stream, &retention)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET" && request.path == "/operator/retention/view" {
+        let retention = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_retention_summary()?;
+        write_response(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            render_operator_retention_html(&retention).into_bytes(),
+        )?;
         return Ok(true);
     }
 

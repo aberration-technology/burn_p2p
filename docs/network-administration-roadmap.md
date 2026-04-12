@@ -28,7 +28,7 @@ as of `2026-04-12`, the repo now has:
 - retained operator lifecycle/schedule history in replay snapshots and typed
   control replay records
 - typed json and human-facing html views for operator audit, retained replay,
-  and control replay history
+  replay snapshot detail, control replay history, and retention status
 - browser replay invalidation and stale-revision handling tied to assignment and
   publication state
 

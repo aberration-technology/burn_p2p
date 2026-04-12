@@ -734,6 +734,10 @@ fn app_operator_replay_view(
                 reducer_cohort_metric_count: row.reducer_cohort_metric_count,
                 head_eval_report_count: row.head_eval_report_count,
                 summary: replay_snapshot_summary_text(row),
+                snapshot_view_path: format!(
+                    "/operator/replay/snapshot/view?captured_at={}",
+                    row.captured_at.to_rfc3339()
+                ),
                 json_snapshot_path: format!(
                     "/operator/replay/snapshot?captured_at={}",
                     row.captured_at.to_rfc3339()
@@ -766,6 +770,92 @@ fn app_operator_replay_view(
                 Some(burn_p2p_core::PageRequest::new(next_offset, page.limit)),
             )
         }),
+    }
+}
+
+#[cfg(feature = "browser-edge")]
+fn snapshot_scope_ids<T, F>(items: &[T], project: F) -> Vec<String>
+where
+    F: Fn(&T) -> Option<&str>,
+{
+    let mut values = std::collections::BTreeSet::new();
+    for item in items {
+        if let Some(value) = project(item) {
+            values.insert(value.to_owned());
+        }
+    }
+    values.into_iter().collect()
+}
+
+#[cfg(feature = "browser-edge")]
+fn app_operator_replay_snapshot_detail_view(
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
+    snapshot: &crate::OperatorReplaySnapshot,
+) -> burn_p2p_app::AppOperatorReplaySnapshotDetailView {
+    let captured_at_value = captured_at.unwrap_or(snapshot.captured_at);
+    let mut study_ids = std::collections::BTreeSet::new();
+    let mut experiment_ids = std::collections::BTreeSet::new();
+    let mut revision_ids = std::collections::BTreeSet::new();
+    for receipt in &snapshot.receipts {
+        study_ids.insert(receipt.study_id.as_str().to_owned());
+        experiment_ids.insert(receipt.experiment_id.as_str().to_owned());
+        revision_ids.insert(receipt.revision_id.as_str().to_owned());
+    }
+    for head in &snapshot.heads {
+        study_ids.insert(head.study_id.as_str().to_owned());
+        experiment_ids.insert(head.experiment_id.as_str().to_owned());
+        revision_ids.insert(head.revision_id.as_str().to_owned());
+    }
+    burn_p2p_app::AppOperatorReplaySnapshotDetailView {
+        captured_at: snapshot.captured_at.to_rfc3339(),
+        study_ids: study_ids.into_iter().collect(),
+        experiment_ids: experiment_ids.into_iter().collect(),
+        revision_ids: revision_ids.into_iter().collect(),
+        head_ids: snapshot_scope_ids(&snapshot.heads, |item| Some(item.head_id.as_str())),
+        receipt_count: snapshot.receipts.len(),
+        head_count: snapshot.heads.len(),
+        merge_count: snapshot.merges.len(),
+        lifecycle_plan_count: snapshot.lifecycle_announcements.len(),
+        schedule_epoch_count: snapshot.schedule_announcements.len(),
+        peer_window_metric_count: snapshot.peer_window_metrics.len(),
+        reducer_cohort_metric_count: snapshot.reducer_cohort_metrics.len(),
+        head_eval_report_count: snapshot.head_eval_reports.len(),
+        eval_protocol_manifest_count: snapshot.eval_protocol_manifests.len(),
+        replay_page_path: "/operator/replay".into(),
+        json_snapshot_path: format!(
+            "/operator/replay/snapshot?captured_at={}",
+            captured_at_value.to_rfc3339()
+        ),
+    }
+}
+
+#[cfg(feature = "browser-edge")]
+fn app_operator_retention_view(
+    summary: &crate::OperatorRetentionSummary,
+) -> burn_p2p_app::AppOperatorRetentionView {
+    burn_p2p_app::AppOperatorRetentionView {
+        backend: summary.backend.clone(),
+        snapshot_retention_limit: summary.snapshot_retention_limit,
+        audit_retention_limit: summary.audit_retention_limit,
+        persisted_snapshot_count: summary.persisted_snapshot_count,
+        persisted_audit_record_count: summary.persisted_audit_record_count,
+        latest_snapshot_at: summary
+            .latest_snapshot_at
+            .map(|timestamp| timestamp.to_rfc3339()),
+        max_peer_window_entries_per_revision: summary
+            .metrics_retention
+            .max_peer_window_entries_per_revision,
+        max_reducer_cohort_entries_per_revision: summary
+            .metrics_retention
+            .max_reducer_cohort_entries_per_revision,
+        max_head_eval_reports_per_revision: summary
+            .metrics_retention
+            .max_head_eval_reports_per_revision,
+        max_metric_revisions_per_experiment: summary
+            .metrics_retention
+            .max_metric_revisions_per_experiment,
+        max_peer_window_detail_windows: summary.metrics_retention.max_peer_window_detail_windows,
+        json_summary_path: "/operator/retention".into(),
     }
 }
 
@@ -902,6 +992,17 @@ pub fn render_operator_replay_html(
     burn_p2p_app::render_operator_replay_html(&app_operator_replay_view(query, page))
 }
 
+#[cfg(feature = "browser-edge")]
+pub fn render_operator_replay_snapshot_html(
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
+    snapshot: &crate::OperatorReplaySnapshot,
+) -> String {
+    burn_p2p_app::render_operator_replay_snapshot_html(&app_operator_replay_snapshot_detail_view(
+        captured_at,
+        snapshot,
+    ))
+}
+
 #[cfg(not(feature = "browser-edge"))]
 pub fn render_operator_replay_html(
     query: &crate::OperatorReplayQuery,
@@ -952,6 +1053,54 @@ pub fn render_operator_replay_html(
         ),
         filters = filter_html,
         rows = rows_html,
+    )
+}
+
+#[cfg(not(feature = "browser-edge"))]
+pub fn render_operator_replay_snapshot_html(
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
+    snapshot: &crate::OperatorReplaySnapshot,
+) -> String {
+    let captured_at = captured_at.unwrap_or(snapshot.captured_at).to_rfc3339();
+    format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><body><main>",
+            "<h1>Retained replay snapshot</h1>",
+            "<p>Captured: <strong>{captured_at}</strong></p>",
+            "<p>receipts={receipts} heads={heads} merges={merges} lifecycle={lifecycle} schedule={schedule}</p>",
+            "<p><a href=\"/operator/replay\">replay history</a> | <a href=\"/operator/replay/snapshot?captured_at={captured_at}\">json snapshot</a></p>",
+            "</main></body></html>"
+        ),
+        captured_at = captured_at,
+        receipts = snapshot.receipts.len(),
+        heads = snapshot.heads.len(),
+        merges = snapshot.merges.len(),
+        lifecycle = snapshot.lifecycle_announcements.len(),
+        schedule = snapshot.schedule_announcements.len(),
+    )
+}
+
+#[cfg(feature = "browser-edge")]
+pub fn render_operator_retention_html(summary: &crate::OperatorRetentionSummary) -> String {
+    burn_p2p_app::render_operator_retention_html(&app_operator_retention_view(summary))
+}
+
+#[cfg(not(feature = "browser-edge"))]
+pub fn render_operator_retention_html(summary: &crate::OperatorRetentionSummary) -> String {
+    format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><body><main>",
+            "<h1>Retention policy</h1>",
+            "<p>Backend: <strong>{backend}</strong></p>",
+            "<p>snapshot_limit={snapshot_limit} audit_limit={audit_limit} retained_snapshots={retained_snapshots} retained_audit={retained_audit}</p>",
+            "<p><a href=\"/operator/retention\">json summary</a></p>",
+            "</main></body></html>"
+        ),
+        backend = summary.backend,
+        snapshot_limit = summary.snapshot_retention_limit,
+        audit_limit = summary.audit_retention_limit,
+        retained_snapshots = summary.persisted_snapshot_count,
+        retained_audit = summary.persisted_audit_record_count,
     )
 }
 

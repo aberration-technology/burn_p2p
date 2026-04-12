@@ -36,8 +36,9 @@ pub use models::{
     AppOperatorAuditFacetSummaryView, AppOperatorAuditPageView, AppOperatorAuditRow,
     AppOperatorAuditSummaryView, AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
     AppOperatorControlReplaySummaryView, AppOperatorFacetBucketView, AppOperatorReplayPageView,
-    AppOperatorReplaySnapshotRow, AppPaths, AppPeerStatusRow, AppPublishedArtifactRow,
-    AppRuntimeStateCard, AppServiceStatusRow, AppSnapshotView, AppTransportSurface, AppTrustView,
+    AppOperatorReplaySnapshotDetailView, AppOperatorReplaySnapshotRow, AppOperatorRetentionView,
+    AppPaths, AppPeerStatusRow, AppPublishedArtifactRow, AppRuntimeStateCard, AppServiceStatusRow,
+    AppSnapshotView, AppTransportSurface, AppTrustView,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop-client"))]
 pub use native_client::{NodeAppHostConfig, NodeAppHostSource, launch_node_app};
@@ -46,6 +47,7 @@ pub use render::{
     render_browser_app_static_html, render_browser_app_static_html_with_config,
     render_dashboard_html, render_head_artifact_view_html, render_operator_audit_html,
     render_operator_control_replay_html, render_operator_replay_html,
+    render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 pub use widgets::{
     AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,

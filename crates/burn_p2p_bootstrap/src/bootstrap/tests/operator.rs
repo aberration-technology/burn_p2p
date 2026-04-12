@@ -349,3 +349,98 @@ fn operator_replay_html_route_renders_human_facing_page() {
     assert!(body.contains("experiment_id=exp-b"));
     assert!(body.contains("/operator/replay/page?experiment_id=exp-b"));
 }
+
+#[test]
+fn operator_replay_snapshot_html_route_renders_human_facing_page() {
+    let temp = tempdir().expect("temp dir");
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(sample_runtime_snapshot()),
+            ..BootstrapAdminState::default()
+        })),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("operator-replay-snapshot-view.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: None,
+    };
+
+    let html = issue_request(
+        context,
+        IssueRequestSpec {
+            method: "GET",
+            path: "/operator/replay/snapshot/view",
+            body: None,
+            headers: &[],
+        },
+    );
+    assert!(html.starts_with("HTTP/1.1 200 OK"));
+    let body = response_body(&html);
+    assert!(body.contains("Retained replay snapshot"));
+    assert!(body.contains("/operator/replay"));
+    assert!(body.contains("/operator/replay/snapshot?captured_at="));
+}
+
+#[test]
+fn operator_retention_html_route_renders_human_facing_page() {
+    let temp = tempdir().expect("temp dir");
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(sample_runtime_snapshot()),
+            ..BootstrapAdminState::default()
+        })),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("operator-retention-view.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: None,
+    };
+
+    let html = issue_request(
+        context,
+        IssueRequestSpec {
+            method: "GET",
+            path: "/operator/retention/view",
+            body: None,
+            headers: &[],
+        },
+    );
+    assert!(html.starts_with("HTTP/1.1 200 OK"));
+    let body = response_body(&html);
+    assert!(body.contains("Retention policy"));
+    assert!(body.contains("/operator/retention"));
+}

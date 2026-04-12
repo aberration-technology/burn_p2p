@@ -2,8 +2,8 @@ use crate::models::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
     AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorAuditPageView,
     AppOperatorAuditRow, AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
-    AppOperatorFacetBucketView, AppOperatorReplayPageView, AppOperatorReplaySnapshotRow,
-    AppPublishedArtifactRow,
+    AppOperatorFacetBucketView, AppOperatorReplayPageView, AppOperatorReplaySnapshotDetailView,
+    AppOperatorReplaySnapshotRow, AppOperatorRetentionView, AppPublishedArtifactRow,
 };
 use dioxus::prelude::*;
 use dioxus::ssr::render_element;
@@ -145,6 +145,24 @@ pub(super) fn render_operator_replay_html(view: &AppOperatorReplayPageView) -> S
     )
 }
 
+pub(super) fn render_operator_replay_snapshot_html(
+    view: &AppOperatorReplaySnapshotDetailView,
+) -> String {
+    render_document(
+        "Operator replay snapshot".into(),
+        rsx! { OperatorReplaySnapshotDetailPage { view: view.clone() } },
+        None,
+    )
+}
+
+pub(super) fn render_operator_retention_html(view: &AppOperatorRetentionView) -> String {
+    render_document(
+        "Operator retention".into(),
+        rsx! { OperatorRetentionPage { view: view.clone() } },
+        None,
+    )
+}
+
 fn render_document(title: String, page: Element, script: Option<&str>) -> String {
     let title = escape_html_text(&title);
     let body = render_element(rsx! {
@@ -224,7 +242,7 @@ fn DashboardPage(network_id: String) -> Element {
                     LinkPill { href: "/operator/audit".to_owned(), label: "/operator/audit" }
                     LinkPill { href: "/operator/replay".to_owned(), label: "/operator/replay" }
                     LinkPill { href: "/operator/control", label: "/operator/control" }
-                    LinkPill { href: "/operator/retention", label: "/operator/retention" }
+                    LinkPill { href: "/operator/retention/view".to_owned(), label: "/operator/retention/view" }
                 }
             }
             section { class: "panel",
@@ -822,6 +840,122 @@ fn OperatorReplayPage(view: AppOperatorReplayPageView) -> Element {
 }
 
 #[component]
+fn OperatorReplaySnapshotDetailPage(view: AppOperatorReplaySnapshotDetailView) -> Element {
+    rsx! {
+        main { class: "operator-main",
+            section { class: "panel hero-shell hero",
+                div { class: "hero-top",
+                    div { class: "hero-copy",
+                        div { class: "eyebrow", "operator replay snapshot" }
+                        h1 { "Retained replay snapshot" }
+                        p { class: "hero-lead",
+                            "Human-facing detail view for one retained operator replay snapshot."
+                        }
+                        div { class: "service-pill-stack",
+                            span { class: "pill", "{view.captured_at}" }
+                            span { class: "pill", "{view.receipt_count} receipts" }
+                            span { class: "pill", "{view.lifecycle_plan_count} lifecycle / {view.schedule_epoch_count} schedule" }
+                        }
+                    }
+                    div { class: "hero-meta-grid",
+                        MetaCard { label: "json", value: view.json_snapshot_path.clone(), detail: "snapshot payload" }
+                        MetaCard { label: "replay", value: view.replay_page_path.clone(), detail: "back to paged history" }
+                    }
+                }
+                div { class: "summary-grid hero-summary-grid",
+                    LiveSummaryCard { label: "heads", value: view.head_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "merges", value: view.merge_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "peer metrics", value: view.peer_window_metric_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "eval reports", value: view.head_eval_report_count.to_string(), element_id: None }
+                }
+                div { class: "operator-link-row",
+                    LinkPill { href: view.replay_page_path.clone(), label: "Replay history" }
+                    LinkPill { href: view.json_snapshot_path.clone(), label: "View JSON snapshot" }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "scope" }
+                h2 { "Retained scope" }
+                div { class: "info-list",
+                    InfoMetric { label: "studies", value: format_scope_list(&view.study_ids), element_id: None }
+                    InfoMetric { label: "experiments", value: format_scope_list(&view.experiment_ids), element_id: None }
+                    InfoMetric { label: "revisions", value: format_scope_list(&view.revision_ids), element_id: None }
+                    InfoMetric { label: "heads", value: format_scope_list(&view.head_ids), element_id: None }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "counts" }
+                h2 { "Retained entities" }
+                div { class: "info-list",
+                    InfoMetric { label: "receipts", value: view.receipt_count.to_string(), element_id: None }
+                    InfoMetric { label: "heads", value: view.head_count.to_string(), element_id: None }
+                    InfoMetric { label: "merges", value: view.merge_count.to_string(), element_id: None }
+                    InfoMetric { label: "lifecycle plans", value: view.lifecycle_plan_count.to_string(), element_id: None }
+                    InfoMetric { label: "schedule epochs", value: view.schedule_epoch_count.to_string(), element_id: None }
+                    InfoMetric { label: "peer window metrics", value: view.peer_window_metric_count.to_string(), element_id: None }
+                    InfoMetric { label: "reducer cohort metrics", value: view.reducer_cohort_metric_count.to_string(), element_id: None }
+                    InfoMetric { label: "head eval reports", value: view.head_eval_report_count.to_string(), element_id: None }
+                    InfoMetric { label: "eval protocol manifests", value: view.eval_protocol_manifest_count.to_string(), element_id: None }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn OperatorRetentionPage(view: AppOperatorRetentionView) -> Element {
+    rsx! {
+        main { class: "operator-main",
+            section { class: "panel hero-shell hero",
+                div { class: "hero-top",
+                    div { class: "hero-copy",
+                        div { class: "eyebrow", "operator retention" }
+                        h1 { "Retention policy" }
+                        p { class: "hero-lead",
+                            "Current backend retention posture for replay snapshots, audit rows, and raw metrics history."
+                        }
+                        div { class: "service-pill-stack",
+                            span { class: "pill", "backend {view.backend}" }
+                            span { class: "pill", "{view.persisted_snapshot_count} retained snapshots" }
+                            span { class: "pill", "{view.persisted_audit_record_count} retained audit rows" }
+                        }
+                    }
+                    div { class: "hero-meta-grid",
+                        MetaCard { label: "json", value: view.json_summary_path.clone(), detail: "retention summary payload" }
+                        MetaCard {
+                            label: "latest snapshot",
+                            value: view.latest_snapshot_at.clone().unwrap_or_else(|| "n/a".into()),
+                            detail: "newest retained replay point"
+                        }
+                    }
+                }
+                div { class: "summary-grid hero-summary-grid",
+                    LiveSummaryCard { label: "snapshot limit", value: view.snapshot_retention_limit.to_string(), element_id: None }
+                    LiveSummaryCard { label: "audit limit", value: view.audit_retention_limit.to_string(), element_id: None }
+                    LiveSummaryCard { label: "retained snapshots", value: view.persisted_snapshot_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "retained audit", value: view.persisted_audit_record_count.to_string(), element_id: None }
+                }
+                div { class: "operator-link-row",
+                    LinkPill { href: "/".to_owned(), label: "Dashboard" }
+                    LinkPill { href: view.json_summary_path.clone(), label: "View JSON summary" }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "budget" }
+                h2 { "Metrics retention budget" }
+                div { class: "info-list",
+                    InfoMetric { label: "peer window / revision", value: view.max_peer_window_entries_per_revision.to_string(), element_id: None }
+                    InfoMetric { label: "reducer cohort / revision", value: view.max_reducer_cohort_entries_per_revision.to_string(), element_id: None }
+                    InfoMetric { label: "head eval / revision", value: view.max_head_eval_reports_per_revision.to_string(), element_id: None }
+                    InfoMetric { label: "metric revisions / experiment", value: view.max_metric_revisions_per_experiment.to_string(), element_id: None }
+                    InfoMetric { label: "peer detail windows", value: view.max_peer_window_detail_windows.to_string(), element_id: None }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn FacetBucketCard(label: String, buckets: Vec<AppOperatorFacetBucketView>) -> Element {
     rsx! {
         article { class: "mobile-card",
@@ -988,7 +1122,12 @@ fn OperatorReplayRowView(row: AppOperatorReplaySnapshotRow) -> Element {
             td { "{scope}" }
             td { "{counts}" }
             td { "{row.summary}" }
-            td { a { class: "table-link", href: row.json_snapshot_path.clone(), "json" } }
+            td {
+                div { class: "table-cell-stack",
+                    a { class: "table-link", href: row.snapshot_view_path.clone(), "view" }
+                    a { class: "table-link", href: row.json_snapshot_path.clone(), "json" }
+                }
+            }
         }
     }
 }
@@ -1004,6 +1143,7 @@ fn OperatorReplayCard(row: AppOperatorReplaySnapshotRow) -> Element {
             div { class: "mobile-meta", "{counts}" }
             div { class: "muted", "{row.summary}" }
             div { class: "operator-link-row", style: "margin-top: 10px;",
+                a { href: row.snapshot_view_path.clone(), "Open snapshot" }
                 a { href: row.json_snapshot_path.clone(), "JSON snapshot" }
             }
         }
