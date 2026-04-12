@@ -60,9 +60,9 @@ example:
 cargo xtask deploy aws \
   --action plan \
   --var-file deploy/terraform/aws/reference.tfvars.example \
-  --bootstrap-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.10 \
-  --reducer-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.10 \
-  --validator-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.10 \
+  --bootstrap-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.11 \
+  --reducer-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.11 \
+  --validator-image ghcr.io/acme/burn-p2p-bootstrap:0.21.0-pre.11 \
   --trainer-image ghcr.io/acme/my-burn-node:latest
 ```
 
