@@ -13,6 +13,10 @@ use burn_p2p_core::{
 };
 use burn_p2p_security::{PeerTrustLevel, ReputationDecision};
 use burn_p2p_swarm::{AlertNotice, AlertSeverity, OverlayChannel, OverlayTopic};
+use burn_p2p_workload::{
+    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingProgress,
+    WorkloadTrainingResult, WorkloadValidationProgress, WorkloadValidationResult,
+};
 use chrono::{Duration, Utc};
 
 use crate::{
@@ -29,7 +33,9 @@ use crate::{
     MergeWindowView, MetricPoint, NodeAppDiffusionView, OperatorConsoleView,
     OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView, ParticipantAppView,
     ParticipantProfile, ReducerUtilizationView, RobustnessPanelView, ShardAssignmentHeatmap,
-    StudyBoardView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
+    StudyBoardView, TrainingBudgetSummaryView, TrainingProgressSummaryView,
+    TrainingResultSummaryView, TrustBadgeView, UiChannel, UiEventEnvelope, UiPayload,
+    ValidationProgressSummaryView, ValidationResultSummaryView,
 };
 
 #[test]
@@ -361,6 +367,46 @@ fn operator_console_and_study_board_are_framework_neutral_contracts() {
     assert!(matches!(event.payload, UiPayload::Operator(_)));
     assert_eq!(board.variants.len(), 1);
     assert_eq!(board.migrations.len(), 1);
+}
+
+#[test]
+fn training_and_validation_summary_views_follow_shared_execution_payloads() {
+    let budget = WorkloadTrainingBudget::default();
+    let training_progress = WorkloadTrainingProgress {
+        stage: WorkloadExecutionStage::Executing,
+        completed_units: 8,
+        total_units: Some(16),
+        detail: Some("running local micro-epoch".into()),
+    };
+    let validation_progress = WorkloadValidationProgress {
+        stage: WorkloadExecutionStage::Publishing,
+        completed_units: 4,
+        total_units: Some(4),
+        detail: Some("writing receipt".into()),
+    };
+    let training_result = WorkloadTrainingResult {
+        artifact_id: ArtifactId::new("artifact"),
+        receipt_id: Some(ContributionReceiptId::new("receipt")),
+        window_secs: 12,
+    };
+    let validation_result = WorkloadValidationResult {
+        head_id: HeadId::new("head"),
+        accepted: true,
+        checked_chunks: 5,
+        emitted_receipt_id: Some(ContributionReceiptId::new("validation-receipt")),
+    };
+
+    let budget_view = TrainingBudgetSummaryView::from(&budget);
+    let training_progress_view = TrainingProgressSummaryView::from(&training_progress);
+    let validation_progress_view = ValidationProgressSummaryView::from(&validation_progress);
+    let training_result_view = TrainingResultSummaryView::from(&training_result);
+    let validation_result_view = ValidationResultSummaryView::from(&validation_result);
+
+    assert_eq!(budget_view.execution_mode, "webgpu-required");
+    assert_eq!(training_progress_view.stage, "executing");
+    assert_eq!(validation_progress_view.stage, "publishing");
+    assert_eq!(training_result_view.artifact_id, "artifact");
+    assert_eq!(validation_result_view.head_id, "head");
 }
 
 #[test]

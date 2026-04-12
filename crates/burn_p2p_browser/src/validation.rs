@@ -1,28 +1,8 @@
-use burn_p2p::{ContributionReceiptId, HeadId};
-use serde::{Deserialize, Serialize};
+/// Browser-local compatibility alias for the shared workload validation plan.
+pub type BrowserValidationPlan = burn_p2p::WorkloadValidationPlan;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Represents a browser validation plan.
-pub struct BrowserValidationPlan {
-    /// The head ID.
-    pub head_id: HeadId,
-    /// The max checkpoint bytes.
-    pub max_checkpoint_bytes: u64,
-    /// The sample budget.
-    pub sample_budget: u32,
-    /// The emit receipt.
-    pub emit_receipt: bool,
-}
+/// Browser-local compatibility alias for the shared workload validation progress payload.
+pub type BrowserValidationProgress = burn_p2p::WorkloadValidationProgress;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Represents a browser validation result.
-pub struct BrowserValidationResult {
-    /// The head ID.
-    pub head_id: HeadId,
-    /// The accepted.
-    pub accepted: bool,
-    /// The checked chunks.
-    pub checked_chunks: usize,
-    /// The emitted receipt ID.
-    pub emitted_receipt_id: Option<ContributionReceiptId>,
-}
+/// Browser-local compatibility alias for the shared workload validation result.
+pub type BrowserValidationResult = burn_p2p::WorkloadValidationResult;

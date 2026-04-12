@@ -9,6 +9,7 @@ mod auth;
 mod browser_app;
 mod dashboard;
 mod robustness;
+mod training;
 
 pub use auth::{
     AuthAppView, BrowserExperimentPickerCard, BrowserExperimentPickerState,
@@ -40,6 +41,11 @@ pub use dashboard::{
 pub use robustness::{
     CanaryRegressionView, QuarantinedPeerView, RobustnessPanelView, RobustnessReasonCountView,
     TrustScorePointView,
+};
+pub use training::{
+    LifecycleAssignmentStatusView, ParticipationTrustSummaryView, RuntimeCapabilitySummaryView,
+    TrainingBudgetSummaryView, TrainingProgressSummaryView, TrainingResultSummaryView,
+    ValidationProgressSummaryView, ValidationResultSummaryView,
 };
 
 #[cfg(test)]

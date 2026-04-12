@@ -1,6 +1,8 @@
 //! Experiment manifests, directory policies, and topology helpers for burn_p2p.
 #![forbid(unsafe_code)]
 
+/// Builder helpers for experiment directory and lifecycle state.
+pub mod builders;
 /// Public APIs for control.
 pub mod control;
 /// Public APIs for directory.
@@ -10,6 +12,7 @@ pub mod spec;
 /// Reducer and merge topology helpers.
 pub mod topology;
 
+pub use builders::{ExperimentDirectoryProjectionBuilder, ExperimentLifecyclePlanBuilder};
 pub use control::{
     ActivationTarget, ExperimentControlCommand, ExperimentControlEnvelope, ExperimentControlState,
     ExperimentLifecycleEnvelope, ExperimentLifecyclePhase, ExperimentLifecyclePlan,

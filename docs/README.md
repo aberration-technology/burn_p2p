@@ -12,6 +12,9 @@ truth. docs here should stay short and code-adjacent.
   dependency shapes
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
   `burn_p2p` into a Burn project
+- [burn-dragon-productization-roadmap.md](burn-dragon-productization-roadmap.md):
+  upstream work needed to make `burn_p2p` a cleaner product/runtime surface for
+  `burn_dragon_p2p`
 - [learning-dynamics.md](learning-dynamics.md): how windowed p2p averaging
   learns, how contributions are weighted, and where it differs from sync ddp
 - [memory-retention.md](memory-retention.md): crate-by-crate memory-growth

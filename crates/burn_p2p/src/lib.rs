@@ -58,26 +58,27 @@ pub use burn_p2p_core::{
     AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability,
     BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, BrowserRole, BrowserRolePolicy,
     BrowserVisibilityPolicy, CanaryEvalReport, CapabilityCard, CapabilityEstimate, ChunkId,
-    ClientPlatform, ClientReleaseManifest, CohortRobustnessReport, CompiledFeatureSet,
-    ConfiguredServiceSet, ContentId, ContributionReceipt, ContributionReceiptId,
-    ContributionRollup, DatasetId, DatasetManifest, DatasetView, DatasetViewId, EdgeAuthProvider,
-    EdgeFeature, EdgeServiceManifest, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
-    ExperimentDirectoryEntry, ExperimentId, ExperimentManifest, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, GenesisSpec,
-    HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId, HeadPromotionPolicy,
-    IdentityVisibility, LagPolicy, LagState, LeaderboardEntry, LeaderboardIdentity,
-    LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy, MergeStrategy,
-    MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope, MetricTrustClass,
-    MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest, MicroShardId,
-    NetworkEstimate, NetworkId, NetworkManifest, NodeCertId, NodeCertificate,
-    NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
-    PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId, ProfileMode,
-    ProjectFamilyId, ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus,
+    ClientPlatform, ClientReleaseManifest, ClientReleaseManifestBuilder, CohortRobustnessReport,
+    CompiledFeatureSet, ConfiguredServiceSet, ContentId, ContributionReceipt,
+    ContributionReceiptId, ContributionRollup, DatasetId, DatasetManifest, DatasetView,
+    DatasetViewId, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest, EvalAggregationRule,
+    EvalMetricDef, EvalProtocolManifest, ExperimentDirectoryEntry, ExperimentId,
+    ExperimentManifest, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
+    ExperimentVisibility, GenesisSpec, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId,
+    HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState, LeaderboardEntry,
+    LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy,
+    MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope,
+    MetricTrustClass, MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest,
+    MicroShardId, NetworkEstimate, NetworkId, NetworkManifest, NetworkManifestBuilder, NodeCertId,
+    NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet,
+    PeerWindowMetrics, PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId,
+    ProfileMode, ProjectFamilyId, ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus,
     ReducerLoadReport, ReductionCertificate, RejectionReason, ReleaseTrainManifest, RevisionId,
     RevisionManifest, RevocationEpoch, RobustnessAlert, RobustnessDecision, RobustnessPolicy,
     RobustnessPreset, SocialMode, SocialProfile, StudyId, SupportedWorkload,
-    TargetArtifactManifest, TelemetrySummary, TrustScore, UpdateAnnounce, UpdateFeatureSketch,
-    UpdateNormStats, ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
+    SupportedWorkloadBuilder, TargetArtifactManifest, TelemetrySummary, TrustScore, UpdateAnnounce,
+    UpdateFeatureSketch, UpdateNormStats, ValidationQuorumCertificate, WindowActivation, WindowId,
+    WorkloadId,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,
@@ -88,9 +89,9 @@ pub use burn_p2p_dataloader::{
 };
 pub use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentDirectory, ExperimentDirectoryAccess,
-    ExperimentDirectoryPolicyExt, ExperimentLifecyclePhase, ExperimentLifecyclePlan,
-    ExperimentSpec, PatchClass, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec,
-    RuntimePatch, StudySpec,
+    ExperimentDirectoryPolicyExt, ExperimentDirectoryProjectionBuilder, ExperimentLifecyclePhase,
+    ExperimentLifecyclePlan, ExperimentLifecyclePlanBuilder, ExperimentSpec, PatchClass,
+    PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
 };
 pub use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, CapabilityResourceProbe, LimitPolicy, LimitProfile,
@@ -125,12 +126,15 @@ pub use burn_p2p_swarm::{
     UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
 pub use burn_p2p_workload::{
-    ContinuousTrainerPolicy, EvalSplit, LeaseDataPipeline, LeaseDataPipelineDescriptor,
+    ContinuousTrainerPolicy, EvalSplit, GeneratedWorkloadInputDescriptor,
+    GeneratedWorkloadInputProvider, LeaseDataPipeline, LeaseDataPipelineDescriptor,
     LeaseDataPipelineKind, MergeModelCandidate, MetricReport, P2pWorkload, PatchOutcome,
     ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy, TrainingWindowOutcome,
     TrainingWindowTiming, ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome,
-    WindowCtx, WindowReport, local_upstream_root, local_upstream_root_for_pipeline,
-    standard_contribution_weight,
+    WindowCtx, WindowReport, WorkloadExecutionStage, WorkloadInputSource, WorkloadTrainingBudget,
+    WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadValidationPlan,
+    WorkloadValidationProgress, WorkloadValidationResult, local_upstream_root,
+    local_upstream_root_for_pipeline, standard_contribution_weight,
 };
 pub use config::{
     ArtifactTransferPhase, ArtifactTransferState, AuthConfig, ClientReenrollmentStatus,
@@ -196,9 +200,10 @@ pub mod dataloader {
 /// Public APIs for experiment.
 pub mod experiment {
     pub use crate::{
-        ExperimentControlCommand, ExperimentHandle, ExperimentOverlayTopics, ExperimentSpec,
-        PatchClass, PatchOutcome, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec,
-        RuntimePatch, StudySpec,
+        ExperimentControlCommand, ExperimentDirectoryProjectionBuilder, ExperimentHandle,
+        ExperimentLifecyclePlanBuilder, ExperimentOverlayTopics, ExperimentSpec, PatchClass,
+        PatchOutcome, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch,
+        StudySpec,
     };
 }
 

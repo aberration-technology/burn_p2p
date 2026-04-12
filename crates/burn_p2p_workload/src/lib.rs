@@ -3,6 +3,7 @@
 
 mod backend;
 mod data_pipeline;
+mod execution;
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -20,7 +21,15 @@ pub use backend::{
     TrainingWindowTiming, ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome,
     WindowCtx, WindowReport,
 };
-pub use data_pipeline::{LeaseDataPipeline, LeaseDataPipelineDescriptor, LeaseDataPipelineKind};
+pub use data_pipeline::{
+    GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
+    LeaseDataPipelineDescriptor, LeaseDataPipelineKind, WorkloadInputSource,
+};
+pub use execution::{
+    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingPlan, WorkloadTrainingProgress,
+    WorkloadTrainingResult, WorkloadValidationPlan, WorkloadValidationProgress,
+    WorkloadValidationResult,
+};
 
 /// Returns the local filesystem root for one dataset registration when the
 /// dataset is backed by a local upstream.

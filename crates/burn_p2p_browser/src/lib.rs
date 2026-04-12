@@ -9,6 +9,8 @@ pub mod auth;
 pub mod bridge;
 /// Capability detection and reporting helpers.
 pub mod capability;
+/// Public conformance helpers for downstream browser integrations.
+pub mod conformance;
 /// Durable browser storage helpers.
 pub mod durability;
 /// Runtime state and execution helpers.
@@ -45,6 +47,10 @@ pub use burn_p2p_core::{
     ReenrollmentStatus, TrustBundleExport,
 };
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
+pub use conformance::{
+    BrowserConformanceHarness, browser_conformance_capability_for_role,
+    browser_conformance_directory, browser_conformance_session, browser_conformance_transport,
+};
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,
 };
@@ -54,7 +60,9 @@ pub use storage::{
     BrowserReceiptOutbox, BrowserReceiptOutboxBackend, BrowserStorageSnapshot,
     BrowserStoredAssignment,
 };
-pub use training::{BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingResult};
+pub use training::{
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingProgress, BrowserTrainingResult,
+};
 pub use transport::{BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus};
 pub use ui_bindings::{
     BrowserAppUiState, BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserUiBindings,
@@ -65,7 +73,7 @@ pub use ui_bindings::{
     recommended_browser_join_policy_for_scopes, recommended_browser_runtime_state,
     recommended_browser_runtime_state_for_scopes,
 };
-pub use validation::{BrowserValidationPlan, BrowserValidationResult};
+pub use validation::{BrowserValidationPlan, BrowserValidationProgress, BrowserValidationResult};
 pub use worker::{BrowserMetricsSyncState, BrowserWorkerRuntime};
 
 #[cfg(test)]

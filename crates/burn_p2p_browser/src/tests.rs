@@ -12,10 +12,10 @@ use std::{
 use burn_p2p::{
     ArtifactId, AuthProvider, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
     ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
-    ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadId, NetworkId,
-    PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, RevisionId,
-    StudyId, WindowActivation, WindowId, WorkloadId,
+    ExperimentDirectoryPolicyExt, ExperimentDirectoryProjectionBuilder, ExperimentId,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
+    HeadId, NetworkId, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId,
+    PrincipalSession, RevisionId, StudyId, WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
     ArtifactProfile, BackendClass, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
@@ -31,6 +31,49 @@ use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_per
 use chrono::Utc;
 use semver::Version;
 
+fn conformance_revision_manifest() -> burn_p2p::RevisionManifest {
+    burn_p2p::RevisionManifest {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        workload_id: WorkloadId::new("browser-demo"),
+        required_release_train_hash: ContentId::new("train-browser"),
+        model_schema_hash: ContentId::new("model-browser"),
+        checkpoint_format_hash: ContentId::new("checkpoint-browser"),
+        dataset_view_id: burn_p2p::DatasetViewId::new("view-browser"),
+        training_config_hash: ContentId::new("training-browser"),
+        merge_topology_policy_hash: ContentId::new("topology-browser"),
+        slot_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::new(),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: Some(1024),
+            estimated_download_bytes: 1024,
+            estimated_window_seconds: 30,
+        },
+        activation_window: WindowActivation {
+            activation_window: WindowId(1),
+            grace_windows: 0,
+        },
+        lag_policy: burn_p2p::LagPolicy::default(),
+        merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::default(),
+        robustness_policy: None,
+        browser_enabled: true,
+        browser_role_policy: BrowserRolePolicy {
+            observer: true,
+            verifier: true,
+            trainer_wgpu: true,
+            fallback: false,
+        },
+        max_browser_checkpoint_bytes: Some(16 * 1024 * 1024),
+        max_browser_window_secs: Some(30),
+        max_browser_shard_bytes: Some(8 * 1024 * 1024),
+        requires_webgpu: true,
+        max_browser_batch_size: Some(4),
+        recommended_browser_precision: Some(Precision::Fp16),
+        visibility_policy: BrowserVisibilityPolicy::SwarmEligible,
+        description: "browser conformance revision".into(),
+    }
+}
+
 #[test]
 fn worker_bridge_messages_round_trip_through_json() {
     let command = BrowserWorkerCommand::Train(BrowserTrainingPlan {
@@ -44,6 +87,126 @@ fn worker_bridge_messages_round_trip_through_json() {
     let decoded: BrowserWorkerCommand =
         serde_json::from_slice(&bytes).expect("deserialize command");
     assert_eq!(decoded, command);
+}
+
+#[test]
+fn browser_conformance_harness_executes_authenticated_training_and_validation() {
+    let revision = conformance_revision_manifest();
+    let entry = ExperimentDirectoryProjectionBuilder::from_revision(
+        NetworkId::new("net-browser"),
+        StudyId::new("study-browser"),
+        "Browser Demo",
+        &revision,
+    )
+    .with_visibility(ExperimentVisibility::Public)
+    .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_scope(ExperimentScope::Connect)
+    .with_scope(ExperimentScope::Train {
+        experiment_id: revision.experiment_id.clone(),
+    })
+    .with_scope(ExperimentScope::Validate {
+        experiment_id: revision.experiment_id.clone(),
+    })
+    .build();
+    let directory =
+        browser_conformance_directory(NetworkId::new("net-browser"), vec![entry.clone()]);
+    let session = browser_conformance_session(
+        NetworkId::new("net-browser"),
+        PrincipalId::new("browser-principal"),
+        BTreeSet::from([
+            ExperimentScope::Connect,
+            ExperimentScope::Train {
+                experiment_id: revision.experiment_id.clone(),
+            },
+            ExperimentScope::Validate {
+                experiment_id: revision.experiment_id.clone(),
+            },
+        ]),
+    );
+    let mut trainer_harness = BrowserConformanceHarness::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        browser_conformance_capability_for_role(BrowserRuntimeRole::BrowserTrainerWgpu),
+        browser_conformance_transport(),
+        directory,
+        session,
+    );
+
+    let heads = [burn_p2p::HeadDescriptor {
+        head_id: HeadId::new("head-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        artifact_id: ArtifactId::new("artifact-browser-head"),
+        parent_head_id: None,
+        global_step: 1,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    }];
+    trainer_harness.apply_heads(&heads);
+
+    let training = trainer_harness
+        .run_training(BrowserTrainingPlan {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            workload_id: WorkloadId::new("browser-demo"),
+            budget: BrowserTrainingBudget::default(),
+        })
+        .expect("training result");
+
+    let mut verifier_harness = BrowserConformanceHarness::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserVerifier,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("verify-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        browser_conformance_capability_for_role(BrowserRuntimeRole::BrowserVerifier),
+        browser_conformance_transport(),
+        browser_conformance_directory(NetworkId::new("net-browser"), vec![entry.clone()]),
+        browser_conformance_session(
+            NetworkId::new("net-browser"),
+            PrincipalId::new("principal-browser"),
+            BTreeSet::from([
+                ExperimentScope::Train {
+                    experiment_id: revision.experiment_id.clone(),
+                },
+                ExperimentScope::Validate {
+                    experiment_id: revision.experiment_id.clone(),
+                },
+            ]),
+        ),
+    );
+    verifier_harness.apply_heads(&heads);
+
+    let validation = verifier_harness
+        .run_validation(BrowserValidationPlan {
+            head_id: HeadId::new("head-browser"),
+            max_checkpoint_bytes: 16 * 1024 * 1024,
+            sample_budget: 4,
+            emit_receipt: true,
+        })
+        .expect("validation result");
+
+    assert_eq!(training.window_secs, 30);
+    assert!(training.receipt_id.is_some());
+    assert!(validation.accepted);
+    assert_eq!(validation.checked_chunks, 4);
+    assert!(!trainer_harness.pending_receipts().is_empty());
+    assert!(!verifier_harness.pending_receipts().is_empty());
 }
 
 #[test]

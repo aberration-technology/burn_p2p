@@ -139,6 +139,163 @@ impl ClientReleaseManifest {
     }
 }
 
+/// Builder for one supported-workload manifest entry.
+pub struct SupportedWorkloadBuilder {
+    workload_id: WorkloadId,
+    workload_name: String,
+    model_program_hash: ContentId,
+    checkpoint_format_hash: ContentId,
+    supported_revision_family: ContentId,
+    resource_class: String,
+}
+
+impl SupportedWorkloadBuilder {
+    /// Creates a new builder.
+    pub fn new(
+        workload_id: WorkloadId,
+        workload_name: impl Into<String>,
+        model_program_hash: ContentId,
+        checkpoint_format_hash: ContentId,
+    ) -> Self {
+        Self {
+            supported_revision_family: ContentId::new(format!(
+                "{}-revision-family",
+                workload_id.as_str()
+            )),
+            resource_class: "standard".into(),
+            workload_id,
+            workload_name: workload_name.into(),
+            model_program_hash,
+            checkpoint_format_hash,
+        }
+    }
+
+    /// Overrides the supported revision-family hash.
+    pub fn with_supported_revision_family(mut self, supported_revision_family: ContentId) -> Self {
+        self.supported_revision_family = supported_revision_family;
+        self
+    }
+
+    /// Overrides the resource class label.
+    pub fn with_resource_class(mut self, resource_class: impl Into<String>) -> Self {
+        self.resource_class = resource_class.into();
+        self
+    }
+
+    /// Builds the final workload manifest entry.
+    pub fn build(self) -> SupportedWorkload {
+        SupportedWorkload {
+            workload_id: self.workload_id,
+            workload_name: self.workload_name,
+            model_program_hash: self.model_program_hash,
+            checkpoint_format_hash: self.checkpoint_format_hash,
+            supported_revision_family: self.supported_revision_family,
+            resource_class: self.resource_class,
+        }
+    }
+}
+
+/// Builder for one client release manifest.
+pub struct ClientReleaseManifestBuilder {
+    project_family_id: ProjectFamilyId,
+    release_train_hash: ContentId,
+    target_artifact_id: String,
+    target_artifact_hash: ContentId,
+    target_platform: ClientPlatform,
+    app_semver: Version,
+    git_commit: String,
+    cargo_lock_hash: ContentId,
+    burn_version_string: String,
+    enabled_features_hash: ContentId,
+    protocol_major: u16,
+    supported_workloads: Vec<SupportedWorkload>,
+    built_at: DateTime<Utc>,
+}
+
+impl ClientReleaseManifestBuilder {
+    /// Creates a new builder with the minimum required identity fields.
+    pub fn new(
+        project_family_id: ProjectFamilyId,
+        release_train_hash: ContentId,
+        target_artifact_id: impl Into<String>,
+        target_artifact_hash: ContentId,
+        target_platform: ClientPlatform,
+        app_semver: Version,
+        protocol_major: u16,
+    ) -> Self {
+        Self {
+            project_family_id,
+            release_train_hash,
+            target_artifact_id: target_artifact_id.into(),
+            target_artifact_hash,
+            target_platform,
+            app_semver,
+            git_commit: "unknown".into(),
+            cargo_lock_hash: ContentId::new("unknown-cargo-lock"),
+            burn_version_string: "unknown".into(),
+            enabled_features_hash: ContentId::new("unknown-enabled-features"),
+            protocol_major,
+            supported_workloads: Vec::new(),
+            built_at: Utc::now(),
+        }
+    }
+
+    /// Sets the git commit string.
+    pub fn with_git_commit(mut self, git_commit: impl Into<String>) -> Self {
+        self.git_commit = git_commit.into();
+        self
+    }
+
+    /// Sets the cargo.lock hash.
+    pub fn with_cargo_lock_hash(mut self, cargo_lock_hash: ContentId) -> Self {
+        self.cargo_lock_hash = cargo_lock_hash;
+        self
+    }
+
+    /// Sets the burn version string.
+    pub fn with_burn_version_string(mut self, burn_version_string: impl Into<String>) -> Self {
+        self.burn_version_string = burn_version_string.into();
+        self
+    }
+
+    /// Sets the enabled-features hash.
+    pub fn with_enabled_features_hash(mut self, enabled_features_hash: ContentId) -> Self {
+        self.enabled_features_hash = enabled_features_hash;
+        self
+    }
+
+    /// Sets the build timestamp.
+    pub fn with_built_at(mut self, built_at: DateTime<Utc>) -> Self {
+        self.built_at = built_at;
+        self
+    }
+
+    /// Adds one supported workload.
+    pub fn with_supported_workload(mut self, supported_workload: SupportedWorkload) -> Self {
+        self.supported_workloads.push(supported_workload);
+        self
+    }
+
+    /// Builds the final client release manifest.
+    pub fn build(self) -> ClientReleaseManifest {
+        ClientReleaseManifest {
+            project_family_id: self.project_family_id,
+            release_train_hash: self.release_train_hash,
+            target_artifact_id: self.target_artifact_id,
+            target_artifact_hash: self.target_artifact_hash,
+            target_platform: self.target_platform,
+            app_semver: self.app_semver,
+            git_commit: self.git_commit,
+            cargo_lock_hash: self.cargo_lock_hash,
+            burn_version_string: self.burn_version_string,
+            enabled_features_hash: self.enabled_features_hash,
+            protocol_major: self.protocol_major,
+            supported_workloads: self.supported_workloads,
+            built_at: self.built_at,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Describes the network.
 pub struct NetworkManifest {
@@ -162,6 +319,81 @@ pub struct NetworkManifest {
     pub created_at: DateTime<Utc>,
     /// The description.
     pub description: String,
+}
+
+/// Builder for one network manifest.
+pub struct NetworkManifestBuilder {
+    network_id: NetworkId,
+    project_family_id: ProjectFamilyId,
+    protocol_major: u16,
+    required_release_train_hash: ContentId,
+    allowed_target_artifact_hashes: BTreeSet<ContentId>,
+    authority_public_keys: Vec<String>,
+    bootstrap_addrs: Vec<String>,
+    auth_policy_hash: ContentId,
+    created_at: DateTime<Utc>,
+    description: String,
+}
+
+impl NetworkManifestBuilder {
+    /// Creates a new builder.
+    pub fn new(
+        network_id: NetworkId,
+        project_family_id: ProjectFamilyId,
+        protocol_major: u16,
+        required_release_train_hash: ContentId,
+        auth_policy_hash: ContentId,
+        created_at: DateTime<Utc>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            network_id,
+            project_family_id,
+            protocol_major,
+            required_release_train_hash,
+            allowed_target_artifact_hashes: BTreeSet::new(),
+            authority_public_keys: Vec::new(),
+            bootstrap_addrs: Vec::new(),
+            auth_policy_hash,
+            created_at,
+            description: description.into(),
+        }
+    }
+
+    /// Adds one allowed target artifact hash.
+    pub fn with_allowed_target_artifact_hash(mut self, target_artifact_hash: ContentId) -> Self {
+        self.allowed_target_artifact_hashes
+            .insert(target_artifact_hash);
+        self
+    }
+
+    /// Adds one authority public key.
+    pub fn with_authority_public_key(mut self, authority_public_key: impl Into<String>) -> Self {
+        self.authority_public_keys.push(authority_public_key.into());
+        self
+    }
+
+    /// Adds one bootstrap address.
+    pub fn with_bootstrap_addr(mut self, bootstrap_addr: impl Into<String>) -> Self {
+        self.bootstrap_addrs.push(bootstrap_addr.into());
+        self
+    }
+
+    /// Builds the final network manifest.
+    pub fn build(self) -> NetworkManifest {
+        NetworkManifest {
+            network_id: self.network_id,
+            project_family_id: self.project_family_id,
+            protocol_major: self.protocol_major,
+            required_release_train_hash: self.required_release_train_hash,
+            allowed_target_artifact_hashes: self.allowed_target_artifact_hashes,
+            authority_public_keys: self.authority_public_keys,
+            bootstrap_addrs: self.bootstrap_addrs,
+            auth_policy_hash: self.auth_policy_hash,
+            created_at: self.created_at,
+            description: self.description,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,5 +872,63 @@ impl RevisionManifest {
     /// Performs the effective lag policy operation.
     pub fn effective_lag_policy(&self) -> LagPolicy {
         self.lag_policy.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_builders_cover_single_family_single_workload_setup() {
+        let workload = SupportedWorkloadBuilder::new(
+            WorkloadId::new("dragon"),
+            "Burn Dragon",
+            ContentId::new("program"),
+            ContentId::new("checkpoint"),
+        )
+        .with_supported_revision_family(ContentId::new("family"))
+        .with_resource_class("gpu-medium")
+        .build();
+
+        let release = ClientReleaseManifestBuilder::new(
+            ProjectFamilyId::new("dragon-family"),
+            ContentId::new("release-train"),
+            "native-linux-x86_64",
+            ContentId::new("artifact"),
+            ClientPlatform::Native,
+            Version::new(0, 21, 0),
+            1,
+        )
+        .with_built_at(Utc::now())
+        .with_git_commit("deadbeef")
+        .with_cargo_lock_hash(ContentId::new("lock"))
+        .with_burn_version_string("0.18")
+        .with_enabled_features_hash(ContentId::new("features"))
+        .with_supported_workload(workload.clone())
+        .build();
+
+        let network = NetworkManifestBuilder::new(
+            NetworkId::new("dragon-network"),
+            ProjectFamilyId::new("dragon-family"),
+            1,
+            release.release_train_hash.clone(),
+            ContentId::new("auth-policy"),
+            Utc::now(),
+            "dragon network",
+        )
+        .with_allowed_target_artifact_hash(release.target_artifact_hash.clone())
+        .with_authority_public_key("validator-key")
+        .with_bootstrap_addr("/ip4/127.0.0.1/tcp/4001")
+        .build();
+
+        assert_eq!(release.supported_workloads, vec![workload]);
+        assert!(
+            network
+                .allowed_target_artifact_hashes
+                .contains(&ContentId::new("artifact"))
+        );
+        assert_eq!(network.authority_public_keys, vec!["validator-key"]);
+        assert_eq!(network.bootstrap_addrs, vec!["/ip4/127.0.0.1/tcp/4001"]);
     }
 }

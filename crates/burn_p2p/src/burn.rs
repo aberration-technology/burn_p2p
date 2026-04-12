@@ -29,6 +29,11 @@ pub use burn_p2p_engine::{
     materialize_store_bytes_artifact, materialize_store_file_artifact, merge_weighted_mean_modules,
     module_schema_hash, save_record_file, save_store_file,
 };
+pub use burn_p2p_workload::{
+    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingPlan, WorkloadTrainingProgress,
+    WorkloadTrainingResult, WorkloadValidationPlan, WorkloadValidationProgress,
+    WorkloadValidationResult,
+};
 
 /// Type alias for the burn learning components used by [`BurnLearnerWorkload`].
 pub type BurnLearningComponents<W> = LearningComponentsMarker<
