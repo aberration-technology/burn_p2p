@@ -1041,7 +1041,10 @@ version = "0.21.0-pre.9"
 dependencies = [
  "burn_p2p",
  "burn_p2p_browser",
+ "burn_p2p_core",
+ "burn_p2p_security",
  "burn_p2p_views",
+ "chrono",
  "console_error_panic_hook",
  "dioxus",
  "gloo-timers",

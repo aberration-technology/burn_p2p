@@ -38,5 +38,10 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Document", "Element", "HtmlInputElement", "Location", "Storage", "Window"] }
 
+[dev-dependencies]
+burn_p2p_core.workspace = true
+burn_p2p_security.workspace = true
+chrono.workspace = true
+
 [lints]
 workspace = true

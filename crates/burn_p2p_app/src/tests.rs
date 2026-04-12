@@ -1,10 +1,30 @@
 use crate::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
     AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppPublishedArtifactRow,
-    render_artifact_run_summaries_html, render_artifact_run_view_html,
-    render_browser_app_static_html, render_dashboard_html, render_head_artifact_view_html,
+    AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,
+    LifecycleAssignmentStatusCard, RuntimeCapabilityCard, TrainingResultPanel,
+    TransportHealthPanel, assert_browser_client_selected_experiment,
+    assert_experiment_picker_contains_allowed_revision, assert_lifecycle_assignment_matches,
+    assert_participant_has_receipts, assert_training_result_complete,
+    assert_transport_health_ready, render_artifact_run_summaries_html,
+    render_artifact_run_view_html, render_browser_app_static_html, render_dashboard_html,
+    render_head_artifact_view_html,
 };
-use burn_p2p_views::{BrowserAppStaticBootstrap, BrowserAppSurface};
+use burn_p2p_core::{
+    ArtifactId, ContributionReceipt, ContributionReceiptId, ExperimentId, ExperimentScope, HeadId,
+    NetworkId, PeerId, RevisionId, StudyId,
+};
+use burn_p2p_security::PeerTrustLevel;
+use burn_p2p_views::{
+    BrowserAppClientView, BrowserAppNetworkView, BrowserAppStaticBootstrap, BrowserAppSurface,
+    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
+    ContributionIdentityPanel, ExperimentPickerView, LifecycleAssignmentStatusView,
+    ParticipantAppView, ParticipantProfile, RuntimeCapabilitySummaryView,
+    TrainingResultSummaryView, TrustBadgeView,
+};
+use chrono::Utc;
+use dioxus::{prelude::*, ssr::render_element};
+use std::collections::BTreeMap;
 
 #[test]
 fn dashboard_html_mentions_bootstrap_routes() {
@@ -186,4 +206,326 @@ fn artifact_run_and_head_pages_render_history_details() {
     assert!(head_html.contains("Available profiles"));
     assert!(head_html.contains("BrowserSnapshot"));
     assert!(head_html.contains("/portal/artifacts/runs/exp-auth/run-auth"));
+}
+
+#[test]
+fn reusable_widgets_render_typed_non_portal_cards() {
+    let auth_html = render_element(rsx! {
+        AuthSessionCard {
+            session: Some(ContributionIdentityPanel {
+                principal_id: "principal-auth".into(),
+                provider_label: "GitHub".into(),
+                trust_badges: vec![TrustBadgeView {
+                    level: PeerTrustLevel::Reputable,
+                    label: "reputable".into(),
+                }],
+                scoped_experiments: vec![ExperimentId::new("exp-auth")],
+            })
+        }
+    });
+    assert!(auth_html.contains("principal-auth"));
+    assert!(auth_html.contains("GitHub"));
+
+    let capability_html = render_element(rsx! {
+        RuntimeCapabilityCard {
+            summary: RuntimeCapabilitySummaryView {
+                preferred_role: "trainer".into(),
+                backend_summary: "webgpu".into(),
+                can_train: true,
+            }
+        }
+    });
+    assert!(capability_html.contains("trainer"));
+    assert!(capability_html.contains("webgpu"));
+
+    let training_html = render_element(rsx! {
+        TrainingResultPanel {
+            result: Some(TrainingResultSummaryView {
+                artifact_id: "artifact-auth".into(),
+                receipt_id: Some("receipt-auth".into()),
+                window_secs: 30,
+            })
+        }
+    });
+    assert!(training_html.contains("artifact-auth"));
+    assert!(training_html.contains("receipt-auth"));
+
+    let network_html = render_element(rsx! {
+        TransportHealthPanel {
+            network: BrowserAppNetworkView {
+                edge_base_url: "https://edge.example".into(),
+                transport: "wss-fallback".into(),
+                node_state: "observer".into(),
+                direct_peers: 2,
+                observed_peers: 5,
+                estimated_network_size: 7,
+                accepted_receipts: 3,
+                certified_merges: 1,
+                in_flight_transfers: 0,
+                network_note: "healthy".into(),
+                metrics_live_ready: true,
+                last_directory_sync_at: Some("2026-04-11T00:00:00Z".into()),
+                last_error: None,
+                performance: None,
+                diffusion: None,
+            }
+        }
+    });
+    assert!(network_html.contains("wss-fallback"));
+    assert!(network_html.contains("https://edge.example"));
+
+    let picker = ExperimentPickerView::from_directory(
+        NetworkId::new("net-auth"),
+        vec![burn_p2p_core::ExperimentDirectoryEntry {
+            network_id: NetworkId::new("net-auth"),
+            study_id: StudyId::new("study-auth"),
+            experiment_id: ExperimentId::new("exp-auth"),
+            workload_id: burn_p2p_core::WorkloadId::new("wgpu-demo"),
+            display_name: "Auth Experiment".into(),
+            model_schema_hash: burn_p2p_core::ContentId::new("schema-auth"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("dataset-auth"),
+            resource_requirements: burn_p2p_core::ExperimentResourceRequirements {
+                minimum_roles: Default::default(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 1024,
+                estimated_window_seconds: 45,
+            },
+            visibility: burn_p2p_core::ExperimentVisibility::Public,
+            opt_in_policy: burn_p2p_core::ExperimentOptInPolicy::Open,
+            current_revision_id: RevisionId::new("rev-auth"),
+            current_head_id: Some(HeadId::new("head-auth")),
+            allowed_roles: Default::default(),
+            allowed_scopes: std::collections::BTreeSet::from([ExperimentScope::Train {
+                experiment_id: ExperimentId::new("exp-auth"),
+            }]),
+            metadata: BTreeMap::new(),
+        }],
+        &[ExperimentScope::Train {
+            experiment_id: ExperimentId::new("exp-auth"),
+        }],
+    );
+    let picker_html = render_element(rsx! {
+        ExperimentRevisionSelector {
+            picker: picker,
+            selected_experiment_id: Some("exp-auth".into()),
+            selected_revision_id: Some("rev-auth".into()),
+            select_base_path: Some("/portal/select".into()),
+        }
+    });
+    assert!(picker_html.contains("Auth Experiment"));
+    assert!(picker_html.contains("/portal/select?experiment_id=exp-auth"));
+    assert!(picker_html.contains("revision_id=rev-auth"));
+
+    let receipt_html = render_element(rsx! {
+        ContributionReceiptSummaryPanel {
+            participant: ParticipantAppView {
+                profile: ParticipantProfile {
+                    peer_id: PeerId::new("peer-auth"),
+                    display_name: Some("auth peer".into()),
+                    github: None,
+                },
+                current_assignment: None,
+                local_telemetry: None,
+                accepted_receipts: vec![ContributionReceipt {
+                    receipt_id: ContributionReceiptId::new("receipt-auth"),
+                    peer_id: PeerId::new("peer-auth"),
+                    study_id: StudyId::new("study-auth"),
+                    experiment_id: ExperimentId::new("exp-auth"),
+                    revision_id: RevisionId::new("rev-auth"),
+                    base_head_id: HeadId::new("head-auth"),
+                    artifact_id: ArtifactId::new("artifact-auth"),
+                    accepted_at: Utc::now(),
+                    accepted_weight: 2.5,
+                    metrics: BTreeMap::new(),
+                    merge_cert_id: None,
+                }],
+                latest_accepted_receipt: None,
+                latest_published_artifact_id: None,
+                checkpoint_downloads: Vec::new(),
+            }
+        }
+    });
+    assert!(receipt_html.contains("1 accepted"));
+    assert!(receipt_html.contains("receipt-auth"));
+
+    let lifecycle_html = render_element(rsx! {
+        LifecycleAssignmentStatusCard {
+            status: LifecycleAssignmentStatusView {
+                experiment_label: "exp-auth".into(),
+                revision_label: "rev-auth".into(),
+                lifecycle_phase: "active".into(),
+                assignment_status: "assigned".into(),
+            }
+        }
+    });
+    assert!(lifecycle_html.contains("exp-auth"));
+    assert!(lifecycle_html.contains("assigned"));
+}
+
+#[test]
+fn snapshot_assertions_cover_non_portal_downstream_smoke_checks() {
+    let browser_view = BrowserAppClientView {
+        network_id: "net-auth".into(),
+        default_surface: BrowserAppSurface::Train,
+        runtime_label: "trainer".into(),
+        runtime_detail: "ready".into(),
+        capability_summary: "webgpu".into(),
+        session_label: "principal-auth".into(),
+        selected_experiment: Some(burn_p2p_views::BrowserAppExperimentSummary {
+            display_name: "Auth Experiment".into(),
+            experiment_id: "exp-auth".into(),
+            revision_id: "rev-auth".into(),
+            workload_id: "wgpu-demo".into(),
+            current_head_id: Some("head-auth".into()),
+            validate_available: true,
+            train_available: true,
+            availability: "available".into(),
+        }),
+        viewer: BrowserAppViewerView {
+            visible_experiments: 1,
+            visible_heads: 1,
+            leaderboard_entries: 0,
+            signed_directory_ready: true,
+            signed_leaderboard_ready: false,
+            experiments_preview: Vec::new(),
+            leaderboard_preview: Vec::new(),
+        },
+        validation: BrowserAppValidationView {
+            validate_available: true,
+            can_validate: true,
+            current_head_id: Some("head-auth".into()),
+            metrics_sync_at: None,
+            pending_receipts: 0,
+            validation_status: Some("accepted".into()),
+            checked_chunks: Some(4),
+            emitted_receipt_id: None,
+            evaluation_summary: None,
+            metric_preview: Vec::new(),
+        },
+        training: BrowserAppTrainingView {
+            train_available: true,
+            can_train: true,
+            active_assignment: Some("exp-auth/rev-auth".into()),
+            slice_status: "active".into(),
+            latest_head_id: Some("head-auth".into()),
+            cached_chunk_artifacts: 1,
+            cached_microshards: 1,
+            pending_receipts: 1,
+            max_window_secs: Some(30),
+            last_window_secs: Some(30),
+            optimizer_steps: Some(4),
+            accepted_samples: Some(128),
+            slice_target_samples: Some(256),
+            slice_remaining_samples: Some(128),
+            last_loss: Some("0.12".into()),
+            publish_latency_ms: Some(120),
+            throughput_summary: Some("4.2/s".into()),
+            last_artifact_id: Some("artifact-auth".into()),
+            last_receipt_id: Some("receipt-auth".into()),
+        },
+        network: BrowserAppNetworkView {
+            edge_base_url: "https://edge.example".into(),
+            transport: "wss-fallback".into(),
+            node_state: "trainer".into(),
+            direct_peers: 1,
+            observed_peers: 2,
+            estimated_network_size: 2,
+            accepted_receipts: 1,
+            certified_merges: 1,
+            in_flight_transfers: 0,
+            network_note: "healthy".into(),
+            metrics_live_ready: true,
+            last_directory_sync_at: Some("2026-04-11T00:00:00Z".into()),
+            last_error: None,
+            performance: None,
+            diffusion: None,
+        },
+    };
+    assert_browser_client_selected_experiment(&browser_view, "exp-auth", "rev-auth")
+        .expect("selected experiment assertion");
+    assert_transport_health_ready(&browser_view.network).expect("transport health assertion");
+
+    let picker = ExperimentPickerView::from_directory(
+        NetworkId::new("net-auth"),
+        vec![burn_p2p_core::ExperimentDirectoryEntry {
+            network_id: NetworkId::new("net-auth"),
+            study_id: StudyId::new("study-auth"),
+            experiment_id: ExperimentId::new("exp-auth"),
+            workload_id: burn_p2p_core::WorkloadId::new("wgpu-demo"),
+            display_name: "Auth Experiment".into(),
+            model_schema_hash: burn_p2p_core::ContentId::new("schema-auth"),
+            dataset_view_id: burn_p2p_core::DatasetViewId::new("dataset-auth"),
+            resource_requirements: burn_p2p_core::ExperimentResourceRequirements {
+                minimum_roles: Default::default(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 1024,
+                estimated_window_seconds: 45,
+            },
+            visibility: burn_p2p_core::ExperimentVisibility::Public,
+            opt_in_policy: burn_p2p_core::ExperimentOptInPolicy::Open,
+            current_revision_id: RevisionId::new("rev-auth"),
+            current_head_id: Some(HeadId::new("head-auth")),
+            allowed_roles: Default::default(),
+            allowed_scopes: std::collections::BTreeSet::from([ExperimentScope::Train {
+                experiment_id: ExperimentId::new("exp-auth"),
+            }]),
+            metadata: BTreeMap::new(),
+        }],
+        &[ExperimentScope::Train {
+            experiment_id: ExperimentId::new("exp-auth"),
+        }],
+    );
+    assert_experiment_picker_contains_allowed_revision(&picker, "exp-auth", "rev-auth")
+        .expect("picker assertion");
+
+    assert_training_result_complete(&TrainingResultSummaryView {
+        artifact_id: "artifact-auth".into(),
+        receipt_id: Some("receipt-auth".into()),
+        window_secs: 30,
+    })
+    .expect("training result assertion");
+
+    assert_participant_has_receipts(
+        &ParticipantAppView {
+            profile: ParticipantProfile {
+                peer_id: PeerId::new("peer-auth"),
+                display_name: Some("auth peer".into()),
+                github: None,
+            },
+            current_assignment: None,
+            local_telemetry: None,
+            accepted_receipts: vec![ContributionReceipt {
+                receipt_id: ContributionReceiptId::new("receipt-auth"),
+                peer_id: PeerId::new("peer-auth"),
+                study_id: StudyId::new("study-auth"),
+                experiment_id: ExperimentId::new("exp-auth"),
+                revision_id: RevisionId::new("rev-auth"),
+                base_head_id: HeadId::new("head-auth"),
+                artifact_id: ArtifactId::new("artifact-auth"),
+                accepted_at: Utc::now(),
+                accepted_weight: 1.0,
+                metrics: BTreeMap::new(),
+                merge_cert_id: None,
+            }],
+            latest_accepted_receipt: None,
+            latest_published_artifact_id: None,
+            checkpoint_downloads: Vec::new(),
+        },
+        1,
+    )
+    .expect("participant receipt assertion");
+
+    assert_lifecycle_assignment_matches(
+        &LifecycleAssignmentStatusView {
+            experiment_label: "exp-auth".into(),
+            revision_label: "rev-auth".into(),
+            lifecycle_phase: "active".into(),
+            assignment_status: "assigned".into(),
+        },
+        "exp-auth",
+        "rev-auth",
+    )
+    .expect("lifecycle assertion");
 }

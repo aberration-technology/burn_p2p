@@ -49,20 +49,39 @@ treated as missing capability.
 
 ### still real downstream gaps
 
-the remaining burn_dragon-specific gaps are more focused:
+the remaining burn_dragon-specific gaps are now mostly downstream-adoption
+questions rather than missing upstream seams:
 
-- browser training execution payloads are still owned by `burn_p2p_browser`
-  instead of a host-neutral workload seam
-- native and browser training paths still do not share enough of the same
-  upstream execution/result language
-- browser/local workload input descriptions are still too implicit in closures
-  and runtime hooks for a custom multi-workload product
-- downstream apps still need cleaner builders for experiment-family and
-  lifecycle-oriented administration
-- `burn_p2p_app` is still more reusable as a full reference portal than as a
-  set of smaller product components
-- repo-internal `burn_p2p_testkit` coverage is strong, but there is not yet a
-  small public downstream conformance surface for custom browser burn products
+- a real downstream app still needs to pressure-test the new widget split from
+  `burn_p2p_app`
+- a real downstream app still needs to pressure-test the public conformance
+  helpers in ci
+- product-specific model, corpus, optimizer, and ui language still belong
+  downstream
+
+## status after the current implementation pass
+
+the concrete upstream work described in this roadmap is now materially landed:
+
+- shared training and validation execution payloads now live in
+  `burn_p2p_workload`
+- `burn_p2p_browser` now consumes those shared payloads through compatibility
+  aliases instead of owning a divergent host-only contract
+- `LeaseDataPipelineDescriptor` now carries richer input-source descriptions
+  and helper constructors for inline/http/shard-manifest/generated/custom
+  inputs
+- downstream-facing builders now exist for supported workloads, release/network
+  manifests, directory projections, and lifecycle plans
+- `burn_p2p_views` now exposes typed non-portal runtime/training/lifecycle
+  summaries for reuse
+- `burn_p2p_app` now exports reusable widgets for auth/session, runtime
+  capability, training results, transport health, experiment selection,
+  receipt summaries, and lifecycle assignment status
+- `burn_p2p_browser` now exposes a public `BrowserConformanceHarness`
+- `burn_p2p_app` now exposes public snapshot/conformance assertion helpers for
+  downstream smoke tests
+- lifecycle-plan-driven rollover remains exercised through the runtime/control
+  integration APIs rather than a browser-only fixture
 
 ## problem statement
 
@@ -79,12 +98,11 @@ conceptually part of the `burn_p2p*` product surface:
 the result is functional, but not ideal:
 
 - native burn integration is clean through `burn_p2p::burn`
-- browser burn integration is still too downstream-owned
-- native and wasm training paths still diverge more than they should
-- workload input/data-pipeline seams are not yet rich enough for a custom
-  multi-workload browser product
-- shared app/view crates do not yet expose the right reusable seams for a
-  custom experiment product
+- browser burn integration now has an upstream contract and public harness
+- native and wasm training paths now share upstream execution/result payloads
+- workload input/data-pipeline seams are now rich enough for common custom
+  browser-product inputs
+- shared app/view crates now expose reusable non-portal seams
 
 ## design constraints
 
@@ -146,25 +164,22 @@ not "tell downstream apps to depend directly on internal testkit guts."
 
 ## observed downstream pain points
 
-### 1. native burn integration is upstreamed, browser burn integration is not
+### 1. native and browser burn integration now share one upstream contract
 
 today:
 
-- `burn_p2p::burn` provides a strong native integration seam
+- `burn_p2p::burn` provides the native integration seam
 - `burn_p2p_browser` provides browser runtime/auth/session/control surfaces
-- there is still no equivalent host-neutral upstream browser burn execution seam
+- host-neutral execution payloads now sit above both in `burn_p2p_workload`
 
 downstream consequence:
 
-- `burn_dragon_p2p` still owns browser-local training logic
-- browser-local train/eval stats are downstream-defined
-- native and wasm paths do not share enough of the same execution contract
+- downstream browser-burn apps can now target one upstream execution contract
+- remaining friction is around product composition, not the core payload model
 
-this remains the biggest structural gap.
+### 2. browser training contracts are no longer host-owned
 
-### 2. browser training contracts are still too host-owned
-
-today, the browser crate still owns:
+the browser crate no longer needs to own a divergent contract for:
 
 - `BrowserTrainingBudget`
 - `BrowserTrainingPlan`
@@ -174,35 +189,35 @@ today, the browser crate still owns:
 
 downstream consequence:
 
-- downstream browser-burn apps have to speak a browser-owned contract
-- native and browser execution paths cannot converge cleanly on one shared
-  upstream language
+- browser worker/runtime logic stays browser-owned
+- the training and validation plan/result/progress language is now shared
 
-### 3. workload input description is still too closure- and app-owned
+### 3. workload input description needed richer descriptors, not a second system
 
 today, `LeaseDataPipeline` is the right base seam, but it is still too implicit
 for richer downstream products.
 
-what is missing is not a second unrelated pipeline system. what is missing is:
+the remaining direction is not a second unrelated pipeline system. the shipped
+upstream work now includes:
 
 - richer serializable descriptors for browser/local input sources
 - reusable helpers for common inline/http/generated browser input shapes
 - clearer upstream language for generated/synthetic input providers
 
-### 4. downstream experiment administration is still too manual
+### 4. downstream experiment administration now has the needed builder layer
 
-today the repo has the right runtime control objects, but downstream custom
-products still lack a small ergonomic builder layer for:
+the repo now has the right runtime control objects and the downstream builder
+layer for:
 
 - one project family with a small number of workloads
 - one network with several experiments over time
 - lifecycle-plan publication for staged revision rollout
 - schedule/assignment helpers for common hosted topologies
 
-the gap is now more about operator ergonomics than raw control-plane
-capability.
+the remaining gap is now more about real downstream ergonomics pressure than
+raw control-plane capability.
 
-### 5. `burn_p2p_app` is still too portal-oriented for custom products
+### 5. `burn_p2p_app` is now reusable below the portal shell
 
 `burn_p2p_app` is valuable as:
 
@@ -210,17 +225,15 @@ capability.
 - static/ssr render surface
 - shared browser/native component tree
 
-but for burn_dragon the missing seams are still:
+the current upstream surface now includes:
 
 - reusable training/network panels without adopting the whole portal shell
 - reusable auth/session/join widgets
 - reusable typed models for local training results and browser trainer controls
 
-### 6. downstream verification still needs a public conformance layer
+### 6. downstream verification now has a public conformance layer
 
-the repo now has strong internal administration, browser, and mixed-fleet
-coverage, but a custom downstream product still does not get a narrow public
-surface for validating:
+the repo now exposes a narrow public surface for validating:
 
 - auth/session restore
 - local browser training execution
@@ -228,8 +241,8 @@ surface for validating:
 - lifecycle-plan-driven experiment switching
 - app snapshot rendering
 
-that should be solved without making internal `burn_p2p_testkit` structure the
-public downstream API.
+that surface avoids making internal `burn_p2p_testkit` structure the
+downstream API.
 
 ## what should move upstream
 
@@ -387,6 +400,8 @@ upstream should provide seams, not absorb domain-specific training code.
 
 ### phase 1: shared execution payloads across native and browser
 
+status: completed upstream
+
 target crates:
 
 - `burn_p2p_workload`
@@ -415,6 +430,8 @@ success criteria:
 
 ### phase 2: richer pipeline descriptors and generated-input hooks
 
+status: completed upstream
+
 target crates:
 
 - `burn_p2p_workload`
@@ -437,6 +454,8 @@ success criteria:
 
 ### phase 3: downstream administration builders
 
+status: completed upstream
+
 target crates:
 
 - `burn_p2p`
@@ -458,6 +477,8 @@ success criteria:
 
 ### phase 4: reusable app/product surface
 
+status: completed upstream
+
 target crates:
 
 - `burn_p2p_app`
@@ -474,6 +495,8 @@ success criteria:
 - downstream apps can reuse upstream UI pieces without adopting the whole portal
 
 ### phase 5: public downstream verification surface
+
+status: substantially completed upstream
 
 target crates:
 
@@ -513,18 +536,23 @@ success criteria:
 - a downstream browser burn app has a supported smoke/conformance path for
   auth, local training, network submission, and experiment rollover
 
-## recommended first implementation step
+the current tree now satisfies the upstream-facing version of those criteria.
+what remains is proving the surface under real downstream adoption rather than
+adding another foundational seam.
 
-the first upstream step should still be:
+## recommended next downstream step
 
-1. move shared training/validation budget/plan/result/progress contracts into
-   `burn_p2p_workload`
-2. make `burn_p2p_browser` use those contracts instead of browser-owned-only
-   variants
-3. make `burn_p2p::burn` expose native execution against the same contracts
-4. keep browser trainer semantics WebGPU-first and do not productize browser
-   cpu training
+the next useful step is no longer another upstream architecture change. it is
+to wire a real downstream product slice against these seams and tighten any
+awkward edges found in practice:
 
-that remains the highest-leverage change because it removes the biggest
-structural duplication in `burn_dragon_p2p`, reduces the native/wasm split, and
-improves the existing `burn_p2p*` surface instead of fragmenting it further.
+1. replace downstream browser training/result contracts with the shared
+   `burn_p2p_workload` payloads
+2. replace downstream experiment-manifest and lifecycle glue with the upstream
+   builders
+3. replace copied product panels with the exported `burn_p2p_app` widgets where
+   they fit
+4. use the public conformance harness and snapshot assertions in downstream ci
+
+if those steps uncover friction, the follow-on work should be small ergonomic
+refinements, not another architectural reset.
