@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_support::{load_slot_assignments, persist_slot_assignments};
 
 impl<P> RunningNode<P> {
     /// Performs the list experiments operation.
@@ -71,7 +72,14 @@ impl<P> RunningNode<P> {
         assignment: &SlotAssignmentState,
     ) -> anyhow::Result<()> {
         if let Some(storage) = self.config().storage.as_ref() {
+            let mut assignments = load_slot_assignments(storage)?;
+            if assignments.is_empty() {
+                assignments.push(assignment.clone());
+            } else {
+                assignments[0] = assignment.clone();
+            }
             persist_primary_slot_assignment(storage, assignment)?;
+            persist_slot_assignments(storage, &assignments)?;
         }
         Ok(())
     }

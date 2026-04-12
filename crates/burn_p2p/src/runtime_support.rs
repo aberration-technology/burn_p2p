@@ -18,12 +18,12 @@ pub(crate) use control_plane::run_control_plane;
 pub(crate) use persistence::{
     inferred_next_window_id, load_head_state, load_json, load_known_peers,
     load_latest_merge_certificate, load_limit_profile, load_primary_slot_assignment,
-    persist_auth_state, persist_control_plane_state, persist_head_state,
+    load_slot_assignments, persist_auth_state, persist_control_plane_state, persist_head_state,
     persist_in_flight_transfer_states, persist_json, persist_known_peers, persist_limit_profile,
     persist_primary_slot_assignment, persist_runtime_binding_state, persist_runtime_security_state,
-    persist_window_id, remove_artifact_transfer_state, restore_auth_config,
-    restore_control_plane_state, restore_in_flight_transfer_states, restore_runtime_binding_config,
-    restore_runtime_security_state,
+    persist_slot_assignments, persist_window_id, remove_artifact_transfer_state,
+    restore_auth_config, restore_control_plane_state, restore_in_flight_transfer_states,
+    restore_runtime_binding_config, restore_runtime_security_state,
 };
 #[cfg(test)]
 pub(crate) use persistence::{
@@ -40,15 +40,16 @@ pub(crate) use placement::{
 pub(crate) use topology::experiment_snapshot_peer_ids;
 pub(crate) use topology::{
     LagAssessment, active_experiment_directory_entry, assess_head_lag, cached_connected_snapshots,
-    connected_peer_ids, effective_experiment_lifecycle_plan, experiment_has_lifecycle_plan,
-    latest_head_from_snapshot, latest_merge_window_from_connected_snapshots,
-    latest_merge_window_from_snapshot, latest_reducer_assignment_from_snapshot,
-    matches_experiment_head, merge_control_plane_snapshot, metric_quality,
-    open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids, resolve_canonical_head,
-    runtime_assign_reducers, runtime_merge_topology_policy, runtime_robustness_policy,
-    runtime_topology_peers, runtime_training_peers, runtime_validator_peers, runtime_validators,
-    snapshots_with_local_control_plane, update_announces_from_connected_snapshots,
-    update_feature_sketch_from_metrics, update_norm_stats,
+    connected_peer_ids, effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch,
+    experiment_has_lifecycle_plan, latest_head_from_snapshot,
+    latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
+    latest_reducer_assignment_from_snapshot, matches_experiment_head, merge_control_plane_snapshot,
+    metric_quality, open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids,
+    resolve_canonical_head, runtime_assign_reducers, runtime_merge_topology_policy,
+    runtime_robustness_policy, runtime_topology_peers, runtime_training_peers,
+    runtime_validator_peers, runtime_validators, snapshots_with_local_control_plane,
+    update_announces_from_connected_snapshots, update_feature_sketch_from_metrics,
+    update_norm_stats,
 };
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{

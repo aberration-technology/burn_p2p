@@ -211,6 +211,19 @@ pub(crate) fn run_control_plane(
                     let mut snapshot = lock_telemetry_state(&state);
                     sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                 }
+                Ok(RuntimeCommand::PublishSchedule(announcement)) => {
+                    let local_announcement = (*announcement).clone();
+                    shell.publish_schedule(local_announcement.clone());
+                    if let Err(error) = shell.publish_pubsub(
+                        boundary.control_overlay.clone(),
+                        PubsubPayload::Schedule(announcement),
+                    ) {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = lock_telemetry_state(&state);
+                    sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
+                }
                 Ok(RuntimeCommand::PublishHead(announcement)) => {
                     let overlay = announcement.overlay.clone();
                     let _ = shell.subscribe_topic(overlay.clone());

@@ -90,7 +90,8 @@ pub use burn_p2p_dataloader::{
 pub use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentDirectory, ExperimentDirectoryAccess,
     ExperimentDirectoryPolicyExt, ExperimentDirectoryProjectionBuilder, ExperimentLifecyclePhase,
-    ExperimentLifecyclePlan, ExperimentLifecyclePlanBuilder, ExperimentSpec, PatchClass,
+    ExperimentLifecyclePlan, ExperimentLifecyclePlanBuilder, ExperimentSpec,
+    FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochBuilder, PatchClass,
     PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
 };
 pub use burn_p2p_limits::{
@@ -114,16 +115,16 @@ pub use burn_p2p_swarm::{
     ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, ChunkFetchRequest,
     ChunkFetchResponse, ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse,
     ControlPlaneShell, ControlPlaneSnapshot, ExperimentDirectoryAnnouncement,
-    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, HeadAnnouncement, LeaseAnnouncement,
-    LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell,
-    MergeAnnouncement, MergeWindowAnnouncement, MetricsAnnouncement, MicroShardFetchRequest,
-    MicroShardFetchResponse, MicroShardProviderRecord, MigrationCoordinator, MigrationPlan,
-    NativeControlPlaneShell, OverlayChannel, OverlayTopic, PeerAuthAnnouncement,
-    PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId, ProtocolSet,
-    ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement, ReducerLoadAnnouncement,
-    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy,
-    SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement, TransportKind,
-    UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
+    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, FleetScheduleAnnouncement,
+    HeadAnnouncement, LeaseAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
+    MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement, MergeWindowAnnouncement,
+    MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse, MicroShardProviderRecord,
+    MigrationCoordinator, MigrationPlan, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
+    PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId,
+    ProtocolSet, ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement,
+    ReducerLoadAnnouncement, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment,
+    RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
+    TransportKind, UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
 pub use burn_p2p_workload::{
     ContinuousTrainerPolicy, EvalSplit, GeneratedWorkloadInputDescriptor,
@@ -156,8 +157,8 @@ pub use node::{Node, NodeBuilder, RunningNode};
 pub use project_family::{P2pProjectFamily, SelectedWorkloadProject, SingleWorkloadProjectFamily};
 use runtime_support::{
     LagAssessment, assess_head_lag, cached_connected_snapshots, connected_peer_ids,
-    effective_experiment_lifecycle_plan, effective_limit_profile, experiment_has_lifecycle_plan,
-    inferred_next_window_id, latest_head_from_snapshot,
+    effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch, effective_limit_profile,
+    experiment_has_lifecycle_plan, inferred_next_window_id, latest_head_from_snapshot,
     latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
     latest_reducer_assignment_from_snapshot, load_head_state, load_known_peers,
     load_latest_merge_certificate, load_primary_slot_assignment, lock_telemetry_state,
@@ -201,9 +202,9 @@ pub mod dataloader {
 pub mod experiment {
     pub use crate::{
         ExperimentControlCommand, ExperimentDirectoryProjectionBuilder, ExperimentHandle,
-        ExperimentLifecyclePlanBuilder, ExperimentOverlayTopics, ExperimentSpec, PatchClass,
-        PatchOutcome, PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch,
-        StudySpec,
+        ExperimentLifecyclePlanBuilder, ExperimentOverlayTopics, ExperimentSpec,
+        FleetScheduleEpoch, FleetScheduleEpochBuilder, PatchClass, PatchOutcome, PatchSupport,
+        PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
     };
 }
 
@@ -240,20 +241,21 @@ pub mod prelude {
         CheckpointSyncHandle, ChunkingScheme, ControlHandle, DataReceiptBuilder, DataloaderError,
         DatasetConfig, DatasetRegistration, DatasetSizing, EmaFlow, EvalSplit,
         ExperimentControlCommand, ExperimentHandle, ExperimentOverlayTopics, ExperimentSpec,
-        FsArtifactStore, GarbageCollectionReport, IdentityConfig, LeaseCache, LeasePlanner,
-        LeasePlannerConfig, LeaseSelection, LimitPolicy, LimitProfile, LimitsError, LocalBackend,
-        MainnetHandle, MergeCandidate, MergePlan, MetricReport, MicroShardPlan, MicroShardPlanner,
-        MicroShardPlannerConfig, Node, NodeBuilder, NodeConfig, NodeRuntimeState,
-        NodeTelemetrySnapshot, P2pProjectFamily, P2pWorkload, PatchClass, PatchOutcome,
-        PatchSupport, PatchValue, PlannedLease, ReducerOutcome, ReleaseManifest, ReleasePolicy,
-        ReputationDecision, ReputationEngine, ReputationObservation, ReputationPolicy,
-        ReputationState, RevisionCompatibility, RevisionSpec, RoleSet, RunningNode, RuntimePatch,
-        RuntimeStatus, SecurityError, SelectedWorkloadProject, ShardAwareSampler, ShardCache,
-        ShardCostModel, ShardFetchEntry, ShardFetchManifest, SingleWorkloadProjectFamily,
-        SlotAssignmentState, SlotRuntimeState, StorageConfig, StudySpec, SyncPlan, SyncRequest,
-        TelemetryHandle, TrainError, TrainingWindowOutcome, UpdateAuditReport, UpstreamAdapter,
-        ValidationOutcome, ValidatorPolicy, WindowCtx, WindowReport, WorkBudget, checkpoint,
-        dataloader, experiment, limits, materialize_aggregate_artifact_bytes, security,
+        FleetScheduleEpoch, FleetScheduleEpochBuilder, FsArtifactStore, GarbageCollectionReport,
+        IdentityConfig, LeaseCache, LeasePlanner, LeasePlannerConfig, LeaseSelection, LimitPolicy,
+        LimitProfile, LimitsError, LocalBackend, MainnetHandle, MergeCandidate, MergePlan,
+        MetricReport, MicroShardPlan, MicroShardPlanner, MicroShardPlannerConfig, Node,
+        NodeBuilder, NodeConfig, NodeRuntimeState, NodeTelemetrySnapshot, P2pProjectFamily,
+        P2pWorkload, PatchClass, PatchOutcome, PatchSupport, PatchValue, PlannedLease,
+        ReducerOutcome, ReleaseManifest, ReleasePolicy, ReputationDecision, ReputationEngine,
+        ReputationObservation, ReputationPolicy, ReputationState, RevisionCompatibility,
+        RevisionSpec, RoleSet, RunningNode, RuntimePatch, RuntimeStatus, SecurityError,
+        SelectedWorkloadProject, ShardAwareSampler, ShardCache, ShardCostModel, ShardFetchEntry,
+        ShardFetchManifest, SingleWorkloadProjectFamily, SlotAssignmentState, SlotRuntimeState,
+        StorageConfig, StudySpec, SyncPlan, SyncRequest, TelemetryHandle, TrainError,
+        TrainingWindowOutcome, UpdateAuditReport, UpstreamAdapter, ValidationOutcome,
+        ValidatorPolicy, WindowCtx, WindowReport, WorkBudget, checkpoint, dataloader, experiment,
+        limits, materialize_aggregate_artifact_bytes, security,
     };
     pub use burn_p2p_core::{
         ArtifactDescriptor, ArtifactId, ArtifactKind, AssignmentLease, CapabilityCard,

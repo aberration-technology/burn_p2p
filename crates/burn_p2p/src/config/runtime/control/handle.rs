@@ -84,6 +84,13 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to send lifecycle announcement: {error}"))
     }
 
+    /// Performs the publish schedule operation.
+    pub fn publish_schedule(&self, announcement: FleetScheduleAnnouncement) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishSchedule(Box::new(announcement)))
+            .map_err(|error| anyhow::anyhow!("failed to send schedule announcement: {error}"))
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&self, announcement: HeadAnnouncement) -> anyhow::Result<()> {
         self.tx

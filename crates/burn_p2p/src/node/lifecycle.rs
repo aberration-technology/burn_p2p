@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_support::load_slot_assignments;
 
 /// Handle to a live native runtime.
 ///
@@ -42,8 +43,9 @@ impl<P> RunningNode<P> {
                 }
                 snapshot.known_peer_addresses.insert(address);
             }
-            if let Some(assignment) = load_primary_slot_assignment(storage)? {
-                snapshot.set_primary_slot_state(SlotRuntimeState::Assigned(assignment));
+            let slot_assignments = load_slot_assignments(storage)?;
+            if !slot_assignments.is_empty() {
+                snapshot.set_slot_assignments(&slot_assignments);
             }
             restore_control_plane_state(storage, &mut snapshot)?;
             restore_runtime_security_state(storage, &mut snapshot)?;

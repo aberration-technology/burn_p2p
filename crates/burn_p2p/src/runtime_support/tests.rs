@@ -9,6 +9,9 @@ use burn_p2p_core::{
     PeerAuthEnvelope, PrincipalId, ProjectFamilyId, RevocationEpoch, SignatureAlgorithm,
     SignatureMetadata,
 };
+use burn_p2p_experiment::{
+    ActivationTarget, FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
+};
 
 fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
     let mut snapshot = NodeTelemetrySnapshot::starting(
@@ -26,6 +29,15 @@ fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnap
     );
     snapshot.local_peer_id = Some(PeerId::new("local"));
     snapshot
+}
+
+fn test_experiment_handle() -> ExperimentHandle {
+    ExperimentHandle {
+        network_id: NetworkId::new("net-test"),
+        study_id: StudyId::new("study"),
+        experiment_id: ExperimentId::new("experiment"),
+        revision_id: RevisionId::new("revision"),
+    }
 }
 
 fn trust_score(
@@ -113,6 +125,37 @@ fn advertise_auth_peer(
                 challenge_signature_hex: "00".into(),
                 presented_at: announced_at,
             },
+            announced_at,
+        });
+}
+
+fn publish_schedule_epoch(
+    snapshot: &mut NodeTelemetrySnapshot,
+    epoch: FleetScheduleEpoch,
+    announced_at: DateTime<Utc>,
+) {
+    let certificate = FleetScheduleEpochEnvelope {
+        network_id: NetworkId::new("net-test"),
+        epoch,
+    }
+    .into_signed_cert(
+        SignatureMetadata {
+            signer: PeerId::new("authority"),
+            key_id: "schedule".into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: announced_at,
+            signature_hex: "00".into(),
+        },
+        Version::new(1, 0, 0),
+    )
+    .expect("schedule certificate");
+
+    snapshot
+        .control_plane
+        .schedule_announcements
+        .push(FleetScheduleAnnouncement {
+            overlay: OverlayTopic::control(NetworkId::new("net-test")),
+            certificate,
             announced_at,
         });
 }
@@ -986,7 +1029,12 @@ fn local_training_schedule_hint_uses_verified_planner_scales() {
         );
     }
 
-    let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+    let hint = local_training_schedule_hint(
+        &snapshot,
+        &test_experiment_handle(),
+        &PeerId::new("local"),
+        WindowId(2),
+    );
 
     assert!(
         hint.budget_scale > 1.15,
@@ -1036,7 +1084,12 @@ fn local_training_schedule_hint_ignores_unverified_planner_scales() {
         );
     }
 
-    let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+    let hint = local_training_schedule_hint(
+        &snapshot,
+        &test_experiment_handle(),
+        &PeerId::new("local"),
+        WindowId(2),
+    );
 
     assert_eq!(hint.budget_scale, 1.0);
     assert_eq!(hint.microshard_scale, 1.0);
@@ -1079,7 +1132,12 @@ fn local_training_schedule_hint_downscales_under_sustained_planner_backpressure(
         );
     }
 
-    let hint = local_training_schedule_hint(&snapshot, &PeerId::new("local"));
+    let hint = local_training_schedule_hint(
+        &snapshot,
+        &test_experiment_handle(),
+        &PeerId::new("local"),
+        WindowId(2),
+    );
 
     assert!(
         hint.budget_scale < 0.8,
@@ -1091,6 +1149,97 @@ fn local_training_schedule_hint_downscales_under_sustained_planner_backpressure(
         "unexpected microshard scale: {}",
         hint.microshard_scale
     );
+}
+
+#[test]
+fn local_training_schedule_hint_prefers_effective_schedule_epoch_scales() {
+    let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+    let now = Utc::now();
+    publish_training_hint(
+        &mut snapshot,
+        "local",
+        PeerWindowStatus::Completed,
+        100,
+        900,
+        0,
+        now,
+    );
+    publish_schedule_epoch(
+        &mut snapshot,
+        FleetScheduleEpoch {
+            target: ActivationTarget {
+                activation: WindowActivation {
+                    activation_window: WindowId(3),
+                    grace_windows: 0,
+                },
+                required_client_capabilities: BTreeSet::new(),
+            },
+            ends_before_window: None,
+            plan_epoch: 4,
+            assignments: vec![FleetScheduleAssignment {
+                peer_id: PeerId::new("local"),
+                slot_index: 0,
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("experiment"),
+                revision_id: RevisionId::new("revision"),
+                budget_scale: Some(0.7),
+                microshard_scale: Some(0.65),
+            }],
+            reason: Some("rebalance".into()),
+        },
+        now,
+    );
+
+    let hint = local_training_schedule_hint(
+        &snapshot,
+        &test_experiment_handle(),
+        &PeerId::new("local"),
+        WindowId(3),
+    );
+
+    assert_eq!(hint.budget_scale, 0.7);
+    assert_eq!(hint.microshard_scale, 0.65);
+}
+
+#[test]
+fn local_training_schedule_hint_clamps_when_epoch_assigns_peer_elsewhere() {
+    let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+    let now = Utc::now();
+    publish_schedule_epoch(
+        &mut snapshot,
+        FleetScheduleEpoch {
+            target: ActivationTarget {
+                activation: WindowActivation {
+                    activation_window: WindowId(2),
+                    grace_windows: 0,
+                },
+                required_client_capabilities: BTreeSet::new(),
+            },
+            ends_before_window: None,
+            plan_epoch: 1,
+            assignments: vec![FleetScheduleAssignment {
+                peer_id: PeerId::new("local"),
+                slot_index: 0,
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("other-experiment"),
+                revision_id: RevisionId::new("other-revision"),
+                budget_scale: Some(1.2),
+                microshard_scale: Some(1.1),
+            }],
+            reason: None,
+        },
+        now,
+    );
+
+    let hint = local_training_schedule_hint(
+        &snapshot,
+        &test_experiment_handle(),
+        &PeerId::new("local"),
+        WindowId(2),
+    );
+
+    assert_eq!(hint.budget_scale, 0.25);
+    assert_eq!(hint.microshard_scale, 0.25);
 }
 
 #[test]

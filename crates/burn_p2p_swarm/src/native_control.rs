@@ -474,6 +474,11 @@ impl NativeControlPlaneShell {
         self.snapshot.insert_lifecycle_announcement(announcement);
     }
 
+    /// Performs the publish schedule operation.
+    pub fn publish_schedule(&mut self, announcement: FleetScheduleAnnouncement) {
+        self.snapshot.insert_schedule_announcement(announcement);
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
         self.snapshot.insert_head_announcement(announcement);
@@ -1624,6 +1629,11 @@ impl NativeControlPlaneShell {
     /// Performs the publish lifecycle operation.
     pub fn publish_lifecycle(&mut self, announcement: ExperimentLifecycleAnnouncement) {
         self.inner.publish_lifecycle(announcement);
+    }
+
+    /// Performs the publish schedule operation.
+    pub fn publish_schedule(&mut self, announcement: FleetScheduleAnnouncement) {
+        self.inner.publish_schedule(announcement);
     }
 
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {

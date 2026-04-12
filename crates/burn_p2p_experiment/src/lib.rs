@@ -12,11 +12,14 @@ pub mod spec;
 /// Reducer and merge topology helpers.
 pub mod topology;
 
-pub use builders::{ExperimentDirectoryProjectionBuilder, ExperimentLifecyclePlanBuilder};
+pub use builders::{
+    ExperimentDirectoryProjectionBuilder, ExperimentLifecyclePlanBuilder, FleetScheduleEpochBuilder,
+};
 pub use control::{
     ActivationTarget, ExperimentControlCommand, ExperimentControlEnvelope, ExperimentControlState,
     ExperimentLifecycleEnvelope, ExperimentLifecyclePhase, ExperimentLifecyclePlan,
-    ExperimentSnapshot, PatchPlan, StageError,
+    ExperimentSnapshot, FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
+    PatchPlan, StageError,
 };
 pub use directory::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};
 pub use spec::{

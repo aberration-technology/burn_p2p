@@ -378,8 +378,13 @@ impl crate::P2pWorkload for SwitchingTestWorkload {
         }
     }
 
-    fn apply_patch(&mut self, _patch: &crate::RuntimePatch) -> crate::PatchOutcome {
-        crate::PatchOutcome::Applied
+    fn apply_patch(&mut self, patch: &crate::RuntimePatch) -> crate::PatchOutcome {
+        if let Some(crate::PatchValue::Float(value)) = patch.values.get("learning_rate") {
+            self.learning_rate = *value;
+            crate::PatchOutcome::Applied
+        } else {
+            crate::PatchOutcome::Rejected("missing learning_rate patch".into())
+        }
     }
 
     fn supported_patch_classes(&self) -> crate::PatchSupport {
@@ -708,6 +713,33 @@ pub(super) fn lifecycle_announcement(
         .expect("lifecycle certificate");
 
     crate::ExperimentLifecycleAnnouncement {
+        overlay: mainnet().control_overlay(),
+        certificate,
+        announced_at: Utc::now(),
+    }
+}
+
+pub(super) fn schedule_announcement(
+    epoch: burn_p2p_experiment::FleetScheduleEpoch,
+) -> crate::FleetScheduleAnnouncement {
+    let envelope = burn_p2p_experiment::FleetScheduleEpochEnvelope {
+        network_id: mainnet().genesis.network_id.clone(),
+        epoch,
+    };
+    let certificate = envelope
+        .into_signed_cert(
+            burn_p2p_core::SignatureMetadata {
+                signer: crate::PeerId::new("authority-switch"),
+                key_id: "authority-key".into(),
+                algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                signed_at: Utc::now(),
+                signature_hex: "feedface".into(),
+            },
+            mainnet().genesis.protocol_version.clone(),
+        )
+        .expect("schedule certificate");
+
+    crate::FleetScheduleAnnouncement {
         overlay: mainnet().control_overlay(),
         certificate,
         announced_at: Utc::now(),

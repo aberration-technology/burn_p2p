@@ -1,4 +1,5 @@
 use super::*;
+use burn_p2p_core::ControlCertId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Enumerates the supported runtime statuses.
@@ -306,6 +307,9 @@ pub struct NodeTelemetrySnapshot {
     #[serde(default)]
     /// Recent canary reports tracked by the robustness pipeline.
     pub canary_reports: Vec<CanaryEvalReport>,
+    #[serde(default)]
+    /// Applied signed control certificates retained to avoid re-executing runtime mutations.
+    pub applied_control_cert_ids: BTreeSet<ControlCertId>,
     /// The effective limit profile.
     pub effective_limit_profile: Option<LimitProfile>,
     /// The last error.
@@ -355,6 +359,7 @@ impl NodeTelemetrySnapshot {
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
             canary_reports: Vec::new(),
+            applied_control_cert_ids: BTreeSet::new(),
             effective_limit_profile: None,
             last_error: None,
             started_at: now,
@@ -388,11 +393,41 @@ impl NodeTelemetrySnapshot {
     }
 
     pub(crate) fn set_primary_slot_state(&mut self, slot_state: SlotRuntimeState) {
+        self.set_slot_state(0, slot_state);
+    }
+
+    pub(crate) fn set_slot_state(&mut self, slot_index: usize, slot_state: SlotRuntimeState) {
         if self.slot_states.is_empty() {
             self.slot_states.push(slot_state);
+        } else if slot_index >= self.slot_states.len() {
+            self.slot_states
+                .resize(slot_index + 1, SlotRuntimeState::Unassigned);
+            self.slot_states[slot_index] = slot_state;
         } else {
-            self.slot_states[0] = slot_state;
+            self.slot_states[slot_index] = slot_state;
         }
+        self.updated_at = Utc::now();
+    }
+
+    pub(crate) fn set_slot_assignments(&mut self, assignments: &[SlotAssignmentState]) {
+        self.slot_states = if assignments.is_empty() {
+            vec![SlotRuntimeState::Unassigned]
+        } else {
+            assignments
+                .iter()
+                .cloned()
+                .map(SlotRuntimeState::Assigned)
+                .collect()
+        };
+        self.updated_at = Utc::now();
+    }
+
+    pub(crate) fn has_applied_control_cert(&self, control_cert_id: &ControlCertId) -> bool {
+        self.applied_control_cert_ids.contains(control_cert_id)
+    }
+
+    pub(crate) fn mark_control_cert_applied(&mut self, control_cert_id: ControlCertId) {
+        self.applied_control_cert_ids.insert(control_cert_id);
         self.updated_at = Utc::now();
     }
 

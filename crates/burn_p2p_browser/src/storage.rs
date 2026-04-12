@@ -46,6 +46,14 @@ pub struct BrowserStoredAssignment {
     pub revision_id: RevisionId,
 }
 
+impl BrowserStoredAssignment {
+    fn matches_binding(&self, other: &Self) -> bool {
+        self.study_id == other.study_id
+            && self.experiment_id == other.experiment_id
+            && self.revision_id == other.revision_id
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Declares how one replay chunk payload is durably stored.
 pub enum BrowserArtifactReplayChunkStorage {
@@ -422,6 +430,14 @@ impl BrowserStorageSnapshot {
 
     /// Performs the remember assignment operation.
     pub fn remember_assignment(&mut self, assignment: BrowserStoredAssignment) {
+        let assignment_changed = self
+            .active_assignment
+            .as_ref()
+            .is_some_and(|existing| !existing.matches_binding(&assignment));
+        if assignment_changed {
+            self.clear_artifact_replay_checkpoint();
+            self.last_head_id = None;
+        }
         self.active_assignment = Some(assignment);
         self.updated_at = Utc::now();
     }

@@ -364,6 +364,7 @@ pub(crate) fn cached_connected_snapshots(
                 ControlPlaneSnapshot {
                     control_announcements: aggregate.control_announcements.clone(),
                     lifecycle_announcements: aggregate.lifecycle_announcements.clone(),
+                    schedule_announcements: aggregate.schedule_announcements.clone(),
                     head_announcements: aggregate
                         .head_announcements
                         .iter()
@@ -703,6 +704,16 @@ fn lifecycle_announcements_for_experiment<'a>(
         })
 }
 
+fn schedule_announcements_for_network<'a>(
+    snapshot: &'a ControlPlaneSnapshot,
+    network_id: &'a NetworkId,
+) -> impl Iterator<Item = &'a FleetScheduleAnnouncement> + 'a {
+    snapshot
+        .schedule_announcements
+        .iter()
+        .filter(|announcement| announcement.certificate.network_id == *network_id)
+}
+
 fn latest_matching_lifecycle_target_entry(
     snapshot: &ControlPlaneSnapshot,
     experiment: &ExperimentHandle,
@@ -791,6 +802,40 @@ pub(crate) fn effective_experiment_lifecycle_plan(
                 .then(left.announced_at.cmp(&right.announced_at))
         })
         .map(|announcement| announcement.certificate.body.payload.payload.plan.clone())
+}
+
+pub(crate) fn effective_fleet_schedule_epoch(
+    snapshot: &ControlPlaneSnapshot,
+    network_id: &NetworkId,
+    activation_window: WindowId,
+) -> Option<FleetScheduleEpoch> {
+    schedule_announcements_for_network(snapshot, network_id)
+        .filter(|announcement| {
+            announcement
+                .certificate
+                .body
+                .payload
+                .payload
+                .epoch
+                .is_effective_for_window(activation_window)
+        })
+        .max_by(|left, right| {
+            left.certificate
+                .activation
+                .activation_window
+                .cmp(&right.certificate.activation.activation_window)
+                .then(
+                    left.certificate
+                        .body
+                        .payload
+                        .payload
+                        .epoch
+                        .plan_epoch
+                        .cmp(&right.certificate.body.payload.payload.epoch.plan_epoch),
+                )
+                .then(left.announced_at.cmp(&right.announced_at))
+        })
+        .map(|announcement| announcement.certificate.body.payload.payload.epoch.clone())
 }
 
 pub(crate) fn active_experiment_directory_entry(

@@ -90,6 +90,17 @@ pub struct ExperimentLifecycleAnnouncement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a fleet schedule epoch announcement.
+pub struct FleetScheduleAnnouncement {
+    /// The overlay.
+    pub overlay: OverlayTopic,
+    /// The certificate.
+    pub certificate: ControlCertificate<FleetScheduleEpochEnvelope>,
+    /// The announced at.
+    pub announced_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents a head announcement.
 pub struct HeadAnnouncement {
     /// The overlay.
@@ -410,6 +421,8 @@ pub struct ControlPlaneSnapshot {
     pub control_announcements: Vec<ControlAnnouncement>,
     /// The lifecycle announcements.
     pub lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
+    /// The fleet schedule announcements.
+    pub schedule_announcements: Vec<FleetScheduleAnnouncement>,
     /// The head announcements.
     pub head_announcements: Vec<HeadAnnouncement>,
     /// The lease announcements.
@@ -450,6 +463,7 @@ impl ControlPlaneSnapshot {
     pub fn clamp_announcement_histories(&mut self) {
         cap_control_announcements(&mut self.control_announcements);
         cap_lifecycle_announcements(&mut self.lifecycle_announcements);
+        cap_schedule_announcements(&mut self.schedule_announcements);
         cap_head_announcements(&mut self.head_announcements);
         cap_lease_announcements(&mut self.lease_announcements);
         cap_merge_window_announcements(&mut self.merge_window_announcements);
@@ -477,6 +491,11 @@ impl ControlPlaneSnapshot {
     ) {
         push_unique(&mut self.lifecycle_announcements, announcement);
         cap_lifecycle_announcements(&mut self.lifecycle_announcements);
+    }
+
+    pub(crate) fn insert_schedule_announcement(&mut self, announcement: FleetScheduleAnnouncement) {
+        push_unique(&mut self.schedule_announcements, announcement);
+        cap_schedule_announcements(&mut self.schedule_announcements);
     }
 
     pub(crate) fn insert_head_announcement(&mut self, announcement: HeadAnnouncement) {
@@ -562,6 +581,9 @@ impl ControlPlaneSnapshot {
         }
         for announcement in &remote.lifecycle_announcements {
             self.insert_lifecycle_announcement(announcement.clone());
+        }
+        for announcement in &remote.schedule_announcements {
+            self.insert_schedule_announcement(announcement.clone());
         }
         for announcement in &remote.head_announcements {
             self.insert_head_announcement(announcement.clone());
@@ -673,6 +695,8 @@ pub enum PubsubPayload {
     Control(ControlAnnouncement),
     /// Uses the lifecycle variant.
     Lifecycle(Box<ExperimentLifecycleAnnouncement>),
+    /// Uses the schedule variant.
+    Schedule(Box<FleetScheduleAnnouncement>),
     /// Uses the head variant.
     Head(HeadAnnouncement),
     /// Uses the lease variant.
@@ -898,6 +922,7 @@ pub(crate) fn cap_tail<T>(values: &mut Vec<T>, max_len: usize) {
 const MAX_METRICS_ANNOUNCEMENTS: usize = 64;
 const MAX_CONTROL_ANNOUNCEMENTS: usize = 64;
 const MAX_LIFECYCLE_ANNOUNCEMENTS: usize = 64;
+const MAX_SCHEDULE_ANNOUNCEMENTS: usize = 64;
 const MAX_HEAD_ANNOUNCEMENTS: usize = 256;
 const MAX_LEASE_ANNOUNCEMENTS: usize = 128;
 const MAX_MERGE_WINDOW_ANNOUNCEMENTS: usize = 128;
@@ -940,6 +965,26 @@ fn cap_lifecycle_announcements(values: &mut Vec<ExperimentLifecycleAnnouncement>
             .then(left.announced_at.cmp(&right.announced_at))
     });
     cap_tail(values, MAX_LIFECYCLE_ANNOUNCEMENTS);
+}
+
+fn cap_schedule_announcements(values: &mut Vec<FleetScheduleAnnouncement>) {
+    values.sort_by(|left, right| {
+        left.certificate
+            .activation
+            .activation_window
+            .cmp(&right.certificate.activation.activation_window)
+            .then(
+                left.certificate
+                    .body
+                    .payload
+                    .payload
+                    .epoch
+                    .plan_epoch
+                    .cmp(&right.certificate.body.payload.payload.epoch.plan_epoch),
+            )
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_SCHEDULE_ANNOUNCEMENTS);
 }
 
 fn cap_head_announcements(values: &mut Vec<HeadAnnouncement>) {
@@ -1616,6 +1661,9 @@ pub(crate) fn apply_pubsub_payload_with_index(
         PubsubPayload::Lifecycle(announcement) => {
             snapshot.insert_lifecycle_announcement(*announcement)
         }
+        PubsubPayload::Schedule(announcement) => {
+            snapshot.insert_schedule_announcement(*announcement)
+        }
         PubsubPayload::Head(announcement) => snapshot.insert_head_announcement(announcement),
         PubsubPayload::Lease(announcement) => snapshot.insert_lease_announcement(announcement),
         PubsubPayload::Merge(announcement) => {
@@ -1662,6 +1710,7 @@ pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
     match payload {
         PubsubPayload::Control(_) => "control",
         PubsubPayload::Lifecycle(_) => "lifecycle",
+        PubsubPayload::Schedule(_) => "schedule",
         PubsubPayload::Head(_) => "head",
         PubsubPayload::Lease(_) => "lease",
         PubsubPayload::Merge(_) => "merge",

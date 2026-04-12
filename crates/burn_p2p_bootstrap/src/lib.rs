@@ -1077,6 +1077,7 @@ mod tests {
                 evaluator_quorum: 1,
                 evaluated_at: now,
             }],
+            applied_control_cert_ids: BTreeSet::new(),
             effective_limit_profile: None,
             last_error: Some("peer rejected".into()),
             started_at: now,

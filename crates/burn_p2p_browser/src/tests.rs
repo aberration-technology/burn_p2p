@@ -765,6 +765,80 @@ fn browser_storage_reconstructs_edge_replay_prefix_from_segments() {
 }
 
 #[test]
+fn browser_storage_keeps_replay_state_when_assignment_binding_is_unchanged() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+    storage.remember_head(HeadId::new("head-browser"));
+    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        run_id: RunId::new("run-browser"),
+        head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        provider_peer_ids: vec![PeerId::new("peer-a")],
+        artifact_descriptor: None,
+        completed_chunks: Vec::new(),
+        edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
+        completed_bytes: 0,
+        last_attempted_at: Utc::now(),
+        attempt_count: 1,
+    });
+
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+
+    assert_eq!(storage.last_head_id, Some(HeadId::new("head-browser")));
+    assert!(storage.artifact_replay_checkpoint.is_some());
+}
+
+#[test]
+fn browser_storage_clears_replay_state_when_assignment_binding_changes() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+    storage.remember_head(HeadId::new("head-browser"));
+    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        run_id: RunId::new("run-browser"),
+        head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        provider_peer_ids: vec![PeerId::new("peer-a")],
+        artifact_descriptor: None,
+        completed_chunks: Vec::new(),
+        edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
+        completed_bytes: 0,
+        last_attempted_at: Utc::now(),
+        attempt_count: 1,
+    });
+
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-next"),
+    });
+
+    assert_eq!(storage.last_head_id, None);
+    assert!(storage.artifact_replay_checkpoint.is_none());
+}
+
+#[test]
 fn capability_report_projects_canonical_browser_capabilities() {
     let report = BrowserCapabilityReport {
         gpu_support: BrowserGpuSupport::Available,

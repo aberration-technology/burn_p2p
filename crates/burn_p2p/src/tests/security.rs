@@ -263,6 +263,73 @@ fn control_handle_updates_lifecycle_announcements() {
 }
 
 #[test]
+fn control_handle_updates_schedule_announcements() {
+    let running = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn");
+
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(2),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "runtime did not start",
+    );
+
+    let control = running.control_handle();
+    control
+        .publish_schedule(schedule_announcement(
+            burn_p2p_experiment::FleetScheduleEpochBuilder::new()
+                .with_activation(crate::WindowActivation {
+                    activation_window: crate::WindowId(5),
+                    grace_windows: 1,
+                })
+                .with_plan_epoch(6)
+                .assign_peer_slot_scaled(
+                    crate::PeerId::new("peer-a"),
+                    0,
+                    crate::StudyId::new("study-1"),
+                    crate::ExperimentId::new("exp-1"),
+                    crate::RevisionId::new("rev-2"),
+                    Some(0.8),
+                    Some(0.75),
+                )
+                .build(),
+        ))
+        .expect("publish schedule");
+
+    wait_for(
+        Duration::from_secs(2),
+        || {
+            telemetry
+                .snapshot()
+                .control_plane
+                .schedule_announcements
+                .len()
+                == 1
+        },
+        "schedule announcement was not reflected in local telemetry",
+    );
+
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot.control_plane.schedule_announcements.len(), 1);
+    assert_eq!(
+        snapshot.control_plane.schedule_announcements[0]
+            .certificate
+            .body
+            .payload
+            .payload
+            .epoch
+            .plan_epoch,
+        6
+    );
+
+    running.shutdown().expect("shutdown");
+    let _ = running.await_termination().expect("await termination");
+}
+
+#[test]
 fn persisted_local_auth_and_policy_survive_restart_without_with_auth() {
     let storage = tempdir().expect("persisted auth storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());

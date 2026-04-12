@@ -25,15 +25,15 @@ use semver::Version;
 use super::{
     AggregateProposalAnnouncement, ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot,
     ExperimentControlEnvelope, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
-    HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell,
-    MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
-    PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolSet, PubsubEnvelope,
-    PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy,
-    SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
+    FleetScheduleAnnouncement, HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
+    MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell,
+    OverlayChannel, OverlayTopic, PeerDirectoryAnnouncement, PeerObservation, PeerStore,
+    ProtocolSet, PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
+    RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
-    ExperimentLifecyclePlan,
+    ExperimentLifecyclePlan, FleetScheduleEpochEnvelope,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1350,6 +1350,7 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
         ControlPlaneSnapshot {
             control_announcements: listener.snapshot().control_announcements.clone(),
             lifecycle_announcements: listener.snapshot().lifecycle_announcements.clone(),
+            schedule_announcements: listener.snapshot().schedule_announcements.clone(),
             head_announcements: listener.snapshot().head_announcements.clone(),
             lease_announcements: listener.snapshot().lease_announcements.clone(),
             merge_announcements: listener.snapshot().merge_announcements.clone(),
@@ -2556,6 +2557,162 @@ fn native_control_plane_shell_propagates_lifecycle_announcements_over_pubsub() {
         dialer
             .snapshot()
             .lifecycle_announcements
+            .contains(&announcement)
+    );
+}
+
+#[test]
+fn native_control_plane_shell_propagates_schedule_announcements_over_pubsub() {
+    let network_id = NetworkId::new("network");
+    let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
+    let control_overlay = OverlayTopic::control(network_id.clone());
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
+
+    let now = Utc::now();
+    let announcement = FleetScheduleAnnouncement {
+        overlay: control_overlay.clone(),
+        certificate: FleetScheduleEpochEnvelope {
+            network_id: network_id.clone(),
+            epoch: burn_p2p_experiment::FleetScheduleEpoch {
+                target: ActivationTarget {
+                    activation: WindowActivation {
+                        activation_window: WindowId(3),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                ends_before_window: Some(WindowId(6)),
+                plan_epoch: 2,
+                assignments: vec![burn_p2p_experiment::FleetScheduleAssignment {
+                    peer_id: PeerId::new("peer-a"),
+                    slot_index: 0,
+                    study_id: StudyId::new("study"),
+                    experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+                    revision_id: RevisionId::new("rev-b"),
+                    budget_scale: Some(0.8),
+                    microshard_scale: Some(0.75),
+                }],
+                reason: Some("rebalance".into()),
+            },
+        }
+        .into_signed_cert(
+            burn_p2p_core::SignatureMetadata {
+                signer: PeerId::new("authority"),
+                key_id: "authority-key".into(),
+                algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+                signed_at: now,
+                signature_hex: "aabbcc".into(),
+            },
+            Version::new(0, 1, 0),
+        )
+        .expect("schedule cert"),
+        announced_at: now,
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("tcp addr"))
+        .expect("listen");
+
+    let listen_addr = loop {
+        match listener.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("listener did not produce a listen address"),
+        }
+    };
+
+    dialer.dial(listen_addr).expect("dial");
+
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < connect_deadline,
+            "native shells did not connect"
+        );
+
+        if let Some(event) = listener.wait_event(Duration::from_millis(100))
+            && let LiveControlPlaneEvent::ConnectionEstablished { .. } = event
+        {
+            listener_connected = true;
+        }
+
+        if let Some(event) = dialer.wait_event(Duration::from_millis(100))
+            && let LiveControlPlaneEvent::ConnectionEstablished { .. } = event
+        {
+            dialer_connected = true;
+        }
+    }
+
+    listener
+        .subscribe_topic(control_overlay.clone())
+        .expect("listener subscribe");
+    dialer
+        .subscribe_topic(control_overlay.clone())
+        .expect("dialer subscribe");
+
+    let publish_deadline = Instant::now() + Duration::from_secs(10);
+    let mut listener_saw_remote_subscription = false;
+    let mut published = false;
+    let mut received_pubsub = false;
+    while !received_pubsub {
+        assert!(
+            Instant::now() < publish_deadline,
+            "dialer did not receive schedule announcement over pubsub"
+        );
+
+        let pump_until = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < pump_until {
+            if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+                match event {
+                    LiveControlPlaneEvent::TopicSubscribed { topic }
+                        if topic == control_overlay.as_str() =>
+                    {
+                        listener_saw_remote_subscription = true;
+                    }
+                    LiveControlPlaneEvent::PubsubMessage { kind, .. } if kind == "schedule" => {}
+                    _ => {}
+                }
+            }
+
+            if let Some(event) = dialer.wait_event(Duration::from_millis(25))
+                && let LiveControlPlaneEvent::PubsubMessage { kind, topic, .. } = event
+                && kind == "schedule"
+                && topic == control_overlay.as_str()
+            {
+                received_pubsub = true;
+                break;
+            }
+        }
+
+        if !published && listener_saw_remote_subscription {
+            listener.publish_schedule(announcement.clone());
+            match listener.publish_pubsub(
+                control_overlay.clone(),
+                PubsubPayload::Schedule(Box::new(announcement.clone())),
+            ) {
+                Ok(()) => published = true,
+                Err(SwarmError::Pubsub(message))
+                    if message.contains("NoPeersSubscribedToTopic") => {}
+                Err(error) => panic!("publish schedule pubsub: {error}"),
+            }
+        }
+    }
+
+    assert!(
+        dialer
+            .snapshot()
+            .schedule_announcements
             .contains(&announcement)
     );
 }

@@ -309,6 +309,127 @@ impl ExperimentLifecycleEnvelope {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One authoritative slot assignment carried by a fleet schedule epoch.
+pub struct FleetScheduleAssignment {
+    /// The assigned peer ID.
+    pub peer_id: PeerId,
+    /// The slot index for this assignment.
+    pub slot_index: usize,
+    /// The study ID.
+    pub study_id: StudyId,
+    /// The experiment ID.
+    pub experiment_id: ExperimentId,
+    /// The revision ID.
+    pub revision_id: RevisionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional authoritative budget scale for this slot.
+    pub budget_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional authoritative microshard scale for this slot.
+    pub microshard_scale: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One authoritative fleet schedule epoch for bounded-window placement.
+pub struct FleetScheduleEpoch {
+    /// The activation target.
+    pub target: ActivationTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional exclusive upper bound for the epoch.
+    pub ends_before_window: Option<WindowId>,
+    #[serde(default)]
+    /// Monotonic operator epoch for competing schedules.
+    pub plan_epoch: u64,
+    /// Slot assignments carried by this epoch.
+    pub assignments: Vec<FleetScheduleAssignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional operator reason.
+    pub reason: Option<String>,
+}
+
+impl FleetScheduleEpoch {
+    /// Returns whether the epoch is effective for the supplied window.
+    pub fn is_effective_for_window(&self, window: WindowId) -> bool {
+        self.target.activation.becomes_active_at(window)
+            && self
+                .ends_before_window
+                .map(|end| window < end)
+                .unwrap_or(true)
+    }
+
+    /// Returns the slot assignments for one peer ordered by slot index.
+    pub fn assignments_for_peer(&self, peer_id: &PeerId) -> Vec<&FleetScheduleAssignment> {
+        let mut assignments = self
+            .assignments
+            .iter()
+            .filter(|assignment| &assignment.peer_id == peer_id)
+            .collect::<Vec<_>>();
+        assignments.sort_by_key(|assignment| assignment.slot_index);
+        assignments
+    }
+
+    /// Returns whether the epoch carries at least one assignment for the peer.
+    pub fn has_assignment_for_peer(&self, peer_id: &PeerId) -> bool {
+        self.assignments
+            .iter()
+            .any(|assignment| &assignment.peer_id == peer_id)
+    }
+
+    /// Returns the authoritative slot assignment for one peer and experiment when present.
+    pub fn assignment_for_peer_experiment(
+        &self,
+        peer_id: &PeerId,
+        study_id: &StudyId,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+    ) -> Option<&FleetScheduleAssignment> {
+        self.assignments
+            .iter()
+            .filter(|assignment| {
+                &assignment.peer_id == peer_id
+                    && &assignment.study_id == study_id
+                    && &assignment.experiment_id == experiment_id
+                    && &assignment.revision_id == revision_id
+            })
+            .min_by_key(|assignment| assignment.slot_index)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Wraps one fleet schedule epoch with transport metadata.
+pub struct FleetScheduleEpochEnvelope {
+    /// The network ID.
+    pub network_id: NetworkId,
+    /// The schedule epoch.
+    pub epoch: FleetScheduleEpoch,
+}
+
+impl FleetScheduleEpochEnvelope {
+    /// Consumes the value and returns the signed cert.
+    pub fn into_signed_cert(
+        self,
+        signer: burn_p2p_core::SignatureMetadata,
+        protocol_version: Version,
+    ) -> Result<ControlCertificate<FleetScheduleEpochEnvelope>, burn_p2p_core::SchemaError> {
+        let activation = self.epoch.target.activation.clone();
+        let required_client_capabilities = self.epoch.target.required_client_capabilities.clone();
+
+        let body = burn_p2p_core::SignedPayload::new(
+            SchemaEnvelope::new("burn_p2p.schedule", protocol_version, self),
+            signer,
+        )?;
+
+        Ok(ControlCertificate {
+            control_cert_id: body.payload_id.clone().into(),
+            network_id: body.payload.payload.network_id.clone(),
+            activation,
+            required_client_capabilities,
+            body,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Captures experiment control state.
 pub struct ExperimentControlState {
     /// The network ID.

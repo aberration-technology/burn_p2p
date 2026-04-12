@@ -30,8 +30,17 @@ impl<P> RunningNode<P> {
         }
         let adaptation_factor =
             local_training_adaptation_factor(&prepared.telemetry_snapshot, &prepared.local_peer_id);
-        let schedule_hint =
-            local_training_schedule_hint(&prepared.telemetry_snapshot, &prepared.local_peer_id);
+        let window_id = inferred_next_window_id(
+            &prepared.storage,
+            experiment,
+            prepared.current_head.as_ref().map(|(_, head)| head),
+        )?;
+        let schedule_hint = local_training_schedule_hint(
+            &prepared.telemetry_snapshot,
+            experiment,
+            &prepared.local_peer_id,
+            window_id,
+        );
         let budget_work_units = training_placement_budget_work_units(
             limit_profile.recommended_budget.budget_work_units.max(1),
             capability,
@@ -51,11 +60,6 @@ impl<P> RunningNode<P> {
             .expect("running node should retain prepared node")
             .project
             .microshard_plan(&registration)?;
-        let window_id = inferred_next_window_id(
-            &prepared.storage,
-            experiment,
-            prepared.current_head.as_ref().map(|(_, head)| head),
-        )?;
         let overlays = experiment.overlay_set()?;
         let base_head_id = prepared
             .current_head

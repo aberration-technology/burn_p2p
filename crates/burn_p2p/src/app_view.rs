@@ -184,33 +184,48 @@ fn resolve_selected_experiment(
             .cloned();
     }
 
-    let assigned = primary_slot_assignment(snapshot);
-    if let Some(assigned) = assigned
-        && let Some(entry) = directory.iter().find(|entry| {
+    for assigned in slot_assignments(snapshot) {
+        if let Some(entry) = directory.iter().find(|entry| {
             entry.experiment_id == assigned.experiment_id
                 && entry.current_revision_id == assigned.revision_id
-        })
-    {
-        return Some(entry.clone());
+        }) {
+            return Some(entry.clone());
+        }
     }
 
     directory.first().cloned()
 }
 
 fn primary_slot_assignment(snapshot: &NodeTelemetrySnapshot) -> Option<&SlotAssignmentState> {
-    match snapshot.slot_states.first() {
-        Some(SlotRuntimeState::Assigned(assignment))
-        | Some(SlotRuntimeState::MaterializingBase(assignment))
-        | Some(SlotRuntimeState::FetchingShards(assignment))
-        | Some(SlotRuntimeState::Training(assignment))
-        | Some(SlotRuntimeState::Publishing(assignment))
-        | Some(SlotRuntimeState::CoolingDown(assignment))
-        | Some(SlotRuntimeState::Migrating(assignment)) => Some(assignment),
-        Some(SlotRuntimeState::Blocked {
+    slot_assignments(snapshot).next()
+}
+
+fn slot_assignments(
+    snapshot: &NodeTelemetrySnapshot,
+) -> impl Iterator<Item = &SlotAssignmentState> + '_ {
+    snapshot
+        .slot_states
+        .iter()
+        .filter_map(slot_assignment_from_state)
+}
+
+fn slot_assignment_from_state(state: &SlotRuntimeState) -> Option<&SlotAssignmentState> {
+    match state {
+        SlotRuntimeState::Assigned(assignment)
+        | SlotRuntimeState::MaterializingBase(assignment)
+        | SlotRuntimeState::FetchingShards(assignment)
+        | SlotRuntimeState::Training(assignment)
+        | SlotRuntimeState::Publishing(assignment)
+        | SlotRuntimeState::CoolingDown(assignment)
+        | SlotRuntimeState::Migrating(assignment) => Some(assignment),
+        SlotRuntimeState::Blocked {
             assignment: Some(assignment),
             ..
-        }) => Some(assignment),
-        _ => None,
+        } => Some(assignment),
+        SlotRuntimeState::Unassigned
+        | SlotRuntimeState::Blocked {
+            assignment: None, ..
+        } => None,
     }
 }
 
@@ -347,25 +362,35 @@ fn runtime_detail(snapshot: &NodeTelemetrySnapshot) -> String {
     if let Some(error) = snapshot.last_error.as_ref() {
         return error.clone();
     }
-    match snapshot.slot_states.first() {
-        Some(SlotRuntimeState::Assigned(assignment))
-        | Some(SlotRuntimeState::MaterializingBase(assignment))
-        | Some(SlotRuntimeState::FetchingShards(assignment))
-        | Some(SlotRuntimeState::Training(assignment))
-        | Some(SlotRuntimeState::Publishing(assignment))
-        | Some(SlotRuntimeState::CoolingDown(assignment))
-        | Some(SlotRuntimeState::Migrating(assignment)) => format!(
+
+    if let Some(assignment) = primary_slot_assignment(snapshot) {
+        let remaining_slots = slot_assignments(snapshot).count().saturating_sub(1);
+        let detail = format!(
             "{}/{}/{}",
             assignment.study_id.as_str(),
             assignment.experiment_id.as_str(),
             assignment.revision_id.as_str()
-        ),
-        Some(SlotRuntimeState::Blocked { reason, .. }) => reason.clone(),
-        _ => format!(
-            "{} direct peers · lag {}",
-            snapshot.connected_peers, snapshot.head_lag_steps
-        ),
+        );
+        if remaining_slots == 0 {
+            return detail;
+        }
+        return format!(
+            "{detail} +{remaining_slots} slot{}",
+            if remaining_slots == 1 { "" } else { "s" }
+        );
     }
+
+    if let Some(reason) = snapshot.slot_states.iter().find_map(|state| match state {
+        SlotRuntimeState::Blocked { reason, .. } => Some(reason.clone()),
+        _ => None,
+    }) {
+        return reason;
+    }
+
+    format!(
+        "{} direct peers · lag {}",
+        snapshot.connected_peers, snapshot.head_lag_steps
+    )
 }
 
 fn capability_summary(snapshot: &NodeTelemetrySnapshot) -> String {
@@ -440,7 +465,7 @@ fn training_summary(snapshot: &NodeTelemetrySnapshot) -> String {
 }
 
 fn training_slice_status(snapshot: &NodeTelemetrySnapshot) -> String {
-    match snapshot.slot_states.first() {
+    let label = match snapshot.slot_states.first() {
         Some(SlotRuntimeState::Assigned(_)) => "assignment ready".into(),
         Some(SlotRuntimeState::MaterializingBase(_)) => "materializing base checkpoint".into(),
         Some(SlotRuntimeState::FetchingShards(_)) => "downloading assigned slice".into(),
@@ -450,6 +475,12 @@ fn training_slice_status(snapshot: &NodeTelemetrySnapshot) -> String {
         Some(SlotRuntimeState::Migrating(_)) => "migrating to the next slice".into(),
         Some(SlotRuntimeState::Blocked { reason, .. }) => reason.clone(),
         Some(SlotRuntimeState::Unassigned) | None => "waiting for work".into(),
+    };
+    let active_slots = slot_assignments(snapshot).count();
+    if active_slots > 1 {
+        format!("{label} · {active_slots} slots active")
+    } else {
+        label
     }
 }
 
@@ -514,6 +545,7 @@ mod tests {
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
             canary_reports: Vec::new(),
+            applied_control_cert_ids: BTreeSet::new(),
             effective_limit_profile: None,
             last_error: None,
             started_at: chrono::Utc::now(),
@@ -562,5 +594,112 @@ mod tests {
             "exp"
         );
         assert_eq!(view.network.transport, "native");
+    }
+
+    #[test]
+    fn native_app_view_resolves_selection_from_non_primary_assigned_slot() {
+        let snapshot = NodeTelemetrySnapshot {
+            status: RuntimeStatus::Running,
+            network_id: Some(NetworkId::new("demo")),
+            slot_states: vec![
+                SlotRuntimeState::Unassigned,
+                SlotRuntimeState::Assigned(SlotAssignmentState::new(
+                    crate::StudyId::new("study-b"),
+                    ExperimentId::new("exp-b"),
+                    RevisionId::new("rev-b"),
+                )),
+            ],
+            lag_state: LagState::Current,
+            head_lag_steps: 0,
+            lag_policy: LagPolicy::default(),
+            local_peer_id: None,
+            configured_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+            node_state: NodeRuntimeState::IdleReady,
+            connected_peers: 2,
+            observed_peer_ids: BTreeSet::new(),
+            known_peer_addresses: BTreeSet::new(),
+            runtime_boundary: None,
+            listen_addresses: Vec::new(),
+            control_plane: ControlPlaneSnapshot::default(),
+            recent_events: Vec::new(),
+            last_snapshot_peer_id: None,
+            last_snapshot: None,
+            admitted_peers: BTreeMap::new(),
+            rejected_peers: BTreeMap::new(),
+            peer_reputation: BTreeMap::new(),
+            minimum_revocation_epoch: None,
+            trust_bundle: None,
+            in_flight_transfers: BTreeMap::new(),
+            robustness_policy: None,
+            latest_cohort_robustness: None,
+            trust_scores: Vec::new(),
+            canary_reports: Vec::new(),
+            applied_control_cert_ids: BTreeSet::new(),
+            effective_limit_profile: None,
+            last_error: None,
+            started_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let entry_a = ExperimentDirectoryEntry {
+            network_id: NetworkId::new("demo"),
+            study_id: crate::StudyId::new("study-a"),
+            experiment_id: ExperimentId::new("exp-a"),
+            workload_id: WorkloadId::new("wl-a"),
+            display_name: "demo-a".into(),
+            model_schema_hash: ContentId::new("schema-a"),
+            dataset_view_id: crate::DatasetViewId::new("dataset-a"),
+            resource_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 10,
+                estimated_window_seconds: 30,
+            },
+            visibility: ExperimentVisibility::Public,
+            opt_in_policy: ExperimentOptInPolicy::Open,
+            current_revision_id: RevisionId::new("rev-a"),
+            current_head_id: None,
+            allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+            allowed_scopes: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        };
+        let entry_b = ExperimentDirectoryEntry {
+            network_id: NetworkId::new("demo"),
+            study_id: crate::StudyId::new("study-b"),
+            experiment_id: ExperimentId::new("exp-b"),
+            workload_id: WorkloadId::new("wl-b"),
+            display_name: "demo-b".into(),
+            model_schema_hash: ContentId::new("schema-b"),
+            dataset_view_id: crate::DatasetViewId::new("dataset-b"),
+            resource_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 20,
+                estimated_window_seconds: 45,
+            },
+            visibility: ExperimentVisibility::Public,
+            opt_in_policy: ExperimentOptInPolicy::Open,
+            current_revision_id: RevisionId::new("rev-b"),
+            current_head_id: Some(crate::HeadId::new("head-b")),
+            allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+            allowed_scopes: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let view = build_node_app_view(
+            &snapshot,
+            "http://127.0.0.1:9000",
+            &[entry_a, entry_b],
+            None,
+        );
+
+        assert_eq!(
+            view.selected_experiment
+                .as_ref()
+                .expect("selected experiment")
+                .experiment_id,
+            "exp-b"
+        );
     }
 }

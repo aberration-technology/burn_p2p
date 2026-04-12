@@ -5,6 +5,7 @@ pub(crate) enum RuntimeCommand {
     SubscribeTopic(OverlayTopic),
     PublishControl(ControlAnnouncement),
     PublishLifecycle(Box<ExperimentLifecycleAnnouncement>),
+    PublishSchedule(Box<FleetScheduleAnnouncement>),
     PublishHead(HeadAnnouncement),
     PublishLease(LeaseAnnouncement),
     PublishMerge(MergeAnnouncement),

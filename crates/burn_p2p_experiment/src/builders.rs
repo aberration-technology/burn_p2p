@@ -8,7 +8,7 @@ use burn_p2p_core::{
 
 use crate::{
     ActivationTarget, ExperimentDirectoryPolicyExt, ExperimentLifecyclePhase,
-    ExperimentLifecyclePlan,
+    ExperimentLifecyclePlan, FleetScheduleAssignment, FleetScheduleEpoch,
 };
 
 /// Builder for one directory projection derived from one revision and customized
@@ -167,6 +167,128 @@ pub struct ExperimentLifecyclePlanBuilder {
     required_client_capabilities: BTreeSet<String>,
     plan_epoch: u64,
     reason: Option<String>,
+}
+
+/// Builder for one authoritative fleet schedule epoch.
+pub struct FleetScheduleEpochBuilder {
+    activation: WindowActivation,
+    required_client_capabilities: BTreeSet<String>,
+    ends_before_window: Option<burn_p2p_core::WindowId>,
+    plan_epoch: u64,
+    assignments: Vec<FleetScheduleAssignment>,
+    reason: Option<String>,
+}
+
+impl FleetScheduleEpochBuilder {
+    /// Creates an empty schedule builder.
+    pub fn new() -> Self {
+        Self {
+            activation: WindowActivation {
+                activation_window: burn_p2p_core::WindowId(0),
+                grace_windows: 0,
+            },
+            required_client_capabilities: BTreeSet::new(),
+            ends_before_window: None,
+            plan_epoch: 0,
+            assignments: Vec::new(),
+            reason: None,
+        }
+    }
+
+    /// Sets the activation target.
+    pub fn with_activation(mut self, activation: WindowActivation) -> Self {
+        self.activation = activation;
+        self
+    }
+
+    /// Adds one required client capability.
+    pub fn with_required_client_capability(mut self, capability: impl Into<String>) -> Self {
+        self.required_client_capabilities.insert(capability.into());
+        self
+    }
+
+    /// Sets the exclusive end window.
+    pub fn ending_before(mut self, window_id: burn_p2p_core::WindowId) -> Self {
+        self.ends_before_window = Some(window_id);
+        self
+    }
+
+    /// Sets the operator plan epoch.
+    pub fn with_plan_epoch(mut self, plan_epoch: u64) -> Self {
+        self.plan_epoch = plan_epoch;
+        self
+    }
+
+    /// Sets an operator reason.
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    /// Adds one slot assignment.
+    pub fn assign_peer_slot(
+        mut self,
+        peer_id: burn_p2p_core::PeerId,
+        slot_index: usize,
+        study_id: burn_p2p_core::StudyId,
+        experiment_id: burn_p2p_core::ExperimentId,
+        revision_id: burn_p2p_core::RevisionId,
+    ) -> Self {
+        self.assignments.push(FleetScheduleAssignment {
+            peer_id,
+            slot_index,
+            study_id,
+            experiment_id,
+            revision_id,
+            budget_scale: None,
+            microshard_scale: None,
+        });
+        self
+    }
+
+    /// Adds one slot assignment with explicit scales.
+    #[allow(clippy::too_many_arguments)]
+    pub fn assign_peer_slot_scaled(
+        mut self,
+        peer_id: burn_p2p_core::PeerId,
+        slot_index: usize,
+        study_id: burn_p2p_core::StudyId,
+        experiment_id: burn_p2p_core::ExperimentId,
+        revision_id: burn_p2p_core::RevisionId,
+        budget_scale: Option<f64>,
+        microshard_scale: Option<f64>,
+    ) -> Self {
+        self.assignments.push(FleetScheduleAssignment {
+            peer_id,
+            slot_index,
+            study_id,
+            experiment_id,
+            revision_id,
+            budget_scale,
+            microshard_scale,
+        });
+        self
+    }
+
+    /// Builds the final fleet schedule epoch.
+    pub fn build(self) -> FleetScheduleEpoch {
+        FleetScheduleEpoch {
+            target: ActivationTarget {
+                activation: self.activation,
+                required_client_capabilities: self.required_client_capabilities,
+            },
+            ends_before_window: self.ends_before_window,
+            plan_epoch: self.plan_epoch,
+            assignments: self.assignments,
+            reason: self.reason,
+        }
+    }
+}
+
+impl Default for FleetScheduleEpochBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ExperimentLifecyclePlanBuilder {
@@ -364,5 +486,47 @@ mod tests {
             plan.target.activation.activation_window,
             burn_p2p_core::WindowId(8)
         );
+    }
+
+    #[test]
+    fn fleet_schedule_epoch_builder_tracks_assignments_and_window_bounds() {
+        let epoch = FleetScheduleEpochBuilder::new()
+            .with_activation(WindowActivation {
+                activation_window: burn_p2p_core::WindowId(4),
+                grace_windows: 1,
+            })
+            .with_required_client_capability("native")
+            .with_plan_epoch(9)
+            .ending_before(burn_p2p_core::WindowId(7))
+            .with_reason("rebalance validators")
+            .assign_peer_slot_scaled(
+                burn_p2p_core::PeerId::new("peer-a"),
+                0,
+                StudyId::new("study"),
+                ExperimentId::new("experiment-a"),
+                RevisionId::new("rev-a"),
+                Some(0.8),
+                Some(0.75),
+            )
+            .assign_peer_slot(
+                burn_p2p_core::PeerId::new("peer-a"),
+                1,
+                StudyId::new("study"),
+                ExperimentId::new("experiment-b"),
+                RevisionId::new("rev-b"),
+            )
+            .build();
+
+        assert_eq!(epoch.plan_epoch, 9);
+        assert_eq!(epoch.ends_before_window, Some(burn_p2p_core::WindowId(7)));
+        assert!(epoch.target.required_client_capabilities.contains("native"));
+        assert_eq!(epoch.assignments.len(), 2);
+        assert!(epoch.is_effective_for_window(burn_p2p_core::WindowId(5)));
+        assert!(!epoch.is_effective_for_window(burn_p2p_core::WindowId(7)));
+        let assignments = epoch.assignments_for_peer(&burn_p2p_core::PeerId::new("peer-a"));
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(assignments[0].slot_index, 0);
+        assert_eq!(assignments[0].budget_scale, Some(0.8));
+        assert_eq!(assignments[1].slot_index, 1);
     }
 }

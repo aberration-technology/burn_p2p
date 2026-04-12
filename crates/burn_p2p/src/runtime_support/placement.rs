@@ -437,7 +437,9 @@ fn planner_prunes_training_assignment(history: Option<&FleetPlacementPlannerHist
 
 pub(crate) fn local_training_schedule_hint(
     snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
     local_peer_id: &PeerId,
+    window_id: WindowId,
 ) -> TrainingScheduleHint {
     let histories = training_assignment_histories(snapshot, &[]);
     let planner_histories = fleet_placement_planner_histories(snapshot);
@@ -485,10 +487,54 @@ pub(crate) fn local_training_schedule_hint(
             .clamp(0.25, 1.4)
     };
 
-    TrainingScheduleHint {
+    let planner_hint = TrainingScheduleHint {
         budget_scale,
         microshard_scale,
+    };
+
+    effective_fleet_schedule_epoch(&snapshot.control_plane, &experiment.network_id, window_id)
+        .map(|epoch| authoritative_schedule_hint(snapshot, experiment, local_peer_id, &epoch))
+        .unwrap_or(planner_hint)
+}
+
+fn authoritative_schedule_hint(
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+    local_peer_id: &PeerId,
+    epoch: &FleetScheduleEpoch,
+) -> TrainingScheduleHint {
+    if let Some(assignment) = epoch.assignment_for_peer_experiment(
+        local_peer_id,
+        &experiment.study_id,
+        &experiment.experiment_id,
+        &experiment.revision_id,
+    ) {
+        let mut hint = TrainingScheduleHint::default();
+        if let Some(scale) = assignment.budget_scale {
+            hint.budget_scale = scale.clamp(0.25, 1.6);
+        }
+        if let Some(scale) = assignment.microshard_scale {
+            hint.microshard_scale = scale.clamp(0.25, 1.4);
+        }
+        return hint;
     }
+
+    if snapshot
+        .local_peer_id
+        .as_ref()
+        .is_some_and(|peer_id| peer_id == local_peer_id)
+        && epoch.has_assignment_for_peer(local_peer_id)
+    {
+        // This epoch is authoritative for the local peer, but the current
+        // experiment is not one of its assigned slots. Clamp to the safety
+        // floor so stale callers do minimal work until assignment catches up.
+        return TrainingScheduleHint {
+            budget_scale: 0.25,
+            microshard_scale: 0.25,
+        };
+    }
+
+    TrainingScheduleHint::default()
 }
 
 fn filter_training_assignment_peers(

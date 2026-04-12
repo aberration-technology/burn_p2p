@@ -1029,6 +1029,422 @@ fn family_runtime_applies_control_plane_pause_and_resume_at_window_boundaries() 
 }
 
 #[test]
+fn family_runtime_applies_patch_control_to_active_experiment() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("patch control storage");
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(storage.path().to_path_buf()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(vec![
+            switching_directory_entry(
+                "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
+            ),
+        ]))
+        .spawn()
+        .expect("spawn patch control runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "patch control runtime did not start",
+    );
+
+    let experiment = running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+    running
+        .initialize_local_head(&experiment)
+        .expect("initialize local head");
+    let baseline = running
+        .train_window_once(&experiment)
+        .expect("train baseline window");
+    let baseline_delta = metric_float(&baseline.report.stats, "delta");
+
+    running
+        .control_handle()
+        .publish_control(control_announcement(
+            burn_p2p_experiment::ExperimentControlCommand::PatchExperiment {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                patch: crate::RuntimePatch::new(
+                    crate::PatchClass::Hot,
+                    "set learning rate",
+                    BTreeMap::from([("learning_rate".into(), crate::PatchValue::Float(0.25))]),
+                    BTreeSet::new(),
+                )
+                .expect("build runtime patch"),
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(2),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+            },
+        ))
+        .expect("publish patch control");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            !telemetry
+                .snapshot()
+                .control_plane
+                .control_announcements
+                .is_empty()
+        },
+        "patch control announcement was not reflected in telemetry",
+    );
+
+    running
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow control plane for patch");
+    let trained = running
+        .train_window_once(&experiment)
+        .expect("train patched window");
+    let patched_delta = metric_float(&trained.report.stats, "delta");
+    assert!(
+        patched_delta < baseline_delta,
+        "expected patched learning rate to reduce delta from {baseline_delta} to {patched_delta}"
+    );
+    assert!(
+        (patched_delta - (baseline_delta * 0.25)).abs() < 1e-6,
+        "expected patched delta {patched_delta} to be one quarter of baseline {baseline_delta}"
+    );
+
+    running.shutdown().expect("shutdown patch control runtime");
+    let _ = running
+        .await_termination()
+        .expect("await patch control runtime");
+}
+
+#[test]
+fn family_runtime_applies_promote_and_rollback_head_controls() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("head control storage");
+    let storage_config = StorageConfig::new(storage.path().to_path_buf());
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(storage_config.clone())
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(vec![
+            switching_directory_entry(
+                "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
+            ),
+        ]))
+        .spawn()
+        .expect("spawn head control runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "head control runtime did not start",
+    );
+
+    let experiment = running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+    let genesis_head = running
+        .initialize_local_head(&experiment)
+        .expect("initialize local head");
+    let trained = running
+        .train_window_once(&experiment)
+        .expect("train promoted head candidate");
+    running
+        .adopt_known_head_if_present(&experiment, &genesis_head)
+        .expect("re-adopt genesis head");
+
+    running
+        .control_handle()
+        .publish_control(control_announcement(
+            burn_p2p_experiment::ExperimentControlCommand::PromoteHead {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                head_id: trained.head.head_id.clone(),
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(2),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+            },
+        ))
+        .expect("publish promote control");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            !telemetry
+                .snapshot()
+                .control_plane
+                .control_announcements
+                .is_empty()
+        },
+        "promote control announcement was not reflected in telemetry",
+    );
+    running
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow promote control");
+    assert_eq!(
+        crate::runtime_support::load_head_state(&storage_config, &experiment)
+            .expect("load promoted head")
+            .expect("promoted head should persist")
+            .head_id,
+        trained.head.head_id
+    );
+
+    running
+        .control_handle()
+        .publish_control(control_announcement(
+            burn_p2p_experiment::ExperimentControlCommand::RollbackHead {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                head_id: genesis_head.head_id.clone(),
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(3),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+            },
+        ))
+        .expect("publish rollback control");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            telemetry
+                .snapshot()
+                .control_plane
+                .control_announcements
+                .len()
+                >= 2
+        },
+        "rollback control announcement was not reflected in telemetry",
+    );
+    running
+        .follow_control_plane_once(crate::WindowId(3))
+        .expect("follow rollback control");
+    assert_eq!(
+        crate::runtime_support::load_head_state(&storage_config, &experiment)
+            .expect("load rolled back head")
+            .expect("rolled back head should persist")
+            .head_id,
+        genesis_head.head_id
+    );
+
+    running.shutdown().expect("shutdown head control runtime");
+    let _ = running
+        .await_termination()
+        .expect("await head control runtime");
+}
+
+#[test]
+fn family_runtime_reassigns_local_peer_via_control_command() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("reassign control storage");
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(StorageConfig::new(storage.path().to_path_buf()))
+        .with_auth(
+            crate::AuthConfig::new().with_experiment_directory(switching_directory_entries()),
+        )
+        .spawn()
+        .expect("spawn reassign control runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "reassign control runtime did not start",
+    );
+
+    let initial = running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+    let local_peer_id = telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("runtime should expose local peer id");
+
+    running
+        .control_handle()
+        .publish_control(control_announcement(
+            burn_p2p_experiment::ExperimentControlCommand::ReassignCohort {
+                study_id: crate::StudyId::new("study-switch"),
+                experiment_id: crate::ExperimentId::new("exp-b"),
+                cohort: "validator-a".into(),
+                peer_ids: vec![local_peer_id],
+                target: burn_p2p_experiment::ActivationTarget {
+                    activation: crate::WindowActivation {
+                        activation_window: crate::WindowId(2),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+            },
+        ))
+        .expect("publish reassign cohort control");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            !telemetry
+                .snapshot()
+                .control_plane
+                .control_announcements
+                .is_empty()
+        },
+        "reassign cohort control announcement was not reflected in telemetry",
+    );
+
+    let reassigned = running
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow reassign cohort control")
+        .expect("active experiment should remain assigned");
+    assert_eq!(initial.experiment_id, crate::ExperimentId::new("exp-a"));
+    assert_eq!(reassigned.experiment_id, crate::ExperimentId::new("exp-b"));
+    assert_eq!(reassigned.revision_id, crate::RevisionId::new("rev-b"));
+    assert_eq!(
+        telemetry.snapshot().slot_states.first(),
+        Some(&crate::SlotRuntimeState::Assigned(
+            crate::SlotAssignmentState::new(
+                crate::StudyId::new("study-switch"),
+                crate::ExperimentId::new("exp-b"),
+                crate::RevisionId::new("rev-b"),
+            )
+        ))
+    );
+
+    running
+        .shutdown()
+        .expect("shutdown reassign control runtime");
+    let _ = running
+        .await_termination()
+        .expect("await reassign control runtime");
+}
+
+#[test]
+fn family_runtime_applies_effective_schedule_epoch_assignment() {
+    let _guard = native_swarm_test_guard();
+    let storage = tempdir().expect("schedule epoch storage");
+    let storage_config = StorageConfig::new(storage.path().to_path_buf());
+    let mut running = NodeBuilder::new(switching_test_family())
+        .for_workload(crate::WorkloadId::new("compiled"))
+        .expect("compiled workload")
+        .with_network(switching_network_manifest())
+        .expect("network binding")
+        .with_storage(storage_config.clone())
+        .with_auth(
+            crate::AuthConfig::new().with_experiment_directory(switching_directory_entries()),
+        )
+        .spawn()
+        .expect("spawn schedule epoch runtime");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "schedule epoch runtime did not start",
+    );
+
+    let local_peer_id = telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("runtime should expose local peer id");
+    running
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-a"),
+        )
+        .expect("initial experiment selection");
+
+    running
+        .control_handle()
+        .publish_schedule(schedule_announcement(
+            burn_p2p_experiment::FleetScheduleEpochBuilder::new()
+                .with_activation(crate::WindowActivation {
+                    activation_window: crate::WindowId(2),
+                    grace_windows: 0,
+                })
+                .with_plan_epoch(3)
+                .assign_peer_slot_scaled(
+                    local_peer_id,
+                    0,
+                    crate::StudyId::new("study-switch"),
+                    crate::ExperimentId::new("exp-b"),
+                    crate::RevisionId::new("rev-b"),
+                    Some(0.75),
+                    Some(0.7),
+                )
+                .build(),
+        ))
+        .expect("publish schedule epoch");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            !telemetry
+                .snapshot()
+                .control_plane
+                .schedule_announcements
+                .is_empty()
+        },
+        "schedule epoch announcement was not reflected in telemetry",
+    );
+
+    let reassigned = running
+        .follow_control_plane_once(crate::WindowId(2))
+        .expect("follow schedule epoch")
+        .expect("active experiment should remain assigned");
+    assert_eq!(reassigned.experiment_id, crate::ExperimentId::new("exp-b"));
+    assert_eq!(reassigned.revision_id, crate::RevisionId::new("rev-b"));
+    assert_eq!(
+        telemetry.snapshot().slot_states.first(),
+        Some(&crate::SlotRuntimeState::Assigned(
+            crate::SlotAssignmentState::new(
+                crate::StudyId::new("study-switch"),
+                crate::ExperimentId::new("exp-b"),
+                crate::RevisionId::new("rev-b"),
+            )
+        ))
+    );
+    assert_eq!(
+        crate::runtime_support::load_slot_assignments(&storage_config)
+            .expect("load persisted slot assignments"),
+        vec![crate::SlotAssignmentState::new(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-b"),
+            crate::RevisionId::new("rev-b"),
+        )]
+    );
+
+    running.shutdown().expect("shutdown schedule epoch runtime");
+    let _ = running
+        .await_termination()
+        .expect("await schedule epoch runtime");
+}
+
+#[test]
 fn family_runtime_restores_persisted_control_plane_state_after_restart() {
     let _guard = native_swarm_test_guard();
     let storage = tempdir().expect("persisted control storage");

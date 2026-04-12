@@ -83,6 +83,14 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Performs the publish schedule operation.
+    pub fn publish_schedule(&mut self, announcement: FleetScheduleAnnouncement) {
+        match self {
+            Self::Memory(shell) => shell.publish_schedule(announcement),
+            Self::Native(shell) => shell.publish_schedule(announcement),
+        }
+    }
+
     /// Performs the publish head operation.
     pub fn publish_head(&mut self, announcement: HeadAnnouncement) {
         match self {

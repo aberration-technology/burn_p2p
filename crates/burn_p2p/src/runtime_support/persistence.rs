@@ -7,6 +7,8 @@ pub(crate) struct PersistedControlPlaneState {
     pub control_announcements: Vec<ControlAnnouncement>,
     #[serde(default)]
     pub lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
+    #[serde(default)]
+    pub schedule_announcements: Vec<FleetScheduleAnnouncement>,
     pub lease_announcements: Vec<LeaseAnnouncement>,
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
@@ -23,6 +25,7 @@ impl PersistedControlPlaneState {
         Self {
             control_announcements: bounded_snapshot.control_announcements,
             lifecycle_announcements: bounded_snapshot.lifecycle_announcements,
+            schedule_announcements: bounded_snapshot.schedule_announcements,
             lease_announcements: bounded_snapshot.lease_announcements,
             auth_announcements: bounded_snapshot.auth_announcements,
             directory_announcements: bounded_snapshot.directory_announcements,
@@ -34,6 +37,7 @@ impl PersistedControlPlaneState {
     fn apply_to_snapshot(self, snapshot: &mut ControlPlaneSnapshot) {
         snapshot.control_announcements = self.control_announcements;
         snapshot.lifecycle_announcements = self.lifecycle_announcements;
+        snapshot.schedule_announcements = self.schedule_announcements;
         snapshot.lease_announcements = self.lease_announcements;
         snapshot.auth_announcements = self.auth_announcements;
         snapshot.directory_announcements = self.directory_announcements;
@@ -48,6 +52,9 @@ impl PersistedControlPlaneState {
         }
         for announcement in self.lifecycle_announcements {
             shell.publish_lifecycle(announcement);
+        }
+        for announcement in self.schedule_announcements {
+            shell.publish_schedule(announcement);
         }
         for announcement in self.lease_announcements {
             shell.publish_lease(announcement);
@@ -69,6 +76,7 @@ impl PersistedControlPlaneState {
     fn is_empty(&self) -> bool {
         self.control_announcements.is_empty()
             && self.lifecycle_announcements.is_empty()
+            && self.schedule_announcements.is_empty()
             && self.lease_announcements.is_empty()
             && self.auth_announcements.is_empty()
             && self.directory_announcements.is_empty()
@@ -274,7 +282,10 @@ fn persisted_slot_states(slot_states: &[SlotRuntimeState]) -> Vec<SlotRuntimeSta
         .collect()
 }
 
-pub(crate) fn persist_json<T: serde::Serialize>(path: PathBuf, value: &T) -> anyhow::Result<()> {
+pub(crate) fn persist_json<T: serde::Serialize + ?Sized>(
+    path: PathBuf,
+    value: &T,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| anyhow::anyhow!("failed to create {}: {error}", parent.display()))?;
@@ -322,12 +333,46 @@ pub(crate) fn persist_primary_slot_assignment(
     storage: &StorageConfig,
     assignment: &SlotAssignmentState,
 ) -> anyhow::Result<()> {
-    persist_json(storage.primary_slot_assignment_path(), assignment)
+    persist_json(storage.primary_slot_assignment_path(), assignment)?;
+    persist_slot_assignments(storage, std::slice::from_ref(assignment))
+}
+
+pub(crate) fn persist_slot_assignments(
+    storage: &StorageConfig,
+    assignments: &[SlotAssignmentState],
+) -> anyhow::Result<()> {
+    let path = storage.slot_assignments_path();
+    if assignments.is_empty() {
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| anyhow::anyhow!("failed to remove {}: {error}", path.display()))?;
+        }
+        return Ok(());
+    }
+    persist_json(path, assignments)
+}
+
+pub(crate) fn load_slot_assignments(
+    storage: &StorageConfig,
+) -> anyhow::Result<Vec<SlotAssignmentState>> {
+    if let Some(assignments) = load_json(storage.slot_assignments_path())? {
+        return Ok(assignments);
+    }
+
+    Ok(load_json(storage.primary_slot_assignment_path())?
+        .into_iter()
+        .collect::<Vec<_>>())
 }
 
 pub(crate) fn load_primary_slot_assignment(
     storage: &StorageConfig,
 ) -> anyhow::Result<Option<SlotAssignmentState>> {
+    if let Some(assignments) =
+        load_json::<Vec<SlotAssignmentState>>(storage.slot_assignments_path())?
+    {
+        return Ok(assignments.into_iter().next());
+    }
+
     load_json(storage.primary_slot_assignment_path())
 }
 

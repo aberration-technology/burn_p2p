@@ -95,8 +95,12 @@ impl<P> RunningNode<P> {
         );
         let adaptation_factor =
             local_training_adaptation_factor(&prepared.telemetry_snapshot, &prepared.local_peer_id);
-        let schedule_hint =
-            local_training_schedule_hint(&prepared.telemetry_snapshot, &prepared.local_peer_id);
+        let schedule_hint = local_training_schedule_hint(
+            &prepared.telemetry_snapshot,
+            experiment,
+            &prepared.local_peer_id,
+            WindowId(planned.window_id.0 + 1),
+        );
         let placement_budget_work_units = training_placement_budget_work_units(
             planned
                 .limit_profile

@@ -130,6 +130,10 @@ impl StorageConfig {
         self.state_dir().join("slot-assignment-primary.json")
     }
 
+    pub(crate) fn slot_assignments_path(&self) -> PathBuf {
+        self.state_dir().join("slot-assignments.json")
+    }
+
     pub(crate) fn auth_state_path(&self) -> PathBuf {
         self.auth_dir().join("auth-state.json")
     }
