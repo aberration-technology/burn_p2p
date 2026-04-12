@@ -2,13 +2,14 @@ use std::collections::BTreeSet;
 
 use crate::{
     AdminCapability, BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle,
-    BootstrapError, BootstrapPlan, HeadQuery, OperatorRetentionPruneResult, ReceiptQuery,
-    ReducerLoadQuery,
+    BootstrapError, BootstrapPlan, HeadQuery, OperatorControlReplayQuery,
+    OperatorControlReplayRecord, OperatorControlReplaySummary, OperatorRetentionPruneResult,
+    ReceiptQuery, ReducerLoadQuery,
 };
 use burn_p2p::{ContributionReceipt, HeadDescriptor, ReducerLoadAnnouncement, TrustedIssuer};
 use burn_p2p_core::{
-    ControlCertificate, PeerId, ReenrollmentStatus, RevocationEpoch, SignatureMetadata,
-    TrustBundleExport, TrustedIssuerStatus,
+    ControlCertificate, Page, PageRequest, PeerId, ReenrollmentStatus, RevocationEpoch,
+    SignatureMetadata, TrustBundleExport, TrustedIssuerStatus,
 };
 use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
@@ -50,6 +51,15 @@ pub enum AdminAction {
     ExportDiagnostics,
     /// Uses the export diagnostics bundle variant.
     ExportDiagnosticsBundle,
+    /// Uses the export operator control replay page variant.
+    ExportOperatorControlReplayPage {
+        /// The query.
+        query: OperatorControlReplayQuery,
+        /// The page.
+        page: PageRequest,
+    },
+    /// Uses the export operator control replay summary variant.
+    ExportOperatorControlReplaySummary(OperatorControlReplayQuery),
     /// Uses the export heads variant.
     ExportHeads(HeadQuery),
     /// Uses the export receipts variant.
@@ -88,6 +98,10 @@ impl AdminAction {
             Self::BanPeer { .. } => AdminCapability::BanPeer,
             Self::ExportDiagnostics => AdminCapability::ExportDiagnostics,
             Self::ExportDiagnosticsBundle => AdminCapability::ExportDiagnosticsBundle,
+            Self::ExportOperatorControlReplayPage { .. }
+            | Self::ExportOperatorControlReplaySummary(_) => {
+                AdminCapability::ExportOperatorControlReplay
+            }
             Self::ExportHeads(_) => AdminCapability::ExportHeads,
             Self::ExportReceipts(_) => AdminCapability::ExportReceipts,
             Self::ExportReducerLoad(_) => AdminCapability::ExportReducerLoad,
@@ -120,6 +134,10 @@ pub enum AdminResult {
     Diagnostics(Box<BootstrapDiagnostics>),
     /// Uses the diagnostics bundle variant.
     DiagnosticsBundle(Box<BootstrapDiagnosticsBundle>),
+    /// Uses the operator control replay page variant.
+    OperatorControlReplayPage(Page<OperatorControlReplayRecord>),
+    /// Uses the operator control replay summary variant.
+    OperatorControlReplaySummary(OperatorControlReplaySummary),
     /// Uses the heads variant.
     Heads(Vec<HeadDescriptor>),
     /// Uses the receipts variant.
@@ -267,6 +285,28 @@ impl BootstrapPlan {
             AdminAction::ExportDiagnosticsBundle => Ok(AdminResult::DiagnosticsBundle(Box::new(
                 state.diagnostics_bundle(self, captured_at, remaining_work_units),
             ))),
+            AdminAction::ExportOperatorControlReplayPage { query, page } => {
+                Ok(AdminResult::OperatorControlReplayPage(
+                    state
+                        .export_operator_control_replay_page(&query, page)
+                        .map_err(|error| {
+                            BootstrapError::InvalidConfig(format!(
+                                "failed to export operator control replay page: {error}"
+                            ))
+                        })?,
+                ))
+            }
+            AdminAction::ExportOperatorControlReplaySummary(query) => {
+                Ok(AdminResult::OperatorControlReplaySummary(
+                    state
+                        .export_operator_control_replay_summary(&query)
+                        .map_err(|error| {
+                            BootstrapError::InvalidConfig(format!(
+                                "failed to export operator control replay summary: {error}"
+                            ))
+                        })?,
+                ))
+            }
             AdminAction::ExportHeads(query) => Ok(AdminResult::Heads(state.export_heads(&query))),
             AdminAction::ExportReceipts(query) => {
                 Ok(AdminResult::Receipts(state.export_receipts(&query)))

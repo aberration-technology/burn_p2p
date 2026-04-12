@@ -312,6 +312,7 @@ pub(crate) fn export_admin_capabilities() -> BTreeSet<AdminCapability> {
     BTreeSet::from([
         AdminCapability::ExportDiagnostics,
         AdminCapability::ExportDiagnosticsBundle,
+        AdminCapability::ExportOperatorControlReplay,
         AdminCapability::ExportHeads,
         AdminCapability::ExportReceipts,
         AdminCapability::ExportReducerLoad,
@@ -333,6 +334,7 @@ pub(crate) fn all_admin_capabilities() -> BTreeSet<AdminCapability> {
         AdminCapability::BanPeer,
         AdminCapability::ExportDiagnostics,
         AdminCapability::ExportDiagnosticsBundle,
+        AdminCapability::ExportOperatorControlReplay,
         AdminCapability::ExportHeads,
         AdminCapability::ExportReceipts,
         AdminCapability::ExportReducerLoad,
@@ -352,6 +354,9 @@ pub(crate) fn parse_admin_capability_token(token: &str) -> Option<AdminCapabilit
         "exportdiagnostics" | "export_diagnostics" => Some(AdminCapability::ExportDiagnostics),
         "exportdiagnosticsbundle" | "export_diagnostics_bundle" => {
             Some(AdminCapability::ExportDiagnosticsBundle)
+        }
+        "exportoperatorcontrolreplay" | "export_operator_control_replay" => {
+            Some(AdminCapability::ExportOperatorControlReplay)
         }
         "exportheads" | "export_heads" => Some(AdminCapability::ExportHeads),
         "exportreceipts" | "export_receipts" => Some(AdminCapability::ExportReceipts),

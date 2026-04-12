@@ -181,13 +181,14 @@ mod tests {
         ArtifactId, AttestationLevel, AuthorityEpochManifest, BackendClass, CapabilityCard,
         CapabilityCardId, CapabilityClass, ClientPlatform, ContentId, ContributionReceipt,
         ExperimentId, HeadEvalReport, HeadEvalStatus, HeadId, MergeCertificate, MetricTrustClass,
-        NetworkId, PeerId, PeerWindowMetrics, PeerWindowStatus, PersistenceClass, PrincipalId,
-        ReducerCohortMetrics, ReducerCohortStatus, RevisionId, StudyId, TelemetrySummary,
-        ValidatorSetManifest, ValidatorSetMember, WindowActivation, WindowId,
+        NetworkId, PageRequest, PeerId, PeerWindowMetrics, PeerWindowStatus, PersistenceClass,
+        PrincipalId, ReducerCohortMetrics, ReducerCohortStatus, RevisionId, StudyId,
+        TelemetrySummary, ValidatorSetManifest, ValidatorSetMember, WindowActivation, WindowId,
     };
     use burn_p2p_experiment::{
-        ActivationTarget, ExperimentControlCommand, ExperimentLifecyclePhase,
-        ExperimentLifecyclePlan, FleetScheduleEpochBuilder,
+        ActivationTarget, ExperimentControlCommand, ExperimentLifecycleEnvelope,
+        ExperimentLifecyclePhase, ExperimentLifecyclePlan, FleetScheduleEpochBuilder,
+        FleetScheduleEpochEnvelope,
     };
     use burn_p2p_security::{
         MergeEvidenceRequirement, PeerAdmissionReport, PeerTrustLevel, ReleasePolicy,
@@ -203,8 +204,8 @@ mod tests {
     use super::{
         ActiveExperiment, AdminAction, AdminResult, BootstrapAdminState,
         BootstrapEmbeddedDaemonConfig, BootstrapPeerDaemonConfig, BootstrapPlan, BootstrapPreset,
-        BootstrapService, BootstrapSpec, HeadQuery, ReceiptQuery, ReducerLoadQuery,
-        render_openmetrics,
+        BootstrapService, BootstrapSpec, HeadQuery, OperatorControlReplayKind,
+        OperatorControlReplayQuery, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
     };
 
     fn genesis() -> burn_p2p_core::GenesisSpec {
@@ -835,6 +836,195 @@ mod tests {
                 assert_eq!(cert.activation.activation_window, WindowId(8));
                 assert_eq!(cert.body.payload.payload.epoch.plan_epoch, 4);
                 assert_eq!(cert.body.payload.payload.epoch.assignments.len(), 1);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_control_replay_exports_filter_by_scope() {
+        let plan = plan(BootstrapPreset::AuthorityValidator);
+        let now = Utc::now();
+        let signer = burn_p2p_core::SignatureMetadata {
+            signer: PeerId::new("authority"),
+            key_id: "authority-key".into(),
+            algorithm: burn_p2p_core::SignatureAlgorithm::Ed25519,
+            signed_at: now,
+            signature_hex: "abcd".into(),
+        };
+        let lifecycle = ExperimentLifecycleEnvelope {
+            network_id: NetworkId::new("mainnet"),
+            plan: ExperimentLifecyclePlan {
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp-a"),
+                base_revision_id: Some(RevisionId::new("rev-a")),
+                target_entry: burn_p2p::ExperimentDirectoryEntry {
+                    network_id: NetworkId::new("mainnet"),
+                    study_id: StudyId::new("study"),
+                    experiment_id: ExperimentId::new("exp-b"),
+                    workload_id: WorkloadId::new("alternate"),
+                    display_name: "exp-b".into(),
+                    model_schema_hash: ContentId::new("schema-b"),
+                    dataset_view_id: burn_p2p::DatasetViewId::new("view-b"),
+                    resource_requirements: burn_p2p::ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::from([burn_p2p_core::PeerRole::TrainerCpu]),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 0,
+                        estimated_window_seconds: 30,
+                    },
+                    visibility: burn_p2p::ExperimentVisibility::Public,
+                    opt_in_policy: burn_p2p::ExperimentOptInPolicy::Open,
+                    current_revision_id: RevisionId::new("rev-b"),
+                    current_head_id: Some(HeadId::new("head-b")),
+                    allowed_roles: burn_p2p_core::PeerRoleSet::default_trainer(),
+                    allowed_scopes: BTreeSet::new(),
+                    metadata: BTreeMap::new(),
+                },
+                phase: ExperimentLifecyclePhase::Activating,
+                target: ActivationTarget {
+                    activation: WindowActivation {
+                        activation_window: WindowId(7),
+                        grace_windows: 0,
+                    },
+                    required_client_capabilities: BTreeSet::new(),
+                },
+                plan_epoch: 3,
+                reason: Some("roll exp-b".into()),
+            },
+        }
+        .into_signed_cert(signer.clone(), Version::new(0, 1, 0))
+        .expect("lifecycle cert");
+        let schedule = FleetScheduleEpochEnvelope {
+            network_id: NetworkId::new("mainnet"),
+            epoch: FleetScheduleEpochBuilder::new()
+                .with_activation(WindowActivation {
+                    activation_window: WindowId(8),
+                    grace_windows: 0,
+                })
+                .ending_before(WindowId(12))
+                .with_plan_epoch(4)
+                .with_reason("rebalance trainer slots")
+                .assign_peer_slot_scaled(
+                    PeerId::new("trainer-a"),
+                    0,
+                    StudyId::new("study"),
+                    ExperimentId::new("exp-a"),
+                    RevisionId::new("rev-a"),
+                    Some(0.5),
+                    Some(0.25),
+                )
+                .build(),
+        }
+        .into_signed_cert(signer, Version::new(0, 1, 0))
+        .expect("schedule cert");
+        let runtime_snapshot = NodeTelemetrySnapshot {
+            status: RuntimeStatus::Running,
+            node_state: super::NodeRuntimeState::IdleReady,
+            slot_states: vec![super::SlotRuntimeState::Assigned(SlotAssignmentState::new(
+                StudyId::new("study"),
+                ExperimentId::new("exp-b"),
+                RevisionId::new("rev-b"),
+            ))],
+            lag_state: burn_p2p::LagState::Current,
+            head_lag_steps: 0,
+            lag_policy: burn_p2p::LagPolicy::default(),
+            network_id: Some(NetworkId::new("mainnet")),
+            local_peer_id: Some(PeerId::new("authority")),
+            configured_roles: burn_p2p_core::PeerRoleSet::default_trainer(),
+            connected_peers: 1,
+            observed_peer_ids: BTreeSet::new(),
+            known_peer_addresses: BTreeSet::new(),
+            runtime_boundary: None,
+            listen_addresses: Vec::new(),
+            control_plane: ControlPlaneSnapshot {
+                lifecycle_announcements: vec![burn_p2p::ExperimentLifecycleAnnouncement {
+                    overlay: burn_p2p::OverlayTopic::control(NetworkId::new("mainnet")),
+                    certificate: lifecycle,
+                    announced_at: now - chrono::Duration::seconds(2),
+                }],
+                schedule_announcements: vec![burn_p2p::FleetScheduleAnnouncement {
+                    overlay: burn_p2p::OverlayTopic::control(NetworkId::new("mainnet")),
+                    certificate: schedule,
+                    announced_at: now - chrono::Duration::seconds(1),
+                }],
+                ..ControlPlaneSnapshot::default()
+            },
+            recent_events: Vec::new(),
+            last_snapshot_peer_id: None,
+            last_snapshot: None,
+            admitted_peers: BTreeMap::new(),
+            rejected_peers: BTreeMap::new(),
+            peer_reputation: BTreeMap::new(),
+            minimum_revocation_epoch: None,
+            trust_bundle: None,
+            in_flight_transfers: BTreeMap::new(),
+            robustness_policy: None,
+            latest_cohort_robustness: None,
+            trust_scores: Vec::new(),
+            canary_reports: Vec::new(),
+            applied_control_cert_ids: BTreeSet::new(),
+            effective_limit_profile: None,
+            last_error: None,
+            started_at: now,
+            updated_at: now,
+        };
+        let mut state = BootstrapAdminState {
+            runtime_snapshot: Some(runtime_snapshot),
+            ..BootstrapAdminState::default()
+        };
+
+        let page = plan
+            .execute_admin_action(
+                AdminAction::ExportOperatorControlReplayPage {
+                    query: OperatorControlReplayQuery {
+                        kind: Some(OperatorControlReplayKind::ScheduleEpoch),
+                        network_id: Some(NetworkId::new("mainnet")),
+                        study_id: Some(StudyId::new("study")),
+                        experiment_id: Some(ExperimentId::new("exp-a")),
+                        revision_id: Some(RevisionId::new("rev-a")),
+                        peer_id: Some(PeerId::new("trainer-a")),
+                        window_id: Some(WindowId(8)),
+                        since: None,
+                        until: None,
+                        text: None,
+                    },
+                    page: PageRequest::new(0, 5),
+                },
+                &mut state,
+                None,
+                now,
+                None,
+            )
+            .expect("control replay page");
+        match page {
+            AdminResult::OperatorControlReplayPage(page) => {
+                assert_eq!(page.total, 1);
+                assert_eq!(page.items.len(), 1);
+                assert_eq!(page.items[0].peer_id, Some(PeerId::new("trainer-a")));
+                assert_eq!(page.items[0].window_id, WindowId(8));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        let summary = plan
+            .execute_admin_action(
+                AdminAction::ExportOperatorControlReplaySummary(OperatorControlReplayQuery {
+                    experiment_id: Some(ExperimentId::new("exp-b")),
+                    window_id: Some(WindowId(7)),
+                    ..OperatorControlReplayQuery::default()
+                }),
+                &mut state,
+                None,
+                now,
+                None,
+            )
+            .expect("control replay summary");
+        match summary {
+            AdminResult::OperatorControlReplaySummary(summary) => {
+                assert_eq!(summary.record_count, 1);
+                assert_eq!(summary.distinct_network_count, 1);
+                assert_eq!(summary.counts_by_kind.get("lifecycle-plan"), Some(&1));
             }
             other => panic!("unexpected result: {other:?}"),
         }
@@ -1502,6 +1692,8 @@ mod tests {
         assert!(html.contains("/status"));
         assert!(html.contains("/events"));
         assert!(html.contains("/portal/snapshot"));
+        assert!(html.contains("/operator/control/summary"));
+        assert!(html.contains("/operator/control/page"));
         assert!(html.contains("burn_p2p bootstrap"));
     }
 

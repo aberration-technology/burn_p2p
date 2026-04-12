@@ -31,6 +31,9 @@ fn dashboard_html_mentions_bootstrap_routes() {
     let html = render_dashboard_html("mainnet");
     assert!(html.contains("/portal/snapshot"));
     assert!(html.contains("/diagnostics/bundle"));
+    assert!(html.contains("/operator/control/summary"));
+    assert!(html.contains("/operator/control/page"));
+    assert!(html.contains("/operator/retention"));
 }
 
 #[test]

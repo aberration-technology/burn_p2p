@@ -216,6 +216,7 @@ impl Default for AdminApiPlan {
                 AdminCapability::BanPeer,
                 AdminCapability::ExportDiagnostics,
                 AdminCapability::ExportDiagnosticsBundle,
+                AdminCapability::ExportOperatorControlReplay,
                 AdminCapability::ExportHeads,
                 AdminCapability::ExportReceipts,
                 AdminCapability::ExportReducerLoad,
@@ -242,6 +243,8 @@ pub enum AdminCapability {
     ExportDiagnostics,
     /// Uses the export diagnostics bundle variant.
     ExportDiagnosticsBundle,
+    /// Uses the export operator control replay variant.
+    ExportOperatorControlReplay,
     /// Uses the export heads variant.
     ExportHeads,
     /// Uses the export receipts variant.

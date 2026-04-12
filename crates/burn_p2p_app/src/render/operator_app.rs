@@ -192,6 +192,11 @@ fn DashboardPage(network_id: String) -> Element {
                     LinkPill { href: "/heads", label: "/heads" }
                     LinkPill { href: "/receipts", label: "/receipts" }
                     LinkPill { href: "/reducers/load", label: "/reducers/load" }
+                    LinkPill { href: "/operator/audit/summary", label: "/operator/audit/summary" }
+                    LinkPill { href: "/operator/replay/page", label: "/operator/replay/page" }
+                    LinkPill { href: "/operator/control/summary", label: "/operator/control/summary" }
+                    LinkPill { href: "/operator/control/page", label: "/operator/control/page" }
+                    LinkPill { href: "/operator/retention", label: "/operator/retention" }
                 }
             }
             section { class: "panel",
