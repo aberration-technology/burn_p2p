@@ -1074,9 +1074,11 @@ pub fn render_operator_audit_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
-    let reset_html = (!filters.is_empty() || page.offset > 0)
-        .then_some(" | <a href=\"/operator/audit\">Reset query</a>")
-        .unwrap_or("");
+    let reset_html = if !filters.is_empty() || page.offset > 0 {
+        " | <a href=\"/operator/audit\">Reset query</a>"
+    } else {
+        ""
+    };
     let facet_html = [
         ("kinds", &facets.kinds),
         ("studies", &facets.studies),
@@ -1230,9 +1232,11 @@ pub fn render_operator_replay_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
-    let reset_html = (!filters.is_empty() || page.offset > 0)
-        .then_some(" | <a href=\"/operator/replay\">Reset query</a>")
-        .unwrap_or("");
+    let reset_html = if !filters.is_empty() || page.offset > 0 {
+        " | <a href=\"/operator/replay\">Reset query</a>"
+    } else {
+        ""
+    };
     let rows_html = if page.items.is_empty() {
         "<p>No replay snapshots matched the current query.</p>".to_owned()
     } else {
@@ -1414,9 +1418,11 @@ pub fn render_operator_control_replay_html(
     } else {
         format!("<p>{}</p>", filters.join(" | "))
     };
-    let reset_html = (!filters.is_empty() || page.offset > 0)
-        .then_some(" | <a href=\"/operator/control\">Reset query</a>")
-        .unwrap_or("");
+    let reset_html = if !filters.is_empty() || page.offset > 0 {
+        " | <a href=\"/operator/control\">Reset query</a>"
+    } else {
+        ""
+    };
     let rows_html = if page.items.is_empty() {
         "<p>No lifecycle or schedule rows matched the current query.</p>".to_owned()
     } else {
