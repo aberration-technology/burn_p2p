@@ -1298,19 +1298,39 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
+    let (primary_consumer, follower_consumers) = consumers
+        .split_first()
+        .context("candidate artifact wait requires at least one consumer")?;
+    let primary_consumer = [*primary_consumer];
+    let tier_timeout = demo_candidate_artifact_timeout(timeout);
+
     for (label, provider, outcome) in providers {
         let mut artifact_ids = vec![outcome.training.artifact.artifact_id.clone()];
         if outcome.training.head.artifact_id != outcome.training.artifact.artifact_id {
             artifact_ids.push(outcome.training.head.artifact_id.clone());
         }
         for artifact_id in artifact_ids {
+            let mut staged_providers =
+                vec![(label, provider, outcome.training.contribution.peer_id.clone())];
             wait_for_artifact_from_topology(
-                &[(label, provider, outcome.training.contribution.peer_id.clone())],
-                &consumers,
+                &staged_providers,
+                &primary_consumer,
                 &artifact_id,
-                demo_candidate_artifact_timeout(timeout),
+                tier_timeout,
                 failure_message,
             )?;
+            if let Some(primary_peer_id) = primary_consumer[0].1.telemetry().snapshot().local_peer_id {
+                staged_providers.push((primary_consumer[0].0, primary_consumer[0].1, primary_peer_id));
+            }
+            if !follower_consumers.is_empty() {
+                wait_for_artifact_from_topology(
+                    &staged_providers,
+                    follower_consumers,
+                    &artifact_id,
+                    tier_timeout,
+                    failure_message,
+                )?;
+            }
         }
         for (_, consumer) in &consumers {
             consumer.publish_head_provider(experiment, &outcome.training.head)?;
@@ -1430,9 +1450,9 @@ fn wait_for_head_artifacts<P>(
     )
 }
 
-fn wait_for_artifact_from_topology<P, const N: usize>(
+fn wait_for_artifact_from_topology<P>(
     providers: &[(&str, &burn_p2p::RunningNode<P>, PeerId)],
-    consumers: &[(&str, &burn_p2p::RunningNode<P>); N],
+    consumers: &[(&str, &burn_p2p::RunningNode<P>)],
     artifact_id: &burn_p2p::ArtifactId,
     timeout: Duration,
     failure_message: &str,
@@ -1467,7 +1487,7 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
         let mut all_ready = true;
         for (label, consumer) in consumers {
             if record_artifact_provider(
-                *label,
+                label,
                 consumer,
                 artifact_id,
                 &mut provider_peer_ids,
@@ -1486,18 +1506,18 @@ fn wait_for_artifact_from_topology<P, const N: usize>(
                 Err(error) => {
                     all_ready = false;
                     last_error = Some(format!("{label}: {error}"));
-                    break;
+                    continue;
                 }
             }
             if !record_artifact_provider(
-                *label,
+                label,
                 consumer,
                 artifact_id,
                 &mut provider_peer_ids,
                 &mut last_error,
             ) {
                 all_ready = false;
-                break;
+                continue;
             }
             push_provider_list(&mut staged_provider_peer_ids, &provider_peer_ids);
         }
@@ -1529,26 +1549,32 @@ fn bounded_ci_mnist_mode() -> bool {
 }
 
 fn demo_artifact_sync_attempt_timeout() -> Duration {
-    if hosted_ci_mode() {
-        Duration::from_secs(20)
+    if bounded_ci_mnist_mode() {
+        Duration::from_secs(45)
+    } else if hosted_ci_mode() {
+        Duration::from_secs(30)
     } else {
         Duration::from_secs(5)
     }
 }
 
-fn demo_provider_artifact_timeout() -> Duration {
-    if hosted_ci_mode() {
-        Duration::from_secs(45)
+fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
+    if bounded_ci_mnist_mode() {
+        timeout.max(Duration::from_secs(180))
+    } else if hosted_ci_mode() {
+        timeout.max(Duration::from_secs(120))
     } else {
-        Duration::from_secs(20)
+        timeout
     }
 }
 
-fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
-    if hosted_ci_mode() {
-        timeout.max(Duration::from_secs(90))
+fn demo_provider_artifact_timeout() -> Duration {
+    if bounded_ci_mnist_mode() {
+        Duration::from_secs(75)
+    } else if hosted_ci_mode() {
+        Duration::from_secs(45)
     } else {
-        timeout
+        Duration::from_secs(20)
     }
 }
 
@@ -1561,10 +1587,6 @@ fn demo_validation_round_timeout() -> Duration {
 }
 
 fn require_full_topology_convergence() -> bool {
-    !bounded_ci_mnist_mode()
-}
-
-fn require_viewer_topology_convergence() -> bool {
     !bounded_ci_mnist_mode()
 }
 
@@ -1594,7 +1616,7 @@ fn wait_for_artifact_from_fixed_providers<P>(
         for (label, consumer) in consumers {
             let mut ignored_provider_peer_ids = Vec::new();
             if record_artifact_provider(
-                *label,
+                label,
                 consumer,
                 artifact_id,
                 &mut ignored_provider_peer_ids,
@@ -1612,19 +1634,19 @@ fn wait_for_artifact_from_fixed_providers<P>(
                 Err(error) => {
                     all_ready = false;
                     last_error = Some(format!("{label}: {error}"));
-                    break;
+                    continue;
                 }
             }
 
             if !record_artifact_provider(
-                *label,
+                label,
                 consumer,
                 artifact_id,
                 &mut ignored_provider_peer_ids,
                 &mut last_error,
             ) {
                 all_ready = false;
-                break;
+                continue;
             }
         }
 
@@ -2523,7 +2545,7 @@ fn wait_for_artifact_from_provider<P, const N: usize>(
     );
     wait_for_artifact_from_fixed_providers(
         &consumers,
-        &[provider_peer_id.clone()],
+        std::slice::from_ref(provider_peer_id),
         artifact_id,
         timeout,
         failure_message,
