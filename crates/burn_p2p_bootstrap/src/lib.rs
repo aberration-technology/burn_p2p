@@ -35,7 +35,8 @@ use thiserror::Error;
 pub use crate::admin::{AdminAction, AdminResult, AuthPolicyRollout};
 pub use crate::app_render::{
     render_artifact_run_summaries_html, render_artifact_run_view_html, render_dashboard_html,
-    render_head_artifact_view_html, render_operator_control_replay_html,
+    render_head_artifact_view_html, render_operator_audit_html,
+    render_operator_control_replay_html, render_operator_replay_html,
 };
 pub use crate::browser_edge::{BrowserEdgeSnapshot, BrowserEdgeSnapshotConfig};
 pub use crate::daemon::{
@@ -1692,6 +1693,8 @@ mod tests {
         assert!(html.contains("/status"));
         assert!(html.contains("/events"));
         assert!(html.contains("/portal/snapshot"));
+        assert!(html.contains("/operator/audit"));
+        assert!(html.contains("/operator/replay"));
         assert!(html.contains("/operator/control"));
         assert!(html.contains("burn_p2p bootstrap"));
     }

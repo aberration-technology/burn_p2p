@@ -1,7 +1,9 @@
 use crate::models::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
-    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorControlReplayPageView,
-    AppOperatorControlReplayRow, AppPublishedArtifactRow,
+    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorAuditPageView,
+    AppOperatorAuditRow, AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
+    AppOperatorFacetBucketView, AppOperatorReplayPageView, AppOperatorReplaySnapshotRow,
+    AppPublishedArtifactRow,
 };
 use dioxus::prelude::*;
 use dioxus::ssr::render_element;
@@ -127,6 +129,22 @@ pub(super) fn render_operator_control_replay_html(
     )
 }
 
+pub(super) fn render_operator_audit_html(view: &AppOperatorAuditPageView) -> String {
+    render_document(
+        "Operator audit history".into(),
+        rsx! { OperatorAuditPage { view: view.clone() } },
+        None,
+    )
+}
+
+pub(super) fn render_operator_replay_html(view: &AppOperatorReplayPageView) -> String {
+    render_document(
+        "Operator replay history".into(),
+        rsx! { OperatorReplayPage { view: view.clone() } },
+        None,
+    )
+}
+
 fn render_document(title: String, page: Element, script: Option<&str>) -> String {
     let title = escape_html_text(&title);
     let body = render_element(rsx! {
@@ -203,8 +221,8 @@ fn DashboardPage(network_id: String) -> Element {
                     LinkPill { href: "/heads", label: "/heads" }
                     LinkPill { href: "/receipts", label: "/receipts" }
                     LinkPill { href: "/reducers/load", label: "/reducers/load" }
-                    LinkPill { href: "/operator/audit/summary", label: "/operator/audit/summary" }
-                    LinkPill { href: "/operator/replay/page", label: "/operator/replay/page" }
+                    LinkPill { href: "/operator/audit".to_owned(), label: "/operator/audit" }
+                    LinkPill { href: "/operator/replay".to_owned(), label: "/operator/replay" }
                     LinkPill { href: "/operator/control", label: "/operator/control" }
                     LinkPill { href: "/operator/retention", label: "/operator/retention" }
                 }
@@ -452,6 +470,138 @@ fn ArtifactHeadPage(view: AppHeadArtifactView) -> Element {
 }
 
 #[component]
+fn OperatorAuditPage(view: AppOperatorAuditPageView) -> Element {
+    let filter_count = view.filter_tags.len().to_string();
+    rsx! {
+        main { class: "operator-main",
+            section { class: "panel hero-shell hero",
+                div { class: "hero-top",
+                    div { class: "hero-copy",
+                        div { class: "eyebrow", "operator audit" }
+                        h1 { "Operator audit history" }
+                        p { class: "hero-lead",
+                            "Receipts, heads, merges, lifecycle plans, schedules, and metrics across retained operator history."
+                        }
+                        div { class: "service-pill-stack",
+                            span { class: "pill", "backend {view.summary.backend}" }
+                            span { class: "pill", "{view.total} matching row(s)" }
+                            span { class: "pill", "{filter_count} active filter(s)" }
+                        }
+                    }
+                    div { class: "hero-meta-grid",
+                        MetaCard { label: "json page", value: view.json_page_path.clone(), detail: "paged api export" }
+                        MetaCard { label: "json summary", value: view.json_summary_path.clone(), detail: "aggregate counts" }
+                        MetaCard { label: "json facets", value: view.json_facets_path.clone(), detail: "top buckets" }
+                    }
+                }
+                div { class: "summary-grid hero-summary-grid",
+                    LiveSummaryCard { label: "records", value: view.summary.record_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "experiments", value: view.summary.distinct_experiment_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "peers", value: view.summary.distinct_peer_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "heads", value: view.summary.distinct_head_count.to_string(), element_id: None }
+                }
+                div { class: "operator-link-row",
+                    LinkPill { href: "/".to_owned(), label: "Dashboard" }
+                    LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
+                    LinkPill { href: view.json_summary_path.clone(), label: "View JSON summary" }
+                    LinkPill { href: view.json_facets_path.clone(), label: "View JSON facets" }
+                    if let Some(prev_page_path) = view.prev_page_path.clone() {
+                        a { class: "pill", href: prev_page_path, "Prev page" }
+                    }
+                    if let Some(next_page_path) = view.next_page_path.clone() {
+                        a { class: "pill", href: next_page_path, "Next page" }
+                    }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "query" }
+                h2 { "Current query" }
+                if view.filter_tags.is_empty() {
+                    p { class: "muted", "No filters are active. Showing the newest retained audit rows." }
+                } else {
+                    div { class: "service-pill-stack",
+                        for tag in view.filter_tags.iter() {
+                            span { class: "pill", "{tag}" }
+                        }
+                    }
+                }
+                div { class: "info-list",
+                    InfoMetric { label: "offset", value: view.offset.to_string(), element_id: None }
+                    InfoMetric { label: "limit", value: view.limit.to_string(), element_id: None }
+                    InfoMetric { label: "total", value: view.total.to_string(), element_id: None }
+                    InfoMetric {
+                        label: "capture range",
+                        value: format!(
+                            "{} -> {}",
+                            view.summary
+                                .earliest_captured_at
+                                .clone()
+                                .unwrap_or_else(|| "n/a".into()),
+                            view.summary
+                                .latest_captured_at
+                                .clone()
+                                .unwrap_or_else(|| "n/a".into())
+                        ),
+                        element_id: None,
+                    }
+                }
+                if !view.summary.kind_counts.is_empty() {
+                    div { class: "service-pill-stack",
+                        for kind in view.summary.kind_counts.iter() {
+                            span { class: "pill", "{kind}" }
+                        }
+                    }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "facets" }
+                h2 { "Top facets" }
+                p { class: "muted section-copy", "Highest-frequency values across the filtered audit query." }
+                div { class: "mobile-card-list",
+                    FacetBucketCard { label: "Kinds".to_owned(), buckets: view.facets.kinds.clone() }
+                    FacetBucketCard { label: "Studies".to_owned(), buckets: view.facets.studies.clone() }
+                    FacetBucketCard { label: "Experiments".to_owned(), buckets: view.facets.experiments.clone() }
+                    FacetBucketCard { label: "Revisions".to_owned(), buckets: view.facets.revisions.clone() }
+                    FacetBucketCard { label: "Peers".to_owned(), buckets: view.facets.peers.clone() }
+                    FacetBucketCard { label: "Heads".to_owned(), buckets: view.facets.heads.clone() }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "records" }
+                h2 { "Audit rows" }
+                if view.rows.is_empty() {
+                    p { class: "muted", "No audit rows matched the current query." }
+                } else {
+                    div { class: "scroll-table",
+                        table {
+                            thead {
+                                tr {
+                                    th { "Kind" }
+                                    th { "Scope" }
+                                    th { "Peer / head" }
+                                    th { "Captured" }
+                                    th { "Summary" }
+                                }
+                            }
+                            tbody {
+                                for row in view.rows.iter() {
+                                    OperatorAuditRowView { row: row.clone() }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mobile-card-list",
+                        for row in view.rows {
+                            OperatorAuditCard { row: row.clone() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn OperatorControlReplayPage(view: AppOperatorControlReplayPageView) -> Element {
     let filter_count = view.filter_tags.len().to_string();
     rsx! {
@@ -570,6 +720,170 @@ fn OperatorControlReplayPage(view: AppOperatorControlReplayPageView) -> Element 
 }
 
 #[component]
+fn OperatorReplayPage(view: AppOperatorReplayPageView) -> Element {
+    let filter_count = view.filter_tags.len().to_string();
+    rsx! {
+        main { class: "operator-main",
+            section { class: "panel hero-shell hero",
+                div { class: "hero-top",
+                    div { class: "hero-copy",
+                        div { class: "eyebrow", "operator replay" }
+                        h1 { "Retained replay snapshots" }
+                        p { class: "hero-lead",
+                            "Snapshot-level replay history for lifecycle, schedule, and retained training state."
+                        }
+                        div { class: "service-pill-stack",
+                            span { class: "pill", "{view.total} matching snapshot(s)" }
+                            span { class: "pill", "{filter_count} active filter(s)" }
+                        }
+                    }
+                    div { class: "hero-meta-grid",
+                        MetaCard { label: "json page", value: view.json_page_path.clone(), detail: "paged api export" }
+                        MetaCard { label: "page receipts", value: view.visible_receipt_count.to_string(), detail: "visible retained receipts" }
+                        MetaCard {
+                            label: "page control",
+                            value: format!(
+                                "{} lifecycle / {} schedule",
+                                view.visible_lifecycle_plan_count,
+                                view.visible_schedule_epoch_count
+                            ),
+                            detail: "visible control history"
+                        }
+                    }
+                }
+                div { class: "summary-grid hero-summary-grid",
+                    LiveSummaryCard { label: "snapshots", value: view.total.to_string(), element_id: None }
+                    LiveSummaryCard { label: "visible receipts", value: view.visible_receipt_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "visible lifecycle", value: view.visible_lifecycle_plan_count.to_string(), element_id: None }
+                    LiveSummaryCard { label: "visible schedule", value: view.visible_schedule_epoch_count.to_string(), element_id: None }
+                }
+                div { class: "operator-link-row",
+                    LinkPill { href: "/".to_owned(), label: "Dashboard" }
+                    LinkPill { href: view.json_page_path.clone(), label: "View JSON page" }
+                    if let Some(prev_page_path) = view.prev_page_path.clone() {
+                        a { class: "pill", href: prev_page_path, "Prev page" }
+                    }
+                    if let Some(next_page_path) = view.next_page_path.clone() {
+                        a { class: "pill", href: next_page_path, "Next page" }
+                    }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "query" }
+                h2 { "Current query" }
+                if view.filter_tags.is_empty() {
+                    p { class: "muted", "No filters are active. Showing the newest retained replay snapshots." }
+                } else {
+                    div { class: "service-pill-stack",
+                        for tag in view.filter_tags.iter() {
+                            span { class: "pill", "{tag}" }
+                        }
+                    }
+                }
+                div { class: "info-list",
+                    InfoMetric { label: "offset", value: view.offset.to_string(), element_id: None }
+                    InfoMetric { label: "limit", value: view.limit.to_string(), element_id: None }
+                    InfoMetric { label: "total", value: view.total.to_string(), element_id: None }
+                }
+            }
+            section { class: "panel",
+                div { class: "eyebrow", "snapshots" }
+                h2 { "Replay rows" }
+                if view.rows.is_empty() {
+                    p { class: "muted", "No replay snapshots matched the current query." }
+                } else {
+                    div { class: "scroll-table",
+                        table {
+                            thead {
+                                tr {
+                                    th { "Captured" }
+                                    th { "Scope" }
+                                    th { "Counts" }
+                                    th { "Summary" }
+                                    th { "API" }
+                                }
+                            }
+                            tbody {
+                                for row in view.rows.iter() {
+                                    OperatorReplayRowView { row: row.clone() }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mobile-card-list",
+                        for row in view.rows {
+                            OperatorReplayCard { row: row.clone() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn FacetBucketCard(label: String, buckets: Vec<AppOperatorFacetBucketView>) -> Element {
+    rsx! {
+        article { class: "mobile-card",
+            div { strong { "{label}" } }
+            if buckets.is_empty() {
+                div { class: "muted", "No matching values." }
+            } else {
+                div { class: "service-pill-stack", style: "margin-top: 10px;",
+                    for bucket in buckets {
+                        span { class: "pill", "{bucket.value} ({bucket.count})" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn OperatorAuditRowView(row: AppOperatorAuditRow) -> Element {
+    let scope = format_operator_scope(
+        row.study_id.as_deref(),
+        row.experiment_id.as_deref(),
+        row.revision_id.as_deref(),
+    );
+    let peer_head = format_operator_peer_head(row.peer_id.as_deref(), row.head_id.as_deref());
+    rsx! {
+        tr {
+            td {
+                div { class: "table-cell-stack",
+                    strong { "{row.kind}" }
+                    span { class: "muted", "{row.record_id}" }
+                }
+            }
+            td { "{scope}" }
+            td { "{peer_head}" }
+            td { "{row.captured_at}" }
+            td { "{row.summary}" }
+        }
+    }
+}
+
+#[component]
+fn OperatorAuditCard(row: AppOperatorAuditRow) -> Element {
+    let scope = format_operator_scope(
+        row.study_id.as_deref(),
+        row.experiment_id.as_deref(),
+        row.revision_id.as_deref(),
+    );
+    let peer_head = format_operator_peer_head(row.peer_id.as_deref(), row.head_id.as_deref());
+    rsx! {
+        article { class: "mobile-card",
+            div { strong { "{row.kind}" } }
+            div { class: "mobile-meta", "{row.record_id}" }
+            div { class: "mobile-meta", "{scope}" }
+            div { class: "mobile-meta", "{peer_head}" }
+            div { class: "mobile-meta", "{row.captured_at}" }
+            div { class: "muted", "{row.summary}" }
+        }
+    }
+}
+
+#[component]
 fn OperatorControlReplayRowView(row: AppOperatorControlReplayRow) -> Element {
     let scope = match (
         row.source_experiment_id.as_deref(),
@@ -662,6 +976,97 @@ fn OperatorControlReplayCard(row: AppOperatorControlReplayRow) -> Element {
             div { class: "muted", "{row.summary}" }
         }
     }
+}
+
+#[component]
+fn OperatorReplayRowView(row: AppOperatorReplaySnapshotRow) -> Element {
+    let scope = format_replay_scope(&row);
+    let counts = format_replay_counts(&row);
+    rsx! {
+        tr {
+            td { "{row.captured_at}" }
+            td { "{scope}" }
+            td { "{counts}" }
+            td { "{row.summary}" }
+            td { a { class: "table-link", href: row.json_snapshot_path.clone(), "json" } }
+        }
+    }
+}
+
+#[component]
+fn OperatorReplayCard(row: AppOperatorReplaySnapshotRow) -> Element {
+    let scope = format_replay_scope(&row);
+    let counts = format_replay_counts(&row);
+    rsx! {
+        article { class: "mobile-card",
+            div { strong { "{row.captured_at}" } }
+            div { class: "mobile-meta", "{scope}" }
+            div { class: "mobile-meta", "{counts}" }
+            div { class: "muted", "{row.summary}" }
+            div { class: "operator-link-row", style: "margin-top: 10px;",
+                a { href: row.json_snapshot_path.clone(), "JSON snapshot" }
+            }
+        }
+    }
+}
+
+fn format_operator_scope(
+    study_id: Option<&str>,
+    experiment_id: Option<&str>,
+    revision_id: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(study_id) = study_id {
+        parts.push(study_id.to_owned());
+    }
+    if let Some(experiment_id) = experiment_id {
+        parts.push(experiment_id.to_owned());
+    }
+    if let Some(revision_id) = revision_id {
+        parts.push(revision_id.to_owned());
+    }
+    if parts.is_empty() {
+        "n/a".into()
+    } else {
+        parts.join(" / ")
+    }
+}
+
+fn format_operator_peer_head(peer_id: Option<&str>, head_id: Option<&str>) -> String {
+    match (peer_id, head_id) {
+        (Some(peer_id), Some(head_id)) => format!("{peer_id} · {head_id}"),
+        (Some(peer_id), None) => peer_id.to_owned(),
+        (None, Some(head_id)) => head_id.to_owned(),
+        (None, None) => "n/a".into(),
+    }
+}
+
+fn format_scope_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "n/a".into()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn format_replay_scope(row: &AppOperatorReplaySnapshotRow) -> String {
+    format!(
+        "{} | {} | {}",
+        format_scope_list(&row.study_ids),
+        format_scope_list(&row.experiment_ids),
+        format_scope_list(&row.revision_ids),
+    )
+}
+
+fn format_replay_counts(row: &AppOperatorReplaySnapshotRow) -> String {
+    format!(
+        "receipts {} · heads {} · merges {} · lifecycle {} · schedule {}",
+        row.receipt_count,
+        row.head_count,
+        row.merge_count,
+        row.lifecycle_plan_count,
+        row.schedule_epoch_count,
+    )
 }
 
 #[component]

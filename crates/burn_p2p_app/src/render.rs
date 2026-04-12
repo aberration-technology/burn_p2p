@@ -2,8 +2,8 @@ mod browser_app;
 mod operator_app;
 
 use crate::{
-    AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView,
-    AppOperatorControlReplayPageView,
+    AppArtifactRunSummaryRow, AppArtifactRunView, AppHeadArtifactView, AppOperatorAuditPageView,
+    AppOperatorControlReplayPageView, AppOperatorReplayPageView,
 };
 
 /// Renders the operator-facing bootstrap dashboard HTML.
@@ -67,4 +67,14 @@ pub fn render_head_artifact_view_html(view: &AppHeadArtifactView) -> String {
 /// Renders one operator-facing lifecycle and schedule replay page.
 pub fn render_operator_control_replay_html(view: &AppOperatorControlReplayPageView) -> String {
     operator_app::render_operator_control_replay_html(view)
+}
+
+/// Renders one operator-facing audit-history page.
+pub fn render_operator_audit_html(view: &AppOperatorAuditPageView) -> String {
+    operator_app::render_operator_audit_html(view)
+}
+
+/// Renders one operator-facing retained replay page.
+pub fn render_operator_replay_html(view: &AppOperatorReplayPageView) -> String {
+    operator_app::render_operator_replay_html(view)
 }

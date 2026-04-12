@@ -390,6 +390,111 @@ pub struct AppHeadArtifactView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One top facet bucket shown on operator audit pages.
+pub struct AppOperatorFacetBucketView {
+    /// Normalized facet value.
+    pub value: String,
+    /// Count of matching rows for the facet value.
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Facet summary shown above the operator audit page.
+pub struct AppOperatorAuditFacetSummaryView {
+    /// Maximum buckets retained in each facet list.
+    pub limit: usize,
+    /// Top record kinds.
+    pub kinds: Vec<AppOperatorFacetBucketView>,
+    /// Top studies.
+    pub studies: Vec<AppOperatorFacetBucketView>,
+    /// Top experiments.
+    pub experiments: Vec<AppOperatorFacetBucketView>,
+    /// Top revisions.
+    pub revisions: Vec<AppOperatorFacetBucketView>,
+    /// Top peers.
+    pub peers: Vec<AppOperatorFacetBucketView>,
+    /// Top heads.
+    pub heads: Vec<AppOperatorFacetBucketView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Aggregate summary shown above the operator audit page.
+pub struct AppOperatorAuditSummaryView {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Total matching record count.
+    pub record_count: usize,
+    /// Rendered per-kind counts.
+    pub kind_counts: Vec<String>,
+    /// Distinct studies surfaced by the current query.
+    pub distinct_study_count: usize,
+    /// Distinct experiments surfaced by the current query.
+    pub distinct_experiment_count: usize,
+    /// Distinct revisions surfaced by the current query.
+    pub distinct_revision_count: usize,
+    /// Distinct peers surfaced by the current query.
+    pub distinct_peer_count: usize,
+    /// Distinct heads surfaced by the current query.
+    pub distinct_head_count: usize,
+    /// Earliest matching capture timestamp, when available.
+    pub earliest_captured_at: Option<String>,
+    /// Latest matching capture timestamp, when available.
+    pub latest_captured_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One operator-facing audit-history row.
+pub struct AppOperatorAuditRow {
+    /// Stable record identifier.
+    pub record_id: String,
+    /// Human-readable record kind.
+    pub kind: String,
+    /// Study scope, when available.
+    pub study_id: Option<String>,
+    /// Experiment scope, when available.
+    pub experiment_id: Option<String>,
+    /// Revision scope, when available.
+    pub revision_id: Option<String>,
+    /// Peer scope, when available.
+    pub peer_id: Option<String>,
+    /// Head scope, when available.
+    pub head_id: Option<String>,
+    /// RFC3339 capture timestamp.
+    pub captured_at: String,
+    /// Flattened human-readable summary.
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One rendered operator audit page.
+pub struct AppOperatorAuditPageView {
+    /// Current summary block for the filtered query.
+    pub summary: AppOperatorAuditSummaryView,
+    /// Current facet summary for the filtered query.
+    pub facets: AppOperatorAuditFacetSummaryView,
+    /// Rows rendered in the current page.
+    pub rows: Vec<AppOperatorAuditRow>,
+    /// Human-readable active filter tags.
+    pub filter_tags: Vec<String>,
+    /// Current page offset.
+    pub offset: usize,
+    /// Current page limit.
+    pub limit: usize,
+    /// Total matching rows across all pages.
+    pub total: usize,
+    /// JSON page API path for the current query.
+    pub json_page_path: String,
+    /// JSON summary API path for the current query.
+    pub json_summary_path: String,
+    /// JSON facets API path for the current query.
+    pub json_facets_path: String,
+    /// Previous-page HTML path when one exists.
+    pub prev_page_path: Option<String>,
+    /// Next-page HTML path when one exists.
+    pub next_page_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Aggregate summary shown above the operator control replay page.
 pub struct AppOperatorControlReplaySummaryView {
     /// Human-readable backend label.
@@ -470,6 +575,68 @@ pub struct AppOperatorControlReplayPageView {
     pub json_page_path: String,
     /// JSON summary API path for the current query.
     pub json_summary_path: String,
+    /// Previous-page HTML path when one exists.
+    pub prev_page_path: Option<String>,
+    /// Next-page HTML path when one exists.
+    pub next_page_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One retained replay snapshot row shown on operator pages.
+pub struct AppOperatorReplaySnapshotRow {
+    /// Snapshot timestamp.
+    pub captured_at: String,
+    /// Distinct studies retained in the snapshot.
+    pub study_ids: Vec<String>,
+    /// Distinct experiments retained in the snapshot.
+    pub experiment_ids: Vec<String>,
+    /// Distinct revisions retained in the snapshot.
+    pub revision_ids: Vec<String>,
+    /// Distinct heads retained in the snapshot.
+    pub head_ids: Vec<String>,
+    /// Count of retained receipts.
+    pub receipt_count: usize,
+    /// Count of retained heads.
+    pub head_count: usize,
+    /// Count of retained merges.
+    pub merge_count: usize,
+    /// Count of retained lifecycle plans.
+    pub lifecycle_plan_count: usize,
+    /// Count of retained schedule epochs.
+    pub schedule_epoch_count: usize,
+    /// Count of retained peer-window metrics.
+    pub peer_window_metric_count: usize,
+    /// Count of retained reducer-cohort metrics.
+    pub reducer_cohort_metric_count: usize,
+    /// Count of retained head-eval reports.
+    pub head_eval_report_count: usize,
+    /// Flattened human-readable summary.
+    pub summary: String,
+    /// JSON API path for the snapshot detail payload.
+    pub json_snapshot_path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One rendered operator replay page.
+pub struct AppOperatorReplayPageView {
+    /// Rows rendered in the current page.
+    pub rows: Vec<AppOperatorReplaySnapshotRow>,
+    /// Human-readable active filter tags.
+    pub filter_tags: Vec<String>,
+    /// Current page offset.
+    pub offset: usize,
+    /// Current page limit.
+    pub limit: usize,
+    /// Total matching rows across all pages.
+    pub total: usize,
+    /// Total retained receipts across the visible page.
+    pub visible_receipt_count: usize,
+    /// Total retained lifecycle plans across the visible page.
+    pub visible_lifecycle_plan_count: usize,
+    /// Total retained schedule epochs across the visible page.
+    pub visible_schedule_epoch_count: usize,
+    /// JSON page API path for the current query.
+    pub json_page_path: String,
     /// Previous-page HTML path when one exists.
     pub prev_page_path: Option<String>,
     /// Next-page HTML path when one exists.

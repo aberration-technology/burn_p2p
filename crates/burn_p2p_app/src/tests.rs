@@ -1,15 +1,18 @@
 use crate::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
-    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorControlReplayPageView,
-    AppOperatorControlReplayRow, AppOperatorControlReplaySummaryView, AppPublishedArtifactRow,
-    AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,
-    LifecycleAssignmentStatusCard, RuntimeCapabilityCard, TrainingResultPanel,
-    TransportHealthPanel, assert_browser_client_selected_experiment,
-    assert_experiment_picker_contains_allowed_revision, assert_lifecycle_assignment_matches,
-    assert_participant_has_receipts, assert_training_result_complete,
-    assert_transport_health_ready, render_artifact_run_summaries_html,
-    render_artifact_run_view_html, render_browser_app_static_html, render_dashboard_html,
-    render_head_artifact_view_html, render_operator_control_replay_html,
+    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorAuditFacetSummaryView,
+    AppOperatorAuditPageView, AppOperatorAuditRow, AppOperatorAuditSummaryView,
+    AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
+    AppOperatorControlReplaySummaryView, AppOperatorFacetBucketView, AppOperatorReplayPageView,
+    AppOperatorReplaySnapshotRow, AppPublishedArtifactRow, AuthSessionCard,
+    ContributionReceiptSummaryPanel, ExperimentRevisionSelector, LifecycleAssignmentStatusCard,
+    RuntimeCapabilityCard, TrainingResultPanel, TransportHealthPanel,
+    assert_browser_client_selected_experiment, assert_experiment_picker_contains_allowed_revision,
+    assert_lifecycle_assignment_matches, assert_participant_has_receipts,
+    assert_training_result_complete, assert_transport_health_ready,
+    render_artifact_run_summaries_html, render_artifact_run_view_html,
+    render_browser_app_static_html, render_dashboard_html, render_head_artifact_view_html,
+    render_operator_audit_html, render_operator_control_replay_html, render_operator_replay_html,
 };
 use burn_p2p_core::{
     ArtifactId, ContributionReceipt, ContributionReceiptId, ExperimentId, ExperimentScope, HeadId,
@@ -32,8 +35,81 @@ fn dashboard_html_mentions_bootstrap_routes() {
     let html = render_dashboard_html("mainnet");
     assert!(html.contains("/portal/snapshot"));
     assert!(html.contains("/diagnostics/bundle"));
+    assert!(html.contains("/operator/audit"));
+    assert!(html.contains("/operator/replay"));
     assert!(html.contains("/operator/control"));
     assert!(html.contains("/operator/retention"));
+}
+
+#[test]
+fn operator_audit_page_renders_filters_facets_and_rows() {
+    let html = render_operator_audit_html(&AppOperatorAuditPageView {
+        summary: AppOperatorAuditSummaryView {
+            backend: "file".into(),
+            record_count: 3,
+            kind_counts: vec!["lifecycle-plan: 1".into(), "schedule-epoch: 2".into()],
+            distinct_study_count: 1,
+            distinct_experiment_count: 2,
+            distinct_revision_count: 2,
+            distinct_peer_count: 1,
+            distinct_head_count: 1,
+            earliest_captured_at: Some("2026-04-12T00:00:00Z".into()),
+            latest_captured_at: Some("2026-04-12T00:05:00Z".into()),
+        },
+        facets: AppOperatorAuditFacetSummaryView {
+            limit: 8,
+            kinds: vec![AppOperatorFacetBucketView {
+                value: "schedule-epoch".into(),
+                count: 2,
+            }],
+            studies: vec![AppOperatorFacetBucketView {
+                value: "study-a".into(),
+                count: 3,
+            }],
+            experiments: vec![AppOperatorFacetBucketView {
+                value: "exp-b".into(),
+                count: 2,
+            }],
+            revisions: vec![AppOperatorFacetBucketView {
+                value: "rev-b".into(),
+                count: 2,
+            }],
+            peers: vec![AppOperatorFacetBucketView {
+                value: "trainer-a".into(),
+                count: 2,
+            }],
+            heads: vec![AppOperatorFacetBucketView {
+                value: "head-b".into(),
+                count: 1,
+            }],
+        },
+        rows: vec![AppOperatorAuditRow {
+            record_id: "audit:1".into(),
+            kind: "lifecycle-plan".into(),
+            study_id: Some("study-a".into()),
+            experiment_id: Some("exp-b".into()),
+            revision_id: Some("rev-b".into()),
+            peer_id: Some("trainer-a".into()),
+            head_id: Some("head-b".into()),
+            captured_at: "2026-04-12T00:05:00Z".into(),
+            summary: "activation_window=7 · target=exp-b".into(),
+        }],
+        filter_tags: vec!["kind=lifecycle-plan".into(), "experiment_id=exp-b".into()],
+        offset: 0,
+        limit: 50,
+        total: 3,
+        json_page_path: "/operator/audit/page?kind=lifecycle-plan".into(),
+        json_summary_path: "/operator/audit/summary?kind=lifecycle-plan".into(),
+        json_facets_path: "/operator/audit/facets?kind=lifecycle-plan&limit=8".into(),
+        prev_page_path: None,
+        next_page_path: Some("/operator/audit?kind=lifecycle-plan&offset=50&limit=50".into()),
+    });
+
+    assert!(html.contains("Operator audit history"));
+    assert!(html.contains("kind=lifecycle-plan"));
+    assert!(html.contains("schedule-epoch (2)"));
+    assert!(html.contains("trainer-a"));
+    assert!(html.contains("/operator/audit/facets?kind=lifecycle-plan"));
 }
 
 #[test]
@@ -84,6 +160,44 @@ fn operator_control_replay_page_renders_filters_and_rows() {
     assert!(html.contains("trainer-a"));
     assert!(html.contains("/operator/control/page?kind=schedule-epoch"));
     assert!(html.contains("epoch 4"));
+}
+
+#[test]
+fn operator_replay_page_renders_filters_and_rows() {
+    let html = render_operator_replay_html(&AppOperatorReplayPageView {
+        rows: vec![AppOperatorReplaySnapshotRow {
+            captured_at: "2026-04-12T00:05:00Z".into(),
+            study_ids: vec!["study-a".into()],
+            experiment_ids: vec!["exp-b".into()],
+            revision_ids: vec!["rev-b".into()],
+            head_ids: vec!["head-b".into()],
+            receipt_count: 8,
+            head_count: 2,
+            merge_count: 1,
+            lifecycle_plan_count: 1,
+            schedule_epoch_count: 1,
+            peer_window_metric_count: 4,
+            reducer_cohort_metric_count: 2,
+            head_eval_report_count: 1,
+            summary: "study-a exp-b rev-b head-b receipt_count=8".into(),
+            json_snapshot_path: "/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z".into(),
+        }],
+        filter_tags: vec!["experiment_id=exp-b".into()],
+        offset: 0,
+        limit: 25,
+        total: 1,
+        visible_receipt_count: 8,
+        visible_lifecycle_plan_count: 1,
+        visible_schedule_epoch_count: 1,
+        json_page_path: "/operator/replay/page?experiment_id=exp-b".into(),
+        prev_page_path: None,
+        next_page_path: None,
+    });
+
+    assert!(html.contains("Retained replay snapshots"));
+    assert!(html.contains("experiment_id=exp-b"));
+    assert!(html.contains("receipts 8"));
+    assert!(html.contains("/operator/replay/snapshot?captured_at=2026-04-12T00:05:00Z"));
 }
 
 #[test]

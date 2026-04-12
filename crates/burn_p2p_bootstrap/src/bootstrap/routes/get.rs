@@ -1,7 +1,7 @@
 use super::*;
 use burn_p2p_bootstrap::{
     OperatorAuditKind, OperatorAuditQuery, OperatorControlReplayKind, OperatorControlReplayQuery,
-    OperatorReplayQuery,
+    OperatorReplayQuery, render_operator_audit_html, render_operator_replay_html,
 };
 use burn_p2p_core::{ExperimentId, HeadId, NetworkId, RevisionId, StudyId, WindowId};
 
@@ -69,6 +69,26 @@ pub(crate) fn handle_get_route(
 
     if request.method == "GET"
         && let Some((page, query)) =
+            operator_audit_request_from_path(&request.path, "/operator/audit")?
+    {
+        let state = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned");
+        let audit_summary = state.export_operator_audit_summary(&query)?;
+        let audit_facets = state.export_operator_audit_facets(&query, 8)?;
+        let audit_page = state.export_operator_audit_page(&query, page)?;
+        write_response(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            render_operator_audit_html(&query, &audit_page, &audit_summary, &audit_facets)
+                .into_bytes(),
+        )?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
             operator_audit_request_from_path(&request.path, "/operator/audit/page")?
     {
         let audit_page = state
@@ -112,6 +132,23 @@ pub(crate) fn handle_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_operator_replay_snapshot(captured_at)?;
         write_json(stream, &replay_snapshot)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
+            operator_replay_page_request_from_path(&request.path, "/operator/replay")?
+    {
+        let replay_page = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_replay_page(&query, page)?;
+        write_response(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            render_operator_replay_html(&query, &replay_page).into_bytes(),
+        )?;
         return Ok(true);
     }
 

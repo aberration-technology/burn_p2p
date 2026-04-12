@@ -430,6 +430,346 @@ fn app_operator_control_replay_view(
 }
 
 #[cfg(feature = "browser-edge")]
+fn audit_summary_count_rows(summary: &crate::OperatorAuditSummary) -> Vec<String> {
+    summary
+        .counts_by_kind
+        .iter()
+        .map(|(kind, count)| format!("{kind}: {count}"))
+        .collect()
+}
+
+#[cfg(feature = "browser-edge")]
+fn facet_bucket_views(
+    buckets: &[crate::OperatorFacetBucket],
+) -> Vec<burn_p2p_app::AppOperatorFacetBucketView> {
+    buckets
+        .iter()
+        .map(|bucket| burn_p2p_app::AppOperatorFacetBucketView {
+            value: bucket.value.clone(),
+            count: bucket.count,
+        })
+        .collect()
+}
+
+fn audit_query_pairs(query: &crate::OperatorAuditQuery) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if let Some(kind) = query.kind.as_ref() {
+        pairs.push(("kind".into(), kind.as_slug().into()));
+    }
+    if let Some(study_id) = query.study_id.as_ref() {
+        pairs.push(("study_id".into(), study_id.as_str().to_owned()));
+    }
+    if let Some(experiment_id) = query.experiment_id.as_ref() {
+        pairs.push(("experiment_id".into(), experiment_id.as_str().to_owned()));
+    }
+    if let Some(revision_id) = query.revision_id.as_ref() {
+        pairs.push(("revision_id".into(), revision_id.as_str().to_owned()));
+    }
+    if let Some(peer_id) = query.peer_id.as_ref() {
+        pairs.push(("peer_id".into(), peer_id.as_str().to_owned()));
+    }
+    if let Some(head_id) = query.head_id.as_ref() {
+        pairs.push(("head_id".into(), head_id.as_str().to_owned()));
+    }
+    if let Some(since) = query.since {
+        pairs.push(("since".into(), since.to_rfc3339()));
+    }
+    if let Some(until) = query.until {
+        pairs.push(("until".into(), until.to_rfc3339()));
+    }
+    if let Some(text) = query.text.as_ref() {
+        pairs.push(("text".into(), text.clone()));
+    }
+    pairs
+}
+
+fn audit_query_tags(query: &crate::OperatorAuditQuery) -> Vec<String> {
+    audit_query_pairs(query)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect()
+}
+
+fn audit_page_path_with_query(
+    base_path: &str,
+    query: &crate::OperatorAuditQuery,
+    page: Option<burn_p2p_core::PageRequest>,
+    limit_override: Option<usize>,
+) -> String {
+    let mut pairs = audit_query_pairs(query);
+    if let Some(page) = page {
+        pairs.push(("offset".into(), page.offset.to_string()));
+        pairs.push(("limit".into(), page.limit.to_string()));
+    }
+    if let Some(limit) = limit_override {
+        pairs.push(("limit".into(), limit.to_string()));
+    }
+    if pairs.is_empty() {
+        return base_path.to_owned();
+    }
+    let query = pairs
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, value.replace(' ', "+")))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base_path}?{query}")
+}
+
+#[cfg(feature = "browser-edge")]
+fn app_operator_audit_view(
+    query: &crate::OperatorAuditQuery,
+    page: &burn_p2p_core::Page<crate::OperatorAuditRecord>,
+    summary: &crate::OperatorAuditSummary,
+    facets: &crate::OperatorAuditFacetSummary,
+) -> burn_p2p_app::AppOperatorAuditPageView {
+    let normalized = burn_p2p_core::PageRequest::new(page.offset, page.limit).normalized();
+    let next_offset = normalized.offset + normalized.limit;
+    let prev_offset = normalized.offset.saturating_sub(normalized.limit);
+    burn_p2p_app::AppOperatorAuditPageView {
+        summary: burn_p2p_app::AppOperatorAuditSummaryView {
+            backend: summary.backend.clone(),
+            record_count: summary.record_count,
+            kind_counts: audit_summary_count_rows(summary),
+            distinct_study_count: summary.distinct_study_count,
+            distinct_experiment_count: summary.distinct_experiment_count,
+            distinct_revision_count: summary.distinct_revision_count,
+            distinct_peer_count: summary.distinct_peer_count,
+            distinct_head_count: summary.distinct_head_count,
+            earliest_captured_at: summary
+                .earliest_captured_at
+                .map(|timestamp| timestamp.to_rfc3339()),
+            latest_captured_at: summary
+                .latest_captured_at
+                .map(|timestamp| timestamp.to_rfc3339()),
+        },
+        facets: burn_p2p_app::AppOperatorAuditFacetSummaryView {
+            limit: facets.limit,
+            kinds: facet_bucket_views(&facets.kinds),
+            studies: facet_bucket_views(&facets.studies),
+            experiments: facet_bucket_views(&facets.experiments),
+            revisions: facet_bucket_views(&facets.revisions),
+            peers: facet_bucket_views(&facets.peers),
+            heads: facet_bucket_views(&facets.heads),
+        },
+        rows: page
+            .items
+            .iter()
+            .map(|row| burn_p2p_app::AppOperatorAuditRow {
+                record_id: row.record_id.clone(),
+                kind: row.kind.as_slug().to_owned(),
+                study_id: row.study_id.as_ref().map(|value| value.as_str().to_owned()),
+                experiment_id: row
+                    .experiment_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                revision_id: row
+                    .revision_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                peer_id: row.peer_id.as_ref().map(|value| value.as_str().to_owned()),
+                head_id: row.head_id.as_ref().map(|value| value.as_str().to_owned()),
+                captured_at: row.captured_at.to_rfc3339(),
+                summary: control_summary_text(&row.summary),
+            })
+            .collect(),
+        filter_tags: audit_query_tags(query),
+        offset: page.offset,
+        limit: page.limit,
+        total: page.total,
+        json_page_path: audit_page_path_with_query(
+            "/operator/audit/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+            None,
+        ),
+        json_summary_path: audit_page_path_with_query("/operator/audit/summary", query, None, None),
+        json_facets_path: audit_page_path_with_query(
+            "/operator/audit/facets",
+            query,
+            None,
+            Some(facets.limit),
+        ),
+        prev_page_path: (page.offset > 0).then(|| {
+            audit_page_path_with_query(
+                "/operator/audit",
+                query,
+                Some(burn_p2p_core::PageRequest::new(prev_offset, page.limit)),
+                None,
+            )
+        }),
+        next_page_path: (next_offset < page.total).then(|| {
+            audit_page_path_with_query(
+                "/operator/audit",
+                query,
+                Some(burn_p2p_core::PageRequest::new(next_offset, page.limit)),
+                None,
+            )
+        }),
+    }
+}
+
+fn replay_query_pairs(query: &crate::OperatorReplayQuery) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if let Some(study_id) = query.study_id.as_ref() {
+        pairs.push(("study_id".into(), study_id.as_str().to_owned()));
+    }
+    if let Some(experiment_id) = query.experiment_id.as_ref() {
+        pairs.push(("experiment_id".into(), experiment_id.as_str().to_owned()));
+    }
+    if let Some(revision_id) = query.revision_id.as_ref() {
+        pairs.push(("revision_id".into(), revision_id.as_str().to_owned()));
+    }
+    if let Some(head_id) = query.head_id.as_ref() {
+        pairs.push(("head_id".into(), head_id.as_str().to_owned()));
+    }
+    if let Some(since) = query.since {
+        pairs.push(("since".into(), since.to_rfc3339()));
+    }
+    if let Some(until) = query.until {
+        pairs.push(("until".into(), until.to_rfc3339()));
+    }
+    if let Some(text) = query.text.as_ref() {
+        pairs.push(("text".into(), text.clone()));
+    }
+    pairs
+}
+
+fn replay_query_tags(query: &crate::OperatorReplayQuery) -> Vec<String> {
+    replay_query_pairs(query)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect()
+}
+
+fn replay_page_path_with_query(
+    base_path: &str,
+    query: &crate::OperatorReplayQuery,
+    page: Option<burn_p2p_core::PageRequest>,
+) -> String {
+    let mut pairs = replay_query_pairs(query);
+    if let Some(page) = page {
+        pairs.push(("offset".into(), page.offset.to_string()));
+        pairs.push(("limit".into(), page.limit.to_string()));
+    }
+    if pairs.is_empty() {
+        return base_path.to_owned();
+    }
+    let query = pairs
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, value.replace(' ', "+")))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base_path}?{query}")
+}
+
+fn replay_snapshot_summary_text(summary: &crate::OperatorReplaySnapshotSummary) -> String {
+    let mut text = summary
+        .study_ids
+        .iter()
+        .map(burn_p2p_core::StudyId::as_str)
+        .chain(
+            summary
+                .experiment_ids
+                .iter()
+                .map(burn_p2p_core::ExperimentId::as_str),
+        )
+        .chain(
+            summary
+                .revision_ids
+                .iter()
+                .map(burn_p2p_core::RevisionId::as_str),
+        )
+        .chain(summary.head_ids.iter().map(burn_p2p_core::HeadId::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (key, value) in &summary.summary {
+        text.push(' ');
+        text.push_str(key);
+        text.push('=');
+        text.push_str(value);
+    }
+    text.trim().to_owned()
+}
+
+#[cfg(feature = "browser-edge")]
+fn app_operator_replay_view(
+    query: &crate::OperatorReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorReplaySnapshotSummary>,
+) -> burn_p2p_app::AppOperatorReplayPageView {
+    let normalized = burn_p2p_core::PageRequest::new(page.offset, page.limit).normalized();
+    let next_offset = normalized.offset + normalized.limit;
+    let prev_offset = normalized.offset.saturating_sub(normalized.limit);
+    burn_p2p_app::AppOperatorReplayPageView {
+        rows: page
+            .items
+            .iter()
+            .map(|row| burn_p2p_app::AppOperatorReplaySnapshotRow {
+                captured_at: row.captured_at.to_rfc3339(),
+                study_ids: row
+                    .study_ids
+                    .iter()
+                    .map(|value| value.as_str().to_owned())
+                    .collect(),
+                experiment_ids: row
+                    .experiment_ids
+                    .iter()
+                    .map(|value| value.as_str().to_owned())
+                    .collect(),
+                revision_ids: row
+                    .revision_ids
+                    .iter()
+                    .map(|value| value.as_str().to_owned())
+                    .collect(),
+                head_ids: row
+                    .head_ids
+                    .iter()
+                    .map(|value| value.as_str().to_owned())
+                    .collect(),
+                receipt_count: row.receipt_count,
+                head_count: row.head_count,
+                merge_count: row.merge_count,
+                lifecycle_plan_count: row.lifecycle_plan_count,
+                schedule_epoch_count: row.schedule_epoch_count,
+                peer_window_metric_count: row.peer_window_metric_count,
+                reducer_cohort_metric_count: row.reducer_cohort_metric_count,
+                head_eval_report_count: row.head_eval_report_count,
+                summary: replay_snapshot_summary_text(row),
+                json_snapshot_path: format!(
+                    "/operator/replay/snapshot?captured_at={}",
+                    row.captured_at.to_rfc3339()
+                ),
+            })
+            .collect(),
+        filter_tags: replay_query_tags(query),
+        offset: page.offset,
+        limit: page.limit,
+        total: page.total,
+        visible_receipt_count: page.items.iter().map(|row| row.receipt_count).sum(),
+        visible_lifecycle_plan_count: page.items.iter().map(|row| row.lifecycle_plan_count).sum(),
+        visible_schedule_epoch_count: page.items.iter().map(|row| row.schedule_epoch_count).sum(),
+        json_page_path: replay_page_path_with_query(
+            "/operator/replay/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+        ),
+        prev_page_path: (page.offset > 0).then(|| {
+            replay_page_path_with_query(
+                "/operator/replay",
+                query,
+                Some(burn_p2p_core::PageRequest::new(prev_offset, page.limit)),
+            )
+        }),
+        next_page_path: (next_offset < page.total).then(|| {
+            replay_page_path_with_query(
+                "/operator/replay",
+                query,
+                Some(burn_p2p_core::PageRequest::new(next_offset, page.limit)),
+            )
+        }),
+    }
+}
+
+#[cfg(feature = "browser-edge")]
 /// Performs the render dashboard html operation.
 pub fn render_dashboard_html(network_id: &NetworkId) -> String {
     burn_p2p_app::render_dashboard_html(network_id.as_str())
@@ -453,6 +793,166 @@ pub fn render_operator_control_replay_html(
     burn_p2p_app::render_operator_control_replay_html(&app_operator_control_replay_view(
         query, page, summary,
     ))
+}
+
+#[cfg(feature = "browser-edge")]
+pub fn render_operator_audit_html(
+    query: &crate::OperatorAuditQuery,
+    page: &burn_p2p_core::Page<crate::OperatorAuditRecord>,
+    summary: &crate::OperatorAuditSummary,
+    facets: &crate::OperatorAuditFacetSummary,
+) -> String {
+    burn_p2p_app::render_operator_audit_html(&app_operator_audit_view(query, page, summary, facets))
+}
+
+#[cfg(not(feature = "browser-edge"))]
+pub fn render_operator_audit_html(
+    query: &crate::OperatorAuditQuery,
+    page: &burn_p2p_core::Page<crate::OperatorAuditRecord>,
+    summary: &crate::OperatorAuditSummary,
+    facets: &crate::OperatorAuditFacetSummary,
+) -> String {
+    let filters = audit_query_tags(query);
+    let filter_html = if filters.is_empty() {
+        "<p>No filters are active.</p>".to_owned()
+    } else {
+        format!("<p>{}</p>", filters.join(" | "))
+    };
+    let facet_html = [
+        ("kinds", &facets.kinds),
+        ("studies", &facets.studies),
+        ("experiments", &facets.experiments),
+        ("revisions", &facets.revisions),
+        ("peers", &facets.peers),
+        ("heads", &facets.heads),
+    ]
+    .into_iter()
+    .map(|(label, buckets)| {
+        let values = if buckets.is_empty() {
+            "n/a".to_owned()
+        } else {
+            buckets
+                .iter()
+                .map(|bucket| format!("{} ({})", bucket.value, bucket.count))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        format!("<p><strong>{label}</strong>: {values}</p>")
+    })
+    .collect::<Vec<_>>()
+    .join("");
+    let rows_html = if page.items.is_empty() {
+        "<p>No audit rows matched the current query.</p>".to_owned()
+    } else {
+        let rows = page
+            .items
+            .iter()
+            .map(|row| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    row.kind.as_slug(),
+                    row.record_id,
+                    row.peer_id
+                        .as_ref()
+                        .map(|peer_id| peer_id.as_str())
+                        .unwrap_or("n/a"),
+                    row.captured_at.to_rfc3339(),
+                    control_summary_text(&row.summary),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            "<table><thead><tr><th>Kind</th><th>Record</th><th>Peer</th><th>Captured</th><th>Summary</th></tr></thead><tbody>{rows}</tbody></table>"
+        )
+    };
+    format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><body><main>",
+            "<h1>Operator audit history</h1>",
+            "<p>Backend: <strong>{backend}</strong> | records: <strong>{record_count}</strong></p>",
+            "<p><a href=\"{json_page}\">json page</a> | <a href=\"{json_summary}\">json summary</a> | <a href=\"{json_facets}\">json facets</a></p>",
+            "{filters}",
+            "{facets}",
+            "{rows}",
+            "</main></body></html>"
+        ),
+        backend = summary.backend,
+        record_count = summary.record_count,
+        json_page = audit_page_path_with_query(
+            "/operator/audit/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+            None,
+        ),
+        json_summary = audit_page_path_with_query("/operator/audit/summary", query, None, None),
+        json_facets =
+            audit_page_path_with_query("/operator/audit/facets", query, None, Some(facets.limit),),
+        filters = filter_html,
+        facets = facet_html,
+        rows = rows_html,
+    )
+}
+
+#[cfg(feature = "browser-edge")]
+pub fn render_operator_replay_html(
+    query: &crate::OperatorReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorReplaySnapshotSummary>,
+) -> String {
+    burn_p2p_app::render_operator_replay_html(&app_operator_replay_view(query, page))
+}
+
+#[cfg(not(feature = "browser-edge"))]
+pub fn render_operator_replay_html(
+    query: &crate::OperatorReplayQuery,
+    page: &burn_p2p_core::Page<crate::OperatorReplaySnapshotSummary>,
+) -> String {
+    let filters = replay_query_tags(query);
+    let filter_html = if filters.is_empty() {
+        "<p>No filters are active.</p>".to_owned()
+    } else {
+        format!("<p>{}</p>", filters.join(" | "))
+    };
+    let rows_html = if page.items.is_empty() {
+        "<p>No replay snapshots matched the current query.</p>".to_owned()
+    } else {
+        let rows = page
+            .items
+            .iter()
+            .map(|row| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/operator/replay/snapshot?captured_at={}\">json</a></td></tr>",
+                    row.captured_at.to_rfc3339(),
+                    row.receipt_count,
+                    replay_snapshot_summary_text(row),
+                    row.captured_at.to_rfc3339(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            "<table><thead><tr><th>Captured</th><th>Receipts</th><th>Summary</th><th>API</th></tr></thead><tbody>{rows}</tbody></table>"
+        )
+    };
+    format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><body><main>",
+            "<h1>Retained replay snapshots</h1>",
+            "<p>Snapshots: <strong>{total}</strong></p>",
+            "<p><a href=\"{json_page}\">json page</a></p>",
+            "{filters}",
+            "{rows}",
+            "</main></body></html>"
+        ),
+        total = page.total,
+        json_page = replay_page_path_with_query(
+            "/operator/replay/page",
+            query,
+            Some(burn_p2p_core::PageRequest::new(page.offset, page.limit)),
+        ),
+        filters = filter_html,
+        rows = rows_html,
+    )
 }
 
 #[cfg(not(feature = "browser-edge"))]

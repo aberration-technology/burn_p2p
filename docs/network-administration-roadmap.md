@@ -12,30 +12,53 @@ it exists to close two concrete problems in the current runtime:
 the goal is to make the network administration story explicit, uniform, and
 operationally safe for long-running multi-experiment fleets.
 
+## status on main
+
+the core roadmap has now landed on `main`.
+
+as of `2026-04-12`, the repo now has:
+
+- signed lifecycle plans and signed fleet schedule epochs carried end to end
+  through the control plane
+- runtime execution for pause, resume, patch, head promotion, rollback, and
+  cohort reassignment through one authoritative control path
+- slot-aware runtime persistence and assignment handling instead of a
+  single-primary-only control model
+- bootstrap/admin issuance for lifecycle and schedule actions
+- retained operator lifecycle/schedule history in replay snapshots and typed
+  control replay records
+- typed json and human-facing html views for operator audit, retained replay,
+  and control replay history
+- browser replay invalidation and stale-revision handling tied to assignment and
+  publication state
+
+the remaining work is now mostly incremental hardening, scale tuning, and
+downstream adoption pressure rather than missing administration primitives.
+
 ## current state
 
-today the runtime behaves like this:
+the runtime now behaves like this:
 
 - one `network_id` hosts a shared control plane
 - that control plane can advertise multiple experiments through directory
   entries
-- a node usually carries one primary active assignment
-- experiment revision changes are discovered through directory reconciliation
-- pause and resume are coordinated through signed control announcements with
-  activation windows
+- lifecycle plans and schedule epochs are the authoritative transition and
+  placement path when present
+- nodes can persist and restore slot-local assignments
+- operator retention and replay include lifecycle and schedule history
+- browser clients invalidate stale replay state when assignment or publication
+  bindings no longer match
 
-that is workable, but it is not a clean control model.
+that is now a coherent administration model rather than only a set of seams.
 
-the weak points are:
+the main remaining weak points are narrower:
 
-- the directory is doing both discovery and effective assignment rollover
-- revision rollovers do not have a first-class barrier protocol
-- some signed control commands are defined in schema but not fully executed by
-  the running node
-- one node / one primary assignment is too narrow for long-lived network
-  tenancy
-- the operator plane does not yet capture experiment lifecycle and scheduling as
-  first-class auditable objects
+- the browser replay path still benefits from more scale-oriented durability
+  work and longer-horizon soak coverage
+- operator search and replay surfaces can still grow more task-oriented export
+  flows on top of the typed records now available
+- larger real-world fleets may still expose planner and retention ergonomics
+  that only appear under heavier production pressure
 
 ## target claim
 
@@ -500,15 +523,14 @@ the following invariants should hold throughout the rollout:
 
 ## honest claim after this roadmap
 
-after this roadmap lands, the admin story should be:
+after this roadmap, the admin story is:
 
 - one long-lived network can safely host many experiments and revisions
 - experiment transitions are scheduled, signed, replayable, and observable
 - scheduler plans are durable and auditable
 - browser peers can survive long offline periods without undefined replay state
 
-until then, the honest claim should remain narrower:
+the remaining claim should now be narrower:
 
-- the repo has the right seams
-- the current runtime supports basic multi-experiment reuse
-- the authoritative administration model is not fully unified yet
+- the core administration model is in place
+- further work is mostly hardening, scale validation, and operator ux polish
