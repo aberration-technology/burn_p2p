@@ -20,6 +20,8 @@ pub enum Command {
     },
     /// Run fast local checks or publish-readiness checks.
     Check(CheckCommand),
+    /// Publish workspace crates to crates.io in dependency order.
+    Publish(PublishCommand),
     /// Run local-first end-to-end suites.
     E2e {
         #[command(subcommand)]
@@ -79,7 +81,7 @@ pub struct CheckCommand {
 #[derive(Debug, Subcommand)]
 pub enum CheckSubcommand {
     /// Run local publish-readiness checks and dry runs.
-    Publish(PublishArgs),
+    Publish(CheckPublishArgs),
     /// Run the env-gated live OIDC integration check.
     AuthOidcLive(RunArgs),
     /// Run the Redis-backed browser-edge auth HA and failure-mode checks.
@@ -87,9 +89,27 @@ pub enum CheckSubcommand {
 }
 
 #[derive(Debug, Args)]
-pub struct PublishArgs {
+pub struct CheckPublishArgs {
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct PublishCommand {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    /// Skip publish-readiness checks before publishing.
+    #[arg(long)]
+    pub skip_checks: bool,
+    /// Package and verify each crate without uploading to crates.io.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Resume the publish sequence starting from this crate name.
+    #[arg(long)]
+    pub from: Option<String>,
+    /// Allow publishing from a dirty worktree.
+    #[arg(long)]
+    pub allow_dirty: bool,
 }
 
 #[derive(Debug, Subcommand)]

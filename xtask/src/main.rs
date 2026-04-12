@@ -9,6 +9,7 @@ use std::{
     env, fs,
     net::TcpListener,
     path::PathBuf,
+    process::Command as ProcessCommand,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -42,8 +43,8 @@ use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
     CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction, DeployCloudArgs,
-    DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs, RunArgs,
-    SetupCommand, StressCommand,
+    DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs, PublishCommand,
+    RunArgs, SetupCommand, StressCommand,
 };
 use formal::{
     run_formal_check, run_formal_export_trace, run_formal_modelcheck, run_formal_verify_trace,
@@ -159,6 +160,7 @@ fn main() -> anyhow::Result<()> {
             }
             None => run_fast_checks(&workspace, command.common),
         },
+        Command::Publish(args) => run_publish(&workspace, args),
         Command::E2e { command } => match command {
             E2eCommand::Smoke(args) => run_e2e_smoke(&workspace, args.common),
             E2eCommand::Mixed(args) => run_e2e_mixed(&workspace, args.common),
@@ -872,6 +874,103 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
         json!({ "kind": "publish-checks" }),
         args.keep_artifacts,
     )
+}
+
+fn run_publish(workspace: &Workspace, args: PublishCommand) -> anyhow::Result<()> {
+    let checks_ran = !args.skip_checks;
+    if checks_ran {
+        run_publish_checks(workspace, args.common.clone())
+            .context("publish-readiness checks failed before publish")?;
+    }
+
+    if !args.allow_dirty {
+        ensure_clean_worktree(workspace)?;
+    }
+
+    let crates = publish_crates_from(args.from.as_deref())?;
+    let artifacts = ArtifactLayout::create(&workspace.root, "publish", args.common.profile)?;
+    let envs = BTreeMap::new();
+    let mut steps = Vec::new();
+
+    for crate_name in &crates {
+        let mut cargo_args = vec![
+            "publish".to_owned(),
+            "-p".to_owned(),
+            (*crate_name).to_owned(),
+            "--locked".to_owned(),
+        ];
+        if args.dry_run {
+            cargo_args.push("--dry-run".to_owned());
+        }
+        if args.allow_dirty {
+            cargo_args.push("--allow-dirty".to_owned());
+        }
+        steps.push(workspace.run_cargo(
+            &artifacts,
+            &format!("publish-{crate_name}"),
+            &cargo_args,
+            &envs,
+        )?);
+    }
+
+    finalize_run(
+        &artifacts,
+        if args.dry_run {
+            "publish-dry-run"
+        } else {
+            "publish"
+        },
+        args.common.profile,
+        &steps,
+        json!({
+            "kind": "publish",
+            "dry_run": args.dry_run,
+            "checks_ran": checks_ran,
+            "allow_dirty": args.allow_dirty,
+            "crates": crates,
+        }),
+        args.common.keep_artifacts,
+    )
+}
+
+fn publish_crates_from(from: Option<&str>) -> anyhow::Result<Vec<&'static str>> {
+    let Some(from) = from else {
+        return Ok(PUBLISH_CRATES.to_vec());
+    };
+    let Some(start_ix) = PUBLISH_CRATES
+        .iter()
+        .position(|crate_name| *crate_name == from)
+    else {
+        anyhow::bail!(
+            "unknown publish resume target `{from}`; expected one of: {}",
+            PUBLISH_CRATES.join(", ")
+        );
+    };
+    Ok(PUBLISH_CRATES[start_ix..].to_vec())
+}
+
+fn ensure_clean_worktree(workspace: &Workspace) -> anyhow::Result<()> {
+    let output = ProcessCommand::new("git")
+        .current_dir(&workspace.root)
+        .args(["status", "--short"])
+        .output()
+        .context("failed to inspect git worktree state")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to inspect git worktree state via `git status --short`: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout);
+    if status.trim().is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "publish requires a clean worktree. rerun with `--allow-dirty` only if you explicitly want to publish unpublished local edits.\n{}",
+        status.trim_end()
+    );
 }
 
 const REAL_OIDC_REQUIRED_ENV_VARS: &[&str] = &[
@@ -4240,7 +4339,7 @@ fn generate_chaos_events(seed: u64, count: u32, peer_count: u32) -> Vec<ChaosEve
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_chaos_events, parse_duration_string};
+    use super::{generate_chaos_events, parse_duration_string, publish_crates_from};
 
     #[test]
     fn duration_parser_supports_suffixes() {
@@ -4259,5 +4358,18 @@ mod tests {
         let first = generate_chaos_events(42, 4, 6);
         let second = generate_chaos_events(42, 4, 6);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn publish_plan_can_resume_from_named_crate() {
+        let crates = publish_crates_from(Some("burn_p2p_browser")).expect("publish plan");
+        assert_eq!(crates.first().copied(), Some("burn_p2p_browser"));
+        assert_eq!(crates.last().copied(), Some("burn_p2p_bootstrap"));
+    }
+
+    #[test]
+    fn publish_plan_rejects_unknown_resume_target() {
+        let error = publish_crates_from(Some("not-a-real-crate")).expect_err("unknown crate");
+        assert!(error.to_string().contains("unknown publish resume target"));
     }
 }

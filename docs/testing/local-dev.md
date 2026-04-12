@@ -158,6 +158,24 @@ Release readiness:
 cargo xtask check publish
 ```
 
+Dry-run the full publish sequence in dependency order:
+
+```bash
+cargo xtask publish --dry-run
+```
+
+Publish the full workspace release after re-running publish-readiness checks:
+
+```bash
+cargo xtask publish
+```
+
+Resume a partial publish from one crate:
+
+```bash
+cargo xtask publish --from burn_p2p_browser
+```
+
 Live OIDC validation against a real IdP:
 
 ```bash
@@ -184,10 +202,11 @@ This lane requires `redis-server` on `PATH`. It exercises shared pending-login
 state across edges plus restart, lock-contention, and transient-loss behavior.
 
 `check publish` allows dirty local worktrees by default so package and dry-run
-checks remain usable while iterating. CI still runs the same path on a clean
-checkout. The dry-run phase verifies the current packaged workspace crates
-together, so sibling crate checks do not depend on stale crates.io copies at the
-same version.
+checks remain usable while iterating. `xtask publish` is stricter: it requires a
+clean worktree unless you pass `--allow-dirty`, because it is the real crates.io
+publisher rather than a packaging check. The dry-run phase verifies the current
+packaged workspace crates together, so sibling crate checks do not depend on
+stale crates.io copies at the same version.
 
 Optional thin `just` wrappers:
 
