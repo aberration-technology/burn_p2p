@@ -2,9 +2,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::state::{
     HeadQuery, OperatorAuditFacetSummary, OperatorAuditKind, OperatorAuditQuery,
-    OperatorAuditRecord, OperatorAuditSummary, OperatorFacetBucket, OperatorReplayQuery,
-    OperatorReplaySnapshot, OperatorReplaySnapshotSummary, OperatorRetentionPruneResult,
-    OperatorRetentionSummary, ReceiptQuery,
+    OperatorAuditRecord, OperatorAuditSummary, OperatorControlReplayKind,
+    OperatorControlReplayQuery, OperatorControlReplayRecord, OperatorControlReplaySummary,
+    OperatorFacetBucket, OperatorReplayQuery, OperatorReplaySnapshot,
+    OperatorReplaySnapshotSummary, OperatorRetentionPruneResult, OperatorRetentionSummary,
+    ReceiptQuery,
 };
 #[cfg(feature = "artifact-publish")]
 use burn_p2p::FsArtifactStore;
@@ -15,7 +17,7 @@ use burn_p2p::{
 use burn_p2p_core::{
     BrowserLeaderboardSnapshot, ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId,
     Page, PageRequest, PeerId, PeerWindowMetrics, PrincipalId, PublicationTarget,
-    ReducerCohortMetrics, RevisionId, StudyId,
+    ReducerCohortMetrics, RevisionId, StudyId, WindowId,
 };
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_publish::PublicationStore;
@@ -61,6 +63,15 @@ pub(crate) trait OperatorStore {
         query: &OperatorReplayQuery,
         page: PageRequest,
     ) -> anyhow::Result<Page<OperatorReplaySnapshotSummary>>;
+    fn control_replay_page(
+        &self,
+        query: &OperatorControlReplayQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<OperatorControlReplayRecord>>;
+    fn control_replay_summary(
+        &self,
+        query: &OperatorControlReplayQuery,
+    ) -> anyhow::Result<OperatorControlReplaySummary>;
     fn retention_summary(&self) -> anyhow::Result<OperatorRetentionSummary>;
     fn prune_retention(&self) -> anyhow::Result<OperatorRetentionPruneResult>;
     fn head_eval_reports(&self, head_id: &HeadId) -> anyhow::Result<Vec<HeadEvalReport>>;
@@ -295,6 +306,183 @@ fn build_replay_snapshot_summary(
         reducer_cohort_metric_count: preview.reducer_cohort_metrics.len(),
         head_eval_report_count: preview.head_eval_reports.len(),
         summary,
+    }
+}
+
+fn build_control_replay_records_from_preview(
+    preview: &FileOperatorStorePreview,
+    _captured_at: DateTime<Utc>,
+) -> Vec<OperatorControlReplayRecord> {
+    let mut records = Vec::new();
+
+    for announcement in &preview.lifecycle_announcements {
+        let plan = &announcement.certificate.body.payload.payload.plan;
+        records.push(OperatorControlReplayRecord {
+            kind: OperatorControlReplayKind::LifecyclePlan,
+            record_id: announcement.certificate.control_cert_id.as_str().to_owned(),
+            network_id: announcement.certificate.network_id.clone(),
+            study_id: plan.study_id.clone(),
+            experiment_id: plan.target_entry.experiment_id.clone(),
+            revision_id: plan.target_entry.current_revision_id.clone(),
+            source_experiment_id: (plan.experiment_id != plan.target_entry.experiment_id)
+                .then(|| plan.experiment_id.clone()),
+            source_revision_id: plan.base_revision_id.clone(),
+            peer_id: None,
+            window_id: plan.target.activation.activation_window,
+            ends_before_window: None,
+            slot_index: None,
+            plan_epoch: plan.plan_epoch,
+            captured_at: announcement.announced_at,
+            summary: BTreeMap::from([
+                ("kind".into(), "lifecycle_plan".into()),
+                ("phase".into(), format!("{:?}", plan.phase)),
+                (
+                    "source_experiment_id".into(),
+                    plan.experiment_id.as_str().to_owned(),
+                ),
+                (
+                    "target_experiment_id".into(),
+                    plan.target_entry.experiment_id.as_str().to_owned(),
+                ),
+                (
+                    "target_revision_id".into(),
+                    plan.target_entry.current_revision_id.as_str().to_owned(),
+                ),
+                (
+                    "activation_window".into(),
+                    plan.target.activation.activation_window.0.to_string(),
+                ),
+                ("plan_epoch".into(), plan.plan_epoch.to_string()),
+                ("reason".into(), plan.reason.clone().unwrap_or_default()),
+            ]),
+        });
+    }
+
+    for announcement in &preview.schedule_announcements {
+        let epoch = &announcement.certificate.body.payload.payload.epoch;
+        for assignment in &epoch.assignments {
+            records.push(OperatorControlReplayRecord {
+                kind: OperatorControlReplayKind::ScheduleEpoch,
+                record_id: format!(
+                    "{}:{}:{}",
+                    announcement.certificate.control_cert_id.as_str(),
+                    assignment.peer_id.as_str(),
+                    assignment.slot_index
+                ),
+                network_id: announcement.certificate.network_id.clone(),
+                study_id: assignment.study_id.clone(),
+                experiment_id: assignment.experiment_id.clone(),
+                revision_id: assignment.revision_id.clone(),
+                source_experiment_id: None,
+                source_revision_id: None,
+                peer_id: Some(assignment.peer_id.clone()),
+                window_id: epoch.target.activation.activation_window,
+                ends_before_window: epoch.ends_before_window,
+                slot_index: Some(assignment.slot_index),
+                plan_epoch: epoch.plan_epoch,
+                captured_at: announcement.announced_at,
+                summary: BTreeMap::from([
+                    ("kind".into(), "schedule_epoch".into()),
+                    (
+                        "activation_window".into(),
+                        epoch.target.activation.activation_window.0.to_string(),
+                    ),
+                    (
+                        "ends_before_window".into(),
+                        epoch
+                            .ends_before_window
+                            .map(|window| window.0.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    ("plan_epoch".into(), epoch.plan_epoch.to_string()),
+                    ("slot_index".into(), assignment.slot_index.to_string()),
+                    (
+                        "budget_scale".into(),
+                        assignment
+                            .budget_scale
+                            .map(|value| format!("{value:.4}"))
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "microshard_scale".into(),
+                        assignment
+                            .microshard_scale
+                            .map(|value| format!("{value:.4}"))
+                            .unwrap_or_default(),
+                    ),
+                    ("reason".into(), epoch.reason.clone().unwrap_or_default()),
+                ]),
+            });
+        }
+    }
+
+    records.sort_by(|left, right| {
+        right
+            .captured_at
+            .cmp(&left.captured_at)
+            .then_with(|| left.record_id.cmp(&right.record_id))
+    });
+    records
+}
+
+fn build_operator_control_replay_summary(
+    backend: String,
+    records: impl IntoIterator<Item = OperatorControlReplayRecord>,
+) -> OperatorControlReplaySummary {
+    let records = records.into_iter().collect::<Vec<_>>();
+    let mut counts_by_kind = BTreeMap::<String, usize>::new();
+    let mut network_ids = BTreeMap::<NetworkId, ()>::new();
+    let mut study_ids = BTreeMap::<StudyId, ()>::new();
+    let mut experiment_ids = BTreeMap::<ExperimentId, ()>::new();
+    let mut revision_ids = BTreeMap::<RevisionId, ()>::new();
+    let mut peer_ids = BTreeMap::<PeerId, ()>::new();
+    let mut window_ids = BTreeMap::<WindowId, ()>::new();
+    let mut earliest: Option<DateTime<Utc>> = None;
+    let mut latest: Option<DateTime<Utc>> = None;
+
+    for record in &records {
+        let captured_at = record.captured_at;
+        *counts_by_kind
+            .entry(record.kind.as_slug().to_owned())
+            .or_default() += 1;
+        network_ids.insert(record.network_id.clone(), ());
+        study_ids.insert(record.study_id.clone(), ());
+        experiment_ids.insert(record.experiment_id.clone(), ());
+        if let Some(source_experiment_id) = record.source_experiment_id.as_ref() {
+            experiment_ids.insert(source_experiment_id.clone(), ());
+        }
+        revision_ids.insert(record.revision_id.clone(), ());
+        if let Some(source_revision_id) = record.source_revision_id.as_ref() {
+            revision_ids.insert(source_revision_id.clone(), ());
+        }
+        if let Some(peer_id) = record.peer_id.as_ref() {
+            peer_ids.insert(peer_id.clone(), ());
+        }
+        window_ids.insert(record.window_id, ());
+        earliest = Some(
+            earliest
+                .map(|value| value.min(captured_at))
+                .unwrap_or(captured_at),
+        );
+        latest = Some(
+            latest
+                .map(|value| value.max(captured_at))
+                .unwrap_or(captured_at),
+        );
+    }
+
+    OperatorControlReplaySummary {
+        backend,
+        record_count: records.len(),
+        counts_by_kind,
+        distinct_network_count: network_ids.len(),
+        distinct_study_count: study_ids.len(),
+        distinct_experiment_count: experiment_ids.len(),
+        distinct_revision_count: revision_ids.len(),
+        distinct_peer_count: peer_ids.len(),
+        distinct_window_count: window_ids.len(),
+        earliest_captured_at: earliest,
+        latest_captured_at: latest,
     }
 }
 
@@ -756,6 +944,52 @@ impl FileOperatorStore {
                 .then_with(|| left.record_id.cmp(&right.record_id))
         });
         Ok(records)
+    }
+
+    fn build_control_replay_records(&self) -> anyhow::Result<Vec<OperatorControlReplayRecord>> {
+        if let Some(OperatorStateBackendConfig::Postgres {
+            url,
+            table_name,
+            snapshot_key,
+        }) = self.operator_state_backend.as_ref()
+        {
+            let rows = load_postgres_operator_state_rows(url, table_name, snapshot_key)?;
+            let mut records = rows
+                .into_iter()
+                .flat_map(|row| {
+                    build_control_replay_records_from_preview(&row.preview, row.captured_at)
+                })
+                .collect::<Vec<_>>();
+            records.sort_by(|left, right| {
+                right
+                    .captured_at
+                    .cmp(&left.captured_at)
+                    .then_with(|| left.record_id.cmp(&right.record_id))
+            });
+            return Ok(records);
+        }
+
+        if let Some(snapshot) = self.remote_snapshot()? {
+            return Ok(build_control_replay_records_from_preview(
+                &snapshot.preview,
+                snapshot.captured_at,
+            ));
+        }
+
+        Ok(build_control_replay_records_from_preview(
+            &FileOperatorStorePreview {
+                receipts: Vec::new(),
+                heads: Vec::new(),
+                merges: Vec::new(),
+                lifecycle_announcements: self.lifecycle_preview.clone(),
+                schedule_announcements: self.schedule_preview.clone(),
+                peer_window_metrics: Vec::new(),
+                reducer_cohort_metrics: Vec::new(),
+                head_eval_reports: Vec::new(),
+                eval_protocol_manifests: Vec::new(),
+            },
+            Utc::now(),
+        ))
     }
 }
 
@@ -2206,6 +2440,32 @@ impl OperatorStore for FileOperatorStore {
         }))
     }
 
+    fn control_replay_page(
+        &self,
+        query: &OperatorControlReplayQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<OperatorControlReplayRecord>> {
+        let records = self.build_control_replay_records()?;
+        Ok(page_from_filtered(records, page, |record| {
+            query.matches(record)
+        }))
+    }
+
+    fn control_replay_summary(
+        &self,
+        query: &OperatorControlReplayQuery,
+    ) -> anyhow::Result<OperatorControlReplaySummary> {
+        let records = self
+            .build_control_replay_records()?
+            .into_iter()
+            .filter(|record| query.matches(record))
+            .collect::<Vec<_>>();
+        Ok(build_operator_control_replay_summary(
+            operator_backend_label(self.operator_state_backend.as_ref()),
+            records,
+        ))
+    }
+
     fn retention_summary(&self) -> anyhow::Result<OperatorRetentionSummary> {
         if let Some(OperatorStateBackendConfig::Postgres {
             url,
@@ -2973,6 +3233,112 @@ mod tests {
     }
 
     #[test]
+    fn build_control_replay_records_from_preview_preserves_typed_control_fields() {
+        let now = Utc::now();
+        let preview = sample_lifecycle_and_schedule_preview(now);
+        let records = build_control_replay_records_from_preview(&preview, now);
+
+        let lifecycle = records
+            .iter()
+            .find(|record| record.kind == OperatorControlReplayKind::LifecyclePlan)
+            .expect("lifecycle record");
+        assert_eq!(lifecycle.network_id, NetworkId::new("mainnet"));
+        assert_eq!(lifecycle.study_id, StudyId::new("study"));
+        assert_eq!(lifecycle.experiment_id, ExperimentId::new("exp-b"));
+        assert_eq!(lifecycle.revision_id, RevisionId::new("rev-b"));
+        assert_eq!(
+            lifecycle.source_experiment_id,
+            Some(ExperimentId::new("exp-a"))
+        );
+        assert_eq!(lifecycle.source_revision_id, Some(RevisionId::new("rev-a")));
+        assert_eq!(lifecycle.window_id, WindowId(7));
+        assert_eq!(lifecycle.plan_epoch, 3);
+
+        let schedule = records
+            .iter()
+            .find(|record| record.kind == OperatorControlReplayKind::ScheduleEpoch)
+            .expect("schedule record");
+        assert_eq!(schedule.network_id, NetworkId::new("mainnet"));
+        assert_eq!(schedule.experiment_id, ExperimentId::new("exp-a"));
+        assert_eq!(schedule.revision_id, RevisionId::new("rev-a"));
+        assert_eq!(schedule.peer_id, Some(PeerId::new("trainer-a")));
+        assert_eq!(schedule.window_id, WindowId(8));
+        assert_eq!(schedule.ends_before_window, Some(WindowId(12)));
+        assert_eq!(schedule.slot_index, Some(0));
+        assert_eq!(schedule.plan_epoch, 4);
+    }
+
+    #[test]
+    fn file_operator_store_control_replay_page_filters_network_and_window() {
+        let now = Utc::now();
+        let preview = sample_lifecycle_and_schedule_preview(now);
+        let store = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::default(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: None,
+            },
+            preview,
+        );
+
+        let page = store
+            .control_replay_page(
+                &OperatorControlReplayQuery {
+                    kind: Some(OperatorControlReplayKind::ScheduleEpoch),
+                    network_id: Some(NetworkId::new("mainnet")),
+                    window_id: Some(WindowId(8)),
+                    experiment_id: Some(ExperimentId::new("exp-a")),
+                    peer_id: Some(PeerId::new("trainer-a")),
+                    ..OperatorControlReplayQuery::default()
+                },
+                PageRequest::default(),
+            )
+            .expect("control replay page");
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].kind, OperatorControlReplayKind::ScheduleEpoch);
+        assert_eq!(page.items[0].slot_index, Some(0));
+        assert_eq!(page.items[0].window_id, WindowId(8));
+    }
+
+    #[test]
+    fn file_operator_store_control_replay_summary_counts_distinct_scope_values() {
+        let now = Utc::now();
+        let preview = sample_lifecycle_and_schedule_preview(now);
+        let store = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::default(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: None,
+            },
+            preview,
+        );
+
+        let summary = store
+            .control_replay_summary(&OperatorControlReplayQuery::default())
+            .expect("control replay summary");
+
+        assert_eq!(summary.backend, "file");
+        assert_eq!(summary.record_count, 2);
+        assert_eq!(summary.counts_by_kind.get("lifecycle-plan"), Some(&1));
+        assert_eq!(summary.counts_by_kind.get("schedule-epoch"), Some(&1));
+        assert_eq!(summary.distinct_network_count, 1);
+        assert_eq!(summary.distinct_study_count, 1);
+        assert_eq!(summary.distinct_experiment_count, 2);
+        assert_eq!(summary.distinct_revision_count, 2);
+        assert_eq!(summary.distinct_peer_count, 1);
+        assert_eq!(summary.distinct_window_count, 2);
+    }
+
+    #[test]
     fn file_operator_store_audit_page_filters_kind_text_and_time() {
         let now = Utc::now();
         let preview = sample_operator_preview(now);
@@ -3523,5 +3889,54 @@ mod tests {
             snapshots[0].reducer_cohort_metrics,
             vec![reducer_cohort_metrics]
         );
+    }
+
+    #[test]
+    fn postgres_operator_control_replay_search_filters_by_window() {
+        let Some(postgres) = PostgresTestServer::spawn() else {
+            eprintln!(
+                "skipping postgres-backed control replay test because docker or postgres container startup is unavailable"
+            );
+            return;
+        };
+
+        let backend = OperatorStateBackendConfig::Postgres {
+            url: postgres.url.clone(),
+            table_name: format!("operator_control_state_{}", std::process::id()),
+            snapshot_key: "control-history".into(),
+        };
+        persist_operator_state_snapshot(
+            Some(&backend),
+            MetricsRetentionBudget::operator(),
+            &sample_lifecycle_and_schedule_preview(Utc::now()),
+        )
+        .expect("persist postgres-backed control snapshot");
+
+        let store = FileOperatorStore::new(
+            FileOperatorStoreConfig {
+                history_root: None,
+                metrics_store_root: None,
+                metrics_retention: MetricsRetentionBudget::operator(),
+                publication_store_root: None,
+                publication_targets: Vec::new(),
+                artifact_store_root: None,
+                operator_state_backend: Some(backend),
+            },
+            FileOperatorStorePreview::default(),
+        );
+
+        let page = store
+            .control_replay_page(
+                &OperatorControlReplayQuery {
+                    window_id: Some(WindowId(7)),
+                    ..OperatorControlReplayQuery::default()
+                },
+                PageRequest::default(),
+            )
+            .expect("postgres control replay page");
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].kind, OperatorControlReplayKind::LifecyclePlan);
+        assert_eq!(page.items[0].window_id, WindowId(7));
     }
 }

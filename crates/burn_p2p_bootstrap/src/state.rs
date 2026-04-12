@@ -19,7 +19,7 @@ use burn_p2p::{
 };
 use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
-    PeerWindowMetrics, ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport,
+    PeerWindowMetrics, ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport, WindowId,
 };
 #[cfg(feature = "metrics-indexer")]
 use burn_p2p_metrics::{RobustnessRollup, derive_robustness_rollup};
@@ -279,6 +279,119 @@ pub struct OperatorAuditFacetSummary {
     pub heads: Vec<OperatorFacetBucket>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Enumerates the control-plane replay record kinds surfaced by the operator plane.
+pub enum OperatorControlReplayKind {
+    LifecyclePlan,
+    ScheduleEpoch,
+}
+
+impl OperatorControlReplayKind {
+    /// Returns the stable slug used by HTTP and external backends.
+    pub const fn as_slug(&self) -> &'static str {
+        match self {
+            Self::LifecyclePlan => "lifecycle-plan",
+            Self::ScheduleEpoch => "schedule-epoch",
+        }
+    }
+
+    /// Parses one stable control replay kind slug.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug {
+            "lifecycle-plan" => Some(Self::LifecyclePlan),
+            "schedule-epoch" => Some(Self::ScheduleEpoch),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Query parameters used to filter typed control-plane replay exports.
+pub struct OperatorControlReplayQuery {
+    /// Optional replay kind filter.
+    pub kind: Option<OperatorControlReplayKind>,
+    /// Optional network filter.
+    pub network_id: Option<NetworkId>,
+    /// Optional study filter.
+    pub study_id: Option<StudyId>,
+    /// Optional experiment filter.
+    pub experiment_id: Option<ExperimentId>,
+    /// Optional revision filter.
+    pub revision_id: Option<RevisionId>,
+    /// Optional peer filter.
+    pub peer_id: Option<PeerId>,
+    /// Optional activation-window filter.
+    pub window_id: Option<WindowId>,
+    /// Optional lower bound for captured timestamps.
+    pub since: Option<DateTime<Utc>>,
+    /// Optional upper bound for captured timestamps.
+    pub until: Option<DateTime<Utc>>,
+    /// Optional free-text substring filter.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One typed control-plane replay record derived from retained operator snapshots.
+pub struct OperatorControlReplayRecord {
+    /// Record kind.
+    pub kind: OperatorControlReplayKind,
+    /// Stable local record identifier.
+    pub record_id: String,
+    /// Network scope.
+    pub network_id: NetworkId,
+    /// Study scope.
+    pub study_id: StudyId,
+    /// Effective experiment scope.
+    pub experiment_id: ExperimentId,
+    /// Effective revision scope.
+    pub revision_id: RevisionId,
+    /// Optional source experiment scope for cross-experiment lifecycle plans.
+    pub source_experiment_id: Option<ExperimentId>,
+    /// Optional source revision scope when the plan expects one before activation.
+    pub source_revision_id: Option<RevisionId>,
+    /// Optional peer scope carried by schedule assignments.
+    pub peer_id: Option<PeerId>,
+    /// Activation window for the record.
+    pub window_id: WindowId,
+    /// Optional exclusive upper window bound for schedule epochs.
+    pub ends_before_window: Option<WindowId>,
+    /// Optional authoritative slot index.
+    pub slot_index: Option<usize>,
+    /// Monotonic operator epoch for competing plans.
+    pub plan_epoch: u64,
+    /// Timestamp captured for replay ordering.
+    pub captured_at: DateTime<Utc>,
+    /// Flattened searchable summary map.
+    pub summary: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Aggregate summary for one typed control-plane replay query.
+pub struct OperatorControlReplaySummary {
+    /// Human-readable backend label.
+    pub backend: String,
+    /// Total records matching the supplied query.
+    pub record_count: usize,
+    /// Per-kind counts for matching records keyed by the stable kind slug.
+    pub counts_by_kind: BTreeMap<String, usize>,
+    /// Distinct networks visible across matching control rows.
+    pub distinct_network_count: usize,
+    /// Distinct studies visible across matching control rows.
+    pub distinct_study_count: usize,
+    /// Distinct experiments visible across matching control rows.
+    pub distinct_experiment_count: usize,
+    /// Distinct revisions visible across matching control rows.
+    pub distinct_revision_count: usize,
+    /// Distinct peers visible across matching control rows.
+    pub distinct_peer_count: usize,
+    /// Distinct activation windows visible across matching control rows.
+    pub distinct_window_count: usize,
+    /// Earliest matching capture timestamp.
+    pub earliest_captured_at: Option<DateTime<Utc>>,
+    /// Latest matching capture timestamp.
+    pub latest_captured_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Query parameters used to filter retained operator replay snapshots.
 pub struct OperatorReplayQuery {
@@ -490,6 +603,90 @@ impl OperatorReplayQuery {
                 .until
                 .as_ref()
                 .is_none_or(|until| &snapshot.captured_at <= until)
+            && text_matches
+    }
+}
+
+impl OperatorControlReplayQuery {
+    /// Returns whether the query matches the supplied typed control replay record.
+    pub fn matches(&self, record: &OperatorControlReplayRecord) -> bool {
+        let text_matches = self.text.as_ref().is_none_or(|text| {
+            let needle = text.trim().to_ascii_lowercase();
+            if needle.is_empty() {
+                return true;
+            }
+            record.record_id.to_ascii_lowercase().contains(&needle)
+                || record
+                    .network_id
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+                || record
+                    .study_id
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+                || record
+                    .experiment_id
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+                || record
+                    .revision_id
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+                || record
+                    .source_experiment_id
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().to_ascii_lowercase().contains(&needle))
+                || record
+                    .source_revision_id
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().to_ascii_lowercase().contains(&needle))
+                || record
+                    .peer_id
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().to_ascii_lowercase().contains(&needle))
+                || record.summary.iter().any(|(key, value)| {
+                    key.to_ascii_lowercase().contains(&needle)
+                        || value.to_ascii_lowercase().contains(&needle)
+                })
+        });
+
+        self.kind.as_ref().is_none_or(|kind| &record.kind == kind)
+            && self
+                .network_id
+                .as_ref()
+                .is_none_or(|network_id| &record.network_id == network_id)
+            && self
+                .study_id
+                .as_ref()
+                .is_none_or(|study_id| &record.study_id == study_id)
+            && self.experiment_id.as_ref().is_none_or(|experiment_id| {
+                &record.experiment_id == experiment_id
+                    || record.source_experiment_id.as_ref() == Some(experiment_id)
+            })
+            && self.revision_id.as_ref().is_none_or(|revision_id| {
+                &record.revision_id == revision_id
+                    || record.source_revision_id.as_ref() == Some(revision_id)
+            })
+            && self
+                .peer_id
+                .as_ref()
+                .is_none_or(|peer_id| record.peer_id.as_ref() == Some(peer_id))
+            && self
+                .window_id
+                .as_ref()
+                .is_none_or(|window_id| &record.window_id == window_id)
+            && self
+                .since
+                .as_ref()
+                .is_none_or(|since| &record.captured_at >= since)
+            && self
+                .until
+                .as_ref()
+                .is_none_or(|until| &record.captured_at <= until)
             && text_matches
     }
 }
@@ -777,6 +974,23 @@ impl BootstrapAdminState {
         page: PageRequest,
     ) -> anyhow::Result<Page<OperatorReplaySnapshotSummary>> {
         self.operator_store().replay_page(query, page)
+    }
+
+    /// Exports one typed lifecycle/schedule replay page derived from retained operator snapshots.
+    pub fn export_operator_control_replay_page(
+        &self,
+        query: &OperatorControlReplayQuery,
+        page: PageRequest,
+    ) -> anyhow::Result<Page<OperatorControlReplayRecord>> {
+        self.operator_store().control_replay_page(query, page)
+    }
+
+    /// Exports one aggregate lifecycle/schedule replay summary for operator tooling.
+    pub fn export_operator_control_replay_summary(
+        &self,
+        query: &OperatorControlReplayQuery,
+    ) -> anyhow::Result<OperatorControlReplaySummary> {
+        self.operator_store().control_replay_summary(query)
     }
 
     /// Exports backend retention diagnostics for operator snapshots and audit rows.

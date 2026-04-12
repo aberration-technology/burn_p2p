@@ -4,5 +4,6 @@ mod artifact_s3;
 mod auth_routes;
 mod browser_portal;
 mod metrics;
+mod operator;
 mod shared;
 mod startup_and_config;

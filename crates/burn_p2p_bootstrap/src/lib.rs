@@ -52,9 +52,11 @@ pub use crate::operator_store::OperatorStateBackendConfig;
 pub use crate::state::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPeerDiagnostic,
     HeadQuery, OperatorAuditFacetSummary, OperatorAuditKind, OperatorAuditQuery,
-    OperatorAuditRecord, OperatorAuditSummary, OperatorFacetBucket, OperatorReplayQuery,
-    OperatorReplaySnapshot, OperatorReplaySnapshotSummary, OperatorRetentionPruneResult,
-    OperatorRetentionSummary, ReceiptQuery, ReducerLoadQuery, render_openmetrics,
+    OperatorAuditRecord, OperatorAuditSummary, OperatorControlReplayKind,
+    OperatorControlReplayQuery, OperatorControlReplayRecord, OperatorControlReplaySummary,
+    OperatorFacetBucket, OperatorReplayQuery, OperatorReplaySnapshot,
+    OperatorReplaySnapshotSummary, OperatorRetentionPruneResult, OperatorRetentionSummary,
+    ReceiptQuery, ReducerLoadQuery, render_openmetrics,
 };
 pub use burn_p2p::{NodeRuntimeState, SlotRuntimeState};
 pub use burn_p2p_core::{

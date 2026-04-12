@@ -1,6 +1,9 @@
 use super::*;
-use burn_p2p_bootstrap::{OperatorAuditKind, OperatorAuditQuery, OperatorReplayQuery};
-use burn_p2p_core::{ExperimentId, HeadId, RevisionId, StudyId};
+use burn_p2p_bootstrap::{
+    OperatorAuditKind, OperatorAuditQuery, OperatorControlReplayKind, OperatorControlReplayQuery,
+    OperatorReplayQuery,
+};
+use burn_p2p_core::{ExperimentId, HeadId, NetworkId, RevisionId, StudyId, WindowId};
 
 pub(crate) fn handle_get_route(
     stream: &mut TcpStream,
@@ -121,6 +124,32 @@ pub(crate) fn handle_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_operator_replay_page(&query, page)?;
         write_json(stream, &replay_page)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some((page, query)) =
+            operator_control_replay_page_request_from_path(&request.path, "/operator/control/page")?
+    {
+        let control_page = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_control_replay_page(&query, page)?;
+        write_json(stream, &control_page)?;
+        return Ok(true);
+    }
+
+    if request.method == "GET"
+        && let Some(query) = operator_control_replay_summary_request_from_path(
+            &request.path,
+            "/operator/control/summary",
+        )?
+    {
+        let control_summary = state
+            .lock()
+            .expect("bootstrap admin state should not be poisoned")
+            .export_operator_control_replay_summary(&query)?;
+        write_json(stream, &control_summary)?;
         return Ok(true);
     }
 
@@ -649,6 +678,147 @@ fn operator_replay_page_request_from_path(
     }
 
     Ok(Some((page.normalized(), replay)))
+}
+
+fn operator_control_replay_page_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<
+    Option<(burn_p2p_core::PageRequest, OperatorControlReplayQuery)>,
+    Box<dyn std::error::Error>,
+> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some((
+            burn_p2p_core::PageRequest::default(),
+            OperatorControlReplayQuery::default(),
+        )));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut page = burn_p2p_core::PageRequest::default();
+    let mut control = OperatorControlReplayQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "offset" => {
+                page.offset = value.parse::<usize>()?;
+            }
+            "limit" => {
+                page.limit = value.parse::<usize>()?;
+            }
+            "kind" => {
+                control.kind = Some(
+                    if let Some(kind) = OperatorControlReplayKind::from_slug(value) {
+                        kind
+                    } else {
+                        return Err(format!("unsupported operator control kind `{value}`").into());
+                    },
+                );
+            }
+            "network_id" => {
+                control.network_id = Some(NetworkId::new(value));
+            }
+            "study_id" => {
+                control.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                control.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                control.revision_id = Some(RevisionId::new(value));
+            }
+            "peer_id" => {
+                control.peer_id = Some(PeerId::new(value));
+            }
+            "window_id" => {
+                control.window_id = Some(WindowId(value.parse::<u64>()?));
+            }
+            "since" => {
+                control.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                control.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                control.text = Some(value.replace('+', " "));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some((page.normalized(), control)))
+}
+
+fn operator_control_replay_summary_request_from_path(
+    request_path: &str,
+    base_path: &str,
+) -> Result<Option<OperatorControlReplayQuery>, Box<dyn std::error::Error>> {
+    let Some(path) = request_path.strip_prefix(base_path) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some(OperatorControlReplayQuery::default()));
+    }
+    let Some(query) = path.strip_prefix('?') else {
+        return Ok(None);
+    };
+
+    let mut control = OperatorControlReplayQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "kind" => {
+                control.kind = Some(
+                    if let Some(kind) = OperatorControlReplayKind::from_slug(value) {
+                        kind
+                    } else {
+                        return Err(format!("unsupported operator control kind `{value}`").into());
+                    },
+                );
+            }
+            "network_id" => {
+                control.network_id = Some(NetworkId::new(value));
+            }
+            "study_id" => {
+                control.study_id = Some(StudyId::new(value));
+            }
+            "experiment_id" => {
+                control.experiment_id = Some(ExperimentId::new(value));
+            }
+            "revision_id" => {
+                control.revision_id = Some(RevisionId::new(value));
+            }
+            "peer_id" => {
+                control.peer_id = Some(PeerId::new(value));
+            }
+            "window_id" => {
+                control.window_id = Some(WindowId(value.parse::<u64>()?));
+            }
+            "since" => {
+                control.since = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "until" => {
+                control.until = Some(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc));
+            }
+            "text" => {
+                control.text = Some(value.replace('+', " "));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Some(control))
 }
 
 pub(crate) fn current_diagnostics(
