@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_app"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_browser",
  "burn_p2p_views",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_auth_external"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "base64 0.22.1",
  "burn_p2p_core",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_auth_github"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_auth_external",
  "burn_p2p_core",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_auth_oauth"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_auth_external",
  "burn_p2p_core",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_auth_oidc"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_auth_external",
  "burn_p2p_core",
@@ -1149,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_bootstrap"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_browser"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "base64 0.22.1",
  "burn_p2p",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_checkpoint"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_core"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "chrono",
  "ciborium",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_dataloader"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_e2e"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p",
@@ -1258,6 +1258,7 @@ dependencies = [
  "burn_p2p_publish",
  "burn_p2p_testkit",
  "chrono",
+ "gloo-net",
  "libp2p-identity",
  "reqwest",
  "semver",
@@ -1267,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_engine"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn",
  "burn-store",
@@ -1280,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_experiment"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1291,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_limits"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1301,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_metrics"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1312,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_publish"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_checkpoint",
  "burn_p2p_core",
@@ -1324,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_security"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1339,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_social"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -1348,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_swarm"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1376,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_testkit"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p",
@@ -1402,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_views"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -1416,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_workload"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -3824,6 +3825,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-net"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c06f627b1a58ca3d42b45d6104bf1e1a03799df472df00988b6ba21accc10580"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-sink",
+ "gloo-utils",
+ "http",
+ "js-sys",
+ "pin-project",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3833,6 +3855,19 @@ dependencies = [
  "futures-core",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gloo-utils"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5555354113b18c547c1d3a98fbf7fb32a9ff4f6fa112ce823a21641a0ba3aa"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

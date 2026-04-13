@@ -7,6 +7,7 @@ use anyhow::{Context, ensure};
 use burn_p2p::{ExperimentDirectoryEntry, HeadDescriptor};
 use burn_p2p_core::{DatasetViewId, ExperimentId, HeadId, RevisionId};
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use burn_p2p_testkit::portal_capture::{
     BrowserPortalCaptureSpec, PortalCaptureInteraction as BrowserScenarioInteraction,
     PortalCaptureManifest as BrowserScenarioManifest,

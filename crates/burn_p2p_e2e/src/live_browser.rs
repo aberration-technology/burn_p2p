@@ -27,6 +27,8 @@ use burn_p2p_core::{
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifactView};
 use chrono::{Duration as ChronoDuration, Utc};
+#[cfg(target_arch = "wasm32")]
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -208,14 +210,10 @@ pub struct BrowserLiveParticipantHandle {
 pub async fn start_live_browser_participant(
     config: BrowserLiveParticipantConfig,
 ) -> anyhow::Result<BrowserLiveParticipantHandle> {
-    let snapshot = reqwest::get(format!("{}/portal/snapshot", config.edge_base_url))
-        .await
-        .context("fetch live browser edge snapshot")?
-        .error_for_status()
-        .context("validate live browser edge snapshot response")?
-        .json::<BrowserEdgeSnapshot>()
-        .await
-        .context("decode live browser edge snapshot")?;
+    let snapshot =
+        fetch_json::<BrowserEdgeSnapshot>(&format!("{}/portal/snapshot", config.edge_base_url))
+            .await
+            .context("fetch live browser edge snapshot")?;
     let requested_scopes = BTreeSet::from([
         ExperimentScope::Connect,
         ExperimentScope::Train {
@@ -305,6 +303,29 @@ pub async fn start_live_browser_participant(
         config,
         capability,
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn fetch_json<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
+    reqwest::get(url)
+        .await
+        .with_context(|| format!("request {url}"))?
+        .error_for_status()
+        .with_context(|| format!("validate response for {url}"))?
+        .json::<T>()
+        .await
+        .with_context(|| format!("decode json response for {url}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_json<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
+    Request::get(url)
+        .send()
+        .await
+        .with_context(|| format!("request {url}"))?
+        .json::<T>()
+        .await
+        .with_context(|| format!("decode json response for {url}"))
 }
 
 /// Executes one training window and flushes receipts for the live participant harness.

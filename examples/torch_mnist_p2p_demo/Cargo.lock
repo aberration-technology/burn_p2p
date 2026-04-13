@@ -275,7 +275,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "burn_p2p"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_checkpoint"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_core"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "chrono",
  "ciborium",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_dataloader"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_experiment"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_limits"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "chrono",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_python"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_security"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_swarm"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_views"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "burn_p2p_core",
  "burn_p2p_experiment",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "burn_p2p_workload"
-version = "0.21.0-pre.12"
+version = "0.21.0-pre.13"
 dependencies = [
  "anyhow",
  "burn_p2p_checkpoint",
@@ -447,6 +447,7 @@ dependencies = [
  "burn_p2p_limits",
  "chrono",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
