@@ -1396,11 +1396,13 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let (primary_consumer, follower_consumers) = consumers
-        .split_first()
-        .context("candidate artifact wait requires at least one consumer")?;
-    let primary_consumer = [*primary_consumer];
+    anyhow::ensure!(
+        !consumers.is_empty(),
+        "candidate artifact wait requires at least one consumer"
+    );
     let tier_timeout = demo_candidate_artifact_timeout(timeout);
+    let mut ordered_consumers = consumers.iter().copied().collect::<Vec<_>>();
+    ordered_consumers.sort_by_key(|(label, _)| candidate_prewarm_consumer_priority(label));
 
     for (label, provider, outcome) in providers {
         let mut artifact_ids = vec![outcome.training.artifact.artifact_id.clone()];
@@ -1415,35 +1417,26 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
             )];
             wait_for_artifact_from_topology(
                 &staged_providers,
-                &primary_consumer,
+                &ordered_consumers,
                 &artifact_id,
                 tier_timeout,
                 failure_message,
             )?;
-            if let Some(primary_peer_id) =
-                primary_consumer[0].1.telemetry().snapshot().local_peer_id
-            {
-                staged_providers.push((
-                    primary_consumer[0].0,
-                    primary_consumer[0].1,
-                    primary_peer_id,
-                ));
-            }
-            if !follower_consumers.is_empty() {
-                wait_for_artifact_from_topology(
-                    &staged_providers,
-                    follower_consumers,
-                    &artifact_id,
-                    tier_timeout,
-                    failure_message,
-                )?;
-            }
         }
         for (_, consumer) in &consumers {
             consumer.publish_head_provider(experiment, &outcome.training.head)?;
         }
     }
     Ok(())
+}
+
+fn candidate_prewarm_consumer_priority(label: &str) -> u8 {
+    match label {
+        VALIDATOR_LABEL => 0,
+        VALIDATOR_B_LABEL => 1,
+        REDUCER_LABEL => 2,
+        _ => 3,
+    }
 }
 
 fn wait_for_candidate_control_plane<P, const NODE_COUNT: usize, const OUTCOME_COUNT: usize>(
