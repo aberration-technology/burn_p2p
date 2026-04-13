@@ -14,7 +14,9 @@ use {
     hmac::{Hmac, Mac},
     percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode},
     reqwest::blocking::Client,
+    serde::Deserialize,
     sha2::{Digest, Sha256},
+    std::time::Duration,
     url::Url,
 };
 
@@ -214,17 +216,134 @@ pub(crate) fn proxy_download_url(
 type HmacSha256 = Hmac<Sha256>;
 
 #[cfg(feature = "s3")]
-struct S3Credentials<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct S3Credentials {
     endpoint: Url,
-    bucket: &'a str,
-    region: &'a str,
-    access_key_id: &'a str,
-    secret_access_key: &'a str,
-    session_token: Option<&'a str>,
+    bucket: String,
+    region: String,
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
 }
 
 #[cfg(feature = "s3")]
-fn s3_credentials(target: &PublicationTarget) -> Result<S3Credentials<'_>, PublishError> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AmbientS3Credentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+}
+
+#[cfg(feature = "s3")]
+#[derive(Clone, Debug, Deserialize)]
+struct ImdsRoleCredentialsResponse {
+    #[serde(rename = "AccessKeyId")]
+    access_key_id: String,
+    #[serde(rename = "SecretAccessKey")]
+    secret_access_key: String,
+    #[serde(rename = "Token")]
+    session_token: Option<String>,
+}
+
+#[cfg(feature = "s3")]
+fn ambient_s3_credentials_from_env<F>(get_var: F) -> Option<AmbientS3Credentials>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let access_key_id = get_var("AWS_ACCESS_KEY_ID")?.trim().to_owned();
+    let secret_access_key = get_var("AWS_SECRET_ACCESS_KEY")?.trim().to_owned();
+    if access_key_id.is_empty() || secret_access_key.is_empty() {
+        return None;
+    }
+    let session_token = get_var("AWS_SESSION_TOKEN")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    Some(AmbientS3Credentials {
+        access_key_id,
+        secret_access_key,
+        session_token,
+    })
+}
+
+#[cfg(feature = "s3")]
+fn ambient_s3_credentials_from_imds() -> Option<AmbientS3Credentials> {
+    let imds_disabled = std::env::var("AWS_EC2_METADATA_DISABLED")
+        .ok()
+        .map(|value| value.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if imds_disabled {
+        return None;
+    }
+    let endpoint = std::env::var("AWS_EC2_METADATA_SERVICE_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "http://169.254.169.254".into());
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let token = client
+        .put(format!("{endpoint}/latest/api/token"))
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .ok()?;
+    let role_name = client
+        .get(format!(
+            "{endpoint}/latest/meta-data/iam/security-credentials/"
+        ))
+        .header("X-aws-ec2-metadata-token", token.trim())
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            (!line.is_empty()).then(|| line.to_owned())
+        })?;
+    let response = client
+        .get(format!(
+            "{endpoint}/latest/meta-data/iam/security-credentials/{role_name}"
+        ))
+        .header("X-aws-ec2-metadata-token", token.trim())
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .ok()
+        .and_then(|body| serde_json::from_str::<ImdsRoleCredentialsResponse>(&body).ok())?;
+    let access_key_id = response.access_key_id.trim().to_owned();
+    let secret_access_key = response.secret_access_key.trim().to_owned();
+    if access_key_id.is_empty() || secret_access_key.is_empty() {
+        return None;
+    }
+    let session_token = response
+        .session_token
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    Some(AmbientS3Credentials {
+        access_key_id,
+        secret_access_key,
+        session_token,
+    })
+}
+
+#[cfg(feature = "s3")]
+fn ambient_s3_credentials() -> Option<AmbientS3Credentials> {
+    ambient_s3_credentials_from_env(|name| std::env::var(name).ok())
+        .or_else(ambient_s3_credentials_from_imds)
+}
+
+#[cfg(feature = "s3")]
+fn s3_credentials(target: &PublicationTarget) -> Result<S3Credentials, PublishError> {
     let endpoint_raw = target
         .endpoint
         .as_deref()
@@ -242,37 +361,57 @@ fn s3_credentials(target: &PublicationTarget) -> Result<S3Credentials<'_>, Publi
         .ok_or_else(|| PublishError::MissingS3Config {
             target_id: target.publication_target_id.clone(),
             field: "bucket",
-        })?;
+        })?
+        .to_owned();
     let region = target
         .region
         .as_deref()
         .ok_or_else(|| PublishError::MissingS3Config {
             target_id: target.publication_target_id.clone(),
             field: "region",
-        })?;
-    let access_key_id =
-        target
-            .access_key_id
-            .as_deref()
-            .ok_or_else(|| PublishError::MissingS3Config {
-                target_id: target.publication_target_id.clone(),
-                field: "access_key_id",
-            })?;
-    let secret_access_key =
-        target
-            .secret_access_key
-            .as_deref()
-            .ok_or_else(|| PublishError::MissingS3Config {
+        })?
+        .to_owned();
+    let (access_key_id, secret_access_key, session_token) = match (
+        target.access_key_id.as_deref(),
+        target.secret_access_key.as_deref(),
+    ) {
+        (Some(access_key_id), Some(secret_access_key)) => (
+            access_key_id.to_owned(),
+            secret_access_key.to_owned(),
+            target.session_token.clone(),
+        ),
+        (Some(_), None) => {
+            return Err(PublishError::MissingS3Config {
                 target_id: target.publication_target_id.clone(),
                 field: "secret_access_key",
-            })?;
+            });
+        }
+        (None, Some(_)) => {
+            return Err(PublishError::MissingS3Config {
+                target_id: target.publication_target_id.clone(),
+                field: "access_key_id",
+            });
+        }
+        (None, None) => {
+            let ambient =
+                ambient_s3_credentials().ok_or_else(|| PublishError::MissingS3Config {
+                    target_id: target.publication_target_id.clone(),
+                    field: "access_key_id",
+                })?;
+            (
+                ambient.access_key_id,
+                ambient.secret_access_key,
+                ambient.session_token,
+            )
+        }
+    };
     Ok(S3Credentials {
         endpoint,
         bucket,
         region,
         access_key_id,
         secret_access_key,
-        session_token: target.session_token.as_deref(),
+        session_token,
     })
 }
 
@@ -377,9 +516,9 @@ fn presign_s3_get_url(
         sha256_hex(canonical_request.as_bytes())
     );
     let signature = hmac_signature(
-        creds.secret_access_key,
+        &creds.secret_access_key,
         &datestamp,
-        creds.region,
+        &creds.region,
         "s3",
         &string_to_sign,
     );
@@ -436,9 +575,9 @@ fn s3_authorized_headers(
         sha256_hex(canonical_request.as_bytes())
     );
     let signature = hmac_signature(
-        creds.secret_access_key,
+        &creds.secret_access_key,
         &datestamp,
-        creds.region,
+        &creds.region,
         "s3",
         &string_to_sign,
     );
@@ -462,7 +601,7 @@ fn s3_object_url(target: &PublicationTarget, object_key: &str) -> Result<Url, Pu
                     endpoint: target.endpoint.clone().unwrap_or_default(),
                 })?;
         segments.pop_if_empty();
-        segments.push(creds.bucket);
+        segments.push(&creds.bucket);
         for segment in object_key.split('/') {
             if !segment.is_empty() {
                 segments.push(segment);
@@ -542,4 +681,40 @@ fn hmac_bytes(key: &[u8], data: &str) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(key).expect("hmac key should be valid");
     mac.update(data.as_bytes());
     mac.finalize().into_bytes().to_vec()
+}
+
+#[cfg(all(test, feature = "s3"))]
+mod tests {
+    use super::{AmbientS3Credentials, ambient_s3_credentials_from_env};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn ambient_s3_credentials_from_env_requires_access_and_secret_keys() {
+        let values = BTreeMap::from([
+            ("AWS_ACCESS_KEY_ID", "access"),
+            ("AWS_SESSION_TOKEN", "token"),
+        ]);
+        let creds =
+            ambient_s3_credentials_from_env(|name| values.get(name).map(|value| value.to_string()));
+        assert_eq!(creds, None);
+    }
+
+    #[test]
+    fn ambient_s3_credentials_from_env_uses_standard_aws_env_vars() {
+        let values = BTreeMap::from([
+            ("AWS_ACCESS_KEY_ID", "access-key"),
+            ("AWS_SECRET_ACCESS_KEY", "secret-key"),
+            ("AWS_SESSION_TOKEN", "session-token"),
+        ]);
+        let creds =
+            ambient_s3_credentials_from_env(|name| values.get(name).map(|value| value.to_string()));
+        assert_eq!(
+            creds,
+            Some(AmbientS3Credentials {
+                access_key_id: "access-key".into(),
+                secret_access_key: "secret-key".into(),
+                session_token: Some("session-token".into()),
+            })
+        );
+    }
 }
