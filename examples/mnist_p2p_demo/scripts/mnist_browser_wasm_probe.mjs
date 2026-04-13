@@ -265,16 +265,26 @@ async function runProfile(page, profile, config, requestLog, origin) {
       ? {
           edge_base_url: config.edge_base_url,
           network_id: config.network_id,
-          experiment_id: config.experiment_id,
-          revision_id: config.revision_id,
           selected_head_id: config.selected_head_id,
-          lease_id: config.lease_id,
-          leased_microshards: config.leased_microshards,
           release_train_hash: config.release_train_hash,
           target_artifact_id: config.target_artifact_id,
           target_artifact_hash: config.target_artifact_hash,
-          workload_id: config.workload_id,
           principal_id: config.principal_id,
+          training_plan: {
+            study_id: "mnist-study",
+            experiment_id: config.experiment_id,
+            revision_id: config.revision_id,
+            workload_id: config.workload_id,
+            budget: {
+              max_window_secs: 12,
+              max_checkpoint_bytes: 16777216,
+              max_shard_bytes: 8388608,
+              requires_webgpu: true,
+              max_batch_size: 4,
+              precision: "Fp16",
+            },
+            lease: null,
+          },
         }
       : null;
   const result = await Promise.race([

@@ -3,12 +3,9 @@ mod native {
     use std::{env, fs, path::PathBuf};
 
     use anyhow::{Context, Result};
-    use mnist_p2p_demo::{
-        correctness::{
-            export::MnistRunExport,
-            live_browser::LiveBrowserProbeManifest,
-            report::apply_live_browser_probe_results,
-        },
+    use mnist_p2p_demo::correctness::{
+        export::MnistRunExport, live_browser::LiveBrowserProbeManifest,
+        report::apply_live_browser_probe_results,
     };
 
     struct Args {

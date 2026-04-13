@@ -1,19 +1,20 @@
 use crate::{
-    AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
-    AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow, AppOperatorAuditFacetSummaryView,
-    AppOperatorAuditPageView, AppOperatorAuditRow, AppOperatorAuditSummaryView,
-    AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
+    AdminSessionCard, AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow,
+    AppArtifactRunView, AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow,
+    AppOperatorAuditFacetSummaryView, AppOperatorAuditPageView, AppOperatorAuditRow,
+    AppOperatorAuditSummaryView, AppOperatorControlReplayPageView, AppOperatorControlReplayRow,
     AppOperatorControlReplaySummaryView, AppOperatorFacetBucketView, AppOperatorReplayPageView,
     AppOperatorReplaySnapshotDetailView, AppOperatorReplaySnapshotRow, AppOperatorRetentionView,
     AppPublishedArtifactRow, AuthSessionCard, ContributionReceiptSummaryPanel,
-    ExperimentRevisionSelector, LifecycleAssignmentStatusCard, RuntimeCapabilityCard,
-    TrainingResultPanel, TransportHealthPanel, assert_browser_client_selected_experiment,
-    assert_experiment_picker_contains_allowed_revision, assert_lifecycle_assignment_matches,
-    assert_participant_has_receipts, assert_training_result_complete,
-    assert_transport_health_ready, render_artifact_run_summaries_html,
-    render_artifact_run_view_html, render_browser_app_static_html, render_dashboard_html,
-    render_head_artifact_view_html, render_operator_audit_html,
-    render_operator_control_replay_html, render_operator_replay_html,
+    DirectoryEntryDraftPanel, ExperimentDirectoryListPanel, ExperimentRevisionSelector,
+    LifecycleAssignmentStatusCard, RolloutPreviewPanel, RolloutSubmissionStatusPanel,
+    RuntimeCapabilityCard, TrainingResultPanel, TransportHealthPanel,
+    assert_browser_client_selected_experiment, assert_experiment_picker_contains_allowed_revision,
+    assert_lifecycle_assignment_matches, assert_participant_has_receipts,
+    assert_training_result_complete, assert_transport_health_ready,
+    render_artifact_run_summaries_html, render_artifact_run_view_html,
+    render_browser_app_static_html, render_dashboard_html, render_head_artifact_view_html,
+    render_operator_audit_html, render_operator_control_replay_html, render_operator_replay_html,
     render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 use burn_p2p_core::{
@@ -22,11 +23,12 @@ use burn_p2p_core::{
 };
 use burn_p2p_security::PeerTrustLevel;
 use burn_p2p_views::{
-    BrowserAppClientView, BrowserAppNetworkView, BrowserAppStaticBootstrap, BrowserAppSurface,
-    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
-    ContributionIdentityPanel, ExperimentPickerView, LifecycleAssignmentStatusView,
-    ParticipantAppView, ParticipantProfile, RuntimeCapabilitySummaryView,
-    TrainingResultSummaryView, TrustBadgeView,
+    AdminSessionSummaryView, BrowserAppClientView, BrowserAppNetworkView,
+    BrowserAppStaticBootstrap, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
+    BrowserAppViewerView, ContributionIdentityPanel, DirectoryEntryDraftView,
+    DirectoryMutationResultView, ExperimentDirectoryListView, ExperimentPickerView,
+    LifecycleAssignmentStatusView, ParticipantAppView, ParticipantProfile, RolloutPreviewView,
+    RuntimeCapabilitySummaryView, TrainingResultSummaryView, TrustBadgeView,
 };
 use chrono::Utc;
 use dioxus::{prelude::*, ssr::render_element};
@@ -41,6 +43,101 @@ fn dashboard_html_mentions_bootstrap_routes() {
     assert!(html.contains("/operator/replay"));
     assert!(html.contains("/operator/control"));
     assert!(html.contains("/operator/retention/view"));
+}
+
+#[test]
+fn operator_rollout_widgets_render_generic_directory_and_status_panels() {
+    let session_html = render_element(rsx! {
+        AdminSessionCard {
+            session: AdminSessionSummaryView {
+                session_label: "authenticated".into(),
+                principal_label: Some("principal-1".into()),
+                provider_label: Some("GitHub".into()),
+                session_id: Some("session-1".into()),
+                rollout_enabled: true,
+            }
+        }
+    });
+    assert!(session_html.contains("operator session"));
+    assert!(session_html.contains("principal-1"));
+
+    let list_html = render_element(rsx! {
+        ExperimentDirectoryListPanel {
+            view: ExperimentDirectoryListView {
+                directory_path: "/directory".into(),
+                signed_directory_path: "/directory/signed".into(),
+                selected_experiment_id: Some("exp-a".into()),
+                selected_revision_id: Some("rev-a".into()),
+                entries: vec![burn_p2p_views::ExperimentDirectoryEntryView {
+                    display_name: "Experiment A".into(),
+                    study_id: "study-a".into(),
+                    experiment_id: "exp-a".into(),
+                    revision_id: "rev-a".into(),
+                    workload_id: "wgpu-demo".into(),
+                    visibility: "Public".into(),
+                    allowed_roles: vec!["TrainerGpu".into()],
+                    allowed_scopes: vec!["Train".into()],
+                    metadata: Vec::new(),
+                }],
+            }
+        }
+    });
+    assert!(list_html.contains("Experiment A"));
+    assert!(list_html.contains("/directory/signed"));
+
+    let draft_html = render_element(rsx! {
+        DirectoryEntryDraftPanel {
+            draft: DirectoryEntryDraftView {
+                display_name: "Experiment A".into(),
+                study_id: "study-a".into(),
+                experiment_id: "exp-a".into(),
+                revision_id: "rev-a".into(),
+                workload_id: "wgpu-demo".into(),
+                visibility: "Public".into(),
+                allowed_roles: vec!["TrainerGpu".into()],
+                allowed_scopes: vec!["Train".into()],
+                metadata_json: "{\"profile_json\":\"...\"}".into(),
+            }
+        }
+    });
+    assert!(draft_html.contains("directory draft"));
+    assert!(draft_html.contains("profile_json"));
+
+    let preview_html = render_element(rsx! {
+        RolloutPreviewPanel {
+            view: RolloutPreviewView {
+                summary_label: "1 entry pending rollout".into(),
+                submit_path: "/admin".into(),
+                requires_session: true,
+                entries: vec![burn_p2p_views::ExperimentDirectoryEntryView {
+                    display_name: "Experiment A".into(),
+                    study_id: "study-a".into(),
+                    experiment_id: "exp-a".into(),
+                    revision_id: "rev-a".into(),
+                    workload_id: "wgpu-demo".into(),
+                    visibility: "Public".into(),
+                    allowed_roles: vec!["TrainerGpu".into()],
+                    allowed_scopes: vec!["Train".into()],
+                    metadata: Vec::new(),
+                }],
+            }
+        }
+    });
+    assert!(preview_html.contains("rollout preview"));
+    assert!(preview_html.contains("exp-a:rev-a"));
+
+    let status_html = render_element(rsx! {
+        RolloutSubmissionStatusPanel {
+            view: DirectoryMutationResultView {
+                status_label: "rollout applied".into(),
+                directory_entries: 1,
+                trusted_issuers: 2,
+                reenrollment_required: false,
+            }
+        }
+    });
+    assert!(status_html.contains("rollout applied"));
+    assert!(status_html.contains("trusted issuers: 2"));
 }
 
 #[test]

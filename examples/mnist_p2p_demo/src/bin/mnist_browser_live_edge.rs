@@ -1,11 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::{
-        env, fs,
-        path::PathBuf,
-        thread,
-        time::Duration,
-    };
+    use std::{env, fs, path::PathBuf, thread, time::Duration};
 
     use anyhow::{Context, Result};
     use mnist_p2p_demo::correctness::live_browser::{
@@ -61,11 +56,12 @@ mod native {
         let peer_head_artifact_root = args.output_root.join("browser-peer-head-artifact-root.txt");
         if peer_head_artifact_root.exists() {
             manifest.peer_head_artifact_root = Some(
-                fs::read_to_string(&peer_head_artifact_root).with_context(|| {
-                    format!("failed to read {}", peer_head_artifact_root.display())
-                })?
-                .trim()
-                .to_owned(),
+                fs::read_to_string(&peer_head_artifact_root)
+                    .with_context(|| {
+                        format!("failed to read {}", peer_head_artifact_root.display())
+                    })?
+                    .trim()
+                    .to_owned(),
             );
         }
         write_live_browser_manifest(&args.output_root, &manifest)?;

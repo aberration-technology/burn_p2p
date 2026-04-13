@@ -1,0 +1,32 @@
+[package]
+name = "burn_p2p_admin"
+description = "Transport-safe admin and operator client surface for burn_p2p edges."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+burn_p2p.workspace = true
+burn_p2p_core.workspace = true
+burn_p2p_experiment.workspace = true
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", features = ["json"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

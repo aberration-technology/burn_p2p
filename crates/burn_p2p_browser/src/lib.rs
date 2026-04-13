@@ -15,6 +15,8 @@ pub mod conformance;
 pub mod durability;
 /// Runtime state and execution helpers.
 pub mod runtime;
+/// Static browser-shell site configuration helpers.
+pub mod site_config;
 /// Persistence and cache helpers.
 pub mod storage;
 /// Public APIs for training.
@@ -56,6 +58,7 @@ pub use conformance::{
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,
 };
+pub use site_config::BrowserSiteBootstrapConfig;
 pub use storage::{
     BrowserArtifactReplayBytePrefix, BrowserArtifactReplayByteSegment,
     BrowserArtifactReplayCheckpoint, BrowserArtifactReplayChunk, BrowserArtifactReplayChunkStorage,

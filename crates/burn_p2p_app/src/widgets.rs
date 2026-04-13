@@ -1,7 +1,8 @@
 use burn_p2p_views::{
-    BrowserAppNetworkView, ContributionIdentityPanel, ExperimentPickerView,
-    LifecycleAssignmentStatusView, ParticipantAppView, RuntimeCapabilitySummaryView,
-    TrainingResultSummaryView,
+    AdminSessionSummaryView, BrowserAppNetworkView, ContributionIdentityPanel,
+    DirectoryEntryDraftView, DirectoryMutationResultView, ExperimentDirectoryListView,
+    ExperimentPickerView, LifecycleAssignmentStatusView, ParticipantAppView, RolloutPreviewView,
+    RuntimeCapabilitySummaryView, TrainingResultSummaryView,
 };
 use dioxus::prelude::*;
 
@@ -32,6 +33,29 @@ pub fn AuthSessionCard(session: Option<ContributionIdentityPanel>) -> Element {
                 }
             } else {
                 p { class: "burn-p2p-widget-empty", "no active session" }
+            }
+        }
+    }
+}
+
+#[component]
+/// Renders one compact admin/session summary card.
+pub fn AdminSessionCard(session: AdminSessionSummaryView) -> Element {
+    rsx! {
+        article { class: "burn-p2p-widget burn-p2p-admin-session-card",
+            h3 { class: "burn-p2p-widget-title", "operator session" }
+            p { class: "burn-p2p-widget-value", "{session.session_label}" }
+            if let Some(principal_label) = session.principal_label {
+                p { class: "burn-p2p-widget-detail", "principal: {principal_label}" }
+            }
+            if let Some(provider_label) = session.provider_label {
+                p { class: "burn-p2p-widget-detail", "provider: {provider_label}" }
+            }
+            if let Some(session_id) = session.session_id {
+                p { class: "burn-p2p-widget-detail", "session: {session_id}" }
+            }
+            p { class: "burn-p2p-widget-detail",
+                if session.rollout_enabled { "rollout: enabled" } else { "rollout: disabled" }
             }
         }
     }
@@ -188,6 +212,100 @@ pub fn LifecycleAssignmentStatusCard(status: LifecycleAssignmentStatusView) -> E
             p { class: "burn-p2p-widget-detail", "revision: {status.revision_label}" }
             p { class: "burn-p2p-widget-detail", "phase: {status.lifecycle_phase}" }
             p { class: "burn-p2p-widget-detail", "status: {status.assignment_status}" }
+        }
+    }
+}
+
+#[component]
+/// Renders a compact operator-facing directory list.
+pub fn ExperimentDirectoryListPanel(view: ExperimentDirectoryListView) -> Element {
+    rsx! {
+        article { class: "burn-p2p-widget burn-p2p-directory-list-panel",
+            h3 { class: "burn-p2p-widget-title", "directory" }
+            p { class: "burn-p2p-widget-detail",
+                "paths: {view.directory_path} | {view.signed_directory_path}"
+            }
+            if view.entries.is_empty() {
+                p { class: "burn-p2p-widget-empty", "no directory entries" }
+            } else {
+                ul { class: "burn-p2p-selector-list",
+                    for entry in view.entries {
+                        li { class: "burn-p2p-selector-row",
+                            strong { "{entry.display_name}" }
+                            span { class: "burn-p2p-selector-meta",
+                                "{entry.experiment_id} / {entry.revision_id} / {entry.workload_id}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+/// Renders an editable directory-entry draft preview.
+pub fn DirectoryEntryDraftPanel(draft: DirectoryEntryDraftView) -> Element {
+    rsx! {
+        article { class: "burn-p2p-widget burn-p2p-directory-draft-panel",
+            h3 { class: "burn-p2p-widget-title", "directory draft" }
+            p { class: "burn-p2p-widget-value", "{draft.display_name}" }
+            p { class: "burn-p2p-widget-detail",
+                "{draft.study_id} / {draft.experiment_id} / {draft.revision_id}"
+            }
+            p { class: "burn-p2p-widget-detail", "workload: {draft.workload_id}" }
+            p { class: "burn-p2p-widget-detail", "visibility: {draft.visibility}" }
+            p { class: "burn-p2p-widget-detail",
+                "roles: {draft.allowed_roles.join(\", \")}"
+            }
+            p { class: "burn-p2p-widget-detail",
+                "scopes: {draft.allowed_scopes.join(\", \")}"
+            }
+            pre { class: "burn-p2p-widget-code", "{draft.metadata_json}" }
+        }
+    }
+}
+
+#[component]
+/// Renders a rollout preview summary.
+pub fn RolloutPreviewPanel(view: RolloutPreviewView) -> Element {
+    rsx! {
+        article { class: "burn-p2p-widget burn-p2p-rollout-preview-panel",
+            h3 { class: "burn-p2p-widget-title", "rollout preview" }
+            p { class: "burn-p2p-widget-value", "{view.summary_label}" }
+            p { class: "burn-p2p-widget-detail", "submit: {view.submit_path}" }
+            p { class: "burn-p2p-widget-detail",
+                if view.requires_session { "session required" } else { "session optional" }
+            }
+            ul { class: "burn-p2p-inline-list",
+                for entry in view.entries {
+                    li { "{entry.experiment_id}:{entry.revision_id}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+/// Renders the last rollout submission result.
+pub fn RolloutSubmissionStatusPanel(view: DirectoryMutationResultView) -> Element {
+    rsx! {
+        article { class: "burn-p2p-widget burn-p2p-rollout-status-panel",
+            h3 { class: "burn-p2p-widget-title", "rollout status" }
+            p { class: "burn-p2p-widget-value", "{view.status_label}" }
+            p { class: "burn-p2p-widget-detail",
+                "directory entries: {view.directory_entries}"
+            }
+            p { class: "burn-p2p-widget-detail",
+                "trusted issuers: {view.trusted_issuers}"
+            }
+            p { class: "burn-p2p-widget-detail",
+                if view.reenrollment_required {
+                    "re-enrollment required"
+                } else {
+                    "re-enrollment not required"
+                }
+            }
         }
     }
 }

@@ -1,0 +1,62 @@
+name: Browser Site
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/browser-site.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "crates/your_browser_shell/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: browser-site-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - run: >
+          cargo xtask browser site
+          --package your_browser_shell
+          --bin your_browser_bin
+          --out-dir target/browser-site
+          --edge-url "${{ vars.BURN_P2P_EDGE_URL }}"
+          --seed-node-url "${{ vars.BURN_P2P_SEED_NODE_URLS }}"
+          --selected-experiment-id "${{ vars.BURN_P2P_SELECTED_EXPERIMENT_ID }}"
+          --selected-revision-id "${{ vars.BURN_P2P_SELECTED_REVISION_ID }}"
+          --require-edge-auth true
+          --app-name "Your Browser App"
+          --default-surface viewer
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/browser-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+# Notes:
+# - `BURN_P2P_SEED_NODE_URLS` can be a single comma-separated variable because
+#   `cargo xtask browser site --seed-node-url` accepts comma-delimited values.
+# - copy this workflow into your downstream repo and replace the package/bin
+#   names and default selection values.

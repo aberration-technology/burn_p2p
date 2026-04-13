@@ -15,14 +15,12 @@ readme = "../../README.md"
 anyhow.workspace = true
 chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 burn_p2p_checkpoint.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_dataloader.workspace = true
 burn_p2p_experiment.workspace = true
 burn_p2p_limits.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true

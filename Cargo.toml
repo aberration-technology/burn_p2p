@@ -3,7 +3,9 @@ resolver = "3"
 members = [
   "xtask",
   "crates/burn_p2p",
+  "crates/burn_p2p_admin",
   "crates/burn_p2p_workload",
+  "crates/burn_p2p_e2e",
   "crates/burn_p2p_python",
   "crates/burn_p2p_auth_external",
   "crates/burn_p2p_auth_github",
@@ -42,7 +44,9 @@ anyhow = "1.0"
 burn = { version = "0.21.0-pre.3", default-features = false, features = ["std", "ndarray", "train", "store"] }
 burn-store = { version = "0.21.0-pre.3", default-features = false, features = ["std", "burnpack", "safetensors"] }
 burn_p2p = { version = "=0.21.0-pre.12", path = "crates/burn_p2p" }
+burn_p2p_admin = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_admin" }
 burn_p2p_workload = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_workload" }
+burn_p2p_e2e = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_e2e" }
 burn_p2p_python = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_python" }
 burn_p2p_auth_external = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_auth_external" }
 burn_p2p_auth_github = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_auth_github" }
@@ -62,6 +66,7 @@ burn_p2p_publish = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_publish
 burn_p2p_security = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_security" }
 burn_p2p_social = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_social", default-features = false }
 burn_p2p_swarm = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_swarm" }
+burn_p2p_testkit = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_testkit" }
 burn_p2p_views = { version = "=0.21.0-pre.12", path = "crates/burn_p2p_views" }
 ciborium = "0.2.2"
 chrono = { version = "0.4", features = ["clock", "serde"] }

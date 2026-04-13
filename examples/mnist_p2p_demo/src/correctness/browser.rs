@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::Context;
 use burn_p2p::{
-    AssignmentLease, AuthProvider, BrowserLoginProvider, BrowserMode, BrowserEdgeSnapshot,
+    AssignmentLease, AuthProvider, BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode,
     ContentId, ExperimentDirectoryEntry, ExperimentScope, HeadDescriptor, NetworkManifest, PeerId,
     PeerRoleSet, PrincipalClaims, PrincipalId, PrincipalSession, ShardCache, ShardFetchManifest,
 };

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use burn_p2p::{BrowserEdgeSnapshot, ExperimentId, HeadId, LeaseId, MicroShardId, PeerId, RevisionId};
+use burn_p2p::{
+    BrowserEdgeSnapshot, ExperimentId, HeadId, LeaseId, MicroShardId, PeerId, RevisionId,
+};
 use burn_p2p_metrics::{MetricsCatchupBundle, NetworkPerformanceSummary};
 use burn_p2p_views::BrowserAppSurface;
 use chrono::{DateTime, Utc};

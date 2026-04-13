@@ -35,6 +35,51 @@ runtime path:
 5. run `optimizer_step(grads)`
 6. publish the updated model artifact
 
+## reusable downstream-facing surfaces
+
+the repo now exposes a small set of product/runtime seams intended for real
+downstream apps:
+
+- `burn_p2p_admin`
+  - typed native+wasm client for `GET /state`, `GET /directory`,
+    `GET /directory/signed`, and `POST /admin`
+  - use this instead of custom downstream admin http glue
+- `burn_p2p_workload::DirectoryMetadataAttachment`
+  - versioned json-in-directory-metadata attachment and resolution helpers
+  - use this instead of custom directory metadata boilerplate
+- `burn_p2p_views`
+  - typed operator/browser/runtime view models for downstream ui composition
+- `burn_p2p_app`
+  - reusable dioxus widgets for auth/session, runtime, training, and
+    operator-directory/rollout panels
+- `burn_p2p_browser::BrowserSiteBootstrapConfig`
+  - static browser-shell config helper emitted by the upstream site builder
+- `burn_p2p_e2e`
+  - public browser capture/export facade and generic validation assertions
+  - use this instead of depending directly on `burn_p2p_testkit`
+
+these surfaces are intentionally mechanism-oriented. keep product semantics,
+model types, dataset semantics, and custom experiment profiles downstream.
+
+## reference infra templates
+
+the repo now also ships copy-edit reference assets for downstream repos under
+[`docs/reference-assets/`](reference-assets/README.md).
+
+use those when you need:
+
+- a github pages workflow for a wasm browser shell
+- a dataset publication workflow pattern
+- a staged validation workflow
+- a bootstrap/cloud deployment starting point
+
+important boundary:
+
+- crate apis such as `burn_p2p_admin`, `burn_p2p_e2e`, `burn_p2p_views`, and
+  `burn_p2p_app` are the reusable upstream interfaces
+- the files in `docs/reference-assets/` and `deploy/` are templates and
+  examples, not semver-stable compatibility promises
+
 ## minimal integration flow
 
 ### 1. define a backend-facing project type

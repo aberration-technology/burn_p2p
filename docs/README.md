@@ -32,6 +32,8 @@ truth. docs here should stay short and code-adjacent.
 - [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
   multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance
+- [reference-assets/README.md](reference-assets/README.md): copy-edit workflow
+  and deployment templates for downstream repos
 - [testing/local-dev.md](testing/local-dev.md): local-first smoke, browser,
   stress, and publish-readiness commands
 - [testing/ci-profiles.md](testing/ci-profiles.md): how xtask profiles map to

@@ -1,0 +1,104 @@
+name: Staged Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staged-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: cargo xtask ci pr-fast --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-validation-pr-fast-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  browser:
+    needs: pr-fast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci browser --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-validation-browser-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  integration:
+    needs: browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask setup browser
+      - run: cargo xtask ci integration --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-validation-integration-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  services:
+    needs: integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci services --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-validation-services-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  publish-readiness:
+    needs: services
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: cargo xtask ci publish --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-validation-publish-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+# Notes:
+# - this pattern mirrors the grouped `cargo xtask ci ...` lanes already used by
+#   the upstream repo.
+# - downstreams can trim or reorder stages, but keeping the lane boundaries
+#   makes local reproduction much easier.

@@ -4,7 +4,11 @@ description = "Simulation and QA boundary crate for burn_p2p."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [features]
 native-gpu-probe = ["dep:burn", "burn_p2p/burn"]
@@ -12,8 +16,8 @@ native-gpu-probe = ["dep:burn", "burn_p2p/burn"]
 [dependencies]
 anyhow.workspace = true
 burn = { workspace = true, optional = true, features = ["autodiff", "wgpu", "cuda"] }
-burn_p2p = { path = "../burn_p2p" }
-burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap", default-features = false, features = [
+burn_p2p.workspace = true
+burn_p2p_bootstrap = { workspace = true, features = [
   "admin-http",
   "metrics",
   "metrics-indexer",
@@ -29,17 +33,17 @@ burn_p2p_bootstrap = { path = "../burn_p2p_bootstrap", default-features = false,
   "auth-oauth",
   "social",
 ] }
-burn_p2p_engine = { path = "../burn_p2p_engine" }
-burn_p2p_checkpoint = { path = "../burn_p2p_checkpoint" }
-burn_p2p_core = { path = "../burn_p2p_core" }
-burn_p2p_dataloader = { path = "../burn_p2p_dataloader" }
-burn_p2p_experiment = { path = "../burn_p2p_experiment" }
-burn_p2p_limits = { path = "../burn_p2p_limits" }
-burn_p2p_metrics = { path = "../burn_p2p_metrics" }
-burn_p2p_app = { path = "../burn_p2p_app", features = ["interactive", "browser-join"] }
-burn_p2p_security = { path = "../burn_p2p_security" }
-burn_p2p_swarm = { path = "../burn_p2p_swarm" }
-burn_p2p_views = { path = "../burn_p2p_views" }
+burn_p2p_engine.workspace = true
+burn_p2p_checkpoint.workspace = true
+burn_p2p_core.workspace = true
+burn_p2p_dataloader.workspace = true
+burn_p2p_experiment.workspace = true
+burn_p2p_limits.workspace = true
+burn_p2p_metrics.workspace = true
+burn_p2p_app = { workspace = true, features = ["interactive", "browser-join"] }
+burn_p2p_security.workspace = true
+burn_p2p_swarm.workspace = true
+burn_p2p_views.workspace = true
 chrono.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -48,7 +52,7 @@ thiserror.workspace = true
 wasm-bindgen-cli-support = "0.2.117"
 
 [dev-dependencies]
-burn_p2p_browser = { path = "../burn_p2p_browser" }
+burn_p2p_browser.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
 

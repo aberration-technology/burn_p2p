@@ -8,6 +8,7 @@
 mod auth;
 mod browser_app;
 mod dashboard;
+mod operator_rollout;
 mod robustness;
 mod training;
 
@@ -37,6 +38,11 @@ pub use dashboard::{
     OperatorRobustnessSummaryView, OperatorTransferView, OverlayStatusView, ReducerUtilizationView,
     ShardAssignmentCell, ShardAssignmentHeatmap, StudyBoardView, UiChannel, UiEventEnvelope,
     UiPayload,
+};
+pub use operator_rollout::{
+    AdminSessionSummaryView, DirectoryEntryDraftView, DirectoryEntryMetadataView,
+    DirectoryMutationResultView, ExperimentDirectoryEntryView, ExperimentDirectoryListView,
+    RolloutPreviewView,
 };
 pub use robustness::{
     CanaryRegressionView, QuarantinedPeerView, RobustnessPanelView, RobustnessReasonCountView,

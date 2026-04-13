@@ -28,12 +28,13 @@ use crate::{
     BrowserAppValidationView, BrowserAppViewerView, BrowserExperimentPickerCard,
     BrowserExperimentPickerState, BrowserExperimentPickerView, CheckpointDagEdgeKind,
     CheckpointDagView, CheckpointDownload, ContributionIdentityPanel, CostPerformancePoint,
-    EmaFlowView, ExperimentMigrationView, ExperimentPickerView, ExperimentVariantView,
-    GitHubProfileLink, HeadPromotionTimelineEntry, LoginProviderView, MergeQueueEntry,
-    MergeQueueStatus, MergeTopologyDashboardView, MergeWindowView, MetricPoint,
-    NodeAppDiffusionView, OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView,
-    OverlayStatusView, ParticipantAppView, ParticipantProfile, ReducerUtilizationView,
-    RobustnessPanelView, ShardAssignmentHeatmap, StudyBoardView, TrainingBudgetSummaryView,
+    DirectoryEntryDraftView, DirectoryMutationResultView, EmaFlowView, ExperimentDirectoryListView,
+    ExperimentMigrationView, ExperimentPickerView, ExperimentVariantView, GitHubProfileLink,
+    HeadPromotionTimelineEntry, LoginProviderView, MergeQueueEntry, MergeQueueStatus,
+    MergeTopologyDashboardView, MergeWindowView, MetricPoint, NodeAppDiffusionView,
+    OperatorConsoleView, OperatorDiagnosticsView, OperatorPeerDiagnosticView, OverlayStatusView,
+    ParticipantAppView, ParticipantProfile, ReducerUtilizationView, RobustnessPanelView,
+    RolloutPreviewView, ShardAssignmentHeatmap, StudyBoardView, TrainingBudgetSummaryView,
     TrainingProgressSummaryView, TrainingResultSummaryView, TrustBadgeView, UiChannel,
     UiEventEnvelope, UiPayload, ValidationProgressSummaryView, ValidationResultSummaryView,
 };
@@ -933,4 +934,65 @@ fn robustness_panel_view_surfaces_rejections_quarantine_and_canary_failures() {
     assert!(panel.quarantined_peers[0].ban_recommended);
     assert_eq!(panel.canary_regressions.len(), 1);
     assert_eq!(panel.policy.preset, burn_p2p_core::RobustnessPreset::Strict);
+}
+
+#[test]
+fn operator_rollout_views_serialize_directory_and_draft_state() {
+    let entry = ExperimentDirectoryEntry {
+        network_id: NetworkId::new("net"),
+        study_id: StudyId::new("study"),
+        experiment_id: ExperimentId::new("exp"),
+        workload_id: burn_p2p_core::WorkloadId::new("wgpu-demo"),
+        display_name: "Operator Experiment".into(),
+        model_schema_hash: burn_p2p_core::ContentId::new("schema"),
+        dataset_view_id: burn_p2p_core::DatasetViewId::new("dataset"),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::from([PeerRole::TrainerGpu]),
+            minimum_device_memory_bytes: Some(1024),
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 2048,
+            estimated_window_seconds: 60,
+        },
+        visibility: ExperimentVisibility::AuthorityAssigned,
+        opt_in_policy: ExperimentOptInPolicy::AuthorityAssigned,
+        current_revision_id: RevisionId::new("rev"),
+        current_head_id: None,
+        allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
+        allowed_scopes: BTreeSet::from([ExperimentScope::Train {
+            experiment_id: ExperimentId::new("exp"),
+        }]),
+        metadata: BTreeMap::from([("profile_json".into(), "{\"kind\":\"language\"}".into())]),
+    };
+
+    let list = ExperimentDirectoryListView::from_entries(
+        "/directory",
+        "/directory/signed",
+        Some("exp".into()),
+        Some("rev".into()),
+        std::slice::from_ref(&entry),
+    );
+    let draft = DirectoryEntryDraftView::from_entry(&entry);
+    let preview = RolloutPreviewView {
+        summary_label: "1 entry pending rollout".into(),
+        submit_path: "/admin".into(),
+        requires_session: true,
+        entries: list.entries.clone(),
+    };
+    let status = DirectoryMutationResultView {
+        status_label: "rollout applied".into(),
+        directory_entries: 1,
+        trusted_issuers: 2,
+        reenrollment_required: false,
+    };
+
+    let encoded = serde_json::to_value((&list, &draft, &preview, &status)).expect("encode views");
+    assert_eq!(encoded[0]["entries"][0]["experiment_id"], "exp");
+    assert!(
+        encoded[1]["metadata_json"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("profile_json")
+    );
+    assert_eq!(encoded[2]["entries"][0]["revision_id"], "rev");
+    assert_eq!(encoded[3]["status_label"], "rollout applied");
 }

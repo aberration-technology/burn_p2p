@@ -1,0 +1,68 @@
+name: Dataset Publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/dataset-publish.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "crates/your_dataset_tools/**"
+      - "datasets/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask check publish --profile ci-integration --keep-artifacts
+      - run: cargo xtask ci services --keep-artifacts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataset-publish-validation-artifacts
+          path: target/test-artifacts
+          if-no-files-found: ignore
+
+  publish-dataset:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build downstream dataset bundle
+        run: |
+          cargo run -p your_dataset_tools -- \
+            publish-dataset \
+            --input datasets/train.jsonl \
+            --output target/published-datasets/train
+      - name: Configure object-store credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Upload dataset bundle
+        run: |
+          aws s3 sync \
+            target/published-datasets/train \
+            "s3://${{ vars.DATASET_BUCKET }}/train"
+
+# Notes:
+# - the bundle-build step is intentionally downstream-owned. keep dataset
+#   semantics, shard layout, and naming in your own repo.
+# - if you publish to gcs or another object store, replace the upload step.
+# - keep `cargo xtask ci services` or an equivalent publication smoke lane in
+#   the workflow so publication regressions do not drift away from dataset
+#   rollout.

@@ -80,6 +80,19 @@ the concrete upstream work described in this roadmap is now materially landed:
 - `burn_p2p_browser` now exposes a public `BrowserConformanceHarness`
 - `burn_p2p_app` now exposes public snapshot/conformance assertion helpers for
   downstream smoke tests
+- `burn_p2p_admin` now provides a transport-safe native+wasm admin client
+  surface for directory fetch, snapshot fetch, and typed `/admin` actions
+- `burn_p2p_workload` now exposes generic versioned directory-metadata
+  attachment helpers for downstream profile blobs
+- `burn_p2p_views` and `burn_p2p_app` now expose generic operator
+  directory/draft/rollout view models and widgets
+- repo `xtask` now has a generic `browser site` build path for downstream wasm
+  browser shells
+- `burn_p2p_e2e` now fronts the reusable browser capture/export facade instead
+  of making downstreams depend directly on `burn_p2p_testkit`
+- `docs/reference-assets/` now provides copy-edit workflow and deployment
+  templates for downstream pages deploy, dataset publish, staged validation,
+  and bootstrap/cloud rollout
 - lifecycle-plan-driven rollover remains exercised through the runtime/control
   integration APIs rather than a browser-only fixture
 

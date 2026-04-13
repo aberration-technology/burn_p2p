@@ -21,6 +21,7 @@ burn = { version = "0.21.0-pre.3", default-features = false, features = ["std", 
 burn_p2p = { path = "../../crates/burn_p2p", features = ["burn"] }
 burn_p2p_browser = { path = "../../crates/burn_p2p_browser" }
 burn_p2p_core = { path = "../../crates/burn_p2p_core" }
+burn_p2p_e2e = { path = "../../crates/burn_p2p_e2e" }
 burn_p2p_metrics = { path = "../../crates/burn_p2p_metrics" }
 burn_p2p_publish = { path = "../../crates/burn_p2p_publish" }
 burn_p2p_views = { path = "../../crates/burn_p2p_views" }
@@ -34,6 +35,7 @@ wasm-bindgen-cli-support = "0.2.117"
 burn = { version = "0.21.0-pre.3", default-features = false, features = ["webgpu", "autodiff"] }
 burn_p2p = { path = "../../crates/burn_p2p" }
 burn_p2p_browser = { path = "../../crates/burn_p2p_browser" }
+burn_p2p_e2e = { path = "../../crates/burn_p2p_e2e" }
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

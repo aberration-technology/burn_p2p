@@ -17,14 +17,14 @@ use burn::{
     train::{InferenceStep, Learner},
 };
 use burn_p2p::{
-    BrowserRolePolicy, BrowserVisibilityPolicy, ClientPlatform, ClientReleaseManifest, ContentId,
-    ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadDescriptor,
-    HeadEvalReport, HeadEvalStatus, LagPolicy, MergeCertificate, MetricTrustClass,
-    MetricValue, NetworkManifest, P2pWorkload, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
-    PeerWindowStatus, Precision, PrincipalId, ProjectFamilyId, ReducerCohortMetrics,
-    RevisionId, RevisionManifest, StorageConfig, StudyId, SupportedWorkload, WindowActivation,
-    WindowId, WorkloadId, ChunkingScheme,
+    BrowserRolePolicy, BrowserVisibilityPolicy, ChunkingScheme, ClientPlatform,
+    ClientReleaseManifest, ContentId, ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt,
+    ExperimentId, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
+    ExperimentVisibility, HeadDescriptor, HeadEvalReport, HeadEvalStatus, LagPolicy,
+    MergeCertificate, MetricTrustClass, MetricValue, NetworkManifest, P2pWorkload, PeerId,
+    PeerRole, PeerRoleSet, PeerWindowMetrics, PeerWindowStatus, Precision, PrincipalId,
+    ProjectFamilyId, ReducerCohortMetrics, RevisionId, RevisionManifest, StorageConfig, StudyId,
+    SupportedWorkload, WindowActivation, WindowId, WorkloadId,
     burn::{
         BurnArtifactConfig, BurnRecordPrecision, BurnTarget, BurnWorkloadConfig, from_learner,
         from_loaders, inspect_module,
@@ -37,13 +37,12 @@ use semver::Version;
 
 use crate::{
     args::Args,
-    correctness::live_browser::{
-        LiveBrowserEdgeConfig, LiveBrowserProbeManifest,
-        materialize_live_browser_dataset_bundle, materialize_live_browser_head_artifact_bundle,
-        prepare_live_browser_dataset_transport, prepare_live_browser_head_artifact_transport,
-        write_live_browser_edge_config,
-    },
     correctness::export::{DemoPhaseEvent, DemoPhaseSummary, DemoPhaseTiming},
+    correctness::live_browser::{
+        LiveBrowserEdgeConfig, LiveBrowserProbeManifest, materialize_live_browser_dataset_bundle,
+        materialize_live_browser_head_artifact_bundle, prepare_live_browser_dataset_transport,
+        prepare_live_browser_head_artifact_transport, write_live_browser_edge_config,
+    },
     data::{MnistDatasetConfig, PreparedMnistData, prepare_mnist_dataset},
     model::{MnistMetricItem, MnistModel},
 };
@@ -115,6 +114,17 @@ pub(crate) struct CoreMnistRun {
     pub phase_timeline: DemoPhaseSummary,
     pub browser_probe_manifest: Option<LiveBrowserProbeManifest>,
     pub browser_probe_summary: Option<serde_json::Value>,
+}
+
+pub(crate) struct DynamicsSummaryInput<'a> {
+    pub baseline_outcomes: &'a [TrainingRecord],
+    pub low_lr_outcomes: &'a [TrainingRecord],
+    pub baseline_initial_accuracy: f64,
+    pub baseline_accuracy: f64,
+    pub low_lr_initial_accuracy: f64,
+    pub low_lr_accuracy: f64,
+    pub prepared_data: &'a PreparedMnistData,
+    pub performance: crate::correctness::export::MnistPerformanceSummary,
 }
 
 #[derive(Clone)]
@@ -338,8 +348,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             validator.telemetry().snapshot().connected_peers >= 1
                 && validator_b.telemetry().snapshot().connected_peers >= 1
                 && reducer.telemetry().snapshot().connected_peers >= 1
-                &&
-                trainer_a1.telemetry().snapshot().connected_peers >= 1
+                && trainer_a1.telemetry().snapshot().connected_peers >= 1
                 && trainer_a2.telemetry().snapshot().connected_peers >= 1
                 && trainer_b.telemetry().snapshot().connected_peers >= 1
                 && viewer.telemetry().snapshot().connected_peers >= 1
@@ -478,10 +487,8 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .snapshot()
         .local_peer_id
         .context("validator-b missing local peer id")?;
-    let validator_peer_ids = BTreeSet::from([
-        validator_peer_id.clone(),
-        validator_b_peer_id.clone(),
-    ]);
+    let validator_peer_ids =
+        BTreeSet::from([validator_peer_id.clone(), validator_b_peer_id.clone()]);
     let mut baseline_head_providers = vec![validator_peer_id.clone()];
     write_demo_phase(&output, "cluster-ready")?;
 
@@ -950,16 +957,37 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         )?;
         write_demo_phase(&output, "browser-handoff-bundle-ready")?;
         let browser_node_records = collect_node_records(
-            &helper,
-            &validator,
-            &validator_b,
-            &reducer,
-            &viewer,
-            &trainer_a1,
-            &trainer_a2,
-            &trainer_b,
+            vec![
+                node_record(HELPER_LABEL, &helper, &storage_root.join(HELPER_LABEL)),
+                node_record(
+                    VALIDATOR_LABEL,
+                    &validator,
+                    &storage_root.join(VALIDATOR_LABEL),
+                ),
+                node_record(
+                    VALIDATOR_B_LABEL,
+                    &validator_b,
+                    &storage_root.join(VALIDATOR_B_LABEL),
+                ),
+                node_record(REDUCER_LABEL, &reducer, &storage_root.join(REDUCER_LABEL)),
+                node_record(VIEWER_LABEL, &viewer, &storage_root.join(VIEWER_LABEL)),
+                node_record(
+                    TRAINER_A1_LABEL,
+                    &trainer_a1,
+                    &storage_root.join(TRAINER_A1_LABEL),
+                ),
+                node_record(
+                    TRAINER_A2_LABEL,
+                    &trainer_a2,
+                    &storage_root.join(TRAINER_A2_LABEL),
+                ),
+                node_record(
+                    TRAINER_B_LABEL,
+                    &trainer_b,
+                    &storage_root.join(TRAINER_B_LABEL),
+                ),
+            ],
             None,
-            &storage_root,
         );
         write_demo_phase(&output, "browser-handoff-node-records-ready")?;
         let browser_peer_window_metrics = baseline_outcomes
@@ -992,6 +1020,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             network_manifest: network_manifest.clone(),
             release_manifest: release_manifest.clone(),
             workload_id: supported_workload.workload_id.clone(),
+            principal_id: PrincipalId::new("mnist-browser-trainer"),
             directory_entries,
             heads: vec![
                 baseline_genesis.clone(),
@@ -1011,8 +1040,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         };
         write_demo_phase(&output, "browser-handoff-edge-config-ready")?;
         write_live_browser_edge_config(&output, &browser_edge_config)?;
-        let peer_dataset_root =
-            materialize_live_browser_dataset_bundle(&output, &browser_edge_config.browser_dataset.bundle)?;
+        let peer_dataset_root = materialize_live_browser_dataset_bundle(
+            &output,
+            &browser_edge_config.browser_dataset.bundle,
+        )?;
         let peer_head_artifact_root = materialize_live_browser_head_artifact_bundle(
             &output,
             &browser_edge_config.browser_head_artifact,
@@ -1042,14 +1073,36 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     }
 
     let node_records = collect_node_records(
-        &helper,
-        &validator,
-        &validator_b,
-        &reducer,
-        &viewer,
-        &trainer_a1,
-        &trainer_a2,
-        &trainer_b,
+        vec![
+            node_record(HELPER_LABEL, &helper, &storage_root.join(HELPER_LABEL)),
+            node_record(
+                VALIDATOR_LABEL,
+                &validator,
+                &storage_root.join(VALIDATOR_LABEL),
+            ),
+            node_record(
+                VALIDATOR_B_LABEL,
+                &validator_b,
+                &storage_root.join(VALIDATOR_B_LABEL),
+            ),
+            node_record(REDUCER_LABEL, &reducer, &storage_root.join(REDUCER_LABEL)),
+            node_record(VIEWER_LABEL, &viewer, &storage_root.join(VIEWER_LABEL)),
+            node_record(
+                TRAINER_A1_LABEL,
+                &trainer_a1,
+                &storage_root.join(TRAINER_A1_LABEL),
+            ),
+            node_record(
+                TRAINER_A2_LABEL,
+                &trainer_a2,
+                &storage_root.join(TRAINER_A2_LABEL),
+            ),
+            node_record(
+                TRAINER_B_LABEL,
+                &trainer_b,
+                &storage_root.join(TRAINER_B_LABEL),
+            ),
+        ],
         late_joiner.as_ref().map(|late_joiner| {
             node_record(
                 TRAINER_LATE_LABEL,
@@ -1057,12 +1110,14 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 &storage_root.join(TRAINER_LATE_LABEL),
             )
         }),
-        &storage_root,
     );
     let mut bootstrap_plan = BTreeMap::from([
         (HELPER_LABEL.to_string(), Vec::new()),
         (VALIDATOR_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
-        (VALIDATOR_B_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
+        (
+            VALIDATOR_B_LABEL.to_string(),
+            vec![HELPER_LABEL.to_string()],
+        ),
         (REDUCER_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
         (VIEWER_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
         (TRAINER_A1_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
@@ -1070,21 +1125,42 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         (TRAINER_B_LABEL.to_string(), vec![HELPER_LABEL.to_string()]),
     ]);
     if late_joiner.is_some() {
-        bootstrap_plan.insert(TRAINER_LATE_LABEL.to_string(), vec![HELPER_LABEL.to_string()]);
+        bootstrap_plan.insert(
+            TRAINER_LATE_LABEL.to_string(),
+            vec![HELPER_LABEL.to_string()],
+        );
     }
     write_demo_phase(&output, "final-snapshots-start")?;
     let mut final_snapshots = BTreeMap::from([
         (HELPER_LABEL.to_string(), helper.telemetry().snapshot()),
-        (VALIDATOR_LABEL.to_string(), validator.telemetry().snapshot()),
-        (VALIDATOR_B_LABEL.to_string(), validator_b.telemetry().snapshot()),
+        (
+            VALIDATOR_LABEL.to_string(),
+            validator.telemetry().snapshot(),
+        ),
+        (
+            VALIDATOR_B_LABEL.to_string(),
+            validator_b.telemetry().snapshot(),
+        ),
         (REDUCER_LABEL.to_string(), reducer.telemetry().snapshot()),
         (VIEWER_LABEL.to_string(), viewer.telemetry().snapshot()),
-        (TRAINER_A1_LABEL.to_string(), trainer_a1.telemetry().snapshot()),
-        (TRAINER_A2_LABEL.to_string(), trainer_a2.telemetry().snapshot()),
-        (TRAINER_B_LABEL.to_string(), trainer_b.telemetry().snapshot()),
+        (
+            TRAINER_A1_LABEL.to_string(),
+            trainer_a1.telemetry().snapshot(),
+        ),
+        (
+            TRAINER_A2_LABEL.to_string(),
+            trainer_a2.telemetry().snapshot(),
+        ),
+        (
+            TRAINER_B_LABEL.to_string(),
+            trainer_b.telemetry().snapshot(),
+        ),
     ]);
     if let Some(late_joiner) = &late_joiner {
-        final_snapshots.insert(TRAINER_LATE_LABEL.to_string(), late_joiner.telemetry().snapshot());
+        final_snapshots.insert(
+            TRAINER_LATE_LABEL.to_string(),
+            late_joiner.telemetry().snapshot(),
+        );
     }
     let mut metric_storages = vec![
         StorageConfig::new(storage_root.join(HELPER_LABEL)),
@@ -1195,10 +1271,7 @@ where
         &training.contribution.base_head_id,
         &training.artifact.artifact_id,
     )?;
-    Ok(TrainingRecord {
-        label,
-        training,
-    })
+    Ok(TrainingRecord { label, training })
 }
 
 fn run_parallel_training_pair<P>(
@@ -1221,11 +1294,23 @@ where
         let training_b_start = Arc::clone(&paired_start);
         let training_a = scope.spawn(move || {
             training_a_start.wait();
-            run_training_round(trainer_a, label_a, experiment, Some(pinned_head), prepared_data)
+            run_training_round(
+                trainer_a,
+                label_a,
+                experiment,
+                Some(pinned_head),
+                prepared_data,
+            )
         });
         let training_b = scope.spawn(move || {
             training_b_start.wait();
-            run_training_round(trainer_b, label_b, experiment, Some(pinned_head), prepared_data)
+            run_training_round(
+                trainer_b,
+                label_b,
+                experiment,
+                Some(pinned_head),
+                prepared_data,
+            )
         });
         let outcome_a = training_a
             .join()
@@ -1252,23 +1337,32 @@ where
 
     while Instant::now() < deadline {
         let snapshot = trainer.telemetry().snapshot();
-        let update_visible = snapshot.control_plane.update_announcements.iter().any(|announcement| {
-            announcement.overlay == overlay
-                && announcement.update.study_id == experiment.study_id
-                && announcement.update.experiment_id == experiment.experiment_id
-                && announcement.update.revision_id == experiment.revision_id
-                && announcement.update.peer_id == training.contribution.peer_id
-                && announcement.update.window_id == training.lease.window_id
-                && announcement.update.base_head_id == training.contribution.base_head_id
-                && announcement.update.delta_artifact_id == training.artifact.artifact_id
-        });
-        let head_visible = snapshot.control_plane.head_announcements.iter().any(|announcement| {
-            announcement.overlay == overlay
-                && announcement.head.study_id == experiment.study_id
-                && announcement.head.experiment_id == experiment.experiment_id
-                && announcement.head.revision_id == experiment.revision_id
-                && announcement.head.head_id == training.head.head_id
-        });
+        let update_visible =
+            snapshot
+                .control_plane
+                .update_announcements
+                .iter()
+                .any(|announcement| {
+                    announcement.overlay == overlay
+                        && announcement.update.study_id == experiment.study_id
+                        && announcement.update.experiment_id == experiment.experiment_id
+                        && announcement.update.revision_id == experiment.revision_id
+                        && announcement.update.peer_id == training.contribution.peer_id
+                        && announcement.update.window_id == training.lease.window_id
+                        && announcement.update.base_head_id == training.contribution.base_head_id
+                        && announcement.update.delta_artifact_id == training.artifact.artifact_id
+                });
+        let head_visible = snapshot
+            .control_plane
+            .head_announcements
+            .iter()
+            .any(|announcement| {
+                announcement.overlay == overlay
+                    && announcement.head.study_id == experiment.study_id
+                    && announcement.head.experiment_id == experiment.experiment_id
+                    && announcement.head.revision_id == experiment.revision_id
+                    && announcement.head.head_id == training.head.head_id
+            });
         let merge_window_visible = snapshot
             .control_plane
             .merge_window_announcements
@@ -1314,8 +1408,11 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
             artifact_ids.push(outcome.training.head.artifact_id.clone());
         }
         for artifact_id in artifact_ids {
-            let mut staged_providers =
-                vec![(label, provider, outcome.training.contribution.peer_id.clone())];
+            let mut staged_providers = vec![(
+                label,
+                provider,
+                outcome.training.contribution.peer_id.clone(),
+            )];
             wait_for_artifact_from_topology(
                 &staged_providers,
                 &primary_consumer,
@@ -1323,8 +1420,14 @@ fn wait_for_candidate_artifacts<P, const PROVIDER_COUNT: usize, const NODE_COUNT
                 tier_timeout,
                 failure_message,
             )?;
-            if let Some(primary_peer_id) = primary_consumer[0].1.telemetry().snapshot().local_peer_id {
-                staged_providers.push((primary_consumer[0].0, primary_consumer[0].1, primary_peer_id));
+            if let Some(primary_peer_id) =
+                primary_consumer[0].1.telemetry().snapshot().local_peer_id
+            {
+                staged_providers.push((
+                    primary_consumer[0].0,
+                    primary_consumer[0].1,
+                    primary_peer_id,
+                ));
             }
             if !follower_consumers.is_empty() {
                 wait_for_artifact_from_topology(
@@ -1370,7 +1473,8 @@ fn wait_for_candidate_control_plane<P, const NODE_COUNT: usize, const OUTCOME_CO
 
         for (label, observer) in &observers {
             for outcome in &outcomes {
-                if let Err(error) = observer.seed_training_candidate(experiment, &outcome.training) {
+                if let Err(error) = observer.seed_training_candidate(experiment, &outcome.training)
+                {
                     last_sync_errors
                         .entry((*label).to_string())
                         .or_default()
@@ -1735,10 +1839,7 @@ fn write_demo_phase(output_root: &Path, phase: &str) -> anyhow::Result<()> {
     });
     let summary = build_demo_phase_summary(&events);
 
-    eprintln!(
-        "mnist demo phase: {phase} (+{}ms)",
-        elapsed_ms_since_start
-    );
+    eprintln!("mnist demo phase: {phase} (+{}ms)", elapsed_ms_since_start);
     fs::write(&events_path, serde_json::to_vec_pretty(&events)?)
         .with_context(|| format!("failed to write {}", events_path.display()))?;
     fs::write(
@@ -1759,7 +1860,12 @@ fn write_demo_phase(output_root: &Path, phase: &str) -> anyhow::Result<()> {
             "elapsed_ms_since_start": elapsed_ms_since_start,
         }))?,
     )
-    .with_context(|| format!("failed to write {}", output_root.join("phase.json").display()))
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            output_root.join("phase.json").display()
+        )
+    })
 }
 
 fn read_demo_phase_events(output_root: &Path) -> anyhow::Result<Vec<DemoPhaseEvent>> {
@@ -2121,10 +2227,7 @@ pub(crate) fn leaderboard_entries(
         .collect()
 }
 
-pub(crate) fn node_peer_id(
-    node_records: &[CoreNodeRecord],
-    label: &str,
-) -> anyhow::Result<PeerId> {
+pub(crate) fn node_peer_id(node_records: &[CoreNodeRecord], label: &str) -> anyhow::Result<PeerId> {
     node_records
         .iter()
         .find(|record| record.label == label)
@@ -2195,20 +2298,22 @@ where
         || {
             let expected_aggregate_id = &reduced.aggregate.aggregate_id;
             let expected_artifact_id = &reduced.aggregate.aggregate_artifact_id;
-            [validator.telemetry().snapshot(), validator_b.telemetry().snapshot()]
-                .into_iter()
-                .all(|snapshot| {
-                    snapshot
-                        .control_plane
-                        .aggregate_proposal_announcements
-                        .iter()
-                        .any(|announcement| {
-                            announcement.proposal.aggregate_id == *expected_aggregate_id
-                                && announcement.proposal.aggregate_artifact_id
-                                    == *expected_artifact_id
-                                && announcement.proposal.reducer_peer_id == *reducer_peer_id
-                        })
-                })
+            [
+                validator.telemetry().snapshot(),
+                validator_b.telemetry().snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                snapshot
+                    .control_plane
+                    .aggregate_proposal_announcements
+                    .iter()
+                    .any(|announcement| {
+                        announcement.proposal.aggregate_id == *expected_aggregate_id
+                            && announcement.proposal.aggregate_artifact_id == *expected_artifact_id
+                            && announcement.proposal.reducer_peer_id == *reducer_peer_id
+                    })
+            })
         },
         "validators did not observe the dedicated reducer aggregate proposal",
     )?;
@@ -2226,19 +2331,15 @@ where
         .local_peer_id
         .context("validator-b missing local peer id")?;
     let promotion_deadline = Instant::now() + DEMO_VALIDATION_ROUND_TIMEOUT;
-    let (
-        validator_outcome,
-        validator_b_outcome,
-        validator_attempts,
-        validator_b_attempts,
-    ) = run_parallel_demo_validation_drivers(
-        validator,
-        validator_b,
-        experiment,
-        &aggregate_id,
-        &merged_head_id,
-        promotion_deadline,
-    )?;
+    let (validator_outcome, validator_b_outcome, validator_attempts, validator_b_attempts) =
+        run_parallel_demo_validation_drivers(
+            validator,
+            validator_b,
+            experiment,
+            &aggregate_id,
+            &merged_head_id,
+            promotion_deadline,
+        )?;
     let coordination = observe_demo_validation_coordination(
         [validator, validator_b],
         experiment,
@@ -2278,16 +2379,13 @@ where
     anyhow::ensure!(
         validator_peer_ids.contains(&validation.merge_certificate.validator),
         "merge promotion came from non-validator peer {}",
-            validation.merge_certificate.validator,
+        validation.merge_certificate.validator,
     );
     if validation.merge_certificate.validator == validator_peer_id {
         validator.publish_head_provider(experiment, &validation.merged_head)?;
         wait_for_artifact_from_provider(
             (VALIDATOR_LABEL, validator),
-            [
-                (REDUCER_LABEL, reducer),
-                (VALIDATOR_B_LABEL, validator_b),
-            ],
+            [(REDUCER_LABEL, reducer), (VALIDATOR_B_LABEL, validator_b)],
             &validator_peer_id,
             &validation.merged_head.artifact_id,
             demo_provider_artifact_timeout(),
@@ -2297,10 +2395,7 @@ where
         validator_b.publish_head_provider(experiment, &validation.merged_head)?;
         wait_for_artifact_from_provider(
             (VALIDATOR_B_LABEL, validator_b),
-            [
-                (REDUCER_LABEL, reducer),
-                (VALIDATOR_LABEL, validator),
-            ],
+            [(REDUCER_LABEL, reducer), (VALIDATOR_LABEL, validator)],
             &validator_b_peer_id,
             &validation.merged_head.artifact_id,
             demo_provider_artifact_timeout(),
@@ -2385,13 +2480,19 @@ where
             )
         });
 
-        let (validator_attempts, validator_outcome) = validator_run
-            .join()
-            .map_err(|_| anyhow::anyhow!("parallel validation thread {VALIDATOR_LABEL} panicked"))??;
-        let (validator_b_attempts, validator_b_outcome) = validator_b_run
-            .join()
-            .map_err(|_| anyhow::anyhow!("parallel validation thread {VALIDATOR_B_LABEL} panicked"))??;
-        Ok((validator_outcome, validator_b_outcome, validator_attempts, validator_b_attempts))
+        let (validator_attempts, validator_outcome) = validator_run.join().map_err(|_| {
+            anyhow::anyhow!("parallel validation thread {VALIDATOR_LABEL} panicked")
+        })??;
+        let (validator_b_attempts, validator_b_outcome) =
+            validator_b_run.join().map_err(|_| {
+                anyhow::anyhow!("parallel validation thread {VALIDATOR_B_LABEL} panicked")
+            })??;
+        Ok((
+            validator_outcome,
+            validator_b_outcome,
+            validator_attempts,
+            validator_b_attempts,
+        ))
     })
 }
 
@@ -2412,15 +2513,20 @@ where
     let mut promoted = None;
 
     while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
-        promoted =
-            run_demo_validation_attempt(label, node, experiment, aggregate_id, &mut attempts, promoted)?;
-        let coordination = observe_demo_validation_coordination(
-            [node],
+        promoted = run_demo_validation_attempt(
+            label,
+            node,
             experiment,
             aggregate_id,
-            merged_head_id,
+            &mut attempts,
+            promoted,
         )?;
-        if promoted.is_some() || coordination.quorum_visible || coordination.merge_certificate.is_some() {
+        let coordination =
+            observe_demo_validation_coordination([node], experiment, aggregate_id, merged_head_id)?;
+        if promoted.is_some()
+            || coordination.quorum_visible
+            || coordination.merge_certificate.is_some()
+        {
             stop.store(true, Ordering::Relaxed);
             break;
         }
@@ -2514,10 +2620,8 @@ where
         *attempts,
         aggregate_id.as_str(),
     );
-    let promoted = record_promoted_validation_outcome(
-        promoted,
-        node.validate_candidates_once(experiment)?,
-    )?;
+    let promoted =
+        record_promoted_validation_outcome(promoted, node.validate_candidates_once(experiment)?)?;
     eprintln!(
         "mnist reducer validation: {label} attempt {} finished in {:?} promoted={}",
         *attempts,
@@ -2706,18 +2810,12 @@ pub(crate) fn trainer_lease_summary(
 }
 
 pub(crate) fn dynamics_summary(
-    baseline_outcomes: &[TrainingRecord],
-    low_lr_outcomes: &[TrainingRecord],
-    baseline_initial_accuracy: f64,
-    baseline_accuracy: f64,
-    low_lr_initial_accuracy: f64,
-    low_lr_accuracy: f64,
-    prepared_data: &PreparedMnistData,
-    performance: crate::correctness::export::MnistPerformanceSummary,
+    input: DynamicsSummaryInput<'_>,
 ) -> crate::correctness::export::MnistDynamicsSummary {
-    let windows = baseline_outcomes
+    let windows = input
+        .baseline_outcomes
         .iter()
-        .chain(low_lr_outcomes.iter())
+        .chain(input.low_lr_outcomes.iter())
         .collect::<Vec<_>>();
     let training_window_count = windows.len();
     let total_window_duration_ms = windows
@@ -2738,7 +2836,11 @@ pub(crate) fn dynamics_summary(
         .sum::<u64>();
     let total_examples = windows
         .iter()
-        .map(|outcome| prepared_data.examples_for_lease(&outcome.training.lease))
+        .map(|outcome| {
+            input
+                .prepared_data
+                .examples_for_lease(&outcome.training.lease)
+        })
         .sum::<usize>();
 
     crate::correctness::export::MnistDynamicsSummary {
@@ -2772,21 +2874,23 @@ pub(crate) fn dynamics_summary(
         } else {
             total_examples as f64 / training_window_count as f64
         },
-        global_training_throughput_work_units_per_sec: performance
+        global_training_throughput_work_units_per_sec: input
+            .performance
             .overall
             .training
             .throughput_work_units_per_sec,
-        global_validation_throughput_samples_per_sec: performance
+        global_validation_throughput_samples_per_sec: input
+            .performance
             .overall
             .head_evaluation
             .throughput_samples_per_sec,
-        global_wait_time_ms: performance.overall.training.wait_time_ms
-            + performance.overall.validation.wait_time_ms,
-        global_idle_time_ms: performance.overall.training.idle_time_ms
-            + performance.overall.validation.idle_time_ms,
-        baseline_accuracy_gain: baseline_accuracy - baseline_initial_accuracy,
-        low_lr_accuracy_gain: low_lr_accuracy - low_lr_initial_accuracy,
-        performance,
+        global_wait_time_ms: input.performance.overall.training.wait_time_ms
+            + input.performance.overall.validation.wait_time_ms,
+        global_idle_time_ms: input.performance.overall.training.idle_time_ms
+            + input.performance.overall.validation.idle_time_ms,
+        baseline_accuracy_gain: input.baseline_accuracy - input.baseline_initial_accuracy,
+        low_lr_accuracy_gain: input.low_lr_accuracy - input.low_lr_initial_accuracy,
+        performance: input.performance,
     }
 }
 
@@ -2809,40 +2913,10 @@ pub(crate) fn node_record<P>(
     }
 }
 
-fn collect_node_records<PH, PV, PVB, PR, PVW, PTA1, PTA2, PTB>(
-    helper: &burn_p2p::RunningNode<PH>,
-    validator: &burn_p2p::RunningNode<PV>,
-    validator_b: &burn_p2p::RunningNode<PVB>,
-    reducer: &burn_p2p::RunningNode<PR>,
-    viewer: &burn_p2p::RunningNode<PVW>,
-    trainer_a1: &burn_p2p::RunningNode<PTA1>,
-    trainer_a2: &burn_p2p::RunningNode<PTA2>,
-    trainer_b: &burn_p2p::RunningNode<PTB>,
+fn collect_node_records(
+    mut records: Vec<CoreNodeRecord>,
     late_joiner_record: Option<CoreNodeRecord>,
-    storage_root: &Path,
 ) -> Vec<CoreNodeRecord> {
-    let mut records = vec![
-        node_record(HELPER_LABEL, helper, &storage_root.join(HELPER_LABEL)),
-        node_record(VALIDATOR_LABEL, validator, &storage_root.join(VALIDATOR_LABEL)),
-        node_record(
-            VALIDATOR_B_LABEL,
-            validator_b,
-            &storage_root.join(VALIDATOR_B_LABEL),
-        ),
-        node_record(REDUCER_LABEL, reducer, &storage_root.join(REDUCER_LABEL)),
-        node_record(VIEWER_LABEL, viewer, &storage_root.join(VIEWER_LABEL)),
-        node_record(
-            TRAINER_A1_LABEL,
-            trainer_a1,
-            &storage_root.join(TRAINER_A1_LABEL),
-        ),
-        node_record(
-            TRAINER_A2_LABEL,
-            trainer_a2,
-            &storage_root.join(TRAINER_A2_LABEL),
-        ),
-        node_record(TRAINER_B_LABEL, trainer_b, &storage_root.join(TRAINER_B_LABEL)),
-    ];
     if let Some(late_joiner_record) = late_joiner_record {
         records.push(late_joiner_record);
     }
@@ -2891,9 +2965,11 @@ fn load_metric_artifacts_from_storages<T: serde::de::DeserializeOwned>(
     paths
         .into_iter()
         .map(|path| {
-            serde_json::from_slice(&fs::read(&path).with_context(|| {
-                format!("failed to read metrics artifact {}", path.display())
-            })?)
+            serde_json::from_slice(
+                &fs::read(&path).with_context(|| {
+                    format!("failed to read metrics artifact {}", path.display())
+                })?,
+            )
             .with_context(|| format!("failed to decode metrics artifact {}", path.display()))
         })
         .collect()

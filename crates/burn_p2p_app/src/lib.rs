@@ -50,8 +50,9 @@ pub use render::{
     render_operator_replay_snapshot_html, render_operator_retention_html,
 };
 pub use widgets::{
-    AuthSessionCard, ContributionReceiptSummaryPanel, ExperimentRevisionSelector,
-    LifecycleAssignmentStatusCard, RuntimeCapabilityCard, TrainingResultPanel,
+    AdminSessionCard, AuthSessionCard, ContributionReceiptSummaryPanel, DirectoryEntryDraftPanel,
+    ExperimentDirectoryListPanel, ExperimentRevisionSelector, LifecycleAssignmentStatusCard,
+    RolloutPreviewPanel, RolloutSubmissionStatusPanel, RuntimeCapabilityCard, TrainingResultPanel,
     TransportHealthPanel,
 };
 

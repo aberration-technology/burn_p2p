@@ -3,6 +3,7 @@
 
 mod backend;
 mod data_pipeline;
+mod directory_metadata;
 mod execution;
 
 use std::{collections::BTreeMap, path::PathBuf};
@@ -24,6 +25,10 @@ pub use backend::{
 pub use data_pipeline::{
     GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
     LeaseDataPipelineDescriptor, LeaseDataPipelineKind, WorkloadInputSource,
+};
+pub use directory_metadata::{
+    DirectoryMetadataAttachment, find_matching_directory_entry,
+    find_matching_directory_entry_with_predicate,
 };
 pub use execution::{
     WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingLease, WorkloadTrainingPlan,

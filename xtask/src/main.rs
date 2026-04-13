@@ -17,8 +17,10 @@ use std::{
 use anyhow::{Context, ensure};
 use artifacts::{ArtifactLayout, copy_dir_all, copy_files_with_extension_tree};
 use burn_p2p::{PeerId, WindowId};
+use burn_p2p_app::{browser_app_stylesheet, render_browser_app_static_html};
 use burn_p2p_bootstrap::BootstrapPreset;
-use burn_p2p_core::{AggregationStrategy, RobustnessPolicy};
+use burn_p2p_browser::BrowserSiteBootstrapConfig;
+use burn_p2p_core::{AggregationStrategy, ExperimentId, RevisionId, RobustnessPolicy};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_security::{FeatureLayer, aggregate_updates_with_policy, extract_feature_sketch};
 use burn_p2p_testkit::{
@@ -41,10 +43,10 @@ use burn_p2p_testkit::{
 use burn_p2p_views::BrowserAppSurface;
 use clap::Parser;
 use cli::{
-    AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, ChaosArgs,
-    CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction, DeployCloudArgs,
-    DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs, PublishCommand,
-    RunArgs, SetupCommand, StressCommand,
+    AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, BrowserSiteArgs,
+    ChaosArgs, CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction,
+    DeployCloudArgs, DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs,
+    PublishCommand, RunArgs, SetupCommand, StressCommand,
 };
 use formal::{
     run_formal_check, run_formal_export_trace, run_formal_modelcheck, run_formal_verify_trace,
@@ -74,9 +76,12 @@ const PUBLISH_CRATES: &[&str] = &[
     "burn_p2p_views",
     "burn_p2p_python",
     "burn_p2p",
+    "burn_p2p_admin",
     "burn_p2p_browser",
     "burn_p2p_app",
     "burn_p2p_bootstrap",
+    "burn_p2p_testkit",
+    "burn_p2p_e2e",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +176,7 @@ fn main() -> anyhow::Result<()> {
             BrowserCommand::Smoke(args) => run_browser_smoke(&workspace, args),
             BrowserCommand::Trainer(args) => run_browser_trainer(&workspace, args),
             BrowserCommand::Real(args) => run_browser_real(&workspace, args),
+            BrowserCommand::Site(args) => run_browser_site(&workspace, *args),
         },
         Command::Adversarial { command } => match command {
             AdversarialCommand::Smoke(args) => run_adversarial_smoke(&workspace, args.common),
@@ -2600,6 +2606,169 @@ fn run_browser_real(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result<
     )
 }
 
+fn run_browser_site(workspace: &Workspace, args: BrowserSiteArgs) -> anyhow::Result<()> {
+    ensure!(
+        args.selected_experiment_id.is_some() || args.selected_revision_id.is_none(),
+        "--selected-revision-id requires --selected-experiment-id"
+    );
+    let out_dir = if args.out_dir.is_absolute() {
+        args.out_dir.clone()
+    } else {
+        workspace.root.join(&args.out_dir)
+    };
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir)
+            .with_context(|| format!("failed to clear {}", out_dir.display()))?;
+    }
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+
+    build_browser_site_wasm_bundle(workspace, &args, &out_dir)?;
+    write_browser_site_shell(&args, &out_dir)?;
+    Ok(())
+}
+
+fn build_browser_site_wasm_bundle(
+    workspace: &Workspace,
+    args: &BrowserSiteArgs,
+    out_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let mut command = ProcessCommand::new(workspace.cargo());
+    command
+        .current_dir(&workspace.root)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(workspace.root.join("Cargo.toml"))
+        .arg("-p")
+        .arg(&args.package)
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--profile")
+        .arg(&args.wasm_profile)
+        .arg("--bin")
+        .arg(&args.bin);
+    if args.no_default_features {
+        command.arg("--no-default-features");
+    }
+    if let Some(features) = args
+        .features
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.arg("--features").arg(features);
+    }
+    run_site_step(&mut command, "cargo build browser wasm bundle")?;
+
+    let wasm_input = workspace
+        .root
+        .join("target/wasm32-unknown-unknown")
+        .join(&args.wasm_profile)
+        .join(format!("{}.wasm", args.bin));
+    ensure!(
+        wasm_input.exists(),
+        "missing wasm output at {}",
+        wasm_input.display()
+    );
+
+    let mut bindgen = wasm_bindgen_cli_support::Bindgen::new();
+    bindgen.input_path(&wasm_input).out_name(&args.bin);
+    bindgen
+        .web(true)
+        .context("configure wasm-bindgen web target")?;
+    bindgen
+        .generate(out_dir)
+        .context("generate wasm-bindgen browser bundle")?;
+    Ok(())
+}
+
+fn write_browser_site_shell(
+    args: &BrowserSiteArgs,
+    out_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let normalized_seed_node_urls = args
+        .seed_node_urls
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let site_config = {
+        let config = BrowserSiteBootstrapConfig::new(
+            args.edge_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        )
+        .with_seed_node_urls(normalized_seed_node_urls)
+        .with_edge_auth_requirement(args.require_edge_auth);
+        match args
+            .selected_experiment_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(experiment_id) => config.with_selection(
+                ExperimentId::new(experiment_id),
+                args.selected_revision_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(RevisionId::new),
+            ),
+            None => config,
+        }
+    };
+    let loader = format!(
+        "import init from \"./{bin}.js\";\n\nawait init({{ module_or_path: new URL(\"./{bin}_bg.wasm\", import.meta.url) }});\n",
+        bin = args.bin
+    );
+    let bootstrap = burn_p2p_views::BrowserAppStaticBootstrap {
+        app_name: args.app_name.clone(),
+        asset_base_url: String::new(),
+        module_entry_path: "browser-app-loader.js".into(),
+        stylesheet_path: Some("browser-app.css".into()),
+        default_edge_url: site_config.edge_base_url.clone(),
+        default_surface: BrowserAppSurface::from_key(&args.default_surface),
+        refresh_interval_ms: 15_000,
+    };
+    fs::write(
+        out_dir.join("index.html"),
+        render_browser_app_static_html(&bootstrap),
+    )
+    .with_context(|| format!("failed to write {}/index.html", out_dir.display()))?;
+    fs::write(
+        out_dir.join("404.html"),
+        render_browser_app_static_html(&bootstrap),
+    )
+    .with_context(|| format!("failed to write {}/404.html", out_dir.display()))?;
+    fs::write(out_dir.join(".nojekyll"), "")
+        .with_context(|| format!("failed to write {}/.nojekyll", out_dir.display()))?;
+    fs::write(out_dir.join("browser-app-loader.js"), loader)
+        .with_context(|| format!("failed to write loader in {}", out_dir.display()))?;
+    fs::write(out_dir.join("browser-app.css"), browser_app_stylesheet())
+        .with_context(|| format!("failed to write stylesheet in {}", out_dir.display()))?;
+    fs::write(
+        out_dir.join("browser-app-config.json"),
+        serde_json::to_vec_pretty(&site_config)?,
+    )
+    .with_context(|| format!("failed to write browser config in {}", out_dir.display()))?;
+    Ok(())
+}
+
+fn run_site_step(command: &mut ProcessCommand, label: &str) -> anyhow::Result<()> {
+    let output = command.output().with_context(|| format!("run {label}"))?;
+    ensure!(
+        output.status.success(),
+        "{label} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
+}
+
 fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> anyhow::Result<()> {
     let artifacts =
         ArtifactLayout::create(&workspace.root, "stress-multiprocess", args.common.profile)?;
@@ -4403,7 +4572,7 @@ mod tests {
     fn publish_plan_can_resume_from_named_crate() {
         let crates = publish_crates_from(Some("burn_p2p_browser")).expect("publish plan");
         assert_eq!(crates.first().copied(), Some("burn_p2p_browser"));
-        assert_eq!(crates.last().copied(), Some("burn_p2p_bootstrap"));
+        assert_eq!(crates.last().copied(), Some("burn_p2p_e2e"));
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::profile::Profile;
 
@@ -132,6 +134,8 @@ pub enum BrowserCommand {
     Trainer(BrowserArgs),
     /// Run the local real-browser probe path.
     Real(BrowserArgs),
+    /// Build a static wasm browser-site bundle for a downstream browser shell.
+    Site(Box<BrowserSiteArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,6 +233,49 @@ pub struct BrowserArgs {
     /// Launch browsers headed instead of headless.
     #[arg(long)]
     pub headed: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct BrowserSiteArgs {
+    /// Workspace package that owns the wasm browser binary.
+    #[arg(long)]
+    pub package: String,
+    /// Browser binary target name built for wasm.
+    #[arg(long)]
+    pub bin: String,
+    /// Output directory for the generated static site.
+    #[arg(long, default_value = "target/xtask/browser-site")]
+    pub out_dir: PathBuf,
+    /// Optional edge base URL embedded into the site bootstrap.
+    #[arg(long)]
+    pub edge_url: Option<String>,
+    /// Seed node URLs embedded into the site bootstrap.
+    #[arg(long = "seed-node-url", value_delimiter = ',', action = ArgAction::Append)]
+    pub seed_node_urls: Vec<String>,
+    /// Optional selected experiment identifier.
+    #[arg(long)]
+    pub selected_experiment_id: Option<String>,
+    /// Optional selected revision identifier.
+    #[arg(long)]
+    pub selected_revision_id: Option<String>,
+    /// Whether the generated site expects authenticated edge access.
+    #[arg(long, default_value_t = true)]
+    pub require_edge_auth: bool,
+    /// Human-readable site title.
+    #[arg(long, default_value = "burn_p2p browser")]
+    pub app_name: String,
+    /// Default browser-app surface for the generated shell.
+    #[arg(long, default_value = "viewer")]
+    pub default_surface: String,
+    /// Cargo profile used for the wasm build.
+    #[arg(long, default_value = "wasm-release")]
+    pub wasm_profile: String,
+    /// Optional cargo feature list passed to the wasm build.
+    #[arg(long)]
+    pub features: Option<String>,
+    /// Disable default cargo features for the wasm build.
+    #[arg(long)]
+    pub no_default_features: bool,
 }
 
 #[derive(Debug, Args, Clone)]

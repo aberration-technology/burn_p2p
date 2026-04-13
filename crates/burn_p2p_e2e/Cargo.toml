@@ -1,0 +1,34 @@
+[package]
+name = "burn_p2p_e2e"
+description = "Public downstream e2e and browser-validation facade for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+anyhow.workspace = true
+burn_p2p.workspace = true
+burn_p2p_browser.workspace = true
+burn_p2p_core.workspace = true
+burn_p2p_metrics.workspace = true
+burn_p2p_publish.workspace = true
+burn_p2p_testkit.workspace = true
+chrono.workspace = true
+libp2p-identity = { version = "0.2.13", features = ["ed25519", "peerid", "rand"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

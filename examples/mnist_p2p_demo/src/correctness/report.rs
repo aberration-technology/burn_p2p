@@ -7,19 +7,20 @@ use chrono::Utc;
 
 use crate::{
     core::{
-        CoreMnistRun, dynamics_summary, experiment_directory_entries, leaderboard_entries,
-        leaderboard_node_pairs, metric_float, node_peer_id, trainer_lease_summary,
+        CoreMnistRun, DynamicsSummaryInput, dynamics_summary, experiment_directory_entries,
+        leaderboard_entries, leaderboard_node_pairs, metric_float, node_peer_id,
+        trainer_lease_summary,
     },
     correctness::{
         browser::{browser_scenarios, exercise_browser_roles, probe_browser_http_shard_fetch},
-        live_browser::LiveBrowserProbeManifest,
         export::{
             BrowserDatasetAccessSummary, BrowserDeviceLimitSummary, BrowserExecutionSummary,
             CoreMnistSummary, DemoAssessmentSummary, DeviceLimitExerciseSummary,
-            ExperimentRunSummary, MnistCorrectnessSummary, MnistPerformanceSummary,
-            MnistRunExport, NativeNodeDeviceLimitSummary, NodeSummary,
-            ResilienceDrillSummary, TopologyExerciseSummary,
+            ExperimentRunSummary, MnistCorrectnessSummary, MnistPerformanceSummary, MnistRunExport,
+            NativeNodeDeviceLimitSummary, NodeSummary, ResilienceDrillSummary,
+            TopologyExerciseSummary,
         },
+        live_browser::LiveBrowserProbeManifest,
     },
 };
 
@@ -250,12 +251,10 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
     let correctness = MnistCorrectnessSummary {
         generated_at: Utc::now(),
         baseline_outperformed_low_lr: accuracy_comparison.baseline_outperformed_low_lr,
-        baseline_accuracy_delta_vs_low_lr: accuracy_comparison
-            .baseline_accuracy_delta_vs_low_lr,
+        baseline_accuracy_delta_vs_low_lr: accuracy_comparison.baseline_accuracy_delta_vs_low_lr,
         baseline_accuracy_tolerance_vs_low_lr: accuracy_comparison
             .baseline_accuracy_tolerance_vs_low_lr,
-        baseline_loss_advantage_vs_low_lr: accuracy_comparison
-            .baseline_loss_advantage_vs_low_lr,
+        baseline_loss_advantage_vs_low_lr: accuracy_comparison.baseline_loss_advantage_vs_low_lr,
         late_joiner_synced_checkpoint: run.late_joiner_synced_checkpoint,
         shard_assignments_are_distinct,
         phase_timeline: run.phase_timeline.clone(),
@@ -271,16 +270,16 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         browser_dataset_access,
         browser_execution,
         resilience,
-        dynamics: dynamics_summary(
-            &run.baseline_outcomes,
-            &run.low_lr_outcomes,
+        dynamics: dynamics_summary(DynamicsSummaryInput {
+            baseline_outcomes: &run.baseline_outcomes,
+            low_lr_outcomes: &run.low_lr_outcomes,
             baseline_initial_accuracy,
             baseline_accuracy,
             low_lr_initial_accuracy,
             low_lr_accuracy,
-            &run.prepared_data,
+            prepared_data: &run.prepared_data,
             performance,
-        ),
+        }),
         assessment,
     };
 
@@ -459,7 +458,10 @@ pub fn apply_live_browser_probe_results(
         .browser_dataset_access
         .upstream_mode
         .clone();
-    export.correctness.assessment.browser_shards_distributed_over_p2p = export
+    export
+        .correctness
+        .assessment
+        .browser_shards_distributed_over_p2p = export
         .correctness
         .browser_dataset_access
         .shards_distributed_over_p2p;
@@ -523,9 +525,9 @@ fn device_limits_summary(
     let native_validator_backends = native_nodes
         .iter()
         .filter(|node| {
-            node.configured_roles.iter().any(|role| {
-                matches!(role.as_str(), "Validator" | "Reducer")
-            })
+            node.configured_roles
+                .iter()
+                .any(|role| matches!(role.as_str(), "Validator" | "Reducer"))
         })
         .filter_map(|node| node.backend_preference.clone())
         .collect::<Vec<_>>();
@@ -685,7 +687,12 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
     let aggregate_proposal_reducers = topology_labels
         .iter()
         .filter_map(|label| run.final_snapshots.get(label))
-        .flat_map(|snapshot| snapshot.control_plane.aggregate_proposal_announcements.iter())
+        .flat_map(|snapshot| {
+            snapshot
+                .control_plane
+                .aggregate_proposal_announcements
+                .iter()
+        })
         .map(|announcement| announcement.proposal.reducer_peer_id.clone())
         .collect::<BTreeSet<_>>();
     let reducer_load_publishers = topology_labels
@@ -783,7 +790,9 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
     })
 }
 
-fn browser_dataset_access_summary(run: &CoreMnistRun) -> anyhow::Result<BrowserDatasetAccessSummary> {
+fn browser_dataset_access_summary(
+    run: &CoreMnistRun,
+) -> anyhow::Result<BrowserDatasetAccessSummary> {
     if let Some(browser_probe_summary) = run.browser_probe_summary.as_ref()
         && let Some(value) = browser_probe_summary.get("browser_dataset_access")
     {
@@ -827,9 +836,7 @@ fn browser_execution_summary(
             emitted_receipt_id: None,
             accepted_receipt_ids: Vec::new(),
             trainer_runtime_and_wasm_training_coherent: false,
-            notes: vec![
-                "live browser participation was not requested for this demo run".into(),
-            ],
+            notes: vec!["live browser participation was not requested for this demo run".into()],
         });
     };
 
@@ -1004,13 +1011,7 @@ mod tests {
 
     #[test]
     fn comparison_uses_loss_tiebreak_within_two_eval_examples() {
-        let comparison = compare_baseline_vs_low_lr(
-            320,
-            0.496875,
-            2.18,
-            0.5,
-            2.24,
-        );
+        let comparison = compare_baseline_vs_low_lr(320, 0.496875, 2.18, 0.5, 2.24);
         assert!(comparison.baseline_accuracy_delta_vs_low_lr < 0.0);
         assert!(
             comparison.baseline_accuracy_delta_vs_low_lr

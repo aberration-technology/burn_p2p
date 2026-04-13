@@ -1036,6 +1036,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn_p2p_admin"
+version = "0.21.0-pre.12"
+dependencies = [
+ "burn_p2p",
+ "burn_p2p_core",
+ "burn_p2p_experiment",
+ "chrono",
+ "gloo-net",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "burn_p2p_app"
 version = "0.21.0-pre.12"
 dependencies = [
@@ -1210,6 +1225,27 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "burn_p2p_e2e"
+version = "0.21.0-pre.12"
+dependencies = [
+ "anyhow",
+ "burn_p2p",
+ "burn_p2p_browser",
+ "burn_p2p_core",
+ "burn_p2p_metrics",
+ "burn_p2p_publish",
+ "burn_p2p_testkit",
+ "chrono",
+ "libp2p-identity",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -11734,7 +11770,9 @@ version = "0.21.0-pre.12"
 dependencies = [
  "anyhow",
  "burn_p2p",
+ "burn_p2p_app",
  "burn_p2p_bootstrap",
+ "burn_p2p_browser",
  "burn_p2p_core",
  "burn_p2p_metrics",
  "burn_p2p_security",
@@ -11746,6 +11784,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "wasm-bindgen-cli-support",
 ]
 
 [[package]]
