@@ -32,7 +32,7 @@ fn reduction_attestations_from_snapshot(
         })
         .map(|announcement| {
             (
-                announcement.certificate.validator.clone(),
+                announcement.certificate.promoter_peer_id.clone(),
                 announcement.certificate.reduction_id.clone(),
             )
         })

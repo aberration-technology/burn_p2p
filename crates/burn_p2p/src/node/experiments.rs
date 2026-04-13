@@ -727,6 +727,7 @@ impl<P> RunningNode<P> {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("runtime does not have a local peer id yet"))?;
         let topology_policy = runtime_merge_topology_policy(
+            self.config(),
             &telemetry_snapshot,
             experiment,
             Some(&outcome.contribution.base_head_id),
@@ -737,12 +738,19 @@ impl<P> RunningNode<P> {
             runtime_topology_peers(&telemetry_snapshot, &self.mainnet().roles, &local_peer_id);
         let validator_peers =
             runtime_validator_peers(&telemetry_snapshot, &self.mainnet().roles, &local_peer_id);
-        let validators = runtime_validators(
-            &self.mainnet().roles,
-            &local_peer_id,
-            &validator_peers,
-            topology_policy.promotion_policy.validator_quorum,
-        );
+        let validators = if matches!(
+            topology_policy.promotion_policy.mode,
+            HeadPromotionMode::ReducerAuthority
+        ) {
+            Vec::new()
+        } else {
+            runtime_validators(
+                &self.mainnet().roles,
+                &local_peer_id,
+                &validator_peers,
+                topology_policy.promotion_policy.validator_quorum,
+            )
+        };
         let merge_window = latest_merge_window_from_snapshot(
             &telemetry_snapshot.control_plane,
             experiment,

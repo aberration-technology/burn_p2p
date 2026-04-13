@@ -559,7 +559,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         )?;
         baseline_head = validation.merged_head.clone();
         baseline_head_providers = vec![
-            validation.merge_certificate.validator.clone(),
+            validation.merge_certificate.promoter_peer_id.clone(),
             reducer_peer_id.clone(),
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
@@ -706,7 +706,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         write_demo_phase(&output, "restart-round-validation-complete")?;
         baseline_head = validation.merged_head.clone();
         baseline_head_providers = vec![
-            validation.merge_certificate.validator.clone(),
+            validation.merge_certificate.promoter_peer_id.clone(),
             reducer_peer_id.clone(),
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
@@ -868,7 +868,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         )?;
         low_lr_head = validation.merged_head.clone();
         let low_lr_head_providers = vec![
-            validation.merge_certificate.validator.clone(),
+            validation.merge_certificate.promoter_peer_id.clone(),
             reducer_peer_id.clone(),
             validator_peer_id.clone(),
             validator_b_peer_id.clone(),
@@ -2182,7 +2182,7 @@ pub(crate) fn leaderboard_entries(
     let mut validation_counts = BTreeMap::<PeerId, u64>::new();
     for certificate in merge_certificates {
         *validation_counts
-            .entry(certificate.validator.clone())
+            .entry(certificate.promoter_peer_id.clone())
             .or_default() += 1;
     }
 
@@ -2370,11 +2370,11 @@ where
         }
     };
     anyhow::ensure!(
-        validator_peer_ids.contains(&validation.merge_certificate.validator),
+        validator_peer_ids.contains(&validation.merge_certificate.promoter_peer_id),
         "merge promotion came from non-validator peer {}",
-        validation.merge_certificate.validator,
+        validation.merge_certificate.promoter_peer_id,
     );
-    if validation.merge_certificate.validator == validator_peer_id {
+    if validation.merge_certificate.promoter_peer_id == validator_peer_id {
         validator.publish_head_provider(experiment, &validation.merged_head)?;
         wait_for_artifact_from_provider(
             (VALIDATOR_LABEL, validator),
@@ -2557,7 +2557,7 @@ fn observe_demo_validation_coordination<P, const N: usize>(
                 && announcement.certificate.revision_id == experiment.revision_id
                 && announcement.certificate.aggregate_id == *aggregate_id
             {
-                attesters.insert(announcement.certificate.validator.clone());
+                attesters.insert(announcement.certificate.promoter_peer_id.clone());
             }
         }
         quorum_visible |= snapshot
@@ -2642,7 +2642,7 @@ fn log_demo_validation_coordination(
         coordination
             .merge_certificate
             .as_ref()
-            .map(|certificate| certificate.validator.as_str().to_owned())
+            .map(|certificate| certificate.promoter_peer_id.as_str().to_owned())
             .unwrap_or_else(|| "none".into()),
     );
 }

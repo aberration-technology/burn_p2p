@@ -541,7 +541,7 @@ fn build_audit_records_from_preview(
             study_id: Some(merge.study_id.clone()),
             experiment_id: Some(merge.experiment_id.clone()),
             revision_id: Some(merge.revision_id.clone()),
-            peer_id: Some(merge.validator.clone()),
+            peer_id: Some(merge.promoter_peer_id.clone()),
             head_id: Some(merge.merged_head_id.clone()),
             captured_at: merge.issued_at,
             summary: BTreeMap::from([
@@ -2854,7 +2854,8 @@ mod tests {
             merged_artifact_id: head.artifact_id.clone(),
             policy: burn_p2p::MergePolicy::WeightedMean,
             issued_at: captured_at - chrono::Duration::seconds(3),
-            validator: PeerId::new(format!("validator-{}", index % 5)),
+            promoter_peer_id: PeerId::new(format!("validator-{}", index % 5)),
+            promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
             contribution_receipts: vec![receipt.receipt_id.clone()],
         };
         let peer_window_metrics = PeerWindowMetrics {
@@ -2982,7 +2983,8 @@ mod tests {
             merged_artifact_id: head.artifact_id.clone(),
             policy: burn_p2p::MergePolicy::WeightedMean,
             issued_at: now - chrono::Duration::seconds(3),
-            validator: PeerId::new("validator-a"),
+            promoter_peer_id: PeerId::new("validator-a"),
+            promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
             contribution_receipts: vec![receipt.receipt_id.clone()],
         };
         let peer_window_metrics = PeerWindowMetrics {

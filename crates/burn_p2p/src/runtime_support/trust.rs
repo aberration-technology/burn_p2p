@@ -102,7 +102,7 @@ fn peer_has_runtime_presence(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId)
         || control_plane
             .reduction_certificate_announcements
             .iter()
-            .any(|announcement| &announcement.certificate.validator == peer_id)
+            .any(|announcement| &announcement.certificate.promoter_peer_id == peer_id)
         || control_plane
             .validation_quorum_announcements
             .iter()
@@ -110,7 +110,7 @@ fn peer_has_runtime_presence(snapshot: &NodeTelemetrySnapshot, peer_id: &PeerId)
         || control_plane
             .merge_announcements
             .iter()
-            .any(|announcement| &announcement.certificate.validator == peer_id)
+            .any(|announcement| &announcement.certificate.promoter_peer_id == peer_id)
         || control_plane
             .reducer_assignment_announcements
             .iter()

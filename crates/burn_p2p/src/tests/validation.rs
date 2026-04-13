@@ -180,7 +180,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
             .reduction_certificate_announcements
             .iter()
             .chain(b.control_plane.reduction_certificate_announcements.iter())
-            .map(|announcement| announcement.certificate.validator.clone())
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone())
             .collect::<BTreeSet<_>>();
         if observed_attesters.len() >= 2
             && a.control_plane.merge_announcements.len() == 1
@@ -628,7 +628,7 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
             .reduction_certificate_announcements
             .iter()
             .chain(b.control_plane.reduction_certificate_announcements.iter())
-            .map(|announcement| announcement.certificate.validator.clone())
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone())
             .collect::<BTreeSet<_>>();
         if observed_attesters.len() >= 2
             && a.control_plane.merge_announcements.len() == 1
@@ -982,4 +982,251 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     let _ = validator_a
         .await_termination()
         .expect("validator a termination");
+}
+
+#[test]
+fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
+    let _guard = native_swarm_test_guard();
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+    let experiment = experiment();
+    let bootstrap_storage = StorageConfig::new(std::env::temp_dir().join(format!(
+        "burn-p2p-reducer-authority-bootstrap-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    )));
+    let reducer_storage = StorageConfig::new(std::env::temp_dir().join(format!(
+        "burn-p2p-reducer-authority-reducer-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    )));
+    let bootstrap_addr = loopback_listen_address();
+
+    let mut directory_entry = runtime_directory_entry(&experiment);
+    directory_entry.allowed_roles = crate::PeerRoleSet::new([
+        crate::PeerRole::Bootstrap,
+        crate::PeerRole::Reducer,
+        crate::PeerRole::TrainerCpu,
+    ]);
+    let mut merge_topology = crate::MergeTopologyPolicy::default();
+    merge_topology.reducer_replication = 1;
+    merge_topology.target_leaf_cohort = 2;
+    merge_topology.promotion_policy.mode = crate::HeadPromotionMode::ReducerAuthority;
+    merge_topology.promotion_policy.validator_quorum = 1;
+    directory_entry.metadata.insert(
+        "burn_p2p.revision.merge_topology.policy_json".into(),
+        serde_json::to_string(&merge_topology).expect("merge topology json"),
+    );
+    let auth = crate::AuthConfig::new().with_experiment_directory(vec![directory_entry]);
+
+    let bootstrap = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Bootstrap]))
+    .with_auth(auth.clone())
+    .with_listen_address(bootstrap_addr.clone())
+    .with_storage(bootstrap_storage.clone())
+    .spawn()
+    .expect("bootstrap spawn");
+    let bootstrap_telemetry = bootstrap.telemetry();
+
+    let reducer = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Reducer]))
+    .with_auth(auth.clone())
+    .with_listen_address(loopback_listen_address())
+    .with_storage(reducer_storage.clone())
+    .with_bootstrap_peer(bootstrap_addr.clone())
+    .spawn()
+    .expect("reducer spawn");
+    let reducer_telemetry = reducer.telemetry();
+
+    let mut trainers = Vec::new();
+    for (index, learning_rate) in [0.25, 0.75].into_iter().enumerate() {
+        let trainer = NodeBuilder::new(SyntheticRuntimeProject {
+            dataset_root: dataset_dir.path().to_path_buf(),
+            learning_rate,
+            target_model: 10.0,
+        })
+        .with_mainnet(mainnet().genesis.clone())
+        .with_roles(crate::PeerRoleSet::new([crate::PeerRole::TrainerCpu]))
+        .with_auth(auth.clone())
+        .with_listen_address(loopback_listen_address())
+        .with_storage(StorageConfig::new(std::env::temp_dir().join(format!(
+            "burn-p2p-reducer-authority-trainer-{index}-{}",
+            Utc::now().timestamp_nanos_opt().expect("nanos")
+        ))))
+        .with_bootstrap_peer(bootstrap_addr.clone())
+        .spawn()
+        .expect("trainer spawn");
+        trainers.push(trainer);
+    }
+
+    wait_for(
+        Duration::from_secs(5),
+        || bootstrap_telemetry.snapshot().connected_peers >= 3,
+        "bootstrap did not connect to reducer and trainers",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || reducer_telemetry.snapshot().connected_peers >= 3,
+        "reducer did not connect to bootstrap and both trainers",
+    );
+
+    let mut bootstrap = bootstrap;
+    let mut reducer = reducer;
+    let genesis_head = bootstrap
+        .initialize_local_head(&experiment)
+        .expect("bootstrap genesis head");
+
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            reducer
+                .sync_experiment_head(&experiment)
+                .expect("reducer sync genesis")
+                .is_some()
+                && trainers.iter().all(|trainer| {
+                    trainer
+                        .sync_experiment_head(&experiment)
+                        .expect("trainer sync genesis")
+                        .is_some()
+                })
+        },
+        "reducer and trainers did not sync genesis head",
+    );
+
+    let mut trainer_outcomes = Vec::new();
+    for trainer in &mut trainers {
+        trainer_outcomes.push(
+            trainer
+                .train_window_once(&experiment)
+                .expect("trainer training window"),
+        );
+    }
+
+    for outcome in &trainer_outcomes {
+        wait_for(
+            Duration::from_secs(5),
+            || {
+                reducer
+                    .sync_artifact_from_peer(
+                        &outcome.contribution.peer_id,
+                        outcome.head.artifact_id.clone(),
+                    )
+                    .is_ok()
+            },
+            "reducer did not warm the trainer artifact",
+        );
+    }
+
+    let reduced = reducer
+        .reduce_candidates_once(&experiment)
+        .expect("reducer authority promotion")
+        .expect("reducer authority outcome");
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = reducer_telemetry.snapshot();
+            snapshot
+                .control_plane
+                .aggregate_proposal_announcements
+                .len()
+                == 1
+                && snapshot
+                    .control_plane
+                    .reduction_certificate_announcements
+                    .len()
+                    == 1
+                && snapshot
+                    .control_plane
+                    .validation_quorum_announcements
+                    .is_empty()
+                && snapshot.control_plane.merge_announcements.len() == 1
+                && snapshot
+                    .control_plane
+                    .merge_window_announcements
+                    .last()
+                    .is_some_and(|announcement| announcement.merge_window.validators.is_empty())
+        },
+        "reducer authority node did not publish the expected canonical promotion state",
+    );
+
+    let reducer_snapshot = reducer_telemetry.snapshot();
+    let reduction_certificate = reducer_snapshot
+        .control_plane
+        .reduction_certificate_announcements
+        .last()
+        .expect("reduction certificate")
+        .certificate
+        .clone();
+    let merge_certificate = reducer_snapshot
+        .control_plane
+        .merge_announcements
+        .last()
+        .expect("merge certificate")
+        .certificate
+        .clone();
+    assert_eq!(
+        reduction_certificate.promotion_mode,
+        crate::HeadPromotionMode::ReducerAuthority
+    );
+    assert_eq!(reduction_certificate.promotion_quorum, 1);
+    assert_eq!(
+        merge_certificate.promotion_mode,
+        crate::HeadPromotionMode::ReducerAuthority
+    );
+    assert_eq!(
+        merge_certificate.merged_head_id,
+        reduced.merged_head.head_id
+    );
+    assert_eq!(merge_certificate.base_head_id, genesis_head.head_id);
+    assert!(
+        reducer_snapshot
+            .control_plane
+            .validation_quorum_announcements
+            .is_empty(),
+        "reducer-authority promotion should not emit validation quorum certificates",
+    );
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            bootstrap
+                .sync_experiment_head(&experiment)
+                .expect("bootstrap sync promoted head")
+                .is_some_and(|head| head.head_id == reduced.merged_head.head_id)
+                && trainers.iter().all(|trainer| {
+                    trainer
+                        .sync_experiment_head(&experiment)
+                        .expect("trainer sync promoted head")
+                        .is_some_and(|head| head.head_id == reduced.merged_head.head_id)
+                })
+        },
+        "bootstrap and trainers did not adopt the reducer-authority canonical head",
+    );
+
+    let head_eval_reports = load_metric_artifacts::<HeadEvalReport>(&reducer_storage, "head-eval-");
+    assert_eq!(head_eval_reports.len(), 1);
+    assert_eq!(head_eval_reports[0].head_id, reduced.merged_head.head_id);
+    assert_eq!(head_eval_reports[0].status, crate::HeadEvalStatus::Skipped);
+    assert_eq!(head_eval_reports[0].sample_count, 0);
+    assert!(head_eval_reports[0].metric_values.is_empty());
+
+    for trainer in trainers {
+        trainer.shutdown().expect("trainer shutdown");
+        let _ = trainer.await_termination().expect("trainer termination");
+    }
+    reducer.shutdown().expect("reducer shutdown");
+    let _ = reducer.await_termination().expect("reducer termination");
+    bootstrap.shutdown().expect("bootstrap shutdown");
+    let _ = bootstrap
+        .await_termination()
+        .expect("bootstrap termination");
 }

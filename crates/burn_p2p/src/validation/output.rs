@@ -21,6 +21,7 @@ pub(super) struct ValidationExecution {
     pub merge_certificate: MergeCertificate,
     pub contribution: ContributionReceipt,
     pub evaluation: MetricReport,
+    pub promotion_mode: HeadPromotionMode,
     pub aggregate: AggregateEnvelope,
     pub local_aggregate_materialization: Option<LocalAggregateMaterialization>,
     pub reduction_certificate: ReductionCertificate,
@@ -205,8 +206,9 @@ pub(super) fn build_reduction_certificate(
         window_id: merge_window.window_id,
         base_head_id: prepared.base_head_id.clone(),
         aggregate_id: aggregate.aggregate_id.clone(),
-        validator: prepared.local_peer_id.clone(),
-        validator_quorum: super::effective_validator_quorum(merge_window) as u16,
+        promoter_peer_id: prepared.local_peer_id.clone(),
+        promotion_mode: super::head_promotion_mode(merge_window),
+        promotion_quorum: super::effective_promotion_quorum(merge_window) as u16,
         cross_checked_reducers,
         issued_at: Utc::now(),
     })
@@ -243,6 +245,7 @@ pub(super) fn build_validation_contribution(
 
 pub(super) fn build_validation_merge_certificate(
     experiment: &ExperimentHandle,
+    merge_window: &MergeWindowState,
     local_peer_id: &PeerId,
     base_head_id: &HeadId,
     merged_head: &HeadDescriptor,
@@ -278,7 +281,8 @@ pub(super) fn build_validation_merge_certificate(
         merged_artifact_id: merged_head.artifact_id.clone(),
         policy: merge_policy,
         issued_at: Utc::now(),
-        validator: local_peer_id.clone(),
+        promoter_peer_id: local_peer_id.clone(),
+        promotion_mode: super::head_promotion_mode(merge_window),
         contribution_receipts,
     }
 }
@@ -312,6 +316,7 @@ pub(super) fn build_validation_quorum_certificate(
         aggregate_id: aggregate.aggregate_id.clone(),
         aggregate_artifact_id: aggregate.aggregate_artifact_id.clone(),
         merged_head_id: merged_head.head_id.clone(),
+        promotion_mode: super::head_promotion_mode(&prepared.merge_window),
         validator_quorum: super::effective_validator_quorum(&prepared.merge_window) as u16,
         coordinator: prepared.local_peer_id.clone(),
         attesting_validators,

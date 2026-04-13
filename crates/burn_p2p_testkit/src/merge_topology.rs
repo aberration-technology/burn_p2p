@@ -998,8 +998,9 @@ pub fn simulate_merge_topology(
             .last()
             .map(|aggregate| aggregate.aggregate_id.clone())
             .unwrap_or_else(|| ContentId::new("aggregate-root")),
-        validator: validators[0].clone(),
-        validator_quorum: config.topology_policy.promotion_policy.validator_quorum,
+        promoter_peer_id: validators[0].clone(),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
+        promotion_quorum: config.topology_policy.promotion_policy.validator_quorum,
         cross_checked_reducers: reducers.iter().take(2).cloned().collect(),
         issued_at: Utc::now(),
     };

@@ -25,7 +25,8 @@ mod tests;
 use candidate::{
     ValidationCandidate, ValidationCandidateHead, ValidationCandidateLoadArgs,
     ValidationCandidateView, collect_validation_candidate_heads, fallback_best_candidate_index,
-    load_validation_base_model, load_validation_candidate_model, select_validation_head,
+    load_validation_base_model, load_validation_candidate_model, select_reducer_authority_head,
+    select_validation_head,
 };
 use output::{
     LocalAggregateMaterialization, ValidationExecution, aggregate_stats_from_updates,
@@ -119,9 +120,27 @@ struct ValidationSnapshotObservation {
     base_head_id: HeadId,
 }
 
+fn head_promotion_mode(merge_window: &MergeWindowState) -> HeadPromotionMode {
+    merge_window.policy.promotion_policy.mode.clone()
+}
+
+fn reducer_authority_promotion_enabled(merge_window: &MergeWindowState) -> bool {
+    matches!(
+        head_promotion_mode(merge_window),
+        HeadPromotionMode::ReducerAuthority
+    )
+}
+
 fn effective_validator_quorum(merge_window: &MergeWindowState) -> usize {
     usize::from(merge_window.policy.promotion_policy.validator_quorum.max(1))
         .min(merge_window.validators.len().max(1))
+}
+
+fn effective_promotion_quorum(merge_window: &MergeWindowState) -> usize {
+    match head_promotion_mode(merge_window) {
+        HeadPromotionMode::ValidatorQuorum => effective_validator_quorum(merge_window),
+        HeadPromotionMode::ReducerAuthority => 1,
+    }
 }
 
 fn validation_candidate_cache_key(

@@ -1008,6 +1008,7 @@ fn eval_summary(report: &burn_p2p_core::HeadEvalReport) -> String {
             burn_p2p_core::HeadEvalStatus::Partial => "partial",
             burn_p2p_core::HeadEvalStatus::Failed => "failed",
             burn_p2p_core::HeadEvalStatus::Superseded => "superseded",
+            burn_p2p_core::HeadEvalStatus::Skipped => "skipped",
         },
         report.sample_count,
         primary_metric

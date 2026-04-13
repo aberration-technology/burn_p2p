@@ -46,7 +46,8 @@ fn experiment_handle_matches_scoped_objects() {
         merged_artifact_id: crate::ArtifactId::new("artifact-merged"),
         policy: crate::MergePolicy::WeightedMean,
         issued_at: Utc::now(),
-        validator: crate::PeerId::new("validator-1"),
+        promoter_peer_id: crate::PeerId::new("validator-1"),
+        promotion_mode: crate::HeadPromotionMode::ValidatorQuorum,
         contribution_receipts: vec![crate::ContributionReceiptId::new("receipt-1")],
     };
 

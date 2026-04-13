@@ -8,7 +8,7 @@ mod tests;
 pub(super) use discovery::collect_validation_candidate_heads;
 pub(super) use model::{
     fallback_best_candidate_index, load_validation_base_model, load_validation_candidate_model,
-    select_validation_head,
+    select_reducer_authority_head, select_validation_head,
 };
 
 pub(super) struct ValidationCandidate<M> {
@@ -16,7 +16,7 @@ pub(super) struct ValidationCandidate<M> {
     pub head: HeadDescriptor,
     pub update: UpdateAnnounce,
     pub evaluation: MetricReport,
-    pub canary_report: CanaryEvalReport,
+    pub canary_report: Option<CanaryEvalReport>,
     pub sample_weight: f64,
     pub quality_weight: f64,
     pub model: M,
@@ -28,7 +28,7 @@ pub(super) struct ValidationCandidateView<'a, M> {
     pub head: &'a HeadDescriptor,
     pub update: &'a UpdateAnnounce,
     pub evaluation: &'a MetricReport,
-    pub canary_report: &'a CanaryEvalReport,
+    pub canary_report: Option<&'a CanaryEvalReport>,
     pub sample_weight: f64,
     pub quality_weight: f64,
     pub model: &'a M,
@@ -41,7 +41,7 @@ impl<'a, M> From<&'a ValidationCandidate<M>> for ValidationCandidateView<'a, M> 
             head: &candidate.head,
             update: &candidate.update,
             evaluation: &candidate.evaluation,
-            canary_report: &candidate.canary_report,
+            canary_report: candidate.canary_report.as_ref(),
             sample_weight: candidate.sample_weight,
             quality_weight: candidate.quality_weight,
             model: &candidate.model,
@@ -55,6 +55,7 @@ pub(super) struct ValidationCandidateLoadArgs<'a, D> {
     pub device: &'a D,
     pub current_head: &'a Option<(PeerId, HeadDescriptor)>,
     pub canary_threshold: f64,
+    pub evaluate_candidates: bool,
 }
 
 pub(super) struct ValidationCandidateHead {

@@ -304,8 +304,9 @@ fn semantic_test_reduction_certificate(
             window_id: WindowId(7),
             base_head_id: HeadId::new("head-base"),
             aggregate_id: ContentId::new(aggregate_id),
-            validator: PeerId::new(validator),
-            validator_quorum: quorum,
+            promoter_peer_id: PeerId::new(validator),
+            promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
+            promotion_quorum: quorum,
             cross_checked_reducers: vec![PeerId::new("reducer-b"), PeerId::new("reducer-a")],
             issued_at,
         },
@@ -333,6 +334,7 @@ fn semantic_test_validation_quorum(
             aggregate_id: ContentId::new(aggregate_id),
             aggregate_artifact_id: ArtifactId::new("artifact-a"),
             merged_head_id: HeadId::new(merged_head_id),
+            promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
             validator_quorum: 2,
             coordinator: PeerId::new(coordinator),
             attesting_validators: validators.iter().map(|peer| PeerId::new(*peer)).collect(),
@@ -587,7 +589,7 @@ fn reduction_certificate_announcements_cap_at_validator_quorum() {
         snapshot
             .reduction_certificate_announcements
             .iter()
-            .map(|announcement| announcement.certificate.validator.as_str())
+            .map(|announcement| announcement.certificate.promoter_peer_id.as_str())
             .collect::<Vec<_>>(),
         vec!["validator-a", "validator-b"]
     );

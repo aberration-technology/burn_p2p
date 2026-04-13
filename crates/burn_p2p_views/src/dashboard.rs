@@ -441,10 +441,10 @@ pub struct HeadPromotionTimelineEntry {
     pub reduction_id: ContentId,
     /// Aggregate identifier that was certified.
     pub aggregate_id: ContentId,
-    /// Validator peer identifier.
-    pub validator: PeerId,
-    /// Validator quorum used for the promotion.
-    pub validator_quorum: u16,
+    /// Promoter peer identifier.
+    pub promoter_peer_id: PeerId,
+    /// Promotion quorum used for the promotion.
+    pub promotion_quorum: u16,
     /// Timestamp when the certificate was issued.
     pub issued_at: DateTime<Utc>,
 }
@@ -454,8 +454,8 @@ impl From<ReductionCertificate> for HeadPromotionTimelineEntry {
         Self {
             reduction_id: value.reduction_id,
             aggregate_id: value.aggregate_id,
-            validator: value.validator,
-            validator_quorum: value.validator_quorum,
+            promoter_peer_id: value.promoter_peer_id,
+            promotion_quorum: value.promotion_quorum,
             issued_at: value.issued_at,
         }
     }

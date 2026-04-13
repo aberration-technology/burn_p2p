@@ -618,7 +618,8 @@ impl SimulationRunner {
                     merged_artifact_id: merged_artifact.artifact_id.clone(),
                     policy: merge.policy,
                     issued_at: granted_at + Duration::seconds(50),
-                    validator: PeerId::new("validator"),
+                    promoter_peer_id: PeerId::new("validator"),
+                    promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
                     contribution_receipts: merge.contribution_receipt_ids,
                 };
                 current_base_head = merged_head_id.clone();

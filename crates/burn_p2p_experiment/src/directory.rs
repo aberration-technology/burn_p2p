@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use burn_p2p_core::{
     ArtifactTargetKind, BrowserCapability, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy,
     CapabilityCard, ClientPlatform, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
-    ExperimentScope, ExperimentVisibility, LagPolicy, MergeWindowMissPolicy, NetworkId, Precision,
-    RevisionManifest, RobustnessPolicy,
+    ExperimentScope, ExperimentVisibility, LagPolicy, MergeTopologyPolicy, MergeWindowMissPolicy,
+    NetworkId, Precision, RevisionManifest, RobustnessPolicy,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ const LAG_BLOCK_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_block";
 const LAG_REBASE_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_full_rebase";
 const LAG_SKEW_KEY: &str = "burn_p2p.revision.lag.max_window_skew_before_lease_revoke";
 const MERGE_WINDOW_MISS_POLICY_KEY: &str = "burn_p2p.revision.merge_window_miss_policy";
+const MERGE_TOPOLOGY_POLICY_JSON_KEY: &str = "burn_p2p.revision.merge_topology.policy_json";
 const BROWSER_ENABLED_KEY: &str = "burn_p2p.revision.browser.enabled";
 const BROWSER_VISIBILITY_POLICY_KEY: &str = "burn_p2p.revision.browser.visibility_policy";
 const BROWSER_ROLE_OBSERVER_KEY: &str = "burn_p2p.revision.browser.role.observer";
@@ -105,6 +106,8 @@ pub trait ExperimentDirectoryPolicyExt {
     fn lag_policy(&self) -> LagPolicy;
     /// Performs the merge window miss policy operation.
     fn merge_window_miss_policy(&self) -> MergeWindowMissPolicy;
+    /// Returns the merge topology policy, when explicitly attached in directory metadata.
+    fn merge_topology_policy(&self) -> Option<MergeTopologyPolicy>;
     /// Performs the browser enabled operation.
     fn browser_enabled(&self) -> bool;
     /// Performs the browser role policy operation.
@@ -224,6 +227,12 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
             .get(MERGE_WINDOW_MISS_POLICY_KEY)
             .and_then(|value| MergeWindowMissPolicy::parse(value))
             .unwrap_or_default()
+    }
+
+    fn merge_topology_policy(&self) -> Option<MergeTopologyPolicy> {
+        self.metadata
+            .get(MERGE_TOPOLOGY_POLICY_JSON_KEY)
+            .and_then(|value| serde_json::from_str(value).ok())
     }
 
     fn browser_enabled(&self) -> bool {
@@ -516,9 +525,10 @@ mod tests {
         ArtifactTargetKind, AttestationLevel, BrowserCapability, BrowserRole, BrowserRolePolicy,
         BrowserVisibilityPolicy, CapabilityCard, CapabilityCardId, CapabilityClass, ClientPlatform,
         ContentId, ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
-        ExperimentScope, ExperimentVisibility, HeadId, LagPolicy, MergeWindowMissPolicy, NetworkId,
-        PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision, RevisionId, RevisionManifest,
-        RobustnessPolicy, StudyId, WindowActivation, WindowId,
+        ExperimentScope, ExperimentVisibility, HeadId, HeadPromotionMode, HeadPromotionPolicy,
+        LagPolicy, MergeTopologyPolicy, MergeWindowMissPolicy, NetworkId, PeerId, PeerRole,
+        PeerRoleSet, PersistenceClass, Precision, RevisionId, RevisionManifest, RobustnessPolicy,
+        StudyId, WindowActivation, WindowId,
     };
     use chrono::Utc;
 
@@ -702,6 +712,25 @@ mod tests {
         );
         assert_eq!(entry.recommended_browser_precision(), Some(Precision::Fp16));
         assert_eq!(entry.max_browser_window_secs(), Some(30));
+    }
+
+    #[test]
+    fn entry_reads_merge_topology_policy_from_metadata() {
+        let mut entry = entry();
+        let policy = MergeTopologyPolicy {
+            promotion_policy: HeadPromotionPolicy {
+                mode: HeadPromotionMode::ReducerAuthority,
+                validator_quorum: 1,
+                ..HeadPromotionPolicy::default()
+            },
+            ..MergeTopologyPolicy::default()
+        };
+        entry.metadata.insert(
+            "burn_p2p.revision.merge_topology.policy_json".into(),
+            serde_json::to_string(&policy).expect("merge topology policy json"),
+        );
+
+        assert_eq!(entry.merge_topology_policy(), Some(policy));
     }
 
     #[test]

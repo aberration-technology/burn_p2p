@@ -197,28 +197,30 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             },
             update: prepared.updates[0].clone(),
             evaluation: metric_report(0.35),
-            canary_report: build_validation_canary_report(
-                &experiment,
-                &prepared.current_head,
-                &HeadDescriptor {
-                    head_id: HeadId::new("head-good"),
-                    study_id: experiment.study_id.clone(),
-                    experiment_id: experiment.experiment_id.clone(),
-                    revision_id: experiment.revision_id.clone(),
-                    artifact_id: ArtifactId::new("artifact-good"),
-                    parent_head_id: Some(HeadId::new("head-base")),
-                    global_step: 4,
-                    created_at: Utc::now(),
-                    metrics: metric_report(0.35).metrics.clone(),
-                },
-                &metric_report(0.35),
-                prepared
-                    .robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
-                2,
-            )
-            .expect("canary"),
+            canary_report: Some(
+                build_validation_canary_report(
+                    &experiment,
+                    &prepared.current_head,
+                    &HeadDescriptor {
+                        head_id: HeadId::new("head-good"),
+                        study_id: experiment.study_id.clone(),
+                        experiment_id: experiment.experiment_id.clone(),
+                        revision_id: experiment.revision_id.clone(),
+                        artifact_id: ArtifactId::new("artifact-good"),
+                        parent_head_id: Some(HeadId::new("head-base")),
+                        global_step: 4,
+                        created_at: Utc::now(),
+                        metrics: metric_report(0.35).metrics.clone(),
+                    },
+                    &metric_report(0.35),
+                    prepared
+                        .robustness_policy
+                        .validator_canary_policy
+                        .maximum_regression_delta,
+                    2,
+                )
+                .expect("canary"),
+            ),
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
@@ -238,28 +240,30 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             },
             update: prepared.updates[1].clone(),
             evaluation: metric_report(0.36),
-            canary_report: build_validation_canary_report(
-                &experiment,
-                &prepared.current_head,
-                &HeadDescriptor {
-                    head_id: HeadId::new("head-replay"),
-                    study_id: experiment.study_id.clone(),
-                    experiment_id: experiment.experiment_id.clone(),
-                    revision_id: experiment.revision_id.clone(),
-                    artifact_id: ArtifactId::new("artifact-replay"),
-                    parent_head_id: Some(HeadId::new("head-base")),
-                    global_step: 4,
-                    created_at: Utc::now(),
-                    metrics: metric_report(0.36).metrics.clone(),
-                },
-                &metric_report(0.36),
-                prepared
-                    .robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
-                2,
-            )
-            .expect("canary"),
+            canary_report: Some(
+                build_validation_canary_report(
+                    &experiment,
+                    &prepared.current_head,
+                    &HeadDescriptor {
+                        head_id: HeadId::new("head-replay"),
+                        study_id: experiment.study_id.clone(),
+                        experiment_id: experiment.experiment_id.clone(),
+                        revision_id: experiment.revision_id.clone(),
+                        artifact_id: ArtifactId::new("artifact-replay"),
+                        parent_head_id: Some(HeadId::new("head-base")),
+                        global_step: 4,
+                        created_at: Utc::now(),
+                        metrics: metric_report(0.36).metrics.clone(),
+                    },
+                    &metric_report(0.36),
+                    prepared
+                        .robustness_policy
+                        .validator_canary_policy
+                        .maximum_regression_delta,
+                    2,
+                )
+                .expect("canary"),
+            ),
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
@@ -339,28 +343,30 @@ fn candidate_robustness_allows_peer_after_inactive_quarantine_expires() {
         },
         update: prepared.updates[0].clone(),
         evaluation: metric_report(0.35),
-        canary_report: build_validation_canary_report(
-            &experiment,
-            &prepared.current_head,
-            &HeadDescriptor {
-                head_id: HeadId::new("head-good"),
-                study_id: experiment.study_id.clone(),
-                experiment_id: experiment.experiment_id.clone(),
-                revision_id: experiment.revision_id.clone(),
-                artifact_id: ArtifactId::new("artifact-good"),
-                parent_head_id: Some(HeadId::new("head-base")),
-                global_step: 4,
-                created_at: Utc::now(),
-                metrics: metric_report(0.35).metrics.clone(),
-            },
-            &metric_report(0.35),
-            prepared
-                .robustness_policy
-                .validator_canary_policy
-                .maximum_regression_delta,
-            2,
-        )
-        .expect("canary"),
+        canary_report: Some(
+            build_validation_canary_report(
+                &experiment,
+                &prepared.current_head,
+                &HeadDescriptor {
+                    head_id: HeadId::new("head-good"),
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    artifact_id: ArtifactId::new("artifact-good"),
+                    parent_head_id: Some(HeadId::new("head-base")),
+                    global_step: 4,
+                    created_at: Utc::now(),
+                    metrics: metric_report(0.35).metrics.clone(),
+                },
+                &metric_report(0.35),
+                prepared
+                    .robustness_policy
+                    .validator_canary_policy
+                    .maximum_regression_delta,
+                2,
+            )
+            .expect("canary"),
+        ),
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
@@ -489,28 +495,30 @@ fn candidate_robustness_caps_surviving_updates_to_maximum_cohort_size() {
                 .cloned()
                 .expect("candidate update"),
             evaluation: metric_report(loss),
-            canary_report: build_validation_canary_report(
-                &experiment,
-                &prepared.current_head,
-                &HeadDescriptor {
-                    head_id: HeadId::new(head_id),
-                    study_id: experiment.study_id.clone(),
-                    experiment_id: experiment.experiment_id.clone(),
-                    revision_id: experiment.revision_id.clone(),
-                    artifact_id: ArtifactId::new(artifact_id),
-                    parent_head_id: Some(HeadId::new("head-base")),
-                    global_step: 4,
-                    created_at: Utc::now(),
-                    metrics: metric_report(loss).metrics.clone(),
-                },
-                &metric_report(loss),
-                prepared
-                    .robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
-                2,
-            )
-            .expect("canary"),
+            canary_report: Some(
+                build_validation_canary_report(
+                    &experiment,
+                    &prepared.current_head,
+                    &HeadDescriptor {
+                        head_id: HeadId::new(head_id),
+                        study_id: experiment.study_id.clone(),
+                        experiment_id: experiment.experiment_id.clone(),
+                        revision_id: experiment.revision_id.clone(),
+                        artifact_id: ArtifactId::new(artifact_id),
+                        parent_head_id: Some(HeadId::new("head-base")),
+                        global_step: 4,
+                        created_at: Utc::now(),
+                        metrics: metric_report(loss).metrics.clone(),
+                    },
+                    &metric_report(loss),
+                    prepared
+                        .robustness_policy
+                        .validator_canary_policy
+                        .maximum_regression_delta,
+                    2,
+                )
+                .expect("canary"),
+            ),
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
@@ -629,28 +637,30 @@ fn candidate_robustness_caps_browser_contribution_weight() {
         },
         update: prepared.updates[0].clone(),
         evaluation: metric_report(0.35),
-        canary_report: build_validation_canary_report(
-            &experiment,
-            &prepared.current_head,
-            &HeadDescriptor {
-                head_id: HeadId::new("head-good"),
-                study_id: experiment.study_id.clone(),
-                experiment_id: experiment.experiment_id.clone(),
-                revision_id: experiment.revision_id.clone(),
-                artifact_id: ArtifactId::new("artifact-good"),
-                parent_head_id: Some(HeadId::new("head-base")),
-                global_step: 4,
-                created_at: Utc::now(),
-                metrics: metric_report(0.35).metrics.clone(),
-            },
-            &metric_report(0.35),
-            prepared
-                .robustness_policy
-                .validator_canary_policy
-                .maximum_regression_delta,
-            2,
-        )
-        .expect("canary"),
+        canary_report: Some(
+            build_validation_canary_report(
+                &experiment,
+                &prepared.current_head,
+                &HeadDescriptor {
+                    head_id: HeadId::new("head-good"),
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    artifact_id: ArtifactId::new("artifact-good"),
+                    parent_head_id: Some(HeadId::new("head-base")),
+                    global_step: 4,
+                    created_at: Utc::now(),
+                    metrics: metric_report(0.35).metrics.clone(),
+                },
+                &metric_report(0.35),
+                prepared
+                    .robustness_policy
+                    .validator_canary_policy
+                    .maximum_regression_delta,
+                2,
+            )
+            .expect("canary"),
+        ),
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
@@ -1112,6 +1122,7 @@ fn merge_certificate_ids_are_validator_scoped() {
 
     let first = build_validation_merge_certificate(
         &experiment,
+        &prepared.merge_window,
         &PeerId::new("validator-a"),
         &prepared.base_head_id,
         &merged_head,
@@ -1121,6 +1132,7 @@ fn merge_certificate_ids_are_validator_scoped() {
     );
     let second = build_validation_merge_certificate(
         &experiment,
+        &prepared.merge_window,
         &PeerId::new("validator-b"),
         &prepared.base_head_id,
         &merged_head,

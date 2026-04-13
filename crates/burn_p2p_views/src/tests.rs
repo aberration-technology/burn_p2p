@@ -130,7 +130,8 @@ fn checkpoint_dag_builds_lineage_and_merge_edges() {
         merged_artifact_id: ArtifactId::new("artifact-child"),
         policy: MergePolicy::Ema,
         issued_at: now + Duration::seconds(2),
-        validator: PeerId::new("validator"),
+        promoter_peer_id: PeerId::new("validator"),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
         contribution_receipts: vec![],
     };
 
@@ -164,7 +165,8 @@ fn ema_flow_orders_merge_certificates_by_time() {
         merged_artifact_id: ArtifactId::new("artifact-1"),
         policy: MergePolicy::Ema,
         issued_at: now,
-        validator: PeerId::new("validator"),
+        promoter_peer_id: PeerId::new("validator"),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
         contribution_receipts: vec![],
     };
     let newer = MergeCertificate {
@@ -177,7 +179,8 @@ fn ema_flow_orders_merge_certificates_by_time() {
         merged_artifact_id: ArtifactId::new("artifact-2"),
         policy: MergePolicy::Ema,
         issued_at: now + Duration::seconds(1),
-        validator: PeerId::new("validator"),
+        promoter_peer_id: PeerId::new("validator"),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
         contribution_receipts: vec![],
     };
 
@@ -839,8 +842,9 @@ fn merge_topology_views_build_window_load_and_aggregate_dag() {
         window_id: WindowId(7),
         base_head_id: HeadId::new("head-0"),
         aggregate_id: burn_p2p_core::ContentId::new("root-a"),
-        validator: PeerId::new("validator-a"),
-        validator_quorum: 2,
+        promoter_peer_id: PeerId::new("validator-a"),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
+        promotion_quorum: 2,
         cross_checked_reducers: vec![PeerId::new("reducer-a")],
         issued_at: now,
     };

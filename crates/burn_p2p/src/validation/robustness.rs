@@ -94,7 +94,7 @@ pub(super) fn evaluate_candidate_robustness<M>(
             quarantined: peer_state.quarantined,
             consecutive_rejections: peer_state.consecutive_rejections,
             current_trust_score: peer_state.trust_score,
-            canary_report: Some(candidate.canary_report.clone()),
+            canary_report: candidate.canary_report.cloned(),
             feature_sketch: update
                 .feature_sketch
                 .clone()

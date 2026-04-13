@@ -437,6 +437,8 @@ impl ReducerCohortMetrics {
 pub enum HeadEvalStatus {
     /// The evaluation completed successfully.
     Completed,
+    /// The evaluation was intentionally skipped because promotion did not require model inference.
+    Skipped,
     /// The evaluation only produced partial or incomplete data.
     Partial,
     /// The evaluation failed.

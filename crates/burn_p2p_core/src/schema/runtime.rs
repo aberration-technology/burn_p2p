@@ -218,10 +218,22 @@ pub enum MergeStrategy {
     MicrocohortReducePlusValidatorPromotion,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Selects how canonical heads are promoted after one merge window closes.
+pub enum HeadPromotionMode {
+    /// Requires validator attestations and canonical evaluation before promotion.
+    ValidatorQuorum,
+    /// Allows one reducer-authority peer to aggregate and promote without model evaluation.
+    ReducerAuthority,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures the head promotion policy.
 pub struct HeadPromotionPolicy {
-    /// The validator quorum.
+    /// The promotion mode.
+    #[serde(default)]
+    pub mode: HeadPromotionMode,
+    /// The validator quorum used when `mode` is `ValidatorQuorum`.
     pub validator_quorum: u16,
     /// The apply single root EMA.
     pub apply_single_root_ema: bool,
@@ -231,9 +243,16 @@ pub struct HeadPromotionPolicy {
     pub promote_serve_head: bool,
 }
 
+impl Default for HeadPromotionMode {
+    fn default() -> Self {
+        Self::ValidatorQuorum
+    }
+}
+
 impl Default for HeadPromotionPolicy {
     fn default() -> Self {
         Self {
+            mode: HeadPromotionMode::ValidatorQuorum,
             validator_quorum: 2,
             apply_single_root_ema: true,
             allow_late_rollover: true,
@@ -433,10 +452,13 @@ pub struct ReductionCertificate {
     pub base_head_id: HeadId,
     /// The aggregate ID.
     pub aggregate_id: ContentId,
-    /// The validator.
-    pub validator: PeerId,
-    /// The validator quorum.
-    pub validator_quorum: u16,
+    /// The local peer that emitted this reduction or promotion certificate.
+    pub promoter_peer_id: PeerId,
+    /// The promotion mode this reduction participates in.
+    #[serde(default)]
+    pub promotion_mode: HeadPromotionMode,
+    /// The quorum required to advance the canonical head.
+    pub promotion_quorum: u16,
     /// The cross checked reducers.
     pub cross_checked_reducers: Vec<PeerId>,
     /// The issued at.
@@ -464,6 +486,9 @@ pub struct ValidationQuorumCertificate {
     pub aggregate_artifact_id: ArtifactId,
     /// The merged head ID this quorum accepted.
     pub merged_head_id: HeadId,
+    /// The promotion mode this quorum certificate attests.
+    #[serde(default)]
+    pub promotion_mode: HeadPromotionMode,
     /// The validator quorum.
     pub validator_quorum: u16,
     /// The coordinator that emitted the compact quorum record.
@@ -778,8 +803,11 @@ pub struct MergeCertificate {
     pub policy: MergePolicy,
     /// The issued at.
     pub issued_at: DateTime<Utc>,
-    /// The validator.
-    pub validator: PeerId,
+    /// The local peer that promoted this canonical head.
+    pub promoter_peer_id: PeerId,
+    /// The promotion mode used for this canonical head.
+    #[serde(default)]
+    pub promotion_mode: HeadPromotionMode,
     /// The contribution receipts.
     pub contribution_receipts: Vec<ContributionReceiptId>,
 }

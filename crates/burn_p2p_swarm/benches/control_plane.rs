@@ -186,8 +186,9 @@ fn reduction_certificate_announcement(index: usize) -> ReductionCertificateAnnou
             window_id: WindowId(1),
             base_head_id: HeadId::new("bench-base-head"),
             aggregate_id: ContentId::derive(&("aggregate", index)).expect("aggregate id"),
-            validator: PeerId::new("validator-0001"),
-            validator_quorum: 2,
+            promoter_peer_id: PeerId::new("validator-0001"),
+            promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
+            promotion_quorum: 2,
             cross_checked_reducers: vec![PeerId::new("reducer-0001"), PeerId::new("reducer-0002")],
             issued_at: Utc::now(),
         },
@@ -260,7 +261,8 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
         merged_artifact_id: ArtifactId::new("bench-merged-artifact"),
         policy: MergePolicy::QualityWeightedEma,
         issued_at: now,
-        validator: PeerId::new("validator-0001"),
+        promoter_peer_id: PeerId::new("validator-0001"),
+        promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
         contribution_receipts: (0..update_count)
             .map(|index| ContributionReceiptId::new(format!("receipt-{index:04}")))
             .collect(),

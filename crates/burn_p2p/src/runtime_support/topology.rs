@@ -88,7 +88,7 @@ pub(crate) fn experiment_snapshot_peer_ids(
                     && announcement.certificate.experiment_id == experiment.experiment_id
                     && announcement.certificate.revision_id == experiment.revision_id
             })
-            .map(|announcement| announcement.certificate.validator.clone()),
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone()),
     );
     peer_ids.extend(
         snapshot
@@ -120,7 +120,7 @@ pub(crate) fn experiment_snapshot_peer_ids(
                     && announcement.certificate.experiment_id == experiment.experiment_id
                     && announcement.certificate.revision_id == experiment.revision_id
             })
-            .map(|announcement| announcement.certificate.validator.clone()),
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone()),
     );
 
     if peer_ids.is_empty() {
@@ -147,7 +147,7 @@ pub(crate) fn prioritized_experiment_snapshot_peer_ids(
         })
         .max_by(|left, right| left.announced_at.cmp(&right.announced_at))
     {
-        prioritized.push(announcement.certificate.validator.clone());
+        prioritized.push(announcement.certificate.promoter_peer_id.clone());
     }
 
     if let Some(announcement) = snapshot
@@ -319,7 +319,7 @@ fn cached_snapshot_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId
             .control_plane
             .reduction_certificate_announcements
             .iter()
-            .map(|announcement| announcement.certificate.validator.clone()),
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone()),
     );
     peer_ids.extend(
         snapshot
@@ -333,7 +333,7 @@ fn cached_snapshot_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId
             .control_plane
             .merge_announcements
             .iter()
-            .map(|announcement| announcement.certificate.validator.clone()),
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone()),
     );
     peer_ids.extend(
         snapshot
@@ -558,8 +558,8 @@ fn head_for_merge_certificate(
                 })
         })
         .max_by(|left, right| {
-            (left.0 == merge.validator)
-                .cmp(&(right.0 == merge.validator))
+            (left.0 == merge.promoter_peer_id)
+                .cmp(&(right.0 == merge.promoter_peer_id))
                 .then(left.1.global_step.cmp(&right.1.global_step))
                 .then(left.1.created_at.cmp(&right.1.created_at))
         })
@@ -1013,12 +1013,17 @@ pub(crate) fn update_announces_from_connected_snapshots(
 }
 
 pub(crate) fn runtime_merge_topology_policy(
+    config: &NodeConfig,
     snapshot: &NodeTelemetrySnapshot,
     experiment: &ExperimentHandle,
     base_head_id: Option<&HeadId>,
 ) -> MergeTopologyPolicy {
     latest_merge_window_from_snapshot(&snapshot.control_plane, experiment, base_head_id)
         .map(|merge_window| merge_window.policy)
+        .or_else(|| {
+            active_experiment_directory_entry(config, snapshot, experiment)
+                .and_then(|entry| entry.merge_topology_policy())
+        })
         .unwrap_or_default()
 }
 

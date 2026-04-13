@@ -882,7 +882,7 @@ struct AggregateProposalAnnouncementKey {
 struct ReductionCertificateAnnouncementKey {
     overlay_path: String,
     aggregate_id: ContentId,
-    validator: PeerId,
+    promoter_peer_id: PeerId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -895,7 +895,7 @@ struct ValidationQuorumAnnouncementKey {
 struct MergeAnnouncementKey {
     overlay_path: String,
     merged_head_id: HeadId,
-    validator: PeerId,
+    promoter_peer_id: PeerId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1121,7 +1121,7 @@ fn reduction_certificate_announcement_key(
     ReductionCertificateAnnouncementKey {
         overlay_path: announcement.overlay.path.clone(),
         aggregate_id: announcement.certificate.aggregate_id.clone(),
-        validator: announcement.certificate.validator.clone(),
+        promoter_peer_id: announcement.certificate.promoter_peer_id.clone(),
     }
 }
 
@@ -1138,7 +1138,7 @@ fn merge_announcement_key(announcement: &MergeAnnouncement) -> MergeAnnouncement
     MergeAnnouncementKey {
         overlay_path: announcement.overlay.path.clone(),
         merged_head_id: announcement.certificate.merged_head_id.clone(),
-        validator: announcement.certificate.validator.clone(),
+        promoter_peer_id: announcement.certificate.promoter_peer_id.clone(),
     }
 }
 
@@ -1353,7 +1353,7 @@ fn aggregate_validator_count(
             announcement.overlay.path == overlay_path
                 && announcement.certificate.aggregate_id == *aggregate_id
         })
-        .map(|announcement| announcement.certificate.validator.clone())
+        .map(|announcement| announcement.certificate.promoter_peer_id.clone())
         .collect::<BTreeSet<_>>()
         .len()
 }
@@ -1565,12 +1565,12 @@ pub(crate) fn insert_reduction_certificate_announcement_with_index(
             }
         }
         None => {
-            let validator_count = aggregate_validator_count(
+            let promoter_count = aggregate_validator_count(
                 &snapshot.reduction_certificate_announcements,
                 &announcement.overlay.path,
                 &announcement.certificate.aggregate_id,
             );
-            if validator_count < usize::from(announcement.certificate.validator_quorum.max(1)) {
+            if promoter_count < usize::from(announcement.certificate.promotion_quorum.max(1)) {
                 snapshot
                     .reduction_certificate_announcements
                     .push(announcement);

@@ -715,12 +715,12 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
                 .reduction_certificate_announcements
                 .iter()
         })
-        .map(|announcement| announcement.certificate.validator.clone())
+        .map(|announcement| announcement.certificate.promoter_peer_id.clone())
         .collect::<BTreeSet<_>>();
     let merge_certificate_validators = run
         .merge_certificates
         .iter()
-        .map(|certificate| certificate.validator.clone())
+        .map(|certificate| certificate.promoter_peer_id.clone())
         .collect::<BTreeSet<_>>();
     let seed_addresses = seed_snapshot
         .listen_addresses

@@ -67,6 +67,10 @@ impl<P> RunningNode<P> {
             .map(|(_, head)| head.head_id.clone())
             .unwrap_or_else(|| HeadId::new("genesis"));
         let topology_policy = runtime_merge_topology_policy(
+            self.node
+                .as_ref()
+                .expect("running node should retain prepared node")
+                .config(),
             &prepared.telemetry_snapshot,
             experiment,
             Some(&base_head_id),
@@ -86,12 +90,19 @@ impl<P> RunningNode<P> {
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
         );
-        let validators = runtime_validators(
-            &prepared.mainnet_roles,
-            &prepared.local_peer_id,
-            &validator_peers,
-            topology_policy.promotion_policy.validator_quorum,
-        );
+        let validators = if matches!(
+            topology_policy.promotion_policy.mode,
+            HeadPromotionMode::ReducerAuthority
+        ) {
+            Vec::new()
+        } else {
+            runtime_validators(
+                &prepared.mainnet_roles,
+                &prepared.local_peer_id,
+                &validator_peers,
+                topology_policy.promotion_policy.validator_quorum,
+            )
+        };
         let merge_window = latest_merge_window_from_snapshot(
             &prepared.telemetry_snapshot.control_plane,
             experiment,

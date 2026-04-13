@@ -487,17 +487,53 @@ pub(crate) fn build_head_eval_report(
     evaluation: &MetricReport,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
-    validator_peer_id: &PeerId,
+    promoter_peer_id: &PeerId,
+    promotion_mode: HeadPromotionMode,
 ) -> anyhow::Result<(HeadEvalReport, EvalProtocolManifest)> {
     let context = resolve_runtime_metric_context(config, experiment, None);
-    let eval_protocol = runtime_validation_eval_protocol(&context.dataset_view_id, evaluation)?;
+    let (eval_protocol, evaluator_set_id, metric_values, sample_count, status) =
+        match promotion_mode {
+            HeadPromotionMode::ValidatorQuorum => {
+                let eval_protocol =
+                    runtime_validation_eval_protocol(&context.dataset_view_id, evaluation)?;
+                let evaluator_set_id = ContentId::derive(&[
+                    "validator-set",
+                    promoter_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    experiment.revision_id.as_str(),
+                ])?;
+                (
+                    eval_protocol,
+                    evaluator_set_id,
+                    evaluation.metrics.clone(),
+                    evaluation_sample_count(evaluation),
+                    HeadEvalStatus::Completed,
+                )
+            }
+            HeadPromotionMode::ReducerAuthority => {
+                let eval_protocol = EvalProtocolManifest::new(
+                    "runtime-aggregation-only",
+                    context.dataset_view_id.clone(),
+                    "promotion",
+                    Vec::new(),
+                    EvalProtocolOptions::new(EvalAggregationRule::Mean, 0, 0, "v1"),
+                )?;
+                let evaluator_set_id = ContentId::derive(&[
+                    "reducer-authority-promoter",
+                    promoter_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    experiment.revision_id.as_str(),
+                ])?;
+                (
+                    eval_protocol,
+                    evaluator_set_id,
+                    BTreeMap::new(),
+                    0,
+                    HeadEvalStatus::Skipped,
+                )
+            }
+        };
     let eval_protocol_id = eval_protocol.eval_protocol_id.clone();
-    let evaluator_set_id = ContentId::derive(&[
-        "validator-set",
-        validator_peer_id.as_str(),
-        experiment.experiment_id.as_str(),
-        experiment.revision_id.as_str(),
-    ])?;
 
     Ok((
         HeadEvalReport {
@@ -509,13 +545,13 @@ pub(crate) fn build_head_eval_report(
             base_head_id: merged_head.parent_head_id.clone(),
             eval_protocol_id,
             evaluator_set_id,
-            metric_values: evaluation.metrics.clone(),
-            sample_count: evaluation_sample_count(evaluation),
+            metric_values,
+            sample_count,
             dataset_view_id: context.dataset_view_id,
             started_at,
             finished_at,
             trust_class: MetricTrustClass::Canonical,
-            status: HeadEvalStatus::Completed,
+            status,
             signature_bundle: Vec::new(),
         },
         eval_protocol,

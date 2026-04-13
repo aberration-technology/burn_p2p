@@ -1204,7 +1204,8 @@ mod tests {
             merged_artifact_id: ArtifactId::new("artifact"),
             policy: burn_p2p_core::MergePolicy::WeightedMean,
             issued_at: now,
-            validator: PeerId::new("validator"),
+            promoter_peer_id: PeerId::new("validator"),
+            promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
             contribution_receipts: vec![burn_p2p_core::ContributionReceiptId::new("receipt")],
         };
         let head = HeadDescriptor {
@@ -1931,7 +1932,8 @@ mod tests {
                 merged_artifact_id: ArtifactId::new("artifact-merged"),
                 policy: burn_p2p::MergePolicy::WeightedMean,
                 issued_at: Utc::now(),
-                validator: PeerId::new("validator-1"),
+                promoter_peer_id: PeerId::new("validator-1"),
+                promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
                 contribution_receipts: vec![first_receipt.receipt_id.clone()],
             }],
             peer_admission_reports: BTreeMap::from([
@@ -2028,7 +2030,8 @@ mod tests {
                 merged_artifact_id: ArtifactId::new(format!("merged-artifact-{index:03}")),
                 policy: burn_p2p::MergePolicy::WeightedMean,
                 issued_at: now + chrono::Duration::seconds(index as i64),
-                validator: PeerId::new("validator"),
+                promoter_peer_id: PeerId::new("validator"),
+                promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
                 contribution_receipts: vec![burn_p2p_core::ContributionReceiptId::new(format!(
                     "receipt-{index:03}"
                 ))],
@@ -2370,7 +2373,8 @@ mod tests {
             merged_artifact_id: ArtifactId::new("merged-artifact"),
             policy: burn_p2p::MergePolicy::WeightedMean,
             issued_at: now + chrono::Duration::seconds(2),
-            validator: PeerId::new("validator"),
+            promoter_peer_id: PeerId::new("validator"),
+            promotion_mode: burn_p2p::HeadPromotionMode::ValidatorQuorum,
             contribution_receipts: vec![
                 first_receipt.receipt_id.clone(),
                 second_receipt.receipt_id.clone(),

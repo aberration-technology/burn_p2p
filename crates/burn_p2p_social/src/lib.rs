@@ -499,7 +499,8 @@ mod tests {
             merged_artifact_id: ArtifactId::new("artifact-merged"),
             policy: burn_p2p_core::MergePolicy::WeightedMean,
             issued_at: now,
-            validator: PeerId::new("validator-1"),
+            promoter_peer_id: PeerId::new("validator-1"),
+            promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
             contribution_receipts: vec![first_receipt.receipt_id.clone()],
         }];
         let peer_principals = BTreeMap::from([
