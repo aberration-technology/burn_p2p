@@ -262,7 +262,10 @@ impl ControlHandle {
         timeout: Duration,
     ) -> anyhow::Result<ControlPlaneSnapshot> {
         let peer_id = peer_id.into();
-        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let telemetry_snapshot = self.telemetry.snapshot();
+        let peer = PeerId::new(peer_id.clone());
+        let (runtime_timeout, fallback_timeout) =
+            split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
         let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
             let (reply_tx, reply_rx) = mpsc::channel();
             self.tx
@@ -317,7 +320,10 @@ impl ControlHandle {
         timeout: Duration,
     ) -> anyhow::Result<Option<ArtifactDescriptor>> {
         let peer_id = peer_id.into();
-        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let telemetry_snapshot = self.telemetry.snapshot();
+        let peer = PeerId::new(peer_id.clone());
+        let (runtime_timeout, fallback_timeout) =
+            split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
         let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
             let (reply_tx, reply_rx) = mpsc::channel();
             self.tx
@@ -353,7 +359,10 @@ impl ControlHandle {
         timeout: Duration,
     ) -> anyhow::Result<Option<ArtifactChunkPayload>> {
         let peer_id = peer_id.into();
-        let (runtime_timeout, fallback_timeout) = split_fetch_timeout(timeout);
+        let telemetry_snapshot = self.telemetry.snapshot();
+        let peer = PeerId::new(peer_id.clone());
+        let (runtime_timeout, fallback_timeout) =
+            split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
         let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
             let (reply_tx, reply_rx) = mpsc::channel();
             self.tx
