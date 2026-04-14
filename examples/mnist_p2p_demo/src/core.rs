@@ -2179,12 +2179,12 @@ fn wait_for_artifact_from_topology<P>(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None::<String>;
-    let mut staged_provider_peer_ids = providers
+    let fixed_provider_peer_ids = providers
         .iter()
         .map(|(_, _, peer_id)| peer_id.clone())
         .collect::<Vec<_>>();
     while Instant::now() < deadline {
-        let mut provider_peer_ids = staged_provider_peer_ids.clone();
+        let mut provider_peer_ids = fixed_provider_peer_ids.clone();
         let mut republish_failed = false;
         for (label, provider, peer_id) in providers {
             match provider.publish_artifact_from_store(artifact_id) {
@@ -2210,10 +2210,9 @@ fn wait_for_artifact_from_topology<P>(
                 label,
                 consumer,
                 artifact_id,
-                &mut provider_peer_ids,
+                &mut Vec::new(),
                 &mut last_error,
             ) {
-                push_provider_list(&mut staged_provider_peer_ids, &provider_peer_ids);
                 continue;
             }
 
@@ -2233,13 +2232,12 @@ fn wait_for_artifact_from_topology<P>(
                 label,
                 consumer,
                 artifact_id,
-                &mut provider_peer_ids,
+                &mut Vec::new(),
                 &mut last_error,
             ) {
                 all_ready = false;
                 continue;
             }
-            push_provider_list(&mut staged_provider_peer_ids, &provider_peer_ids);
         }
 
         if all_ready {
