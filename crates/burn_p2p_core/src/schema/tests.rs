@@ -8,11 +8,12 @@ use super::{
     ActiveServiceSet, AdminMode, AppMode, ArtifactAlias, ArtifactAliasScope,
     ArtifactAliasSourceReason, ArtifactLiveEvent, ArtifactLiveEventKind, ArtifactProfile,
     AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserMode, ClientPlatform,
-    ClientReleaseManifest, CompiledFeatureSet, ConfiguredServiceSet, DownloadDeliveryMode,
-    DownloadTicket, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest, EvalAggregationRule,
-    EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions, ExperimentDirectoryEntry,
-    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
-    ExportJob, ExportJobStatus, HeadEvalReport, HeadEvalStatus, IdentityVisibility, LagPolicy,
+    ClientReleaseManifest, CompiledFeatureSet, ConfiguredServiceSet, DiffusionSteadyStatePolicy,
+    DownloadDeliveryMode, DownloadTicket, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest,
+    EvalAggregationRule, EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions,
+    ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
+    ExperimentScope, ExperimentVisibility, ExportJob, ExportJobStatus, HeadEvalReport,
+    HeadEvalStatus, HeadPromotionMode, HeadPromotionPolicy, IdentityVisibility, LagPolicy,
     LagState, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, MergeStrategy,
     MergeTopologyPolicy, MergeWindowMissPolicy, MetricTrustClass, MetricValue,
     MetricsLedgerSegment, MetricsLiveEvent, MetricsLiveEventKind, MetricsMode,
@@ -728,4 +729,29 @@ fn merge_topology_policy_defaults_to_replicated_rendezvous_dag() {
     assert_eq!(policy.target_leaf_cohort, 16);
     assert_eq!(policy.upper_fanin, 4);
     assert!(policy.promotion_policy.apply_single_root_ema);
+}
+
+#[test]
+fn diffusion_steady_state_policy_round_trips_and_preserves_defaults() {
+    let payload = HeadPromotionPolicy {
+        mode: HeadPromotionMode::DiffusionSteadyState,
+        diffusion: Some(DiffusionSteadyStatePolicy::default()),
+        ..HeadPromotionPolicy::default()
+    };
+
+    let encoded = deterministic_cbor(&payload).expect("encode diffusion promotion policy");
+    let decoded: HeadPromotionPolicy =
+        from_cbor_slice(&encoded).expect("decode diffusion promotion policy");
+
+    assert_eq!(decoded.mode, HeadPromotionMode::DiffusionSteadyState);
+    assert_eq!(
+        decoded.diffusion,
+        Some(DiffusionSteadyStatePolicy {
+            settlement_timeout_secs: 45,
+            observation_poll_ms: 250,
+            required_stable_observations: 4,
+            support_margin: 1,
+            allow_solo_promotion: true,
+        })
+    );
 }

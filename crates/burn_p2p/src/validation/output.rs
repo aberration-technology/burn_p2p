@@ -243,6 +243,7 @@ pub(super) fn build_validation_contribution(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_validation_merge_certificate(
     experiment: &ExperimentHandle,
     merge_window: &MergeWindowState,

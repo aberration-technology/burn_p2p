@@ -221,6 +221,7 @@ pub struct DemoAssessmentSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TopologyExerciseSummary {
+    pub promotion_mode: String,
     pub bootstrap_seed_label: String,
     pub dedicated_reducer_label: String,
     pub validator_labels: Vec<String>,
@@ -233,6 +234,10 @@ pub struct TopologyExerciseSummary {
     pub reduction_attestations_only_from_validators: bool,
     pub merge_certificates_only_from_validators: bool,
     pub validators_observed_validation_quorum: bool,
+    pub trainer_only_diffusion_observed: bool,
+    pub diffusion_certificates_observed: bool,
+    pub diffusion_attestations_only_from_trainers: bool,
+    pub reducer_validation_tier_unused: bool,
     pub notes: Vec<String>,
 }
 

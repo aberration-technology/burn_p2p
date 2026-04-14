@@ -220,6 +220,121 @@ fn runtime_training_peers_exclude_non_trainers_and_quarantined_peers() {
     assert!(!peers.contains(&PeerId::new("peer-quarantined")));
 }
 
+#[test]
+fn reducer_authority_windows_clamp_to_one_deterministic_reducer() {
+    let experiment = test_experiment_handle();
+    let policy = MergeTopologyPolicy {
+        reducer_replication: 3,
+        promotion_policy: HeadPromotionPolicy {
+            mode: HeadPromotionMode::ReducerAuthority,
+            validator_quorum: 4,
+            ..HeadPromotionPolicy::default()
+        },
+        ..MergeTopologyPolicy::default()
+    };
+
+    let first = open_runtime_merge_window(
+        &experiment,
+        WindowId(7),
+        HeadId::new("head-a"),
+        policy.clone(),
+        vec![
+            PeerId::new("reducer-c"),
+            PeerId::new("reducer-a"),
+            PeerId::new("reducer-b"),
+        ],
+        vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
+    )
+    .expect("first reducer-authority window");
+    let second = open_runtime_merge_window(
+        &experiment,
+        WindowId(7),
+        HeadId::new("head-a"),
+        policy,
+        vec![
+            PeerId::new("reducer-b"),
+            PeerId::new("reducer-c"),
+            PeerId::new("reducer-a"),
+        ],
+        vec![PeerId::new("validator-b"), PeerId::new("validator-a")],
+    )
+    .expect("second reducer-authority window");
+
+    assert_eq!(first.policy.reducer_replication, 1);
+    assert_eq!(first.policy.promotion_policy.validator_quorum, 1);
+    assert!(first.validators.is_empty());
+    assert_eq!(first.reducers.len(), 1);
+    assert_eq!(first.reducers, second.reducers);
+}
+
+#[test]
+fn diffusion_steady_state_windows_clear_reducers_and_validators() {
+    let experiment = test_experiment_handle();
+    let policy = MergeTopologyPolicy {
+        strategy: MergeStrategy::KRegularGossip,
+        reducer_replication: 3,
+        upper_fanin: 5,
+        promotion_policy: HeadPromotionPolicy {
+            mode: HeadPromotionMode::DiffusionSteadyState,
+            validator_quorum: 4,
+            diffusion: Some(DiffusionSteadyStatePolicy::default()),
+            ..HeadPromotionPolicy::default()
+        },
+        ..MergeTopologyPolicy::default()
+    };
+
+    let window = open_runtime_merge_window(
+        &experiment,
+        WindowId(9),
+        HeadId::new("head-diffusion"),
+        policy,
+        vec![PeerId::new("reducer-a"), PeerId::new("reducer-b")],
+        vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
+    )
+    .expect("diffusion steady-state window");
+
+    assert!(window.reducers.is_empty());
+    assert!(window.validators.is_empty());
+    assert_eq!(window.policy.reducer_replication, 0);
+    assert_eq!(window.policy.upper_fanin, 0);
+    assert_eq!(window.policy.promotion_policy.validator_quorum, 0);
+    assert_eq!(
+        window.policy.promotion_policy.diffusion,
+        Some(DiffusionSteadyStatePolicy::default())
+    );
+}
+
+#[test]
+fn diffusion_steady_state_rejects_reducer_centric_strategies() {
+    let experiment = test_experiment_handle();
+    let policy = MergeTopologyPolicy {
+        strategy: MergeStrategy::ReplicatedRendezvousDag,
+        promotion_policy: HeadPromotionPolicy {
+            mode: HeadPromotionMode::DiffusionSteadyState,
+            diffusion: Some(DiffusionSteadyStatePolicy::default()),
+            ..HeadPromotionPolicy::default()
+        },
+        ..MergeTopologyPolicy::default()
+    };
+
+    let error = open_runtime_merge_window(
+        &experiment,
+        WindowId(3),
+        HeadId::new("head-invalid"),
+        policy,
+        vec![PeerId::new("reducer-a")],
+        vec![],
+    )
+    .expect_err("diffusion steady-state should reject reducer-centric strategy");
+
+    assert!(
+        error.to_string().contains(
+            "diffusion steady-state promotion requires a trainer-only gossip or broadcast topology"
+        ),
+        "unexpected error: {error}",
+    );
+}
+
 fn publish_training_hint(
     snapshot: &mut NodeTelemetrySnapshot,
     peer_id: &str,

@@ -22,11 +22,11 @@ use std::{
 
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
-    ContentId, ControlCertificate, DatasetViewId, ExperimentDirectoryEntry, HeadDescriptor, HeadId,
-    MergeCertificate, MergeWindowState, MetricsLiveEvent, MicroShardId, NetworkId,
-    PeerAuthEnvelope, PeerId, PeerRoleSet, PeerWindowPlacementHint, ReducerAssignment,
-    ReducerLoadReport, ReductionCertificate, TelemetrySummary, UpdateAnnounce,
-    ValidationQuorumCertificate,
+    ContentId, ControlCertificate, DatasetViewId, DiffusionPromotionCertificate,
+    ExperimentDirectoryEntry, HeadDescriptor, HeadId, MergeCertificate, MergeWindowState,
+    MetricsLiveEvent, MicroShardId, NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet,
+    PeerWindowPlacementHint, ReducerAssignment, ReducerLoadReport, ReductionCertificate,
+    TelemetrySummary, TrainerPromotionAttestation, UpdateAnnounce, ValidationQuorumCertificate,
 };
 use burn_p2p_experiment::{
     ExperimentControlEnvelope, ExperimentLifecycleEnvelope, FleetScheduleEpochEnvelope,
@@ -70,7 +70,9 @@ pub(crate) use events::apply_pubsub_payload;
 pub use events::*;
 pub(crate) use events::{
     ControlPlaneHotIndex, insert_aggregate_proposal_announcement_with_index,
+    insert_diffusion_promotion_certificate_announcement_with_index,
     insert_merge_announcement_with_index, insert_reduction_certificate_announcement_with_index,
+    insert_trainer_promotion_attestation_announcement_with_index,
     insert_validation_quorum_announcement_with_index,
 };
 #[cfg(not(target_arch = "wasm32"))]

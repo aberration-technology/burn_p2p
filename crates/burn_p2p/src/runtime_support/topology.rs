@@ -113,6 +113,33 @@ pub(crate) fn experiment_snapshot_peer_ids(
     peer_ids.extend(
         snapshot
             .control_plane
+            .trainer_promotion_attestation_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.attestation.study_id == experiment.study_id
+                    && announcement.attestation.experiment_id == experiment.experiment_id
+                    && announcement.attestation.revision_id == experiment.revision_id
+            })
+            .map(|announcement| announcement.attestation.attester_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .diffusion_promotion_certificate_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.certificate.study_id == experiment.study_id
+                    && announcement.certificate.experiment_id == experiment.experiment_id
+                    && announcement.certificate.revision_id == experiment.revision_id
+            })
+            .flat_map(|announcement| {
+                std::iter::once(announcement.certificate.promoter_peer_id.clone())
+                    .chain(announcement.certificate.attesting_trainers.iter().cloned())
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
             .merge_announcements
             .iter()
             .filter(|announcement| {
@@ -169,6 +196,34 @@ pub(crate) fn prioritized_experiment_snapshot_peer_ids(
                 .iter()
                 .cloned(),
         );
+    }
+
+    let mut diffusion_certificates = snapshot
+        .control_plane
+        .diffusion_promotion_certificate_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+        })
+        .collect::<Vec<_>>();
+    diffusion_certificates.sort_by(|left, right| {
+        right
+            .certificate
+            .window_id
+            .cmp(&left.certificate.window_id)
+            .then(
+                right
+                    .certificate
+                    .settled_at
+                    .cmp(&left.certificate.settled_at),
+            )
+            .then(right.announced_at.cmp(&left.announced_at))
+    });
+    for announcement in diffusion_certificates {
+        prioritized.push(announcement.certificate.promoter_peer_id.clone());
+        prioritized.extend(announcement.certificate.attesting_trainers.iter().cloned());
     }
 
     let mut proposals = snapshot
@@ -331,6 +386,23 @@ fn cached_snapshot_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId
     peer_ids.extend(
         snapshot
             .control_plane
+            .trainer_promotion_attestation_announcements
+            .iter()
+            .map(|announcement| announcement.attestation.attester_peer_id.clone()),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
+            .diffusion_promotion_certificate_announcements
+            .iter()
+            .flat_map(|announcement| {
+                std::iter::once(announcement.certificate.promoter_peer_id.clone())
+                    .chain(announcement.certificate.attesting_trainers.iter().cloned())
+            }),
+    );
+    peer_ids.extend(
+        snapshot
+            .control_plane
             .merge_announcements
             .iter()
             .map(|announcement| announcement.certificate.promoter_peer_id.clone()),
@@ -385,6 +457,15 @@ pub(crate) fn cached_connected_snapshots(
                         .filter(|announcement| announcement.update.peer_id == peer_id)
                         .cloned()
                         .collect(),
+                    trainer_promotion_attestation_announcements: aggregate
+                        .trainer_promotion_attestation_announcements
+                        .iter()
+                        .filter(|announcement| announcement.attestation.attester_peer_id == peer_id)
+                        .cloned()
+                        .collect(),
+                    diffusion_promotion_certificate_announcements: aggregate
+                        .diffusion_promotion_certificate_announcements
+                        .clone(),
                     aggregate_proposal_announcements: aggregate
                         .aggregate_proposal_announcements
                         .clone(),
@@ -454,15 +535,7 @@ fn latest_remote_head(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     experiment: &ExperimentHandle,
 ) -> Option<(PeerId, HeadDescriptor)> {
-    let remote_merged =
-        latest_merged_head_from_snapshots(snapshots, experiment).max_by(|left, right| {
-            left.1
-                .global_step
-                .cmp(&right.1.global_step)
-                .then(left.1.created_at.cmp(&right.1.created_at))
-        });
-
-    remote_merged.or_else(|| {
+    strongest_remote_promoted_head(snapshots, experiment).or_else(|| {
         snapshots
             .iter()
             .filter_map(|(_, snapshot)| latest_head_from_snapshot(snapshot.clone(), experiment))
@@ -533,6 +606,81 @@ fn latest_merge_from_snapshot(
         .map(|announcement| announcement.certificate.clone())
 }
 
+fn head_for_diffusion_certificate(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    certificate: &DiffusionPromotionCertificate,
+) -> Option<(PeerId, HeadDescriptor)> {
+    snapshots
+        .iter()
+        .flat_map(|(peer_id, snapshot)| {
+            snapshot
+                .head_announcements
+                .iter()
+                .filter(move |announcement| {
+                    announcement.head.head_id == certificate.merged_head_id
+                        && announcement.head.artifact_id == certificate.merged_artifact_id
+                })
+                .map(move |announcement| {
+                    (
+                        announcement
+                            .provider_peer_id
+                            .clone()
+                            .unwrap_or_else(|| peer_id.clone()),
+                        announcement.head.clone(),
+                    )
+                })
+        })
+        .max_by(|left, right| {
+            (left.0 == certificate.promoter_peer_id)
+                .cmp(&(right.0 == certificate.promoter_peer_id))
+                .then(left.1.global_step.cmp(&right.1.global_step))
+                .then(left.1.created_at.cmp(&right.1.created_at))
+        })
+}
+
+fn strongest_diffusion_certificate_from_snapshots(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+) -> Vec<DiffusionPromotionCertificate> {
+    let mut winners = BTreeMap::<(WindowId, HeadId), DiffusionPromotionCertificate>::new();
+    for certificate in snapshots.iter().flat_map(|(_, snapshot)| {
+        snapshot
+            .diffusion_promotion_certificate_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.certificate.study_id == experiment.study_id
+                    && announcement.certificate.experiment_id == experiment.experiment_id
+                    && announcement.certificate.revision_id == experiment.revision_id
+            })
+            .map(|announcement| announcement.certificate.clone())
+            .collect::<Vec<_>>()
+    }) {
+        let key = (certificate.window_id, certificate.base_head_id.clone());
+        match winners.get(&key) {
+            Some(existing)
+                if compare_diffusion_certificate_strength(existing, &certificate).is_ge() => {}
+            _ => {
+                winners.insert(key, certificate);
+            }
+        }
+    }
+    winners.into_values().collect()
+}
+
+fn compare_diffusion_certificate_strength(
+    left: &DiffusionPromotionCertificate,
+    right: &DiffusionPromotionCertificate,
+) -> std::cmp::Ordering {
+    left.attester_count
+        .cmp(&right.attester_count)
+        .then_with(|| {
+            left.cumulative_sample_weight
+                .total_cmp(&right.cumulative_sample_weight)
+        })
+        .then(left.settled_at.cmp(&right.settled_at))
+        .then_with(|| right.merged_head_id.cmp(&left.merged_head_id))
+}
+
 fn head_for_merge_certificate(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     merge: &MergeCertificate,
@@ -565,14 +713,58 @@ fn head_for_merge_certificate(
         })
 }
 
-fn latest_merged_head_from_snapshots<'a>(
+fn latest_merge_with_head_from_snapshots<'a>(
     snapshots: &'a [(PeerId, ControlPlaneSnapshot)],
     experiment: &'a ExperimentHandle,
-) -> impl Iterator<Item = (PeerId, HeadDescriptor)> + 'a {
+) -> impl Iterator<Item = (MergeCertificate, (PeerId, HeadDescriptor))> + 'a {
     snapshots.iter().filter_map(move |(_, snapshot)| {
         let merge = latest_merge_from_snapshot(snapshot, experiment)?;
-        head_for_merge_certificate(snapshots, &merge)
+        let head = head_for_merge_certificate(snapshots, &merge)?;
+        Some((merge, head))
     })
+}
+
+fn strongest_remote_promoted_head(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+) -> Option<(PeerId, HeadDescriptor)> {
+    let remote_diffusion = strongest_diffusion_certificate_from_snapshots(snapshots, experiment)
+        .into_iter()
+        .filter_map(|certificate| {
+            head_for_diffusion_certificate(snapshots, &certificate).map(|head| (certificate, head))
+        })
+        .max_by(|left, right| {
+            left.1
+                .1
+                .global_step
+                .cmp(&right.1.1.global_step)
+                .then_with(|| compare_diffusion_certificate_strength(&left.0, &right.0))
+                .then(left.1.1.created_at.cmp(&right.1.1.created_at))
+                .then_with(|| right.1.1.head_id.cmp(&left.1.1.head_id))
+        })
+        .map(|(_, head)| head);
+    let remote_merged =
+        latest_merge_with_head_from_snapshots(snapshots, experiment).max_by(|left, right| {
+            left.1
+                .1
+                .global_step
+                .cmp(&right.1.1.global_step)
+                .then(left.1.1.created_at.cmp(&right.1.1.created_at))
+        });
+
+    match (remote_diffusion, remote_merged) {
+        (Some(diffusion), Some((merge, merged_head)))
+            if !matches!(
+                merge.promotion_mode,
+                HeadPromotionMode::DiffusionSteadyState
+            ) && merged_head.1.global_step > diffusion.1.global_step =>
+        {
+            Some(merged_head)
+        }
+        (Some(diffusion), _) => Some(diffusion),
+        (None, Some((_, merged_head))) => Some(merged_head),
+        (None, None) => None,
+    }
 }
 
 pub(crate) fn snapshots_with_local_control_plane(
@@ -593,16 +785,7 @@ pub(crate) fn resolve_canonical_head(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
 ) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
     let mut best = load_head_state(storage, experiment)?.map(|head| (PeerId::new("local"), head));
-
-    let remote_merged =
-        latest_merged_head_from_snapshots(snapshots, experiment).max_by(|left, right| {
-            left.1
-                .global_step
-                .cmp(&right.1.global_step)
-                .then(left.1.created_at.cmp(&right.1.created_at))
-        });
-
-    if let Some(remote_merged) = remote_merged {
+    if let Some(remote_merged) = strongest_remote_promoted_head(snapshots, experiment) {
         let replace = best
             .as_ref()
             .map(|(_, head)| remote_merged.1.global_step >= head.global_step)
@@ -922,7 +1105,7 @@ pub(crate) fn latest_merge_window_from_snapshot(
                 .cmp(&right.merge_window.window_id)
                 .then(left.announced_at.cmp(&right.announced_at))
         })
-        .map(|announcement| announcement.merge_window.clone())
+        .map(|announcement| normalize_merge_window_state(announcement.merge_window.clone()))
 }
 
 pub(crate) fn latest_merge_window_from_connected_snapshots(
@@ -1024,6 +1207,7 @@ pub(crate) fn runtime_merge_topology_policy(
             active_experiment_directory_entry(config, snapshot, experiment)
                 .and_then(|entry| entry.merge_topology_policy())
         })
+        .map(normalize_merge_topology_policy)
         .unwrap_or_default()
 }
 
@@ -1155,6 +1339,13 @@ pub(crate) fn open_runtime_merge_window(
     reducers: Vec<PeerId>,
     validators: Vec<PeerId>,
 ) -> anyhow::Result<MergeWindowState> {
+    let policy = normalize_merge_topology_policy(policy);
+    ensure_runtime_merge_strategy_supported(&policy)?;
+    let reducers = runtime_window_reducers(&base_head_id, window_id, &policy, &reducers);
+    let validators = match policy.promotion_policy.mode {
+        HeadPromotionMode::ValidatorQuorum => validators,
+        HeadPromotionMode::ReducerAuthority | HeadPromotionMode::DiffusionSteadyState => Vec::new(),
+    };
     let opened_at = Utc::now();
     let closes_at = opened_at + chrono::Duration::seconds(i64::from(policy.window_duration_secs));
     Ok(MergeWindowState {
@@ -1178,6 +1369,118 @@ pub(crate) fn open_runtime_merge_window(
         opened_at,
         closes_at,
     })
+}
+
+fn normalize_merge_topology_policy(mut policy: MergeTopologyPolicy) -> MergeTopologyPolicy {
+    match policy.promotion_policy.mode {
+        HeadPromotionMode::ValidatorQuorum => {}
+        HeadPromotionMode::ReducerAuthority => {
+            policy.reducer_replication = 1;
+            policy.promotion_policy.validator_quorum = 1;
+            policy.promotion_policy.diffusion = None;
+        }
+        HeadPromotionMode::DiffusionSteadyState => {
+            policy.reducer_replication = 0;
+            policy.upper_fanin = 0;
+            policy.promotion_policy.validator_quorum = 0;
+            policy.promotion_policy.diffusion = Some(
+                policy
+                    .promotion_policy
+                    .diffusion
+                    .clone()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    policy
+}
+
+fn ensure_runtime_merge_strategy_supported(policy: &MergeTopologyPolicy) -> anyhow::Result<()> {
+    if !matches!(
+        policy.promotion_policy.mode,
+        HeadPromotionMode::DiffusionSteadyState
+    ) {
+        return Ok(());
+    }
+
+    match policy.strategy {
+        MergeStrategy::GlobalBroadcastBaseline
+        | MergeStrategy::RandomPeerGossip
+        | MergeStrategy::KRegularGossip
+        | MergeStrategy::LocalGossipPlusPeriodicGlobal => Ok(()),
+        MergeStrategy::CentralReducerBaseline
+        | MergeStrategy::FixedTreeReduce
+        | MergeStrategy::RotatingRendezvousTree
+        | MergeStrategy::ReplicatedRendezvousDag
+        | MergeStrategy::MicrocohortReducePlusValidatorPromotion => Err(anyhow::anyhow!(
+            "diffusion steady-state promotion requires a trainer-only gossip or broadcast topology"
+        )),
+    }
+}
+
+fn reducer_authority_rank(base_head_id: &HeadId, window_id: WindowId, peer_id: &PeerId) -> String {
+    ContentId::derive(&(
+        "reducer-authority",
+        base_head_id.as_str(),
+        window_id.0,
+        peer_id.as_str(),
+    ))
+    .map(|content_id| content_id.as_str().to_owned())
+    .unwrap_or_else(|_| peer_id.as_str().to_owned())
+}
+
+pub(crate) fn runtime_window_reducers(
+    base_head_id: &HeadId,
+    window_id: WindowId,
+    policy: &MergeTopologyPolicy,
+    reducers: &[PeerId],
+) -> Vec<PeerId> {
+    if matches!(
+        policy.promotion_policy.mode,
+        HeadPromotionMode::DiffusionSteadyState
+    ) {
+        return Vec::new();
+    }
+    if !matches!(
+        policy.promotion_policy.mode,
+        HeadPromotionMode::ReducerAuthority
+    ) {
+        return reducers.to_vec();
+    }
+
+    reducers
+        .iter()
+        .min_by(|left, right| {
+            reducer_authority_rank(base_head_id, window_id, left)
+                .cmp(&reducer_authority_rank(base_head_id, window_id, right))
+                .then(left.cmp(right))
+        })
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
+fn normalize_merge_window_state(mut merge_window: MergeWindowState) -> MergeWindowState {
+    merge_window.policy = normalize_merge_topology_policy(merge_window.policy);
+    merge_window.reducers = runtime_window_reducers(
+        &merge_window.base_head_id,
+        merge_window.window_id,
+        &merge_window.policy,
+        &merge_window.reducers,
+    );
+    if matches!(
+        merge_window.policy.promotion_policy.mode,
+        HeadPromotionMode::ReducerAuthority | HeadPromotionMode::DiffusionSteadyState
+    ) {
+        merge_window.validators.clear();
+    }
+    if matches!(
+        merge_window.policy.promotion_policy.mode,
+        HeadPromotionMode::DiffusionSteadyState
+    ) {
+        merge_window.reducers.clear();
+    }
+    merge_window
 }
 
 pub(crate) fn runtime_assign_reducers(

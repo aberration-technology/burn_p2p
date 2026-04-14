@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MnistPromotionMode {
+    ValidatorQuorum,
+    DiffusionSteadyState,
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -30,6 +36,9 @@ pub struct Args {
     /// Lower-learning-rate experiment rounds.
     #[arg(long, default_value_t = 3)]
     pub low_lr_rounds: usize,
+    /// Head promotion mode used by the native mnist cluster.
+    #[arg(long, value_enum, default_value_t = MnistPromotionMode::ValidatorQuorum)]
+    pub promotion_mode: MnistPromotionMode,
     /// Prepares live browser probe handoff artifacts for a post-run browser probe.
     #[arg(long, hide = true, default_value_t = false)]
     pub live_browser_probe: bool,

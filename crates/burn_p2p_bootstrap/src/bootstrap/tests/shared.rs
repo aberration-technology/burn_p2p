@@ -114,7 +114,15 @@ impl HttpTestServer {
             while !stop_flag.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        handle_connection(stream, context.clone()).expect("handle connection");
+                        if stop_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Err(error) = handle_connection(stream, context.clone()) {
+                            if stop_flag.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            panic!("handle connection: {error:?}");
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(StdDuration::from_millis(10));
@@ -148,13 +156,9 @@ impl Drop for HttpTestServer {
 impl RedisTestServer {
     pub(super) fn spawn() -> Self {
         let state = tempdir().expect("redis temp dir");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redis test port");
-        let port = listener.local_addr().expect("redis local addr").port();
-        drop(listener);
-
         let mut server = Self {
-            url: format!("redis://127.0.0.1:{port}/0"),
-            port,
+            url: String::new(),
+            port: 0,
             child: None,
             state,
         };
@@ -164,7 +168,37 @@ impl RedisTestServer {
 
     fn start(&mut self) {
         assert!(self.child.is_none(), "redis test server already started");
-        let child = Command::new("redis-server")
+        const REDIS_START_ATTEMPTS: usize = 8;
+        if self.port != 0 {
+            self.url = format!("redis://127.0.0.1:{}/0", self.port);
+            self.child = Some(self.spawn_redis_server(self.port).unwrap_or_else(|| {
+                panic!("redis test server did not become ready at {}", self.url)
+            }));
+            return;
+        }
+
+        for attempt in 0..REDIS_START_ATTEMPTS {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind redis test port");
+            let port = listener.local_addr().expect("redis local addr").port();
+            drop(listener);
+
+            if let Some(child) = self.spawn_redis_server(port) {
+                self.port = port;
+                self.url = format!("redis://127.0.0.1:{}/0", self.port);
+                self.child = Some(child);
+                return;
+            }
+
+            assert!(
+                attempt + 1 < REDIS_START_ATTEMPTS,
+                "redis test server did not become ready on a reserved localhost port",
+            );
+        }
+    }
+
+    fn spawn_redis_server(&self, port: u16) -> Option<Child> {
+        let url = format!("redis://127.0.0.1:{port}/0");
+        let mut child = Command::new("redis-server")
             .arg("--save")
             .arg("")
             .arg("--appendonly")
@@ -172,7 +206,7 @@ impl RedisTestServer {
             .arg("--bind")
             .arg("127.0.0.1")
             .arg("--port")
-            .arg(self.port.to_string())
+            .arg(port.to_string())
             .arg("--dir")
             .arg(self.state.path())
             .arg("--dbfilename")
@@ -183,24 +217,22 @@ impl RedisTestServer {
             .expect("spawn redis-server");
 
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
-        loop {
-            if let Ok(client) = redis::Client::open(self.url.as_str())
+        while std::time::Instant::now() < deadline {
+            if let Ok(client) = redis::Client::open(url.as_str())
                 && let Ok(mut connection) = client.get_connection()
                 && redis::cmd("PING")
                     .query::<String>(&mut connection)
                     .map(|pong| pong == "PONG")
                     .unwrap_or(false)
             {
-                break;
+                return Some(child);
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "redis test server did not become ready at {}",
-                self.url
-            );
             thread::sleep(StdDuration::from_millis(25));
         }
-        self.child = Some(child);
+
+        let _ = child.kill();
+        let _ = child.wait();
+        None
     }
 
     pub(super) fn stop(&mut self) {

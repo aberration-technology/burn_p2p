@@ -50,6 +50,14 @@ impl<P> RunningNode<P> {
         let execution = self.execute_training_window(&prepared.experiment, &prepared)?;
         let publish_latency_ms =
             self.publish_training_execution(&prepared.experiment, &prepared, &execution)?;
+        super::kick_diffusion_steady_state_after_local_publish(
+            self,
+            &prepared.experiment,
+            execution.window_id,
+            &execution.base_head_id,
+            &execution.head.head_id,
+            &execution.artifact.artifact_id,
+        );
 
         Ok(TrainingWindowOutcome {
             lease: execution.lease,

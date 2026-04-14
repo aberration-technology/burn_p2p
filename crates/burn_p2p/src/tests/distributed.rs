@@ -1,5 +1,34 @@
 use super::support::*;
 
+fn diffusion_runtime_directory_entry(
+    experiment: &ExperimentHandle,
+    allow_solo_promotion: bool,
+) -> ExperimentDirectoryEntry {
+    let mut entry = runtime_directory_entry(experiment);
+    let merge_topology = crate::MergeTopologyPolicy {
+        strategy: crate::MergeStrategy::KRegularGossip,
+        target_leaf_cohort: 3,
+        promotion_policy: crate::HeadPromotionPolicy {
+            mode: crate::HeadPromotionMode::DiffusionSteadyState,
+            validator_quorum: 1,
+            diffusion: Some(crate::DiffusionSteadyStatePolicy {
+                settlement_timeout_secs: 3,
+                observation_poll_ms: 10,
+                required_stable_observations: 1,
+                support_margin: 1,
+                allow_solo_promotion,
+            }),
+            ..crate::HeadPromotionPolicy::default()
+        },
+        ..crate::MergeTopologyPolicy::default()
+    };
+    entry.metadata.insert(
+        "burn_p2p.revision.merge_topology.policy_json".into(),
+        serde_json::to_string(&merge_topology).expect("diffusion merge topology json"),
+    );
+    entry
+}
+
 #[test]
 fn native_runtime_training_and_validation_progresses_across_peers() {
     let _guard = native_swarm_test_guard();
@@ -979,4 +1008,718 @@ fn training_rejects_insufficient_throughput_for_estimated_window() {
 
     running.shutdown().expect("adaptive shutdown");
     let _ = running.await_termination().expect("adaptive termination");
+}
+
+#[test]
+fn diffusion_steady_state_converges_across_trainer_peers() {
+    let _guard = native_swarm_test_guard();
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+
+    let experiment = experiment();
+    let auth = crate::AuthConfig::new()
+        .with_experiment_directory(vec![diffusion_runtime_directory_entry(&experiment, false)]);
+    let seed_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-seed-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let trainer_b_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-b-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let trainer_c_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-c-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+
+    let seed = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth.clone())
+    .with_storage(StorageConfig::new(seed_storage))
+    .spawn()
+    .expect("seed spawn");
+    let seed_telemetry = seed.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = seed_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "diffusion seed did not start",
+    );
+    let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
+
+    let trainer_b = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 0.5,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth.clone())
+    .with_storage(StorageConfig::new(trainer_b_storage))
+    .with_bootstrap_peer(seed_addr.clone())
+    .spawn()
+    .expect("trainer b spawn");
+    let trainer_b_telemetry = trainer_b.telemetry();
+    let trainer_c = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 0.25,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth)
+    .with_storage(StorageConfig::new(trainer_c_storage))
+    .with_bootstrap_peer(seed_addr)
+    .spawn()
+    .expect("trainer c spawn");
+    let trainer_c_telemetry = trainer_c.telemetry();
+
+    wait_for(
+        Duration::from_secs(10),
+        || seed_telemetry.snapshot().connected_peers >= 2,
+        "diffusion seed did not connect to trainers",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || trainer_b_telemetry.snapshot().connected_peers >= 1,
+        "diffusion trainer b did not connect",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || trainer_c_telemetry.snapshot().connected_peers >= 1,
+        "diffusion trainer c did not connect",
+    );
+
+    let mut seed = seed;
+    let genesis_head = seed
+        .initialize_local_head(&experiment)
+        .expect("init diffusion genesis head");
+    let mut trainer_b = trainer_b;
+    let mut trainer_c = trainer_c;
+    for trainer in [&trainer_b, &trainer_c] {
+        wait_for(
+            Duration::from_secs(10),
+            || {
+                trainer
+                    .sync_experiment_head(&experiment)
+                    .expect("sync trainer genesis head")
+                    .is_some()
+            },
+            "diffusion trainer did not sync genesis head",
+        );
+    }
+
+    let start_barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let experiment_for_seed = experiment.clone();
+    let experiment_for_trainer_b = experiment.clone();
+    let experiment_for_trainer_c = experiment.clone();
+    let seed_ref = &mut seed;
+    let trainer_b_ref = &mut trainer_b;
+    let trainer_c_ref = &mut trainer_c;
+    let (seed_window, trainer_b_window, trainer_c_window) = thread::scope(|scope| {
+        let seed = seed_ref;
+        let seed_barrier = std::sync::Arc::clone(&start_barrier);
+        let seed_run = scope.spawn(move || {
+            seed_barrier.wait();
+            seed.train_window_once(&experiment_for_seed)
+        });
+        let trainer_b = trainer_b_ref;
+        let trainer_b_barrier = std::sync::Arc::clone(&start_barrier);
+        let trainer_b_run = scope.spawn(move || {
+            trainer_b_barrier.wait();
+            trainer_b.train_window_once(&experiment_for_trainer_b)
+        });
+        let trainer_c = trainer_c_ref;
+        let trainer_c_barrier = std::sync::Arc::clone(&start_barrier);
+        let trainer_c_run = scope.spawn(move || {
+            trainer_c_barrier.wait();
+            trainer_c.train_window_once(&experiment_for_trainer_c)
+        });
+        let seed_window = seed_run
+            .join()
+            .map_err(|_| anyhow::anyhow!("diffusion seed train thread panicked"))??;
+        let trainer_b_window = trainer_b_run
+            .join()
+            .map_err(|_| anyhow::anyhow!("diffusion trainer b train thread panicked"))??;
+        let trainer_c_window = trainer_c_run
+            .join()
+            .map_err(|_| anyhow::anyhow!("diffusion trainer c train thread panicked"))??;
+        anyhow::Ok((seed_window, trainer_b_window, trainer_c_window))
+    })
+    .expect("parallel diffusion windows");
+    for outcome in [&seed_window, &trainer_b_window, &trainer_c_window] {
+        assert_eq!(
+            outcome.head.parent_head_id,
+            Some(genesis_head.head_id.clone())
+        );
+        assert_eq!(outcome.head.global_step, 1);
+    }
+
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            [
+                seed_telemetry.snapshot(),
+                trainer_b_telemetry.snapshot(),
+                trainer_c_telemetry.snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                let updates = snapshot
+                    .control_plane
+                    .update_announcements
+                    .iter()
+                    .filter(|announcement| {
+                        announcement.update.study_id == experiment.study_id
+                            && announcement.update.experiment_id == experiment.experiment_id
+                            && announcement.update.revision_id == experiment.revision_id
+                            && announcement.update.window_id == WindowId(1)
+                            && announcement.update.base_head_id == genesis_head.head_id
+                    })
+                    .count();
+                updates >= 3
+                    && snapshot
+                        .control_plane
+                        .reducer_assignment_announcements
+                        .is_empty()
+                    && snapshot
+                        .control_plane
+                        .aggregate_proposal_announcements
+                        .is_empty()
+                    && snapshot
+                        .control_plane
+                        .validation_quorum_announcements
+                        .is_empty()
+            })
+        },
+        "diffusion trainers did not observe the trainer-only update frontier",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            [
+                seed_telemetry.snapshot(),
+                trainer_b_telemetry.snapshot(),
+                trainer_c_telemetry.snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                snapshot
+                    .control_plane
+                    .trainer_promotion_attestation_announcements
+                    .iter()
+                    .filter(|announcement| {
+                        announcement.attestation.study_id == experiment.study_id
+                            && announcement.attestation.experiment_id == experiment.experiment_id
+                            && announcement.attestation.revision_id == experiment.revision_id
+                            && announcement.attestation.window_id == WindowId(1)
+                            && announcement.attestation.base_head_id == genesis_head.head_id
+                    })
+                    .count()
+                    >= 3
+            })
+        },
+        "one-shot diffusion training did not publish trainer attestations",
+    );
+
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(20));
+    let local_head_ids = [
+        seed_window.head.head_id.clone(),
+        trainer_b_window.head.head_id.clone(),
+        trainer_c_window.head.head_id.clone(),
+    ];
+    // This loop is a test driver for local diffusion polling, not a runtime
+    // barrier. The separate speculative-progress test covers the non-blocking
+    // property directly.
+    let promoted_head = loop {
+        seed.advance_diffusion_steady_state(&experiment, None, None)
+            .expect("advance seed diffusion");
+        trainer_b
+            .advance_diffusion_steady_state(&experiment, None, None)
+            .expect("advance trainer b diffusion");
+        trainer_c
+            .advance_diffusion_steady_state(&experiment, None, None)
+            .expect("advance trainer c diffusion");
+
+        let seed_head = seed
+            .sync_experiment_head(&experiment)
+            .expect("sync diffusion seed head");
+        let trainer_b_head = trainer_b
+            .sync_experiment_head(&experiment)
+            .expect("sync diffusion trainer b head");
+        let trainer_c_head = trainer_c
+            .sync_experiment_head(&experiment)
+            .expect("sync diffusion trainer c head");
+        if let (Some(seed_head), Some(trainer_b_head), Some(trainer_c_head)) =
+            (seed_head, trainer_b_head, trainer_c_head)
+            && seed_head.head_id == trainer_b_head.head_id
+            && seed_head.head_id == trainer_c_head.head_id
+            && seed_head.head_id != genesis_head.head_id
+            && !local_head_ids.contains(&seed_head.head_id)
+        {
+            break seed_head;
+        }
+        assert!(
+            Instant::now() < convergence_deadline,
+            "diffusion trainers did not converge on one promoted head"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    assert_eq!(promoted_head.global_step, 1);
+    assert_eq!(
+        promoted_head.parent_head_id,
+        Some(genesis_head.head_id.clone())
+    );
+    let expected_model = {
+        let seed_model = metric_float(&seed_window.report.stats, "model");
+        let trainer_b_model = metric_float(&trainer_b_window.report.stats, "model");
+        let trainer_c_model = metric_float(&trainer_c_window.report.stats, "model");
+        let seed_quality = 1.0 / (1.0 + metric_float(&seed_window.report.stats, "loss").abs());
+        let trainer_b_quality =
+            1.0 / (1.0 + metric_float(&trainer_b_window.report.stats, "loss").abs());
+        let trainer_c_quality =
+            1.0 / (1.0 + metric_float(&trainer_c_window.report.stats, "loss").abs());
+        ((seed_model * seed_quality)
+            + (trainer_b_model * trainer_b_quality)
+            + (trainer_c_model * trainer_c_quality))
+            / (seed_quality + trainer_b_quality + trainer_c_quality)
+    };
+    let merged_model = metric_float(&promoted_head.metrics, "model");
+    assert!(
+        (merged_model - expected_model).abs() < 1e-9,
+        "expected diffusion merged model {expected_model}, got {merged_model}",
+    );
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            [
+                seed_telemetry.snapshot(),
+                trainer_b_telemetry.snapshot(),
+                trainer_c_telemetry.snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                !snapshot
+                    .control_plane
+                    .diffusion_promotion_certificate_announcements
+                    .is_empty()
+                    && !snapshot.control_plane.merge_announcements.is_empty()
+            })
+        },
+        "diffusion promotion certificates did not propagate across the trainer swarm",
+    );
+
+    trainer_c.shutdown().expect("trainer c shutdown");
+    let _ = trainer_c
+        .await_termination()
+        .expect("trainer c termination");
+    trainer_b.shutdown().expect("trainer b shutdown");
+    let _ = trainer_b
+        .await_termination()
+        .expect("trainer b termination");
+    seed.shutdown().expect("seed shutdown");
+    let _ = seed.await_termination().expect("seed termination");
+}
+
+#[test]
+fn diffusion_steady_state_settles_without_manual_polling_after_local_attestations() {
+    let _guard = native_swarm_test_guard();
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+
+    let experiment = experiment();
+    let auth = crate::AuthConfig::new()
+        .with_experiment_directory(vec![diffusion_runtime_directory_entry(&experiment, false)]);
+    let seed_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-idle-seed-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let trainer_b_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-idle-b-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let trainer_c_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-idle-c-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+
+    let seed = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth.clone())
+    .with_storage(StorageConfig::new(seed_storage))
+    .spawn()
+    .expect("seed spawn");
+    let seed_telemetry = seed.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = seed_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "diffusion idle-settlement seed did not start",
+    );
+    let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
+
+    let trainer_b = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 0.5,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth.clone())
+    .with_storage(StorageConfig::new(trainer_b_storage))
+    .with_bootstrap_peer(seed_addr.clone())
+    .spawn()
+    .expect("trainer b spawn");
+    let trainer_b_telemetry = trainer_b.telemetry();
+    let trainer_c = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 0.25,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth)
+    .with_storage(StorageConfig::new(trainer_c_storage))
+    .with_bootstrap_peer(seed_addr)
+    .spawn()
+    .expect("trainer c spawn");
+    let trainer_c_telemetry = trainer_c.telemetry();
+
+    wait_for(
+        Duration::from_secs(10),
+        || seed_telemetry.snapshot().connected_peers >= 2,
+        "diffusion idle-settlement seed did not connect to trainers",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || trainer_b_telemetry.snapshot().connected_peers >= 1,
+        "diffusion idle-settlement trainer b did not connect",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || trainer_c_telemetry.snapshot().connected_peers >= 1,
+        "diffusion idle-settlement trainer c did not connect",
+    );
+
+    let mut seed = seed;
+    let genesis_head = seed
+        .initialize_local_head(&experiment)
+        .expect("init diffusion idle-settlement genesis head");
+    let mut trainer_b = trainer_b;
+    let mut trainer_c = trainer_c;
+    for trainer in [&trainer_b, &trainer_c] {
+        wait_for(
+            Duration::from_secs(10),
+            || {
+                trainer
+                    .sync_experiment_head(&experiment)
+                    .expect("sync trainer genesis head")
+                    .is_some()
+            },
+            "diffusion idle-settlement trainer did not sync genesis head",
+        );
+    }
+
+    let start_barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let experiment_for_seed = experiment.clone();
+    let experiment_for_trainer_b = experiment.clone();
+    let experiment_for_trainer_c = experiment.clone();
+    let seed_ref = &mut seed;
+    let trainer_b_ref = &mut trainer_b;
+    let trainer_c_ref = &mut trainer_c;
+    let (seed_window, trainer_b_window, trainer_c_window) = thread::scope(|scope| {
+        let seed = seed_ref;
+        let seed_barrier = std::sync::Arc::clone(&start_barrier);
+        let seed_run = scope.spawn(move || {
+            seed_barrier.wait();
+            seed.train_window_once(&experiment_for_seed)
+        });
+        let trainer_b = trainer_b_ref;
+        let trainer_b_barrier = std::sync::Arc::clone(&start_barrier);
+        let trainer_b_run = scope.spawn(move || {
+            trainer_b_barrier.wait();
+            trainer_b.train_window_once(&experiment_for_trainer_b)
+        });
+        let trainer_c = trainer_c_ref;
+        let trainer_c_barrier = std::sync::Arc::clone(&start_barrier);
+        let trainer_c_run = scope.spawn(move || {
+            trainer_c_barrier.wait();
+            trainer_c.train_window_once(&experiment_for_trainer_c)
+        });
+        let seed_window = seed_run.join().map_err(|_| {
+            anyhow::anyhow!("diffusion idle-settlement seed train thread panicked")
+        })??;
+        let trainer_b_window = trainer_b_run.join().map_err(|_| {
+            anyhow::anyhow!("diffusion idle-settlement trainer b train thread panicked")
+        })??;
+        let trainer_c_window = trainer_c_run.join().map_err(|_| {
+            anyhow::anyhow!("diffusion idle-settlement trainer c train thread panicked")
+        })??;
+        anyhow::Ok((seed_window, trainer_b_window, trainer_c_window))
+    })
+    .expect("parallel diffusion idle-settlement windows");
+
+    let local_head_ids = [
+        seed_window.head.head_id.clone(),
+        trainer_b_window.head.head_id.clone(),
+        trainer_c_window.head.head_id.clone(),
+    ];
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            [
+                seed_telemetry.snapshot(),
+                trainer_b_telemetry.snapshot(),
+                trainer_c_telemetry.snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                snapshot
+                    .control_plane
+                    .trainer_promotion_attestation_announcements
+                    .iter()
+                    .filter(|announcement| {
+                        announcement.attestation.study_id == experiment.study_id
+                            && announcement.attestation.experiment_id == experiment.experiment_id
+                            && announcement.attestation.revision_id == experiment.revision_id
+                            && announcement.attestation.window_id == WindowId(1)
+                            && announcement.attestation.base_head_id == genesis_head.head_id
+                    })
+                    .count()
+                    >= 3
+            })
+        },
+        "diffusion idle-settlement trainers did not publish trainer attestations",
+    );
+
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(20));
+    let promoted_head = loop {
+        let seed_head = seed
+            .sync_experiment_head(&experiment)
+            .expect("sync idle-settlement seed head");
+        let trainer_b_head = trainer_b
+            .sync_experiment_head(&experiment)
+            .expect("sync idle-settlement trainer b head");
+        let trainer_c_head = trainer_c
+            .sync_experiment_head(&experiment)
+            .expect("sync idle-settlement trainer c head");
+        if let (Some(seed_head), Some(trainer_b_head), Some(trainer_c_head)) =
+            (seed_head, trainer_b_head, trainer_c_head)
+            && seed_head.head_id == trainer_b_head.head_id
+            && seed_head.head_id == trainer_c_head.head_id
+            && seed_head.head_id != genesis_head.head_id
+            && !local_head_ids.contains(&seed_head.head_id)
+        {
+            break seed_head;
+        }
+        assert!(
+            Instant::now() < convergence_deadline,
+            "diffusion idle-settlement trainers did not converge without manual polling",
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    assert_eq!(promoted_head.global_step, 1);
+    assert_eq!(
+        promoted_head.parent_head_id,
+        Some(genesis_head.head_id.clone())
+    );
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            [
+                seed_telemetry.snapshot(),
+                trainer_b_telemetry.snapshot(),
+                trainer_c_telemetry.snapshot(),
+            ]
+            .into_iter()
+            .all(|snapshot| {
+                !snapshot
+                    .control_plane
+                    .diffusion_promotion_certificate_announcements
+                    .is_empty()
+                    && !snapshot.control_plane.merge_announcements.is_empty()
+            })
+        },
+        "diffusion idle-settlement certificates did not propagate across the trainer swarm",
+    );
+
+    trainer_c.shutdown().expect("trainer c shutdown");
+    let _ = trainer_c
+        .await_termination()
+        .expect("trainer c termination");
+    trainer_b.shutdown().expect("trainer b shutdown");
+    let _ = trainer_b
+        .await_termination()
+        .expect("trainer b termination");
+    seed.shutdown().expect("seed shutdown");
+    let _ = seed.await_termination().expect("seed termination");
+}
+
+#[test]
+fn diffusion_steady_state_allows_speculative_progress_without_incoming_updates() {
+    let _guard = native_swarm_test_guard();
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+
+    let experiment = experiment();
+    let auth = crate::AuthConfig::new()
+        .with_experiment_directory(vec![diffusion_runtime_directory_entry(&experiment, false)]);
+    let seed_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-progress-seed-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let observer_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-diffusion-progress-observer-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+
+    let seed = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth.clone())
+    .with_storage(StorageConfig::new(seed_storage))
+    .spawn()
+    .expect("diffusion progress seed spawn");
+    let seed_telemetry = seed.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = seed_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "diffusion progress seed did not start",
+    );
+    let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
+
+    let observer = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 0.5,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_auth(auth)
+    .with_storage(StorageConfig::new(observer_storage))
+    .with_bootstrap_peer(seed_addr)
+    .spawn()
+    .expect("diffusion progress observer spawn");
+    let observer_telemetry = observer.telemetry();
+
+    wait_for(
+        Duration::from_secs(10),
+        || seed_telemetry.snapshot().connected_peers >= 1,
+        "diffusion progress seed did not connect to observer",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || observer_telemetry.snapshot().connected_peers >= 1,
+        "diffusion progress observer did not connect",
+    );
+
+    let mut seed = seed;
+    let genesis_head = seed
+        .initialize_local_head(&experiment)
+        .expect("init diffusion progress genesis head");
+    let observer = observer;
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            observer
+                .sync_experiment_head(&experiment)
+                .expect("sync observer genesis head")
+                .is_some()
+        },
+        "diffusion progress observer did not sync genesis head",
+    );
+
+    let mut continuous = seed
+        .continuous_trainer(&experiment)
+        .expect("continuous trainer");
+    let first = continuous
+        .train_next_window()
+        .expect("first speculative diffusion window");
+    let second = continuous
+        .train_next_window()
+        .expect("second speculative diffusion window");
+    assert_eq!(
+        first.head.parent_head_id,
+        Some(genesis_head.head_id.clone())
+    );
+    assert_eq!(second.head.parent_head_id, Some(first.head.head_id.clone()));
+    assert_eq!(second.head.global_step, first.head.global_step + 1);
+    assert_eq!(
+        continuous
+            .canonical_head()
+            .expect("continuous trainer canonical head")
+            .global_step,
+        first.head.global_step
+    );
+    assert_eq!(
+        continuous
+            .training_head()
+            .expect("continuous trainer training head")
+            .head_id,
+        second.head.head_id
+    );
+
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            observer_telemetry
+                .snapshot()
+                .control_plane
+                .update_announcements
+                .iter()
+                .filter(|announcement| {
+                    announcement.update.study_id == experiment.study_id
+                        && announcement.update.experiment_id == experiment.experiment_id
+                        && announcement.update.revision_id == experiment.revision_id
+                })
+                .count()
+                >= 2
+        },
+        "diffusion progress observer did not observe speculative trainer updates",
+    );
+
+    let observer_snapshot = observer_telemetry.snapshot();
+    assert!(
+        observer_snapshot
+            .control_plane
+            .diffusion_promotion_certificate_announcements
+            .is_empty(),
+        "observer unexpectedly saw a diffusion promotion certificate without any incoming peer updates",
+    );
+    assert!(
+        observer_snapshot
+            .control_plane
+            .merge_announcements
+            .is_empty(),
+        "observer unexpectedly saw a canonical merge announcement without any incoming peer updates",
+    );
+
+    drop(continuous);
+    observer.shutdown().expect("observer shutdown");
+    let _ = observer.await_termination().expect("observer termination");
+    seed.shutdown().expect("seed shutdown");
+    let _ = seed.await_termination().expect("seed termination");
 }

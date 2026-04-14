@@ -9,7 +9,7 @@ use crate::{
     core::{
         CoreMnistRun, DynamicsSummaryInput, dynamics_summary, experiment_directory_entries,
         leaderboard_entries, leaderboard_node_pairs, metric_float, node_peer_id,
-        trainer_lease_summary,
+        promotion_mode_slug, trainer_lease_summary,
     },
     correctness::{
         browser::{browser_scenarios, exercise_browser_roles, probe_browser_http_shard_fetch},
@@ -74,6 +74,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         &run.network_manifest,
         &run.supported_workload,
         &run.prepared_data,
+        run.promotion_mode.clone(),
         [&run.baseline_head, &run.low_lr_head],
     );
     let leaderboard = leaderboard_entries(
@@ -83,6 +84,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
         &run.merge_certificates,
     );
     let browser_scenarios = browser_scenarios(
+        &run.promotion_mode,
         &run.network_manifest,
         &run.release_manifest,
         directory_entries,
@@ -102,6 +104,7 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
             &run.network_manifest,
             &run.supported_workload,
             &run.prepared_data,
+            run.promotion_mode.clone(),
             [&run.baseline_head, &run.low_lr_head],
         ),
         &[run.baseline_head.clone(), run.low_lr_head.clone()],
@@ -152,23 +155,43 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
                 && (!role.role.contains("trainer") && !role.role.contains("verifier")
                     || role.command_completed)
         }),
-        split_topology_roles_exercised: topology.all_non_seed_nodes_bootstrap_via_seed
-            && topology.mesh_fanout_beyond_seed_observed
-            && topology.dedicated_reducer_participated
-            && topology.aggregate_proposals_only_from_dedicated_reducer
-            && topology.reducer_load_publishers_within_reducer_validation_tier
-            && topology.reduction_attestations_only_from_validators
-            && topology.merge_certificates_only_from_validators
-            && topology.validators_observed_validation_quorum,
+        split_topology_roles_exercised: if matches!(
+            run.promotion_mode,
+            burn_p2p::HeadPromotionMode::DiffusionSteadyState
+        ) {
+            topology.all_non_seed_nodes_bootstrap_via_seed
+                && topology.mesh_fanout_beyond_seed_observed
+                && topology.trainer_only_diffusion_observed
+                && topology.diffusion_certificates_observed
+                && topology.diffusion_attestations_only_from_trainers
+                && topology.reducer_validation_tier_unused
+        } else {
+            topology.all_non_seed_nodes_bootstrap_via_seed
+                && topology.mesh_fanout_beyond_seed_observed
+                && topology.dedicated_reducer_participated
+                && topology.aggregate_proposals_only_from_dedicated_reducer
+                && topology.reducer_load_publishers_within_reducer_validation_tier
+                && topology.reduction_attestations_only_from_validators
+                && topology.merge_certificates_only_from_validators
+                && topology.validators_observed_validation_quorum
+        },
         browser_dataset_transport: browser_dataset_access.upstream_mode.clone(),
         browser_shards_distributed_over_p2p: browser_dataset_access.shards_distributed_over_p2p,
         notes: {
-            let mut notes = vec![
-            "native trainer and validator nodes run real burn mnist training on one machine".into(),
-            "the active topology uses a helper seed for ingress, a dedicated reducer for aggregate proposals, and separate validators for attestation and promotion".into(),
-            "browser viewer, verifier, and trainer roles are exercised through the browser runtime state machine and portal surfaces".into(),
-            "when the hidden live-browser hook is enabled, the mnist e2e run keeps the native fleet alive while a browser burn/webgpu worker enrolls against the same browser edge, trains on the leased shard slice, and submits a live receipt".into(),
-            ];
+            let mut notes = vec![format!(
+                "native mnist nodes run real burn training on one machine with {} promotion",
+                promotion_mode_slug(&run.promotion_mode)
+            )];
+            if matches!(
+                run.promotion_mode,
+                burn_p2p::HeadPromotionMode::DiffusionSteadyState
+            ) {
+                notes.push("the active topology uses a helper seed for ingress and trainer-only steady-state diffusion for canonical promotion".into());
+            } else {
+                notes.push("the active topology uses a helper seed for ingress, a dedicated reducer for aggregate proposals, and separate validators for attestation and promotion".into());
+            }
+            notes.push("browser viewer, verifier, and trainer roles are exercised through the browser runtime state machine and portal surfaces".into());
+            notes.push("when the hidden live-browser hook is enabled, the mnist e2e run keeps the native fleet alive while a browser burn/webgpu worker enrolls against the same browser edge, trains on the leased shard slice, and submits a live receipt".into());
             if browser_dataset_access.upstream_mode == "p2p-signed-peer-bundle" {
                 notes.push("the browser probe consumes a lease-scoped peer bundle materialized from a p2p-synced artifact instead of fetching dataset bytes back through the edge route".into());
             } else {
@@ -196,7 +219,18 @@ pub(crate) fn build_run_export(run: &CoreMnistRun) -> anyhow::Result<MnistRunExp
                 experiment_id: run.baseline_head.experiment_id.as_str().into(),
                 revision_id: run.baseline_head.revision_id.as_str().into(),
                 display_name: "MNIST baseline".into(),
-                trainer_labels: vec!["trainer-a1".into(), "trainer-a2".into()],
+                trainer_labels: if matches!(
+                    run.promotion_mode,
+                    burn_p2p::HeadPromotionMode::DiffusionSteadyState
+                ) {
+                    vec![
+                        "trainer-a1".into(),
+                        "trainer-a2".into(),
+                        "trainer-a3".into(),
+                    ]
+                } else {
+                    vec!["trainer-a1".into(), "trainer-a2".into()]
+                },
                 initial_head_id: run.baseline_genesis.head_id.clone(),
                 final_head_id: run.baseline_head.head_id.clone(),
                 initial_accuracy: baseline_initial_accuracy,
@@ -667,11 +701,123 @@ fn peer_role_label(role: &PeerRole) -> String {
 
 fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummary> {
     let seed_label = run.bootstrap_seed_label.as_str();
-    let reducer_label = run.dedicated_reducer_label.as_str();
     let seed_snapshot = run
         .final_snapshots
         .get(seed_label)
         .with_context(|| format!("mnist demo missing final snapshot for {seed_label}"))?;
+    let seed_addresses = seed_snapshot
+        .listen_addresses
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let non_seed_labels = run
+        .bootstrap_plan
+        .keys()
+        .filter(|label| label.as_str() != seed_label)
+        .cloned()
+        .collect::<Vec<_>>();
+    let all_non_seed_nodes_bootstrap_via_seed = non_seed_labels.iter().all(|label| {
+        run.bootstrap_plan
+            .get(label)
+            .is_some_and(|bootstraps| bootstraps == std::slice::from_ref(&run.bootstrap_seed_label))
+    });
+    let mesh_fanout_beyond_seed_observed = non_seed_labels.iter().all(|label| {
+        run.final_snapshots.get(label).is_some_and(|snapshot| {
+            snapshot
+                .known_peer_addresses
+                .iter()
+                .any(|address| !seed_addresses.contains(address))
+        })
+    });
+    if matches!(
+        run.promotion_mode,
+        burn_p2p::HeadPromotionMode::DiffusionSteadyState
+    ) {
+        let trainer_peer_ids = run
+            .node_records
+            .iter()
+            .filter(|record| record.label.starts_with("trainer-"))
+            .map(|record| record.peer_id.clone())
+            .collect::<BTreeSet<_>>();
+        let diffusion_attesters = run
+            .final_snapshots
+            .values()
+            .flat_map(|snapshot| {
+                snapshot
+                    .control_plane
+                    .trainer_promotion_attestation_announcements
+                    .iter()
+            })
+            .map(|announcement| announcement.attestation.attester_peer_id.clone())
+            .collect::<BTreeSet<_>>();
+        let diffusion_certificate_promoters = run
+            .final_snapshots
+            .values()
+            .flat_map(|snapshot| {
+                snapshot
+                    .control_plane
+                    .diffusion_promotion_certificate_announcements
+                    .iter()
+            })
+            .map(|announcement| announcement.certificate.promoter_peer_id.clone())
+            .collect::<BTreeSet<_>>();
+        let merge_certificate_promoters = run
+            .merge_certificates
+            .iter()
+            .map(|certificate| certificate.promoter_peer_id.clone())
+            .collect::<BTreeSet<_>>();
+        let reducer_validation_tier_unused = run.final_snapshots.values().all(|snapshot| {
+            snapshot
+                .control_plane
+                .aggregate_proposal_announcements
+                .is_empty()
+                && snapshot.control_plane.reducer_load_announcements.is_empty()
+                && snapshot
+                    .control_plane
+                    .reduction_certificate_announcements
+                    .is_empty()
+                && snapshot
+                    .control_plane
+                    .validation_quorum_announcements
+                    .is_empty()
+        });
+        let diffusion_certificates_observed = !diffusion_certificate_promoters.is_empty();
+        let diffusion_attestations_only_from_trainers = !diffusion_attesters.is_empty()
+            && diffusion_attesters
+                .iter()
+                .all(|peer_id| trainer_peer_ids.contains(peer_id));
+        let trainer_only_diffusion_observed = !merge_certificate_promoters.is_empty()
+            && merge_certificate_promoters
+                .iter()
+                .all(|peer_id| trainer_peer_ids.contains(peer_id));
+
+        return Ok(TopologyExerciseSummary {
+            promotion_mode: promotion_mode_slug(&run.promotion_mode).into(),
+            bootstrap_seed_label: run.bootstrap_seed_label.clone(),
+            dedicated_reducer_label: run.dedicated_reducer_label.clone(),
+            validator_labels: run.validator_labels.clone(),
+            all_non_seed_nodes_bootstrap_via_seed,
+            mesh_fanout_beyond_seed_observed,
+            dedicated_reducer_participated: false,
+            aggregate_proposals_only_from_dedicated_reducer: false,
+            reducer_load_only_from_dedicated_reducer: false,
+            reducer_load_publishers_within_reducer_validation_tier: false,
+            reduction_attestations_only_from_validators: false,
+            merge_certificates_only_from_validators: false,
+            validators_observed_validation_quorum: false,
+            trainer_only_diffusion_observed,
+            diffusion_certificates_observed,
+            diffusion_attestations_only_from_trainers,
+            reducer_validation_tier_unused,
+            notes: vec![
+                "all non-seed nodes join the run through the helper seed instead of dialing one trainer directly".into(),
+                "trainers publish bounded diffusion attestations and converge on canonical promotion without dedicated reducers or validators".into(),
+                "healthy peers are expected to learn non-seed addresses and fan out beyond the helper seed".into(),
+            ],
+        });
+    }
+
+    let reducer_label = run.dedicated_reducer_label.as_str();
     let reducer_peer_id = node_peer_id(&run.node_records, reducer_label)?;
     let validator_peer_ids = run
         .validator_labels
@@ -722,30 +868,6 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
         .iter()
         .map(|certificate| certificate.promoter_peer_id.clone())
         .collect::<BTreeSet<_>>();
-    let seed_addresses = seed_snapshot
-        .listen_addresses
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let non_seed_labels = run
-        .bootstrap_plan
-        .keys()
-        .filter(|label| label.as_str() != seed_label)
-        .cloned()
-        .collect::<Vec<_>>();
-    let all_non_seed_nodes_bootstrap_via_seed = non_seed_labels.iter().all(|label| {
-        run.bootstrap_plan
-            .get(label)
-            .is_some_and(|bootstraps| bootstraps == std::slice::from_ref(&run.bootstrap_seed_label))
-    });
-    let mesh_fanout_beyond_seed_observed = non_seed_labels.iter().all(|label| {
-        run.final_snapshots.get(label).is_some_and(|snapshot| {
-            snapshot
-                .known_peer_addresses
-                .iter()
-                .any(|address| !seed_addresses.contains(address))
-        })
-    });
     let validators_observed_validation_quorum = run.validator_labels.iter().all(|label| {
         run.final_snapshots.get(label).is_some_and(|snapshot| {
             !snapshot
@@ -756,6 +878,7 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
     });
 
     Ok(TopologyExerciseSummary {
+        promotion_mode: promotion_mode_slug(&run.promotion_mode).into(),
         bootstrap_seed_label: run.bootstrap_seed_label.clone(),
         dedicated_reducer_label: run.dedicated_reducer_label.clone(),
         validator_labels: run.validator_labels.clone(),
@@ -781,6 +904,10 @@ fn topology_summary(run: &CoreMnistRun) -> anyhow::Result<TopologyExerciseSummar
                 .iter()
                 .all(|peer_id| validator_peer_ids.contains(peer_id)),
         validators_observed_validation_quorum,
+        trainer_only_diffusion_observed: false,
+        diffusion_certificates_observed: false,
+        diffusion_attestations_only_from_trainers: false,
+        reducer_validation_tier_unused: false,
         notes: vec![
             "all non-seed nodes join the run through the helper seed instead of dialing the validator directly".into(),
             "the dedicated reducer publishes aggregate proposals while validators only attest and promote".into(),

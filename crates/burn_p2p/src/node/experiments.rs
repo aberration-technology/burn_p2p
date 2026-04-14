@@ -1,5 +1,7 @@
 use super::*;
-use crate::runtime_support::{load_slot_assignments, persist_slot_assignments};
+use crate::runtime_support::{
+    load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
+};
 
 impl<P> RunningNode<P> {
     /// Performs the list experiments operation.
@@ -273,7 +275,10 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
     ) -> anyhow::Result<Option<HeadDescriptor>> {
         const HEAD_SYNC_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(750);
-        const HEAD_SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+        // Head adoption may require pulling a newly promoted artifact from the
+        // network. Give larger runtime payloads enough room to materialize
+        // before the caller falls back to another outer retry loop.
+        const HEAD_SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
         const HEAD_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         let assignment = SlotAssignmentState::from_experiment(experiment);
@@ -577,6 +582,19 @@ impl<P> RunningNode<P> {
                     for announcement in &remote_snapshot.update_announcements {
                         let _ = self.control.publish_update(announcement.clone());
                     }
+                    for announcement in &remote_snapshot.trainer_promotion_attestation_announcements
+                    {
+                        let _ = self
+                            .control
+                            .publish_trainer_promotion_attestation(announcement.clone());
+                    }
+                    for announcement in
+                        &remote_snapshot.diffusion_promotion_certificate_announcements
+                    {
+                        let _ = self
+                            .control
+                            .publish_diffusion_promotion_certificate(announcement.clone());
+                    }
                     for announcement in &remote_snapshot.aggregate_proposal_announcements {
                         let _ = self
                             .control
@@ -736,11 +754,17 @@ impl<P> RunningNode<P> {
             runtime_robustness_policy(self.config(), &telemetry_snapshot, experiment);
         let topology_peers =
             runtime_topology_peers(&telemetry_snapshot, &self.mainnet().roles, &local_peer_id);
+        let reducer_peers = runtime_window_reducers(
+            &outcome.contribution.base_head_id,
+            outcome.lease.window_id,
+            &topology_policy,
+            &topology_peers,
+        );
         let validator_peers =
             runtime_validator_peers(&telemetry_snapshot, &self.mainnet().roles, &local_peer_id);
         let validators = if matches!(
             topology_policy.promotion_policy.mode,
-            HeadPromotionMode::ReducerAuthority
+            HeadPromotionMode::ReducerAuthority | HeadPromotionMode::DiffusionSteadyState
         ) {
             Vec::new()
         } else {
@@ -762,7 +786,7 @@ impl<P> RunningNode<P> {
             outcome.lease.window_id,
             outcome.contribution.base_head_id.clone(),
             topology_policy,
-            topology_peers,
+            reducer_peers,
             validators,
         )?);
         self.control.publish_merge_window(MergeWindowAnnouncement {

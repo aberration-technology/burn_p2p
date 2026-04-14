@@ -14,7 +14,6 @@ use burn_p2p_core::MetricsLiveEventKind;
 use burn_p2p_core::QuarantinePolicy;
 use burn_p2p_core::RobustnessAlertSeverity;
 
-mod candidate;
 mod coordination;
 mod execution;
 mod output;
@@ -22,11 +21,17 @@ mod robustness;
 #[cfg(test)]
 mod tests;
 
-use candidate::{
+pub(crate) use crate::candidate::{
     ValidationCandidate, ValidationCandidateHead, ValidationCandidateLoadArgs,
     ValidationCandidateView, collect_validation_candidate_heads, fallback_best_candidate_index,
     load_validation_base_model, load_validation_candidate_model, select_reducer_authority_head,
     select_validation_head,
+};
+#[cfg(test)]
+pub(crate) use crate::candidate_screening::PeerRobustnessState;
+pub(crate) use crate::candidate_screening::{
+    CandidateRobustnessContext, CandidateRobustnessOutcome, PersistedRobustnessState,
+    build_validation_canary_report, evaluate_candidate_robustness,
 };
 use output::{
     LocalAggregateMaterialization, ValidationExecution, aggregate_stats_from_updates,
@@ -34,14 +39,14 @@ use output::{
     build_validation_contribution, build_validation_merge_certificate,
     build_validation_quorum_certificate, build_validation_reducer_load,
 };
-use robustness::{
-    CandidateRobustnessOutcome, PersistedRobustnessState, ValidationRobustnessExecution,
-    append_canary_escalation_alert, append_quarantine_escalation_alerts,
-    append_replica_disagreement_alert, build_validation_canary_report,
-    evaluate_candidate_robustness, observed_replica_agreement, persist_validation_robustness_state,
-};
+pub(crate) use robustness::ValidationRobustnessExecution;
 #[cfg(test)]
-use robustness::{PeerRobustnessState, project_robustness_state};
+use robustness::project_robustness_state;
+use robustness::{
+    append_canary_escalation_alert, append_quarantine_escalation_alerts,
+    append_replica_disagreement_alert, observed_replica_agreement,
+    persist_validation_robustness_state,
+};
 
 const VALIDATION_QUORUM_WAIT: Duration = Duration::from_secs(5);
 const REDUCER_PROPOSAL_WAIT: Duration = Duration::from_secs(2);
@@ -140,6 +145,7 @@ fn effective_promotion_quorum(merge_window: &MergeWindowState) -> usize {
     match head_promotion_mode(merge_window) {
         HeadPromotionMode::ValidatorQuorum => effective_validator_quorum(merge_window),
         HeadPromotionMode::ReducerAuthority => 1,
+        HeadPromotionMode::DiffusionSteadyState => 1,
     }
 }
 

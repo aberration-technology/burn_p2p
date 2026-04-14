@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_support::runtime_window_reducers;
 
 impl<P> RunningNode<P> {
     pub(super) fn plan_training_window(
@@ -85,23 +86,23 @@ impl<P> RunningNode<P> {
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
         );
+        let reducer_peers =
+            runtime_window_reducers(&base_head_id, window_id, &topology_policy, &topology_peers);
         let validator_peers = runtime_validator_peers(
             &prepared.telemetry_snapshot,
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
         );
-        let validators = if matches!(
-            topology_policy.promotion_policy.mode,
-            HeadPromotionMode::ReducerAuthority
-        ) {
-            Vec::new()
-        } else {
-            runtime_validators(
+        let validators = match topology_policy.promotion_policy.mode {
+            HeadPromotionMode::ValidatorQuorum => runtime_validators(
                 &prepared.mainnet_roles,
                 &prepared.local_peer_id,
                 &validator_peers,
                 topology_policy.promotion_policy.validator_quorum,
-            )
+            ),
+            HeadPromotionMode::ReducerAuthority | HeadPromotionMode::DiffusionSteadyState => {
+                Vec::new()
+            }
         };
         let merge_window = latest_merge_window_from_snapshot(
             &prepared.telemetry_snapshot.control_plane,
@@ -114,19 +115,28 @@ impl<P> RunningNode<P> {
             window_id,
             base_head_id.clone(),
             topology_policy.clone(),
-            topology_peers.clone(),
+            reducer_peers.clone(),
             validators,
         )?);
-        let reducer_assignment = latest_reducer_assignment_from_snapshot(
-            &prepared.telemetry_snapshot.control_plane,
-            window_id,
-            &prepared.local_peer_id,
-        )
-        .unwrap_or(runtime_assign_reducers(
-            &merge_window,
-            &prepared.local_peer_id,
-            &topology_peers,
-        )?);
+        let reducer_assignment = if matches!(
+            topology_policy.promotion_policy.mode,
+            HeadPromotionMode::DiffusionSteadyState
+        ) {
+            None
+        } else {
+            Some(
+                latest_reducer_assignment_from_snapshot(
+                    &prepared.telemetry_snapshot.control_plane,
+                    window_id,
+                    &prepared.local_peer_id,
+                )
+                .unwrap_or(runtime_assign_reducers(
+                    &merge_window,
+                    &prepared.local_peer_id,
+                    &reducer_peers,
+                )?),
+            )
+        };
         let lease_microshards = unleased_microshards_for_window(
             &prepared.telemetry_snapshot,
             experiment,

@@ -11,8 +11,10 @@ pub(crate) fn run_control_plane(
     const CONNECTIVITY_REPAIR_INTERVAL: Duration = Duration::from_secs(1);
     const PEER_DIRECTORY_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
     const TRUST_BUNDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+    const DIFFUSION_SETTLEMENT_INTERVAL: Duration = Duration::from_millis(100);
     let signing_keypair = keypair.clone();
     let mut auth = auth;
+    let mut diffusion_state = crate::promotion::diffusion::DiffusionStateCache::default();
     let mut shell = match ControlPlaneShell::new(
         boundary.protocols.control.clone(),
         keypair,
@@ -163,6 +165,9 @@ pub(crate) fn run_control_plane(
     let mut last_trust_bundle_sync_at = Instant::now()
         .checked_sub(TRUST_BUNDLE_REFRESH_INTERVAL)
         .unwrap_or_else(Instant::now);
+    let mut last_diffusion_settlement_at = Instant::now()
+        .checked_sub(DIFFUSION_SETTLEMENT_INTERVAL)
+        .unwrap_or_else(Instant::now);
     loop {
         let mut shutdown_requested = false;
         loop {
@@ -300,6 +305,36 @@ pub(crate) fn run_control_plane(
                     if let Err(error) =
                         shell.publish_pubsub(overlay, PubsubPayload::Update(announcement))
                     {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = lock_telemetry_state(&state);
+                    snapshot.control_plane = shell.snapshot().clone();
+                    snapshot.updated_at = Utc::now();
+                }
+                Ok(RuntimeCommand::PublishTrainerPromotionAttestation(announcement)) => {
+                    let overlay = announcement.overlay.clone();
+                    let _ = shell.subscribe_topic(overlay.clone());
+                    shell.publish_trainer_promotion_attestation(announcement.clone());
+                    if let Err(error) = shell.publish_pubsub(
+                        overlay,
+                        PubsubPayload::TrainerPromotionAttestation(announcement),
+                    ) {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error = Some(error.to_string());
+                    }
+                    let mut snapshot = lock_telemetry_state(&state);
+                    snapshot.control_plane = shell.snapshot().clone();
+                    snapshot.updated_at = Utc::now();
+                }
+                Ok(RuntimeCommand::PublishDiffusionPromotionCertificate(announcement)) => {
+                    let overlay = announcement.overlay.clone();
+                    let _ = shell.subscribe_topic(overlay.clone());
+                    shell.publish_diffusion_promotion_certificate(announcement.clone());
+                    if let Err(error) = shell.publish_pubsub(
+                        overlay,
+                        PubsubPayload::DiffusionPromotionCertificate(announcement),
+                    ) {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error = Some(error.to_string());
                     }
@@ -578,6 +613,44 @@ pub(crate) fn run_control_plane(
             last_trust_bundle_sync_at = Instant::now();
         }
 
+        if last_diffusion_settlement_at.elapsed() >= DIFFUSION_SETTLEMENT_INTERVAL {
+            let shell_snapshot = shell.snapshot().clone();
+            let (network_id, local_peer_id) = {
+                let snapshot = lock_telemetry_state(&state);
+                (snapshot.network_id.clone(), snapshot.local_peer_id.clone())
+            };
+            if let (Some(storage), Some(network_id), Some(local_peer_id)) =
+                (storage.as_ref(), network_id, local_peer_id)
+            {
+                match crate::promotion::diffusion::observe_diffusion_steady_state_from_snapshot(
+                    storage,
+                    &network_id,
+                    &shell_snapshot,
+                    &local_peer_id,
+                    &mut diffusion_state,
+                ) {
+                    Ok(publications) => {
+                        if !publications.is_empty() {
+                            let mut snapshot = lock_telemetry_state(&state);
+                            for publication in publications {
+                                publish_diffusion_settlement(
+                                    &mut shell,
+                                    &mut snapshot,
+                                    publication,
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error =
+                            Some(format!("diffusion settlement observation failed: {error}"));
+                    }
+                }
+            }
+            last_diffusion_settlement_at = Instant::now();
+        }
+
         let mut processed_event = false;
         for batch_index in 0..32 {
             let wait = if batch_index == 0 {
@@ -602,6 +675,44 @@ pub(crate) fn run_control_plane(
             thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+fn publish_diffusion_settlement(
+    shell: &mut ControlPlaneShell,
+    snapshot: &mut NodeTelemetrySnapshot,
+    publication: crate::promotion::diffusion::DiffusionSettlementPublication,
+) {
+    let crate::promotion::diffusion::DiffusionSettlementPublication {
+        overlay,
+        certificate,
+        merge_certificate,
+    } = publication;
+    let certificate_announcement = DiffusionPromotionCertificateAnnouncement {
+        overlay: overlay.clone(),
+        certificate,
+        announced_at: Utc::now(),
+    };
+    shell.publish_diffusion_promotion_certificate(certificate_announcement.clone());
+    if let Err(error) = shell.publish_pubsub(
+        overlay.clone(),
+        PubsubPayload::DiffusionPromotionCertificate(certificate_announcement),
+    ) {
+        snapshot.last_error = Some(error.to_string());
+    }
+    let merge_announcement = MergeAnnouncement {
+        overlay,
+        certificate: merge_certificate,
+        announced_at: Utc::now(),
+    };
+    shell.publish_merge(merge_announcement.clone());
+    if let Err(error) = shell.publish_pubsub(
+        merge_announcement.overlay.clone(),
+        PubsubPayload::Merge(merge_announcement),
+    ) {
+        snapshot.last_error = Some(error.to_string());
+    }
+    snapshot.control_plane = shell.snapshot().clone();
+    snapshot.updated_at = Utc::now();
 }
 
 fn handle_control_plane_event(

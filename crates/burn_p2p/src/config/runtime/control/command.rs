@@ -12,6 +12,8 @@ pub(crate) enum RuntimeCommand {
     PublishMergeWindow(MergeWindowAnnouncement),
     PublishReducerAssignment(ReducerAssignmentAnnouncement),
     PublishUpdate(UpdateEnvelopeAnnouncement),
+    PublishTrainerPromotionAttestation(TrainerPromotionAttestationAnnouncement),
+    PublishDiffusionPromotionCertificate(DiffusionPromotionCertificateAnnouncement),
     PublishAggregateProposal(AggregateProposalAnnouncement),
     PublishReductionCertificate(ReductionCertificateAnnouncement),
     PublishValidationQuorum(ValidationQuorumAnnouncement),

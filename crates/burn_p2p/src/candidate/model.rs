@@ -7,7 +7,7 @@ fn empty_metric_report() -> MetricReport {
     }
 }
 
-pub(in crate::validation) fn load_validation_base_model<P>(
+pub(crate) fn load_validation_base_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
     store: &FsArtifactStore,
@@ -32,7 +32,7 @@ where
     })
 }
 
-pub(in crate::validation) fn load_validation_candidate_model<P>(
+pub(crate) fn load_validation_candidate_model<P>(
     project: &mut P,
     args: ValidationCandidateLoadArgs<'_, P::Device>,
     candidate_head: ValidationCandidateHead,
@@ -82,7 +82,7 @@ where
     })
 }
 
-pub(in crate::validation) fn fallback_best_candidate_index<M>(
+pub(crate) fn fallback_best_candidate_index<M>(
     candidate_models: &[ValidationCandidateView<'_, M>],
 ) -> Option<usize> {
     candidate_models
@@ -97,7 +97,7 @@ pub(in crate::validation) fn fallback_best_candidate_index<M>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::validation) fn select_validation_head<P>(
+pub(crate) fn select_validation_head<P>(
     project: &mut P,
     experiment: &ExperimentHandle,
     store: &FsArtifactStore,
@@ -221,7 +221,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::validation) fn select_reducer_authority_head<P>(
+pub(crate) fn select_reducer_authority_head<P>(
     project: &mut P,
     experiment: &ExperimentHandle,
     store: &FsArtifactStore,

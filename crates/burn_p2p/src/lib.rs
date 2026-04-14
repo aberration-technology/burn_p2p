@@ -32,12 +32,15 @@ use serde::{Deserialize, Serialize};
 
 mod app_view;
 mod browser_join;
+mod candidate;
+mod candidate_screening;
 mod config;
 mod edge_auth;
 mod handles;
 mod metrics_runtime;
 mod node;
 mod project_family;
+mod promotion;
 mod runtime_support;
 mod training;
 mod validation;
@@ -61,23 +64,24 @@ pub use burn_p2p_core::{
     ClientPlatform, ClientReleaseManifest, ClientReleaseManifestBuilder, CohortRobustnessReport,
     CompiledFeatureSet, ConfiguredServiceSet, ContentId, ContributionReceipt,
     ContributionReceiptId, ContributionRollup, DatasetId, DatasetManifest, DatasetView,
-    DatasetViewId, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest, EvalAggregationRule,
-    EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions, ExperimentDirectoryEntry,
-    ExperimentId, ExperimentManifest, ExperimentOptInPolicy, ExperimentResourceRequirements,
-    ExperimentScope, ExperimentVisibility, GenesisSpec, HeadDescriptor, HeadEvalReport,
-    HeadEvalStatus, HeadId, HeadPromotionMode, HeadPromotionPolicy, IdentityVisibility, LagPolicy,
-    LagState, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId,
-    MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy,
-    MergeWindowState, MetricScope, MetricTrustClass, MetricValue, MetricsLedgerSegment,
-    MetricsMode, MetricsSnapshotManifest, MicroShardId, NetworkEstimate, NetworkId,
-    NetworkManifest, NetworkManifestBuilder, NodeCertId, NodeCertificate, NodeCertificateClaims,
-    PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics, PeerWindowPlacementHint,
-    PeerWindowStatus, Precision, PrincipalId, ProfileMode, ProjectFamilyId, ReducerAssignment,
-    ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport, ReductionCertificate,
-    RejectionReason, ReleaseTrainManifest, RevisionId, RevisionManifest, RevocationEpoch,
-    RobustnessAlert, RobustnessDecision, RobustnessPolicy, RobustnessPreset, SocialMode,
-    SocialProfile, StudyId, SupportedWorkload, SupportedWorkloadBuilder, TargetArtifactManifest,
-    TelemetrySummary, TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats,
+    DatasetViewId, DiffusionPromotionCertificate, DiffusionSteadyStatePolicy, EdgeAuthProvider,
+    EdgeFeature, EdgeServiceManifest, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
+    EvalProtocolOptions, ExperimentDirectoryEntry, ExperimentId, ExperimentManifest,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
+    GenesisSpec, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId, HeadPromotionMode,
+    HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState, LeaderboardEntry,
+    LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy,
+    MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope,
+    MetricTrustClass, MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest,
+    MicroShardId, NetworkEstimate, NetworkId, NetworkManifest, NetworkManifestBuilder, NodeCertId,
+    NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet,
+    PeerWindowMetrics, PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId,
+    ProfileMode, ProjectFamilyId, ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus,
+    ReducerLoadReport, ReductionCertificate, RejectionReason, ReleaseTrainManifest, RevisionId,
+    RevisionManifest, RevocationEpoch, RobustnessAlert, RobustnessDecision, RobustnessPolicy,
+    RobustnessPreset, SocialMode, SocialProfile, StudyId, SupportedWorkload,
+    SupportedWorkloadBuilder, TargetArtifactManifest, TelemetrySummary,
+    TrainerPromotionAttestation, TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats,
     ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
 };
 pub use burn_p2p_dataloader::{
@@ -114,17 +118,18 @@ pub use burn_p2p_swarm::{
     AggregateProposalAnnouncement, AlertNotice, AlertSeverity, ArtifactChunkPayload,
     ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, ChunkFetchRequest,
     ChunkFetchResponse, ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse,
-    ControlPlaneShell, ControlPlaneSnapshot, ExperimentDirectoryAnnouncement,
-    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, FleetScheduleAnnouncement,
-    HeadAnnouncement, LeaseAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
-    MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement, MergeWindowAnnouncement,
-    MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse, MicroShardProviderRecord,
-    MigrationCoordinator, MigrationPlan, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
-    PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation, PeerStore, ProtocolId,
-    ProtocolSet, ProviderPointer, PubsubPayload, ReducerAssignmentAnnouncement,
-    ReducerLoadAnnouncement, ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeEnvironment,
-    RuntimeTransportPolicy, SwarmAddress, SwarmError, SwarmStats, TelemetryAnnouncement,
-    TransportKind, UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
+    ControlPlaneShell, ControlPlaneSnapshot, DiffusionPromotionCertificateAnnouncement,
+    ExperimentDirectoryAnnouncement, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
+    FleetScheduleAnnouncement, HeadAnnouncement, LeaseAnnouncement, LiveControlPlaneEvent,
+    LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement,
+    MergeWindowAnnouncement, MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse,
+    MicroShardProviderRecord, MigrationCoordinator, MigrationPlan, NativeControlPlaneShell,
+    OverlayChannel, OverlayTopic, PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation,
+    PeerStore, ProtocolId, ProtocolSet, ProviderPointer, PubsubPayload,
+    ReducerAssignmentAnnouncement, ReducerLoadAnnouncement, ReductionCertificateAnnouncement,
+    RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy, SwarmAddress, SwarmError,
+    SwarmStats, TelemetryAnnouncement, TrainerPromotionAttestationAnnouncement, TransportKind,
+    UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
 };
 pub use burn_p2p_workload::{
     ContinuousTrainerPolicy, DirectoryMetadataAttachment, EvalSplit,

@@ -139,6 +139,28 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Performs the publish trainer promotion attestation operation.
+    pub fn publish_trainer_promotion_attestation(
+        &mut self,
+        announcement: TrainerPromotionAttestationAnnouncement,
+    ) {
+        match self {
+            Self::Memory(shell) => shell.publish_trainer_promotion_attestation(announcement),
+            Self::Native(shell) => shell.publish_trainer_promotion_attestation(announcement),
+        }
+    }
+
+    /// Performs the publish diffusion promotion certificate operation.
+    pub fn publish_diffusion_promotion_certificate(
+        &mut self,
+        announcement: DiffusionPromotionCertificateAnnouncement,
+    ) {
+        match self {
+            Self::Memory(shell) => shell.publish_diffusion_promotion_certificate(announcement),
+            Self::Native(shell) => shell.publish_diffusion_promotion_certificate(announcement),
+        }
+    }
+
     /// Performs the publish aggregate proposal operation.
     pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {
         match self {

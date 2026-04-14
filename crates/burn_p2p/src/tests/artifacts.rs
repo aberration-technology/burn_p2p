@@ -676,6 +676,357 @@ fn resolve_canonical_head_uses_merge_artifact_id_not_only_head_id() {
 }
 
 #[test]
+fn resolve_canonical_head_prefers_diffusion_certificate_over_later_diffusion_merge_timing() {
+    let experiment = experiment();
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let promoter = crate::PeerId::new("trainer-promoter");
+    let later_merger = crate::PeerId::new("trainer-later");
+    let base_head_id = crate::HeadId::new("parent");
+    let created_at = Utc::now();
+
+    let diffusion_head = HeadDescriptor {
+        head_id: crate::HeadId::new("diffusion-head"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("diffusion-artifact"),
+        parent_head_id: Some(base_head_id.clone()),
+        global_step: 2,
+        created_at,
+        metrics: BTreeMap::new(),
+    };
+    let later_head = HeadDescriptor {
+        head_id: crate::HeadId::new("later-head"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("later-artifact"),
+        parent_head_id: Some(base_head_id.clone()),
+        global_step: 2,
+        created_at: created_at + chrono::Duration::milliseconds(10),
+        metrics: BTreeMap::new(),
+    };
+
+    let snapshot_a = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(promoter.clone()),
+            head: diffusion_head.clone(),
+            announced_at: created_at,
+        }],
+        diffusion_promotion_certificate_announcements: vec![
+            crate::DiffusionPromotionCertificateAnnouncement {
+                overlay: overlay.clone(),
+                certificate: crate::DiffusionPromotionCertificate {
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    window_id: WindowId(2),
+                    base_head_id: base_head_id.clone(),
+                    merged_head_id: diffusion_head.head_id.clone(),
+                    merged_artifact_id: diffusion_head.artifact_id.clone(),
+                    promotion_mode: crate::HeadPromotionMode::DiffusionSteadyState,
+                    attesting_trainers: vec![
+                        crate::PeerId::new("trainer-a"),
+                        crate::PeerId::new("trainer-b"),
+                        crate::PeerId::new("trainer-c"),
+                    ],
+                    attestation_ids: vec![
+                        crate::ContentId::new("attestation-a"),
+                        crate::ContentId::new("attestation-b"),
+                        crate::ContentId::new("attestation-c"),
+                    ],
+                    attester_count: 3,
+                    cumulative_sample_weight: 24.0,
+                    settled_at: created_at,
+                    promoter_peer_id: promoter.clone(),
+                },
+                announced_at: created_at,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let snapshot_b = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(later_merger.clone()),
+            head: later_head.clone(),
+            announced_at: later_head.created_at,
+        }],
+        merge_announcements: vec![crate::MergeAnnouncement {
+            overlay,
+            certificate: MergeCertificate {
+                merge_cert_id: crate::MergeCertId::new("diffusion-merge-later"),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                base_head_id: base_head_id.clone(),
+                merged_head_id: later_head.head_id.clone(),
+                merged_artifact_id: later_head.artifact_id.clone(),
+                policy: crate::MergePolicy::WeightedMean,
+                issued_at: later_head.created_at,
+                promoter_peer_id: later_merger.clone(),
+                promotion_mode: crate::HeadPromotionMode::DiffusionSteadyState,
+                contribution_receipts: vec![crate::ContributionReceiptId::new("receipt-later")],
+            },
+            announced_at: later_head.created_at,
+        }],
+        ..Default::default()
+    };
+
+    let storage_root = tempdir().expect("tempdir");
+    let resolved = crate::runtime_support::resolve_canonical_head(
+        &StorageConfig::new(storage_root.path()),
+        &experiment,
+        &[(promoter.clone(), snapshot_a), (later_merger, snapshot_b)],
+    )
+    .expect("resolve canonical head")
+    .expect("diffusion canonical head");
+
+    assert_eq!(resolved.0, promoter);
+    assert_eq!(resolved.1.head_id, diffusion_head.head_id);
+    assert_eq!(resolved.1.artifact_id, diffusion_head.artifact_id);
+}
+
+#[test]
+fn resolve_canonical_head_allows_later_validator_merge_to_advance_past_diffusion() {
+    let experiment = experiment();
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let promoter = crate::PeerId::new("trainer-promoter");
+    let validator = crate::PeerId::new("validator-promoter");
+    let base_head_id = crate::HeadId::new("parent");
+    let created_at = Utc::now();
+
+    let diffusion_head = HeadDescriptor {
+        head_id: crate::HeadId::new("diffusion-head"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("diffusion-artifact"),
+        parent_head_id: Some(base_head_id.clone()),
+        global_step: 2,
+        created_at,
+        metrics: BTreeMap::new(),
+    };
+    let validator_head = HeadDescriptor {
+        head_id: crate::HeadId::new("validator-head"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("validator-artifact"),
+        parent_head_id: Some(diffusion_head.head_id.clone()),
+        global_step: 3,
+        created_at: created_at + chrono::Duration::milliseconds(10),
+        metrics: BTreeMap::new(),
+    };
+
+    let snapshot_a = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(promoter.clone()),
+            head: diffusion_head.clone(),
+            announced_at: created_at,
+        }],
+        diffusion_promotion_certificate_announcements: vec![
+            crate::DiffusionPromotionCertificateAnnouncement {
+                overlay: overlay.clone(),
+                certificate: crate::DiffusionPromotionCertificate {
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    window_id: WindowId(2),
+                    base_head_id: base_head_id.clone(),
+                    merged_head_id: diffusion_head.head_id.clone(),
+                    merged_artifact_id: diffusion_head.artifact_id.clone(),
+                    promotion_mode: crate::HeadPromotionMode::DiffusionSteadyState,
+                    attesting_trainers: vec![
+                        crate::PeerId::new("trainer-a"),
+                        crate::PeerId::new("trainer-b"),
+                    ],
+                    attestation_ids: vec![
+                        crate::ContentId::new("attestation-a"),
+                        crate::ContentId::new("attestation-b"),
+                    ],
+                    attester_count: 2,
+                    cumulative_sample_weight: 16.0,
+                    settled_at: created_at,
+                    promoter_peer_id: promoter,
+                },
+                announced_at: created_at,
+            },
+        ],
+        ..Default::default()
+    };
+    let snapshot_b = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(validator.clone()),
+            head: validator_head.clone(),
+            announced_at: validator_head.created_at,
+        }],
+        merge_announcements: vec![crate::MergeAnnouncement {
+            overlay,
+            certificate: MergeCertificate {
+                merge_cert_id: crate::MergeCertId::new("validator-merge"),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                base_head_id: diffusion_head.head_id.clone(),
+                merged_head_id: validator_head.head_id.clone(),
+                merged_artifact_id: validator_head.artifact_id.clone(),
+                policy: crate::MergePolicy::WeightedMean,
+                issued_at: validator_head.created_at,
+                promoter_peer_id: validator.clone(),
+                promotion_mode: crate::HeadPromotionMode::ValidatorQuorum,
+                contribution_receipts: vec![crate::ContributionReceiptId::new("receipt-merge")],
+            },
+            announced_at: validator_head.created_at,
+        }],
+        ..Default::default()
+    };
+
+    let storage_root = tempdir().expect("tempdir");
+    let resolved = crate::runtime_support::resolve_canonical_head(
+        &StorageConfig::new(storage_root.path()),
+        &experiment,
+        &[
+            (validator.clone(), snapshot_b),
+            (crate::PeerId::new("trainer-promoter"), snapshot_a),
+        ],
+    )
+    .expect("resolve canonical head")
+    .expect("validator canonical head");
+
+    assert_eq!(resolved.0, validator);
+    assert_eq!(resolved.1.head_id, validator_head.head_id);
+    assert_eq!(resolved.1.artifact_id, validator_head.artifact_id);
+}
+
+#[test]
+fn resolve_canonical_head_allows_later_diffusion_window_to_advance_past_earlier_support() {
+    let experiment = experiment();
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let promoter_a = crate::PeerId::new("trainer-promoter-a");
+    let promoter_b = crate::PeerId::new("trainer-promoter-b");
+    let genesis_head = crate::HeadId::new("genesis");
+    let created_at = Utc::now();
+
+    let window_one_head = HeadDescriptor {
+        head_id: crate::HeadId::new("diffusion-head-1"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("diffusion-artifact-1"),
+        parent_head_id: Some(genesis_head.clone()),
+        global_step: 1,
+        created_at,
+        metrics: BTreeMap::new(),
+    };
+    let window_two_head = HeadDescriptor {
+        head_id: crate::HeadId::new("diffusion-head-2"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("diffusion-artifact-2"),
+        parent_head_id: Some(window_one_head.head_id.clone()),
+        global_step: 2,
+        created_at: created_at + chrono::Duration::milliseconds(10),
+        metrics: BTreeMap::new(),
+    };
+
+    let snapshot_a = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(promoter_a.clone()),
+            head: window_one_head.clone(),
+            announced_at: created_at,
+        }],
+        diffusion_promotion_certificate_announcements: vec![
+            crate::DiffusionPromotionCertificateAnnouncement {
+                overlay: overlay.clone(),
+                certificate: crate::DiffusionPromotionCertificate {
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    window_id: WindowId(1),
+                    base_head_id: genesis_head.clone(),
+                    merged_head_id: window_one_head.head_id.clone(),
+                    merged_artifact_id: window_one_head.artifact_id.clone(),
+                    promotion_mode: crate::HeadPromotionMode::DiffusionSteadyState,
+                    attesting_trainers: vec![
+                        crate::PeerId::new("trainer-a"),
+                        crate::PeerId::new("trainer-b"),
+                        crate::PeerId::new("trainer-c"),
+                    ],
+                    attestation_ids: vec![
+                        crate::ContentId::new("attestation-a"),
+                        crate::ContentId::new("attestation-b"),
+                        crate::ContentId::new("attestation-c"),
+                    ],
+                    attester_count: 3,
+                    cumulative_sample_weight: 24.0,
+                    settled_at: created_at,
+                    promoter_peer_id: promoter_a.clone(),
+                },
+                announced_at: created_at,
+            },
+        ],
+        ..Default::default()
+    };
+    let snapshot_b = crate::ControlPlaneSnapshot {
+        head_announcements: vec![HeadAnnouncement {
+            overlay: overlay.clone(),
+            provider_peer_id: Some(promoter_b.clone()),
+            head: window_two_head.clone(),
+            announced_at: window_two_head.created_at,
+        }],
+        diffusion_promotion_certificate_announcements: vec![
+            crate::DiffusionPromotionCertificateAnnouncement {
+                overlay,
+                certificate: crate::DiffusionPromotionCertificate {
+                    study_id: experiment.study_id.clone(),
+                    experiment_id: experiment.experiment_id.clone(),
+                    revision_id: experiment.revision_id.clone(),
+                    window_id: WindowId(2),
+                    base_head_id: window_one_head.head_id.clone(),
+                    merged_head_id: window_two_head.head_id.clone(),
+                    merged_artifact_id: window_two_head.artifact_id.clone(),
+                    promotion_mode: crate::HeadPromotionMode::DiffusionSteadyState,
+                    attesting_trainers: vec![
+                        crate::PeerId::new("trainer-a"),
+                        crate::PeerId::new("trainer-b"),
+                    ],
+                    attestation_ids: vec![
+                        crate::ContentId::new("attestation-d"),
+                        crate::ContentId::new("attestation-e"),
+                    ],
+                    attester_count: 2,
+                    cumulative_sample_weight: 16.0,
+                    settled_at: window_two_head.created_at,
+                    promoter_peer_id: promoter_b.clone(),
+                },
+                announced_at: window_two_head.created_at,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let storage_root = tempdir().expect("tempdir");
+    let resolved = crate::runtime_support::resolve_canonical_head(
+        &StorageConfig::new(storage_root.path()),
+        &experiment,
+        &[(promoter_a, snapshot_a), (promoter_b.clone(), snapshot_b)],
+    )
+    .expect("resolve canonical head")
+    .expect("later diffusion head");
+
+    assert_eq!(resolved.0, promoter_b);
+    assert_eq!(resolved.1.head_id, window_two_head.head_id);
+    assert_eq!(resolved.1.artifact_id, window_two_head.artifact_id);
+}
+
+#[test]
 fn experiment_snapshot_peer_ids_only_include_relevant_experiment_peers() {
     let experiment = experiment();
     let other_experiment = mainnet().experiment(

@@ -510,6 +510,30 @@ impl NativeControlPlaneShell {
         self.snapshot.insert_update_announcement(announcement);
     }
 
+    /// Performs the publish trainer promotion attestation operation.
+    pub fn publish_trainer_promotion_attestation(
+        &mut self,
+        announcement: TrainerPromotionAttestationAnnouncement,
+    ) {
+        insert_trainer_promotion_attestation_announcement_with_index(
+            &mut self.snapshot,
+            &mut self.hot_index,
+            announcement,
+        );
+    }
+
+    /// Performs the publish diffusion promotion certificate operation.
+    pub fn publish_diffusion_promotion_certificate(
+        &mut self,
+        announcement: DiffusionPromotionCertificateAnnouncement,
+    ) {
+        insert_diffusion_promotion_certificate_announcement_with_index(
+            &mut self.snapshot,
+            &mut self.hot_index,
+            announcement,
+        );
+    }
+
     /// Performs the publish aggregate operation.
     pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {
         insert_aggregate_proposal_announcement_with_index(
@@ -1659,6 +1683,22 @@ impl NativeControlPlaneShell {
 
     pub fn publish_update(&mut self, announcement: UpdateEnvelopeAnnouncement) {
         self.inner.publish_update(announcement);
+    }
+
+    pub fn publish_trainer_promotion_attestation(
+        &mut self,
+        announcement: TrainerPromotionAttestationAnnouncement,
+    ) {
+        self.inner
+            .publish_trainer_promotion_attestation(announcement);
+    }
+
+    pub fn publish_diffusion_promotion_certificate(
+        &mut self,
+        announcement: DiffusionPromotionCertificateAnnouncement,
+    ) {
+        self.inner
+            .publish_diffusion_promotion_certificate(announcement);
     }
 
     pub fn publish_aggregate_proposal(&mut self, announcement: AggregateProposalAnnouncement) {

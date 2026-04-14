@@ -10,6 +10,7 @@ pub struct RunningNode<P> {
     pub(crate) telemetry: TelemetryHandle,
     pub(crate) control: ControlHandle,
     pub(crate) training_prefetch: Option<TrainingPrefetchTask>,
+    pub(crate) diffusion_state: crate::promotion::diffusion::DiffusionStateCache,
     pub(crate) validation_cache: Option<Box<dyn Any + Send>>,
     pub(crate) runtime_thread: Option<JoinHandle<()>>,
 }
@@ -100,6 +101,7 @@ impl<P> RunningNode<P> {
             telemetry,
             control,
             training_prefetch: None,
+            diffusion_state: crate::promotion::diffusion::DiffusionStateCache::default(),
             validation_cache: None,
             runtime_thread: Some(runtime_thread),
         })

@@ -232,7 +232,7 @@ fn collapse_speculative_candidate_update(
     }
 }
 
-pub(in crate::validation) fn collect_validation_candidate_heads(
+pub(crate) fn collect_validation_candidate_heads(
     experiment: &ExperimentHandle,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     local_peer_id: &PeerId,

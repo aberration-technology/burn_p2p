@@ -17,12 +17,12 @@ mod planning;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use planning::load_model_for_head;
 use planning::{
     adaptive_microshard_cap, ensure_training_placement_roles, fair_share_budget_work_units,
-    fair_share_microshard_cap, load_model_for_head, load_runtime_model,
-    merge_connected_lease_announcements, plan_prefetch_lease_for_window,
-    preferred_microshards_for_peer, prefetched_lease_is_reusable, runtime_blocked_reason,
-    scheduled_microshard_cap, supports_background_shard_prefetch,
+    fair_share_microshard_cap, load_runtime_model, merge_connected_lease_announcements,
+    plan_prefetch_lease_for_window, preferred_microshards_for_peer, prefetched_lease_is_reusable,
+    runtime_blocked_reason, scheduled_microshard_cap, supports_background_shard_prefetch,
     training_placement_budget_work_units, unleased_microshards_for_window,
     wait_for_prefetch_completion,
 };
@@ -51,7 +51,7 @@ struct PlannedTrainingWindow {
     window_id: WindowId,
     base_head_id: HeadId,
     merge_window: MergeWindowState,
-    reducer_assignment: ReducerAssignment,
+    reducer_assignment: Option<ReducerAssignment>,
 }
 
 struct TrainingExecution<T, M> {
@@ -59,7 +59,7 @@ struct TrainingExecution<T, M> {
     window_id: WindowId,
     base_head_id: HeadId,
     merge_window: MergeWindowState,
-    reducer_assignment: ReducerAssignment,
+    reducer_assignment: Option<ReducerAssignment>,
     limit_profile: LimitProfile,
     model: M,
     head: HeadDescriptor,
@@ -89,6 +89,83 @@ where
     canonical_head: Option<HeadDescriptor>,
     training_head: Option<HeadDescriptor>,
     warm_model: Option<P::Model>,
+}
+
+pub(in crate::training) fn poll_diffusion_steady_state_opportunistically<P>(
+    node: &mut RunningNode<P>,
+    experiment: &ExperimentHandle,
+) where
+    P: P2pWorkload,
+{
+    // Diffusion settlement is a best-effort background pass. Trainers must be
+    // able to keep moving even if one local polling attempt fails.
+    if let Err(error) = node.advance_diffusion_steady_state(experiment, None, None) {
+        drop(error);
+    }
+}
+
+pub(in crate::training) fn kick_diffusion_steady_state_after_local_publish<P>(
+    node: &mut RunningNode<P>,
+    experiment: &ExperimentHandle,
+    window_id: WindowId,
+    base_head_id: &HeadId,
+    head_id: &HeadId,
+    artifact_id: &ArtifactId,
+) where
+    P: P2pWorkload,
+{
+    const LOCAL_DIFFUSION_PUBLISH_SYNC_TIMEOUT: Duration = Duration::from_millis(250);
+    const LOCAL_DIFFUSION_PUBLISH_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+    let deadline = Instant::now() + LOCAL_DIFFUSION_PUBLISH_SYNC_TIMEOUT;
+    while Instant::now() < deadline {
+        let snapshot = node.telemetry().snapshot();
+        let Some(local_peer_id) = snapshot.local_peer_id.as_ref() else {
+            break;
+        };
+        let local_publish_visible = snapshot
+            .control_plane
+            .merge_window_announcements
+            .iter()
+            .any(|announcement| {
+                announcement.merge_window.study_id == experiment.study_id
+                    && announcement.merge_window.experiment_id == experiment.experiment_id
+                    && announcement.merge_window.revision_id == experiment.revision_id
+                    && announcement.merge_window.window_id == window_id
+                    && announcement.merge_window.base_head_id == *base_head_id
+            })
+            && snapshot
+                .control_plane
+                .update_announcements
+                .iter()
+                .any(|announcement| {
+                    announcement.update.study_id == experiment.study_id
+                        && announcement.update.experiment_id == experiment.experiment_id
+                        && announcement.update.revision_id == experiment.revision_id
+                        && announcement.update.window_id == window_id
+                        && announcement.update.base_head_id == *base_head_id
+                        && announcement.update.peer_id == *local_peer_id
+                        && announcement.update.delta_artifact_id == *artifact_id
+                })
+            && snapshot
+                .control_plane
+                .head_announcements
+                .iter()
+                .any(|announcement| {
+                    announcement.head.study_id == experiment.study_id
+                        && announcement.head.experiment_id == experiment.experiment_id
+                        && announcement.head.revision_id == experiment.revision_id
+                        && announcement.head.head_id == *head_id
+                        && announcement.head.artifact_id == *artifact_id
+                        && announcement.provider_peer_id.as_ref() == Some(local_peer_id)
+                });
+        if local_publish_visible {
+            break;
+        }
+        std::thread::sleep(LOCAL_DIFFUSION_PUBLISH_SYNC_POLL_INTERVAL);
+    }
+
+    poll_diffusion_steady_state_opportunistically(node, experiment);
 }
 
 struct PrefetchLeasePlanArgs<'a> {

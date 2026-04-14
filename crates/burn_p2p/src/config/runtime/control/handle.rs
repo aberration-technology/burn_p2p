@@ -141,6 +141,34 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to send update announcement: {error}"))
     }
 
+    /// Performs the publish trainer promotion attestation operation.
+    pub fn publish_trainer_promotion_attestation(
+        &self,
+        announcement: TrainerPromotionAttestationAnnouncement,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishTrainerPromotionAttestation(
+                announcement,
+            ))
+            .map_err(|error| {
+                anyhow::anyhow!("failed to send trainer promotion attestation: {error}")
+            })
+    }
+
+    /// Performs the publish diffusion promotion certificate operation.
+    pub fn publish_diffusion_promotion_certificate(
+        &self,
+        announcement: DiffusionPromotionCertificateAnnouncement,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishDiffusionPromotionCertificate(
+                announcement,
+            ))
+            .map_err(|error| {
+                anyhow::anyhow!("failed to send diffusion promotion certificate: {error}")
+            })
+    }
+
     /// Performs the publish aggregate proposal operation.
     pub fn publish_aggregate_proposal(
         &self,

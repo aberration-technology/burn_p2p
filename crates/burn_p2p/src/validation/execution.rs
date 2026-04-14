@@ -1,5 +1,6 @@
 use super::coordination::validation_blocked_reason;
 use super::*;
+use crate::runtime_support::runtime_window_reducers;
 
 fn runtime_window_validators(
     roles: &PeerRoleSet,
@@ -51,6 +52,15 @@ fn dedicated_reducer_peers(prepared: &ValidationPreparedState) -> BTreeSet<PeerI
         })
         .cloned()
         .collect()
+}
+
+fn local_node_is_reducer_authority(prepared: &ValidationPreparedState) -> bool {
+    !reducer_authority_promotion_enabled(&prepared.merge_window)
+        || prepared
+            .merge_window
+            .reducers
+            .first()
+            .is_none_or(|peer_id| peer_id == &prepared.local_peer_id)
 }
 
 fn has_observed_remote_proposal(
@@ -212,6 +222,9 @@ impl<P> RunningNode<P> {
         }
 
         let prepared = self.prepare_validation_state(experiment)?;
+        if !local_node_is_reducer_authority(&prepared) {
+            return Ok(None);
+        }
         let Some(attempt) = self.execute_validation_candidates(
             experiment,
             &prepared,
@@ -370,9 +383,20 @@ impl<P> RunningNode<P> {
             Some(&base_head_id),
         );
         let topology_peers = runtime_topology_peers(&telemetry_snapshot, &roles, &local_peer_id);
+        let next_window_id = inferred_next_window_id(
+            &storage,
+            experiment,
+            current_head.as_ref().map(|(_, head)| head),
+        )?;
         let updates = observation.updates;
         let merge_window = match observation.observed_merge_window {
             Some(mut merge_window) => {
+                merge_window.reducers = runtime_window_reducers(
+                    &merge_window.base_head_id,
+                    merge_window.window_id,
+                    &merge_window.policy,
+                    &merge_window.reducers,
+                );
                 merge_window.validators = if reducer_authority_promotion_enabled(&merge_window) {
                     Vec::new()
                 } else {
@@ -387,9 +411,15 @@ impl<P> RunningNode<P> {
                 merge_window
             }
             None => {
+                let reducer_peers = runtime_window_reducers(
+                    &base_head_id,
+                    next_window_id,
+                    &topology_policy,
+                    &topology_peers,
+                );
                 let validators = if matches!(
                     topology_policy.promotion_policy.mode,
-                    HeadPromotionMode::ReducerAuthority
+                    HeadPromotionMode::ReducerAuthority | HeadPromotionMode::DiffusionSteadyState
                 ) {
                     Vec::new()
                 } else {
@@ -403,18 +433,22 @@ impl<P> RunningNode<P> {
                 };
                 open_runtime_merge_window(
                     experiment,
-                    inferred_next_window_id(
-                        &storage,
-                        experiment,
-                        current_head.as_ref().map(|(_, head)| head),
-                    )?,
+                    next_window_id,
                     base_head_id.clone(),
                     topology_policy,
-                    topology_peers,
+                    reducer_peers,
                     validators,
                 )?
             }
         };
+        if matches!(
+            merge_window.policy.promotion_policy.mode,
+            HeadPromotionMode::DiffusionSteadyState
+        ) {
+            anyhow::bail!(
+                "validator and reducer execution are not available in diffusion steady-state mode"
+            );
+        }
         let robustness_policy =
             runtime_robustness_policy(self.config(), &telemetry_snapshot, experiment);
         let dataset_view_id =
@@ -634,7 +668,19 @@ impl<P> RunningNode<P> {
             trust_scores,
             mut filtered_updates,
             accepted_weights,
-        } = evaluate_candidate_robustness(&engine, prepared, &all_candidate_models, started_at);
+        } = evaluate_candidate_robustness(
+            &engine,
+            CandidateRobustnessContext {
+                robustness_policy: &prepared.robustness_policy,
+                robustness_state: &prepared.robustness_state,
+                snapshots: &prepared.snapshots,
+                base_head_id: &prepared.base_head_id,
+                dataset_view_id: &prepared.dataset_view_id,
+                merge_window: &prepared.merge_window,
+            },
+            &all_candidate_models,
+            started_at,
+        );
         let mut candidate_models = all_candidate_models
             .iter()
             .filter_map(|candidate| {
@@ -715,6 +761,9 @@ impl<P> RunningNode<P> {
                 Some(index)
             }
             HeadPromotionMode::ReducerAuthority => None,
+            HeadPromotionMode::DiffusionSteadyState => {
+                anyhow::bail!("diffusion steady-state promotion does not use validator execution")
+            }
         };
         let draft_key = validation_execution_draft_key(&candidate_models);
         let cached_draft = self
@@ -769,6 +818,11 @@ impl<P> RunningNode<P> {
                     merge_policy.clone(),
                     &prepared.local_peer_id,
                 )?,
+                HeadPromotionMode::DiffusionSteadyState => {
+                    anyhow::bail!(
+                        "diffusion steady-state promotion does not use validator execution"
+                    )
+                }
             };
             if matches!(promotion_mode, HeadPromotionMode::ValidatorQuorum) {
                 let canary_report = build_validation_canary_report(

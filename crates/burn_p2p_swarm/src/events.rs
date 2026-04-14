@@ -1,5 +1,5 @@
 use super::*;
-use burn_p2p_core::FleetPlacementSnapshot;
+use burn_p2p_core::{ExperimentId, FleetPlacementSnapshot, RevisionId, StudyId, WindowId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates high-level memory/native swarm shell events.
@@ -353,6 +353,28 @@ pub struct ValidationQuorumAnnouncement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a trainer promotion attestation announcement.
+pub struct TrainerPromotionAttestationAnnouncement {
+    /// The overlay.
+    pub overlay: OverlayTopic,
+    /// The attestation.
+    pub attestation: TrainerPromotionAttestation,
+    /// The announced at.
+    pub announced_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Represents a diffusion promotion certificate announcement.
+pub struct DiffusionPromotionCertificateAnnouncement {
+    /// The overlay.
+    pub overlay: OverlayTopic,
+    /// The certificate.
+    pub certificate: DiffusionPromotionCertificate,
+    /// The announced at.
+    pub announced_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents a reducer load announcement.
 pub struct ReducerLoadAnnouncement {
     /// The overlay.
@@ -441,6 +463,11 @@ pub struct ControlPlaneSnapshot {
     pub reduction_certificate_announcements: Vec<ReductionCertificateAnnouncement>,
     /// The validation quorum announcements.
     pub validation_quorum_announcements: Vec<ValidationQuorumAnnouncement>,
+    /// The trainer promotion attestation announcements.
+    pub trainer_promotion_attestation_announcements: Vec<TrainerPromotionAttestationAnnouncement>,
+    /// The diffusion promotion certificate announcements.
+    pub diffusion_promotion_certificate_announcements:
+        Vec<DiffusionPromotionCertificateAnnouncement>,
     /// The reducer load announcements.
     pub reducer_load_announcements: Vec<ReducerLoadAnnouncement>,
     /// The auth announcements.
@@ -476,6 +503,12 @@ impl ControlPlaneSnapshot {
         cap_aggregate_proposal_announcements(&mut self.aggregate_proposal_announcements);
         cap_reduction_certificate_announcements(&mut self.reduction_certificate_announcements);
         cap_validation_quorum_announcements(&mut self.validation_quorum_announcements);
+        cap_trainer_promotion_attestation_announcements(
+            &mut self.trainer_promotion_attestation_announcements,
+        );
+        cap_diffusion_promotion_certificate_announcements(
+            &mut self.diffusion_promotion_certificate_announcements,
+        );
         cap_merge_announcements(&mut self.merge_announcements);
         self.clamp_metrics_announcements();
     }
@@ -605,6 +638,20 @@ impl ControlPlaneSnapshot {
         for announcement in &remote.update_announcements {
             self.insert_update_announcement(announcement.clone());
         }
+        for announcement in &remote.trainer_promotion_attestation_announcements {
+            insert_trainer_promotion_attestation_announcement_with_index(
+                self,
+                &mut index,
+                announcement.clone(),
+            );
+        }
+        for announcement in &remote.diffusion_promotion_certificate_announcements {
+            insert_diffusion_promotion_certificate_announcement_with_index(
+                self,
+                &mut index,
+                announcement.clone(),
+            );
+        }
         for announcement in &remote.aggregate_proposal_announcements {
             insert_aggregate_proposal_announcement_with_index(
                 self,
@@ -677,6 +724,7 @@ pub enum ControlPlaneRequest {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Enumerates the supported control plane response values.
 pub enum ControlPlaneResponse {
@@ -709,6 +757,10 @@ pub enum PubsubPayload {
     ReducerAssignment(ReducerAssignmentAnnouncement),
     /// Uses the update variant.
     Update(UpdateEnvelopeAnnouncement),
+    /// Uses the trainer promotion attestation variant.
+    TrainerPromotionAttestation(TrainerPromotionAttestationAnnouncement),
+    /// Uses the diffusion promotion certificate variant.
+    DiffusionPromotionCertificate(DiffusionPromotionCertificateAnnouncement),
     /// Uses the aggregate proposal variant.
     AggregateProposal(AggregateProposalAnnouncement),
     /// Uses the reduction certificate variant.
@@ -892,6 +944,29 @@ struct ValidationQuorumAnnouncementKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TrainerPromotionAttestationAnnouncementKey {
+    overlay_path: String,
+    study_id: StudyId,
+    experiment_id: ExperimentId,
+    revision_id: RevisionId,
+    window_id: WindowId,
+    base_head_id: HeadId,
+    attester_peer_id: PeerId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DiffusionPromotionCertificateAnnouncementKey {
+    overlay_path: String,
+    study_id: StudyId,
+    experiment_id: ExperimentId,
+    revision_id: RevisionId,
+    window_id: WindowId,
+    base_head_id: HeadId,
+    merged_head_id: HeadId,
+    promoter_peer_id: PeerId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MergeAnnouncementKey {
     overlay_path: String,
     merged_head_id: HeadId,
@@ -903,6 +978,10 @@ pub(crate) struct ControlPlaneHotIndex {
     aggregate_proposal_announcements: BTreeMap<AggregateProposalAnnouncementKey, usize>,
     reduction_certificate_announcements: BTreeMap<ReductionCertificateAnnouncementKey, usize>,
     validation_quorum_announcements: BTreeMap<ValidationQuorumAnnouncementKey, usize>,
+    trainer_promotion_attestation_announcements:
+        BTreeMap<TrainerPromotionAttestationAnnouncementKey, usize>,
+    diffusion_promotion_certificate_announcements:
+        BTreeMap<DiffusionPromotionCertificateAnnouncementKey, usize>,
     merge_announcements: BTreeMap<MergeAnnouncementKey, usize>,
 }
 
@@ -935,6 +1014,8 @@ const MAX_PEER_DIRECTORY_ANNOUNCEMENTS: usize = 256;
 const MAX_AGGREGATE_PROPOSAL_ANNOUNCEMENTS: usize = 256;
 const MAX_REDUCTION_CERTIFICATE_ANNOUNCEMENTS: usize = 256;
 const MAX_VALIDATION_QUORUM_ANNOUNCEMENTS: usize = 128;
+const MAX_TRAINER_PROMOTION_ATTESTATION_ANNOUNCEMENTS: usize = 256;
+const MAX_DIFFUSION_PROMOTION_CERTIFICATE_ANNOUNCEMENTS: usize = 128;
 const MAX_MERGE_ANNOUNCEMENTS: usize = 256;
 const MAX_DISTINCT_WINDOWS_PER_OVERLAY: usize = 8;
 
@@ -1134,6 +1215,35 @@ fn validation_quorum_announcement_key(
     }
 }
 
+fn trainer_promotion_attestation_announcement_key(
+    announcement: &TrainerPromotionAttestationAnnouncement,
+) -> TrainerPromotionAttestationAnnouncementKey {
+    TrainerPromotionAttestationAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        study_id: announcement.attestation.study_id.clone(),
+        experiment_id: announcement.attestation.experiment_id.clone(),
+        revision_id: announcement.attestation.revision_id.clone(),
+        window_id: announcement.attestation.window_id,
+        base_head_id: announcement.attestation.base_head_id.clone(),
+        attester_peer_id: announcement.attestation.attester_peer_id.clone(),
+    }
+}
+
+fn diffusion_promotion_certificate_announcement_key(
+    announcement: &DiffusionPromotionCertificateAnnouncement,
+) -> DiffusionPromotionCertificateAnnouncementKey {
+    DiffusionPromotionCertificateAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        study_id: announcement.certificate.study_id.clone(),
+        experiment_id: announcement.certificate.experiment_id.clone(),
+        revision_id: announcement.certificate.revision_id.clone(),
+        window_id: announcement.certificate.window_id,
+        base_head_id: announcement.certificate.base_head_id.clone(),
+        merged_head_id: announcement.certificate.merged_head_id.clone(),
+        promoter_peer_id: announcement.certificate.promoter_peer_id.clone(),
+    }
+}
+
 fn merge_announcement_key(announcement: &MergeAnnouncement) -> MergeAnnouncementKey {
     MergeAnnouncementKey {
         overlay_path: announcement.overlay.path.clone(),
@@ -1239,6 +1349,67 @@ fn validation_quorum_semantic_fingerprint(announcement: &ValidationQuorumAnnounc
     )
 }
 
+fn trainer_promotion_attestation_semantic_fingerprint(
+    announcement: &TrainerPromotionAttestationAnnouncement,
+) -> String {
+    let mut receipt_ids = announcement.attestation.contribution_receipt_ids.clone();
+    sort_and_dedup(&mut receipt_ids);
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        announcement.overlay.path,
+        announcement.attestation.study_id,
+        announcement.attestation.experiment_id,
+        announcement.attestation.revision_id,
+        announcement.attestation.window_id.0,
+        announcement.attestation.base_head_id,
+        announcement.attestation.merged_head_id,
+        announcement.attestation.merged_artifact_id,
+        announcement.attestation.attester_peer_id,
+        receipt_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        announcement.attestation.accepted_sample_weight.to_bits(),
+        announcement
+            .attestation
+            .quality_score
+            .map(f64::to_bits)
+            .unwrap_or_default(),
+    )
+}
+
+fn diffusion_promotion_certificate_semantic_fingerprint(
+    announcement: &DiffusionPromotionCertificateAnnouncement,
+) -> String {
+    let mut attesters = announcement.certificate.attesting_trainers.clone();
+    let mut attestation_ids = announcement.certificate.attestation_ids.clone();
+    sort_and_dedup(&mut attesters);
+    sort_and_dedup(&mut attestation_ids);
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        announcement.overlay.path,
+        announcement.certificate.study_id,
+        announcement.certificate.experiment_id,
+        announcement.certificate.revision_id,
+        announcement.certificate.window_id.0,
+        announcement.certificate.base_head_id,
+        announcement.certificate.merged_head_id,
+        announcement.certificate.merged_artifact_id,
+        attesters
+            .iter()
+            .map(|peer| peer.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        attestation_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        announcement.certificate.cumulative_sample_weight.to_bits(),
+    )
+}
+
 fn merge_announcement_semantic_fingerprint(announcement: &MergeAnnouncement) -> String {
     let mut receipts = announcement.certificate.contribution_receipts.clone();
     sort_and_dedup(&mut receipts);
@@ -1302,6 +1473,12 @@ pub(crate) fn pubsub_semantic_message_id(bytes: &[u8]) -> String {
             }
             PubsubPayload::ValidationQuorum(announcement) => {
                 validation_quorum_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::TrainerPromotionAttestation(announcement) => {
+                trainer_promotion_attestation_semantic_fingerprint(announcement).into_bytes()
+            }
+            PubsubPayload::DiffusionPromotionCertificate(announcement) => {
+                diffusion_promotion_certificate_semantic_fingerprint(announcement).into_bytes()
             }
             PubsubPayload::Merge(announcement) => {
                 merge_announcement_semantic_fingerprint(announcement).into_bytes()
@@ -1466,6 +1643,36 @@ fn cap_validation_quorum_announcements(values: &mut Vec<ValidationQuorumAnnounce
     cap_tail(values, MAX_VALIDATION_QUORUM_ANNOUNCEMENTS);
 }
 
+fn cap_trainer_promotion_attestation_announcements(
+    values: &mut Vec<TrainerPromotionAttestationAnnouncement>,
+) {
+    values.sort_by(|left, right| {
+        left.attestation
+            .window_id
+            .cmp(&right.attestation.window_id)
+            .then(left.attestation.issued_at.cmp(&right.attestation.issued_at))
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_TRAINER_PROMOTION_ATTESTATION_ANNOUNCEMENTS);
+}
+
+fn cap_diffusion_promotion_certificate_announcements(
+    values: &mut Vec<DiffusionPromotionCertificateAnnouncement>,
+) {
+    values.sort_by(|left, right| {
+        left.certificate
+            .window_id
+            .cmp(&right.certificate.window_id)
+            .then(
+                left.certificate
+                    .settled_at
+                    .cmp(&right.certificate.settled_at),
+            )
+            .then(left.announced_at.cmp(&right.announced_at))
+    });
+    cap_tail(values, MAX_DIFFUSION_PROMOTION_CERTIFICATE_ANNOUNCEMENTS);
+}
+
 fn cap_merge_announcements(values: &mut Vec<MergeAnnouncement>) {
     values.sort_by(|left, right| {
         left.certificate
@@ -1502,6 +1709,28 @@ pub(crate) fn rebuild_hot_index(snapshot: &ControlPlaneSnapshot, index: &mut Con
         .enumerate()
         .map(|(position, announcement)| {
             (validation_quorum_announcement_key(announcement), position)
+        })
+        .collect();
+    index.trainer_promotion_attestation_announcements = snapshot
+        .trainer_promotion_attestation_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| {
+            (
+                trainer_promotion_attestation_announcement_key(announcement),
+                position,
+            )
+        })
+        .collect();
+    index.diffusion_promotion_certificate_announcements = snapshot
+        .diffusion_promotion_certificate_announcements
+        .iter()
+        .enumerate()
+        .map(|(position, announcement)| {
+            (
+                diffusion_promotion_certificate_announcement_key(announcement),
+                position,
+            )
         })
         .collect();
     index.merge_announcements = snapshot
@@ -1613,6 +1842,92 @@ pub(crate) fn insert_validation_quorum_announcement_with_index(
     rebuild_hot_index(snapshot, index);
 }
 
+pub(crate) fn insert_trainer_promotion_attestation_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    announcement: TrainerPromotionAttestationAnnouncement,
+) {
+    let key = trainer_promotion_attestation_announcement_key(&announcement);
+    let fingerprint = trainer_promotion_attestation_semantic_fingerprint(&announcement);
+    match index
+        .trainer_promotion_attestation_announcements
+        .get(&key)
+        .copied()
+    {
+        Some(position) => {
+            if trainer_promotion_attestation_semantic_fingerprint(
+                &snapshot.trainer_promotion_attestation_announcements[position],
+            ) == fingerprint
+            {
+                snapshot.trainer_promotion_attestation_announcements[position].announced_at =
+                    snapshot.trainer_promotion_attestation_announcements[position]
+                        .announced_at
+                        .max(announcement.announced_at);
+                snapshot.trainer_promotion_attestation_announcements[position]
+                    .attestation
+                    .issued_at = snapshot.trainer_promotion_attestation_announcements[position]
+                    .attestation
+                    .issued_at
+                    .max(announcement.attestation.issued_at);
+            } else if snapshot.trainer_promotion_attestation_announcements[position].announced_at
+                <= announcement.announced_at
+            {
+                snapshot.trainer_promotion_attestation_announcements[position] = announcement;
+            }
+        }
+        None => snapshot
+            .trainer_promotion_attestation_announcements
+            .push(announcement),
+    }
+    cap_trainer_promotion_attestation_announcements(
+        &mut snapshot.trainer_promotion_attestation_announcements,
+    );
+    rebuild_hot_index(snapshot, index);
+}
+
+pub(crate) fn insert_diffusion_promotion_certificate_announcement_with_index(
+    snapshot: &mut ControlPlaneSnapshot,
+    index: &mut ControlPlaneHotIndex,
+    announcement: DiffusionPromotionCertificateAnnouncement,
+) {
+    let key = diffusion_promotion_certificate_announcement_key(&announcement);
+    let fingerprint = diffusion_promotion_certificate_semantic_fingerprint(&announcement);
+    match index
+        .diffusion_promotion_certificate_announcements
+        .get(&key)
+        .copied()
+    {
+        Some(position) => {
+            if diffusion_promotion_certificate_semantic_fingerprint(
+                &snapshot.diffusion_promotion_certificate_announcements[position],
+            ) == fingerprint
+            {
+                snapshot.diffusion_promotion_certificate_announcements[position].announced_at =
+                    snapshot.diffusion_promotion_certificate_announcements[position]
+                        .announced_at
+                        .max(announcement.announced_at);
+                snapshot.diffusion_promotion_certificate_announcements[position]
+                    .certificate
+                    .settled_at = snapshot.diffusion_promotion_certificate_announcements[position]
+                    .certificate
+                    .settled_at
+                    .max(announcement.certificate.settled_at);
+            } else {
+                snapshot
+                    .diffusion_promotion_certificate_announcements
+                    .push(announcement);
+            }
+        }
+        None => snapshot
+            .diffusion_promotion_certificate_announcements
+            .push(announcement),
+    }
+    cap_diffusion_promotion_certificate_announcements(
+        &mut snapshot.diffusion_promotion_certificate_announcements,
+    );
+    rebuild_hot_index(snapshot, index);
+}
+
 pub(crate) fn insert_merge_announcement_with_index(
     snapshot: &mut ControlPlaneSnapshot,
     index: &mut ControlPlaneHotIndex,
@@ -1676,6 +1991,20 @@ pub(crate) fn apply_pubsub_payload_with_index(
             snapshot.insert_reducer_assignment_announcement(announcement);
         }
         PubsubPayload::Update(announcement) => snapshot.insert_update_announcement(announcement),
+        PubsubPayload::TrainerPromotionAttestation(announcement) => {
+            insert_trainer_promotion_attestation_announcement_with_index(
+                snapshot,
+                index,
+                announcement,
+            );
+        }
+        PubsubPayload::DiffusionPromotionCertificate(announcement) => {
+            insert_diffusion_promotion_certificate_announcement_with_index(
+                snapshot,
+                index,
+                announcement,
+            );
+        }
         PubsubPayload::AggregateProposal(announcement) => {
             insert_aggregate_proposal_announcement_with_index(snapshot, index, announcement);
         }
@@ -1717,6 +2046,8 @@ pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
         PubsubPayload::MergeWindow(_) => "merge-window",
         PubsubPayload::ReducerAssignment(_) => "reducer-assignment",
         PubsubPayload::Update(_) => "update",
+        PubsubPayload::TrainerPromotionAttestation(_) => "trainer-promotion-attestation",
+        PubsubPayload::DiffusionPromotionCertificate(_) => "diffusion-promotion-certificate",
         PubsubPayload::AggregateProposal(_) => "aggregate-proposal",
         PubsubPayload::ReductionCertificate(_) => "reduction-certificate",
         PubsubPayload::ValidationQuorum(_) => "validation-quorum",
@@ -1728,6 +2059,7 @@ pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Enumerates high-level control-plane request, pubsub, and transport events.
 pub enum LiveControlPlaneEvent {

@@ -296,7 +296,7 @@ where
     })
 }
 
-pub(super) fn load_model_for_head<P>(
+pub(crate) fn load_model_for_head<P>(
     project: &mut P,
     head: &HeadDescriptor,
     store: &FsArtifactStore,

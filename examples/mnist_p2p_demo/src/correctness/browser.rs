@@ -38,10 +38,12 @@ use crate::{
         BrowserDatasetAccessSummary, BrowserRoleExerciseSummary, BrowserScenarioExport,
         CaptureInteraction,
     },
+    core::promotion_mode_slug,
     data::PreparedMnistData,
 };
 
 pub fn browser_scenarios(
+    promotion_mode: &burn_p2p::HeadPromotionMode,
     network_manifest: &NetworkManifest,
     release_manifest: &burn_p2p::ClientReleaseManifest,
     directory_entries: Vec<ExperimentDirectoryEntry>,
@@ -87,11 +89,22 @@ pub fn browser_scenarios(
                 .target_artifact_hash
                 .clone()]),
             minimum_revocation_epoch: burn_p2p::RevocationEpoch(0),
-            active_issuer_peer_id: PeerId::new("mnist-validator"),
+            active_issuer_peer_id: PeerId::new("mnist-authority"),
             issuers: Vec::new(),
             reenrollment: None,
         }),
         captured_at: Utc::now(),
+    };
+    let network_description = if matches!(
+        promotion_mode,
+        burn_p2p::HeadPromotionMode::DiffusionSteadyState
+    ) {
+        format!(
+            "network surface showing helper, viewer, and trainer roles on one {} net",
+            promotion_mode_slug(promotion_mode)
+        )
+    } else {
+        "network surface showing helper, validator, viewer, and trainer roles on one net".into()
     };
 
     vec![
@@ -115,7 +128,7 @@ pub fn browser_scenarios(
         BrowserScenarioExport {
             slug: "mnist-validate".into(),
             title: "mnist validate".into(),
-            description: "validator-facing surface with custom mnist evaluation metrics".into(),
+            description: "verifier-facing surface with custom mnist evaluation metrics".into(),
             default_surface: BrowserAppSurface::Validate,
             snapshot: build_snapshot(BrowserMode::Verifier),
             metrics_catchup: metrics_catchup.clone(),
@@ -148,9 +161,7 @@ pub fn browser_scenarios(
         BrowserScenarioExport {
             slug: "mnist-network".into(),
             title: "mnist network".into(),
-            description:
-                "network surface showing helper, validator, viewer, and trainer roles on one net"
-                    .into(),
+            description: network_description,
             default_surface: BrowserAppSurface::Network,
             snapshot: build_snapshot(BrowserMode::Observer),
             metrics_catchup,

@@ -112,6 +112,17 @@ fn prepared_state() -> ValidationPreparedState {
     }
 }
 
+fn robustness_context(prepared: &ValidationPreparedState) -> CandidateRobustnessContext<'_> {
+    CandidateRobustnessContext {
+        robustness_policy: &prepared.robustness_policy,
+        robustness_state: &prepared.robustness_state,
+        snapshots: &prepared.snapshots,
+        base_head_id: &prepared.base_head_id,
+        dataset_view_id: &prepared.dataset_view_id,
+        merge_window: &prepared.merge_window,
+    }
+}
+
 #[test]
 fn candidate_settle_waits_for_expected_training_peers_within_grace() {
     let mut prepared = prepared_state();
@@ -280,7 +291,12 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
         trust_scores: _,
         filtered_updates,
         accepted_weights,
-    } = evaluate_candidate_robustness(&engine, &prepared, &candidate_views, Utc::now());
+    } = evaluate_candidate_robustness(
+        &engine,
+        robustness_context(&prepared),
+        &candidate_views,
+        Utc::now(),
+    );
 
     assert_eq!(filtered_updates.len(), 1);
     assert_eq!(filtered_updates[0].peer_id, PeerId::new("peer-good"));
@@ -378,7 +394,12 @@ fn candidate_robustness_allows_peer_after_inactive_quarantine_expires() {
         decisions,
         filtered_updates,
         ..
-    } = evaluate_candidate_robustness(&engine, &prepared, &[candidate_view], Utc::now());
+    } = evaluate_candidate_robustness(
+        &engine,
+        robustness_context(&prepared),
+        &[candidate_view],
+        Utc::now(),
+    );
 
     assert_eq!(filtered_updates.len(), 1);
     assert_eq!(filtered_updates[0].peer_id, PeerId::new("peer-good"));
@@ -539,7 +560,12 @@ fn candidate_robustness_caps_surviving_updates_to_maximum_cohort_size() {
         filtered_updates,
         accepted_weights,
         ..
-    } = evaluate_candidate_robustness(&engine, &prepared, &candidate_views, Utc::now());
+    } = evaluate_candidate_robustness(
+        &engine,
+        robustness_context(&prepared),
+        &candidate_views,
+        Utc::now(),
+    );
 
     assert_eq!(filtered_updates.len(), 1);
     assert_eq!(accepted_weights.len(), 1);
@@ -675,7 +701,12 @@ fn candidate_robustness_caps_browser_contribution_weight() {
         accepted_weights,
         filtered_updates,
         ..
-    } = evaluate_candidate_robustness(&engine, &prepared, &candidate_views, Utc::now());
+    } = evaluate_candidate_robustness(
+        &engine,
+        robustness_context(&prepared),
+        &candidate_views,
+        Utc::now(),
+    );
 
     let weight = accepted_weights
         .get(&(PeerId::new("peer-good"), ArtifactId::new("artifact-good")))
@@ -683,6 +714,50 @@ fn candidate_robustness_caps_browser_contribution_weight() {
         .expect("accepted browser weight");
     assert_eq!(weight, 0.25);
     assert_eq!(filtered_updates[0].sample_weight, 16.0 * 0.25);
+}
+
+#[test]
+fn canary_ignores_skipped_eval_heads_without_metrics() {
+    let mut prepared = prepared_state();
+    prepared
+        .current_head
+        .as_mut()
+        .expect("current head")
+        .1
+        .metrics
+        .clear();
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let evaluation = metric_report(0.35);
+    let report = build_validation_canary_report(
+        &experiment,
+        &prepared.current_head,
+        &HeadDescriptor {
+            head_id: HeadId::new("head-candidate"),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            artifact_id: ArtifactId::new("artifact-candidate"),
+            parent_head_id: Some(HeadId::new("head-base")),
+            global_step: 4,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        },
+        &evaluation,
+        prepared
+            .robustness_policy
+            .validator_canary_policy
+            .maximum_regression_delta,
+        2,
+    )
+    .expect("canary report");
+
+    assert!(report.accepted);
+    assert_eq!(report.regression_margin, 0.0);
 }
 
 #[test]

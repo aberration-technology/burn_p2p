@@ -47,9 +47,9 @@ pub(crate) use topology::{
     metric_quality, open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids,
     resolve_canonical_head, runtime_assign_reducers, runtime_merge_topology_policy,
     runtime_robustness_policy, runtime_topology_peers, runtime_training_peers,
-    runtime_validator_peers, runtime_validators, snapshots_with_local_control_plane,
-    update_announces_from_connected_snapshots, update_feature_sketch_from_metrics,
-    update_norm_stats,
+    runtime_validator_peers, runtime_validators, runtime_window_reducers,
+    snapshots_with_local_control_plane, update_announces_from_connected_snapshots,
+    update_feature_sketch_from_metrics, update_norm_stats,
 };
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{

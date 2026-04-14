@@ -1006,11 +1006,16 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
         crate::PeerRole::Reducer,
         crate::PeerRole::TrainerCpu,
     ]);
-    let mut merge_topology = crate::MergeTopologyPolicy::default();
-    merge_topology.reducer_replication = 1;
-    merge_topology.target_leaf_cohort = 2;
-    merge_topology.promotion_policy.mode = crate::HeadPromotionMode::ReducerAuthority;
-    merge_topology.promotion_policy.validator_quorum = 1;
+    let merge_topology = crate::MergeTopologyPolicy {
+        reducer_replication: 1,
+        target_leaf_cohort: 2,
+        promotion_policy: crate::HeadPromotionPolicy {
+            mode: crate::HeadPromotionMode::ReducerAuthority,
+            validator_quorum: 1,
+            ..crate::HeadPromotionPolicy::default()
+        },
+        ..crate::MergeTopologyPolicy::default()
+    };
     directory_entry.metadata.insert(
         "burn_p2p.revision.merge_topology.policy_json".into(),
         serde_json::to_string(&merge_topology).expect("merge topology json"),

@@ -218,13 +218,44 @@ pub enum MergeStrategy {
     MicrocohortReducePlusValidatorPromotion,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// Selects how canonical heads are promoted after one merge window closes.
 pub enum HeadPromotionMode {
     /// Requires validator attestations and canonical evaluation before promotion.
+    #[default]
     ValidatorQuorum,
     /// Allows one reducer-authority peer to aggregate and promote without model evaluation.
     ReducerAuthority,
+    /// Lets trainer peers converge on one canonical head through bounded diffusion and
+    /// steady-state support without dedicated reducers or validators.
+    DiffusionSteadyState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Configures the trainer-only steady-state diffusion promotion mode.
+pub struct DiffusionSteadyStatePolicy {
+    /// Maximum local observation horizon used when waiting for a stable support map.
+    pub settlement_timeout_secs: u32,
+    /// Poll interval used when one peer is locally observing diffusion support.
+    pub observation_poll_ms: u32,
+    /// Number of identical support-map observations required before promotion.
+    pub required_stable_observations: u8,
+    /// Minimum distinct-attester lead over the runner-up candidate.
+    pub support_margin: u16,
+    /// Whether a one-trainer network may self-promote after stable local observation.
+    pub allow_solo_promotion: bool,
+}
+
+impl Default for DiffusionSteadyStatePolicy {
+    fn default() -> Self {
+        Self {
+            settlement_timeout_secs: 45,
+            observation_poll_ms: 250,
+            required_stable_observations: 4,
+            support_margin: 1,
+            allow_solo_promotion: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +266,9 @@ pub struct HeadPromotionPolicy {
     pub mode: HeadPromotionMode,
     /// The validator quorum used when `mode` is `ValidatorQuorum`.
     pub validator_quorum: u16,
+    /// Diffusion settings used when `mode` is `DiffusionSteadyState`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<DiffusionSteadyStatePolicy>,
     /// The apply single root EMA.
     pub apply_single_root_ema: bool,
     /// The allow late rollover.
@@ -243,17 +277,12 @@ pub struct HeadPromotionPolicy {
     pub promote_serve_head: bool,
 }
 
-impl Default for HeadPromotionMode {
-    fn default() -> Self {
-        Self::ValidatorQuorum
-    }
-}
-
 impl Default for HeadPromotionPolicy {
     fn default() -> Self {
         Self {
             mode: HeadPromotionMode::ValidatorQuorum,
             validator_quorum: 2,
+            diffusion: None,
             apply_single_root_ema: true,
             allow_late_rollover: true,
             promote_serve_head: true,
@@ -499,6 +528,77 @@ pub struct ValidationQuorumCertificate {
     pub reduction_ids: Vec<ContentId>,
     /// The issued at.
     pub issued_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Records one trainer attestation for a merged candidate in diffusion mode.
+pub struct TrainerPromotionAttestation {
+    /// The study ID.
+    pub study_id: StudyId,
+    /// The experiment ID.
+    pub experiment_id: ExperimentId,
+    /// The revision ID.
+    pub revision_id: RevisionId,
+    /// The window ID.
+    pub window_id: WindowId,
+    /// The base head ID.
+    pub base_head_id: HeadId,
+    /// The merged head ID being attested.
+    pub merged_head_id: HeadId,
+    /// The merged artifact ID backing that head.
+    pub merged_artifact_id: ArtifactId,
+    /// Sorted receipt IDs that contributed to the attested candidate.
+    pub contribution_receipt_ids: Vec<ContributionReceiptId>,
+    /// Deterministic root over `contribution_receipt_ids`.
+    pub contribution_receipt_root: ContentId,
+    /// The trainer issuing the attestation.
+    pub attester_peer_id: PeerId,
+    /// The promotion mode being attested.
+    #[serde(default)]
+    pub promotion_mode: HeadPromotionMode,
+    /// Number of accepted updates after robustness screening.
+    pub accepted_update_count: u32,
+    /// Total accepted sample weight after robustness weighting.
+    pub accepted_sample_weight: f64,
+    /// Optional quality score used for tie-breaking when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_score: Option<f64>,
+    /// The issued at.
+    pub issued_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Records one settled trainer-support certificate in diffusion mode.
+pub struct DiffusionPromotionCertificate {
+    /// The study ID.
+    pub study_id: StudyId,
+    /// The experiment ID.
+    pub experiment_id: ExperimentId,
+    /// The revision ID.
+    pub revision_id: RevisionId,
+    /// The window ID.
+    pub window_id: WindowId,
+    /// The base head ID.
+    pub base_head_id: HeadId,
+    /// The merged head ID being promoted.
+    pub merged_head_id: HeadId,
+    /// The merged artifact ID backing that head.
+    pub merged_artifact_id: ArtifactId,
+    /// The promotion mode being certified.
+    #[serde(default)]
+    pub promotion_mode: HeadPromotionMode,
+    /// Trainers whose latest visible attestation supports this head.
+    pub attesting_trainers: Vec<PeerId>,
+    /// Content IDs of the supporting attestations.
+    pub attestation_ids: Vec<ContentId>,
+    /// Number of distinct supporting trainers.
+    pub attester_count: u16,
+    /// Total accepted sample weight represented by the supporting attestations.
+    pub cumulative_sample_weight: f64,
+    /// The time the local promoter considered this candidate settled.
+    pub settled_at: DateTime<Utc>,
+    /// The peer publishing the compact certificate.
+    pub promoter_peer_id: PeerId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

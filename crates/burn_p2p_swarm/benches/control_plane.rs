@@ -333,6 +333,8 @@ fn control_snapshot(update_count: usize) -> ControlPlaneSnapshot {
             })
             .collect(),
         update_announcements: (0..update_count).map(update_announcement).collect(),
+        trainer_promotion_attestation_announcements: Vec::new(),
+        diffusion_promotion_certificate_announcements: Vec::new(),
         aggregate_proposal_announcements: (0..(update_count / 8).max(1))
             .map(aggregate_proposal_announcement)
             .collect(),

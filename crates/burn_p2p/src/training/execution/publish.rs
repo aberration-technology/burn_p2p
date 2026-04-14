@@ -6,7 +6,10 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
         prepared: &TrainingPreparedState,
         execution: &TrainingExecution<T, M>,
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<u64>
+    where
+        P: P2pWorkload,
+    {
         let publish_started_at = Utc::now();
         persist_limit_profile(&prepared.storage, experiment, &execution.limit_profile)?;
         set_effective_limit_profile(&self.telemetry, Some(execution.limit_profile.clone()));
@@ -32,12 +35,14 @@ impl<P> RunningNode<P> {
             merge_window: execution.merge_window.clone(),
             announced_at: Utc::now(),
         })?;
-        self.control
-            .publish_reducer_assignment(ReducerAssignmentAnnouncement {
-                overlay: overlays.heads.clone(),
-                assignment: execution.reducer_assignment.clone(),
-                announced_at: Utc::now(),
-            })?;
+        if let Some(reducer_assignment) = execution.reducer_assignment.clone() {
+            self.control
+                .publish_reducer_assignment(ReducerAssignmentAnnouncement {
+                    overlay: overlays.heads.clone(),
+                    assignment: reducer_assignment,
+                    announced_at: Utc::now(),
+                })?;
+        }
         self.publish_artifact_from_store(&execution.artifact.artifact_id)?;
         self.control.publish_update(UpdateEnvelopeAnnouncement {
             overlay: overlays.heads.clone(),
@@ -76,11 +81,12 @@ impl<P> RunningNode<P> {
             },
         })?;
         self.control.publish_head(HeadAnnouncement {
-            overlay: overlays.heads,
+            overlay: overlays.heads.clone(),
             provider_peer_id: Some(prepared.local_peer_id.clone()),
             head: execution.head.clone(),
             announced_at: Utc::now(),
         })?;
+        let metrics_overlay = overlays.metrics;
         let publish_finished_at = Utc::now();
         let publish_latency_ms = (publish_finished_at - publish_started_at)
             .num_milliseconds()
@@ -109,7 +115,7 @@ impl<P> RunningNode<P> {
         let peer_window_hint = build_peer_window_placement_hint(&peer_window_metrics);
         self.control.publish_metrics(build_metrics_announcement(
             experiment,
-            overlays.metrics,
+            metrics_overlay,
             MetricsLiveEventKind::LedgerAppend,
             None,
             Some(execution.merge_window.merge_window_id.clone()),

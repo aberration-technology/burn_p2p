@@ -1,17 +1,18 @@
 use super::*;
+use crate::candidate_screening::build_validation_canary_report;
 
 mod discovery;
 mod model;
 #[cfg(test)]
 mod tests;
 
-pub(super) use discovery::collect_validation_candidate_heads;
-pub(super) use model::{
+pub(crate) use discovery::collect_validation_candidate_heads;
+pub(crate) use model::{
     fallback_best_candidate_index, load_validation_base_model, load_validation_candidate_model,
     select_reducer_authority_head, select_validation_head,
 };
 
-pub(super) struct ValidationCandidate<M> {
+pub(crate) struct ValidationCandidate<M> {
     pub peer_id: PeerId,
     pub head: HeadDescriptor,
     pub update: UpdateAnnounce,
@@ -23,7 +24,7 @@ pub(super) struct ValidationCandidate<M> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ValidationCandidateView<'a, M> {
+pub(crate) struct ValidationCandidateView<'a, M> {
     pub peer_id: &'a PeerId,
     pub head: &'a HeadDescriptor,
     pub update: &'a UpdateAnnounce,
@@ -49,7 +50,7 @@ impl<'a, M> From<&'a ValidationCandidate<M>> for ValidationCandidateView<'a, M> 
     }
 }
 
-pub(super) struct ValidationCandidateLoadArgs<'a, D> {
+pub(crate) struct ValidationCandidateLoadArgs<'a, D> {
     pub experiment: &'a ExperimentHandle,
     pub store: &'a FsArtifactStore,
     pub device: &'a D,
@@ -58,7 +59,7 @@ pub(super) struct ValidationCandidateLoadArgs<'a, D> {
     pub evaluate_candidates: bool,
 }
 
-pub(super) struct ValidationCandidateHead {
+pub(crate) struct ValidationCandidateHead {
     pub origin_peer_id: PeerId,
     pub provider_peer_ids: Vec<PeerId>,
     pub head: HeadDescriptor,

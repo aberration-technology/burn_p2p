@@ -480,6 +480,7 @@ pub(crate) fn build_reducer_cohort_metrics(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_head_eval_report(
     config: &NodeConfig,
     experiment: &ExperimentHandle,
@@ -530,6 +531,28 @@ pub(crate) fn build_head_eval_report(
                     BTreeMap::new(),
                     0,
                     HeadEvalStatus::Skipped,
+                )
+            }
+            HeadPromotionMode::DiffusionSteadyState => {
+                let eval_protocol = EvalProtocolManifest::new(
+                    "runtime-diffusion-promotion",
+                    context.dataset_view_id.clone(),
+                    "promotion",
+                    Vec::new(),
+                    EvalProtocolOptions::new(EvalAggregationRule::Mean, 0, 0, "v1"),
+                )?;
+                let evaluator_set_id = ContentId::derive(&[
+                    "diffusion-promoter",
+                    promoter_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    experiment.revision_id.as_str(),
+                ])?;
+                (
+                    eval_protocol,
+                    evaluator_set_id,
+                    evaluation.metrics.clone(),
+                    evaluation_sample_count(evaluation),
+                    HeadEvalStatus::Completed,
                 )
             }
         };

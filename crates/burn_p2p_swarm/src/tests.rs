@@ -1362,6 +1362,14 @@ fn control_plane_shell_exchanges_snapshot_requests_and_responses() {
                 .reducer_assignment_announcements
                 .clone(),
             update_announcements: listener.snapshot().update_announcements.clone(),
+            trainer_promotion_attestation_announcements: listener
+                .snapshot()
+                .trainer_promotion_attestation_announcements
+                .clone(),
+            diffusion_promotion_certificate_announcements: listener
+                .snapshot()
+                .diffusion_promotion_certificate_announcements
+                .clone(),
             aggregate_proposal_announcements: listener
                 .snapshot()
                 .aggregate_proposal_announcements
