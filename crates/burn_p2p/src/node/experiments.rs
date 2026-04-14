@@ -453,9 +453,11 @@ impl<P> RunningNode<P> {
             }
 
             for provider_peer_id in provider_peer_ids {
-                let Some(request_timeout) =
-                    remaining_request_timeout(deadline, artifact_request_timeout)
-                else {
+                let Some(request_timeout) = fair_request_timeout(
+                    deadline,
+                    artifact_request_timeout,
+                    provider_peer_ids.len(),
+                ) else {
                     break;
                 };
                 match self.sync_artifact_from_peer_bounded(

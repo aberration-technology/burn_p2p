@@ -8,10 +8,10 @@ mod experiments;
 mod lifecycle;
 mod selected;
 
-use artifacts::{ci_scaled_timeout, is_transient_artifact_sync_error, remaining_request_timeout};
+use artifacts::{ci_scaled_timeout, is_transient_artifact_sync_error};
 
 #[cfg(test)]
-pub(crate) use artifacts::prioritized_artifact_source_peers;
+pub(crate) use artifacts::{fair_request_timeout, prioritized_artifact_source_peers};
 pub use builder::{Node, NodeBuilder};
 pub use lifecycle::RunningNode;
 pub(crate) use lifecycle::TrainingPrefetchTask;

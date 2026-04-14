@@ -1,6 +1,38 @@
 use super::support::*;
 
 #[test]
+fn fair_request_timeout_splits_budget_across_candidates() {
+    let timeout = crate::node::fair_request_timeout(
+        Instant::now() + Duration::from_millis(1000),
+        Duration::from_secs(10),
+        4,
+    )
+    .expect("timeout");
+
+    assert!(
+        timeout <= Duration::from_millis(250),
+        "timeout should not exceed one quarter of the remaining budget"
+    );
+    assert!(
+        timeout >= Duration::from_millis(200),
+        "timeout should leave a meaningful slice for later candidates"
+    );
+}
+
+#[test]
+fn fair_request_timeout_respects_small_remaining_budget() {
+    let timeout = crate::node::fair_request_timeout(
+        Instant::now() + Duration::from_millis(120),
+        Duration::from_secs(10),
+        8,
+    )
+    .expect("timeout");
+
+    assert!(timeout <= Duration::from_millis(120));
+    assert!(timeout >= Duration::from_millis(50));
+}
+
+#[test]
 fn persisted_runtime_binding_survives_restart_without_with_network() {
     let storage = tempdir().expect("persisted runtime binding storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());

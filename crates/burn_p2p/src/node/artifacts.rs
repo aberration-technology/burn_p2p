@@ -168,9 +168,11 @@ impl<P> RunningNode<P> {
             while Instant::now() < deadline && selected_provider.is_none() {
                 self.redial_known_candidates(&transfer_state.source_peers);
                 for candidate in &transfer_state.source_peers {
-                    let Some(request_timeout) =
-                        remaining_request_timeout(deadline, artifact_request_timeout)
-                    else {
+                    let Some(request_timeout) = fair_request_timeout(
+                        deadline,
+                        artifact_request_timeout,
+                        transfer_state.source_peers.len(),
+                    ) else {
                         break;
                     };
                     if let Some(policy) = auth_policy {
@@ -341,9 +343,11 @@ impl<P> RunningNode<P> {
             while Instant::now() < chunk_deadline && !stored {
                 self.redial_known_candidates(&provider_candidates);
                 for candidate in &provider_candidates {
-                    let Some(request_timeout) =
-                        remaining_request_timeout(chunk_deadline, artifact_request_timeout)
-                    else {
+                    let Some(request_timeout) = fair_request_timeout(
+                        chunk_deadline,
+                        artifact_request_timeout,
+                        provider_candidates.len(),
+                    ) else {
                         break;
                     };
                     let candidate_key = candidate.to_string();
@@ -458,16 +462,25 @@ pub(super) fn is_transient_artifact_sync_error(error: &anyhow::Error) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
-pub(super) fn remaining_request_timeout(
+pub(crate) fn fair_request_timeout(
     deadline: Instant,
     request_timeout: Duration,
+    candidate_count: usize,
 ) -> Option<Duration> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        None
-    } else {
-        Some(request_timeout.min(remaining))
+        return None;
     }
+
+    let candidate_count = candidate_count.max(1) as u32;
+    let minimum_slice = Duration::from_millis(250);
+    let divided = remaining / candidate_count;
+    let slice = if remaining > minimum_slice {
+        divided.max(minimum_slice)
+    } else {
+        remaining
+    };
+    Some(request_timeout.min(slice).min(remaining))
 }
 
 pub(super) fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {
