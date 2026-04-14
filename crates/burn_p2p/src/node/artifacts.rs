@@ -65,8 +65,8 @@ impl<P> RunningNode<P> {
     ) -> anyhow::Result<ArtifactDescriptor> {
         let budget = timeout.max(Duration::from_secs(1));
         let request_timeout = budget.min(ci_scaled_timeout(
-            Duration::from_secs(2),
-            Duration::from_secs(8),
+            Duration::from_secs(3),
+            Duration::from_secs(15),
         ));
 
         self.sync_artifact_from_peer_with_timeouts(
@@ -336,6 +336,8 @@ impl<P> RunningNode<P> {
             }
             let chunk_deadline = Instant::now() + artifact_chunk_fetch_timeout;
             let mut stored = false;
+            let mut candidate_attempt_counts = BTreeMap::<String, usize>::new();
+            let mut candidate_last_results = BTreeMap::<String, String>::new();
             while Instant::now() < chunk_deadline && !stored {
                 self.redial_known_candidates(&provider_candidates);
                 for candidate in &provider_candidates {
@@ -344,6 +346,10 @@ impl<P> RunningNode<P> {
                     else {
                         break;
                     };
+                    let candidate_key = candidate.to_string();
+                    *candidate_attempt_counts
+                        .entry(candidate_key.clone())
+                        .or_default() += 1;
                     match self.control.fetch_artifact_chunk(
                         candidate.as_str(),
                         descriptor.artifact_id.clone(),
@@ -354,10 +360,18 @@ impl<P> RunningNode<P> {
                             store.store_chunk_bytes(&payload.chunk, &payload.bytes)?;
                             transfer_state.note_completed_chunk(&payload.chunk.chunk_id);
                             self.record_transfer_state(transfer_state.clone());
+                            candidate_last_results.insert(candidate_key, "ok".into());
                             stored = true;
                             break;
                         }
-                        Ok(None) | Err(_) => continue,
+                        Ok(None) => {
+                            candidate_last_results.insert(candidate_key, "none".into());
+                            continue;
+                        }
+                        Err(error) => {
+                            candidate_last_results.insert(candidate_key, error.to_string());
+                            continue;
+                        }
                     }
                 }
 
@@ -369,13 +383,15 @@ impl<P> RunningNode<P> {
             if !stored {
                 let snapshot = self.telemetry().snapshot();
                 return Err(anyhow::anyhow!(
-                    "no connected peer provided chunk {} for artifact {}; provider_candidates={:?}; connected_peers={:?}; peer_directory={:?}",
+                    "no connected peer provided chunk {} for artifact {}; provider_candidates={:?}; candidate_attempts={:?}; candidate_last_results={:?}; connected_peers={:?}; peer_directory={:?}",
                     chunk.chunk_id.as_str(),
                     descriptor.artifact_id.as_str(),
                     provider_candidates
                         .iter()
                         .map(|peer_id| peer_id.to_string())
                         .collect::<Vec<_>>(),
+                    candidate_attempt_counts,
+                    candidate_last_results,
                     connected_peer_ids(&snapshot)
                         .into_iter()
                         .map(|peer_id| peer_id.to_string())
@@ -390,7 +406,7 @@ impl<P> RunningNode<P> {
                                 .addresses
                                 .iter()
                                 .map(|address| address.as_str().to_owned())
-                                .collect::<Vec<_>>()
+                                .collect::<Vec<_>>(),
                         ))
                         .collect::<Vec<_>>(),
                 ));
