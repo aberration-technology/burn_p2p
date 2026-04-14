@@ -199,7 +199,7 @@ where
         };
 
         let store = FsArtifactStore::new(storage.root.clone());
-        if !store.has_manifest(&head.artifact_id) {
+        if !store.has_complete_artifact(&head.artifact_id)? {
             anyhow::ensure!(
                 !provider_peer_ids.is_empty(),
                 "head {} is not materialized locally and has no known provider peers",

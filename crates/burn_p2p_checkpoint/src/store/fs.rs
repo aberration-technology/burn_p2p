@@ -117,6 +117,20 @@ impl FsArtifactStore {
         self.manifest_path(artifact_id).exists()
     }
 
+    /// Returns whether the artifact manifest exists and every referenced chunk
+    /// is materialized locally.
+    pub fn has_complete_artifact(&self, artifact_id: &ArtifactId) -> Result<bool, CheckpointError> {
+        if !self.has_manifest(artifact_id) {
+            return Ok(false);
+        }
+
+        let descriptor = self.load_manifest(artifact_id)?;
+        Ok(descriptor
+            .chunks
+            .iter()
+            .all(|chunk| self.has_chunk(&chunk.chunk_id)))
+    }
+
     /// Performs the store manifest operation.
     pub fn store_manifest(
         &self,
@@ -478,7 +492,7 @@ fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), CheckpointEr
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, io::Write};
+    use std::{fs, fs::File, io::Write};
 
     use burn_p2p_core::{ArtifactKind, ContentId, Precision};
     use tempfile::tempdir;
@@ -512,6 +526,54 @@ mod tests {
             .materialize_artifact_bytes(&descriptor)
             .expect("materialize");
         assert_eq!(materialized, payload);
+        assert!(
+            store
+                .has_complete_artifact(&descriptor.artifact_id)
+                .expect("complete artifact"),
+            "stored artifact should be fully materialized"
+        );
+    }
+
+    #[test]
+    fn has_complete_artifact_rejects_missing_chunks() {
+        let dir = tempdir().expect("tempdir");
+        let store = FsArtifactStore::new(dir.path());
+        let payload = vec![13_u8; 1024];
+        let descriptor = store
+            .store_artifact_reader(
+                &ArtifactBuildSpec::new(
+                    ArtifactKind::ServeHead,
+                    Precision::Fp16,
+                    ContentId::new("schema"),
+                    "burn-record:bin",
+                ),
+                std::io::Cursor::new(payload),
+                ChunkingScheme::new(128).expect("chunking"),
+            )
+            .expect("store artifact");
+
+        assert!(
+            store
+                .has_complete_artifact(&descriptor.artifact_id)
+                .expect("complete artifact before removal"),
+            "artifact should start fully materialized"
+        );
+
+        let removed_chunk = descriptor
+            .chunks
+            .get(1)
+            .or_else(|| descriptor.chunks.first())
+            .expect("artifact chunk")
+            .chunk_id
+            .clone();
+        fs::remove_file(store.chunk_path(&removed_chunk)).expect("remove chunk");
+
+        assert!(
+            !store
+                .has_complete_artifact(&descriptor.artifact_id)
+                .expect("complete artifact after removal"),
+            "artifact with a missing chunk should not count as materialized"
+        );
     }
 
     #[test]

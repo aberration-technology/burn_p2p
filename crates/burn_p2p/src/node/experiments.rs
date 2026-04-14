@@ -329,7 +329,7 @@ impl<P> RunningNode<P> {
             return Ok(None);
         };
         let store = FsArtifactStore::new(storage.root.clone());
-        if !store.has_manifest(&head.artifact_id) && head.global_step > 0 {
+        if !store.has_complete_artifact(&head.artifact_id)? && head.global_step > 0 {
             let deadline = Instant::now() + HEAD_SYNC_WAIT_TIMEOUT;
             loop {
                 match self.sync_artifact_from_peer_bounded(
@@ -436,7 +436,7 @@ impl<P> RunningNode<P> {
         let Some(store) = self.artifact_store() else {
             anyhow::bail!("artifact prewarm requires configured storage");
         };
-        if store.has_manifest(artifact_id) {
+        if store.has_complete_artifact(artifact_id)? {
             return Ok(());
         }
         anyhow::ensure!(
@@ -448,7 +448,7 @@ impl<P> RunningNode<P> {
         let deadline = Instant::now() + timeout;
         let mut last_error = None;
         while Instant::now() < deadline {
-            if store.has_manifest(artifact_id) {
+            if store.has_complete_artifact(artifact_id)? {
                 return Ok(());
             }
 
@@ -477,7 +477,7 @@ impl<P> RunningNode<P> {
             std::thread::sleep(ARTIFACT_WAIT_POLL_INTERVAL);
         }
 
-        if store.has_manifest(artifact_id) {
+        if store.has_complete_artifact(artifact_id)? {
             return Ok(());
         }
         if let Some(error) = last_error {
@@ -500,7 +500,7 @@ impl<P> RunningNode<P> {
         };
         self.ensure_experiment_topics(experiment)?;
         let store = FsArtifactStore::new(storage.root.clone());
-        if !store.has_manifest(&head.artifact_id) {
+        if !store.has_complete_artifact(&head.artifact_id)? {
             return Ok(false);
         }
 

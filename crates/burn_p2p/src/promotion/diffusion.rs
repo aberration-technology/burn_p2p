@@ -936,7 +936,7 @@ where
         )?;
         let store = FsArtifactStore::new(storage.root.clone());
         if let Some((head, provider_peer_ids)) = base_head.as_ref()
-            && !store.has_manifest(&head.artifact_id)
+            && !store.has_complete_artifact(&head.artifact_id)?
             && head.global_step > 0
             && !provider_peer_ids.is_empty()
         {
@@ -1011,7 +1011,7 @@ where
             }
         };
         for candidate_head in candidate_heads {
-            if !store.has_manifest(&candidate_head.head.artifact_id)
+            if !store.has_complete_artifact(&candidate_head.head.artifact_id)?
                 && !candidate_head.provider_peer_ids.is_empty()
             {
                 let _ = self.wait_for_artifact_from_peers(
@@ -1020,7 +1020,7 @@ where
                     DIFFUSION_ARTIFACT_SYNC_TIMEOUT,
                 );
             }
-            if !store.has_manifest(&candidate_head.head.artifact_id) {
+            if !store.has_complete_artifact(&candidate_head.head.artifact_id)? {
                 continue;
             }
             let loaded = {

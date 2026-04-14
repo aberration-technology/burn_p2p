@@ -168,7 +168,7 @@ impl<P> RunningNode<P> {
         );
         const BASE_HEAD_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
         if let Some((source_peer_id, source_head)) = current_head.as_ref()
-            && !store.has_manifest(&source_head.artifact_id)
+            && !store.has_complete_artifact(&source_head.artifact_id)?
         {
             if pinned_head.is_some() && source_head.global_step > 0 {
                 anyhow::bail!(

@@ -2219,12 +2219,16 @@ fn wait_for_artifact_from_topology<P>(
         .iter()
         .map(|(_, _, peer_id)| peer_id.clone())
         .collect::<Vec<_>>();
+    let mut staged_provider_peer_ids = fixed_provider_peer_ids.clone();
     while Instant::now() < deadline {
-        let mut provider_peer_ids = fixed_provider_peer_ids.clone();
+        let mut provider_peer_ids = staged_provider_peer_ids.clone();
         let mut republish_failed = false;
         for (label, provider, peer_id) in providers {
             match provider.publish_artifact_from_store(artifact_id) {
-                Ok(_) => push_unique_peer_id(&mut provider_peer_ids, peer_id.clone()),
+                Ok(_) => {
+                    push_unique_peer_id(&mut provider_peer_ids, peer_id.clone());
+                    push_unique_peer_id(&mut staged_provider_peer_ids, peer_id.clone());
+                }
                 Err(error) => {
                     republish_failed = true;
                     last_error = Some(format!(
@@ -2246,9 +2250,10 @@ fn wait_for_artifact_from_topology<P>(
                 label,
                 consumer,
                 artifact_id,
-                &mut Vec::new(),
+                &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
+                provider_peer_ids = staged_provider_peer_ids.clone();
                 continue;
             }
 
@@ -2273,12 +2278,13 @@ fn wait_for_artifact_from_topology<P>(
                 label,
                 consumer,
                 artifact_id,
-                &mut Vec::new(),
+                &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
                 all_ready = false;
                 continue;
             }
+            provider_peer_ids = staged_provider_peer_ids.clone();
         }
 
         if all_ready {
@@ -2468,8 +2474,16 @@ fn record_artifact_provider<P>(
     let Some(store) = node.artifact_store() else {
         return false;
     };
-    if !store.has_manifest(artifact_id) {
-        return false;
+    match store.has_complete_artifact(artifact_id) {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            *last_error = Some(format!(
+                "{label}: could not inspect {} completeness: {error}",
+                artifact_id.as_str(),
+            ));
+            return false;
+        }
     }
 
     let Some(local_peer_id) = node.telemetry().snapshot().local_peer_id else {

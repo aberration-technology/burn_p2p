@@ -1524,6 +1524,135 @@ fn artifact_sync_resumes_from_persisted_transfer_state_after_restart() {
 }
 
 #[test]
+fn wait_for_artifact_from_peers_repairs_partial_local_artifact() {
+    let _guard = native_swarm_test_guard();
+    let listener_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-partial-artifact-listener-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let dialer_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-partial-artifact-dialer-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let dialer_storage_config = StorageConfig::new(dialer_storage.clone());
+    let payload = (0..4096)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+
+    let listener = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(listener_storage))
+        .spawn()
+        .expect("listener spawn");
+    let listener_telemetry = listener.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = listener_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "listener runtime did not start",
+    );
+
+    let listener_store = listener.artifact_store().expect("listener store");
+    let descriptor = listener_store
+        .store_artifact_reader(
+            &ArtifactBuildSpec::new(
+                crate::ArtifactKind::ServeHead,
+                crate::Precision::Fp16,
+                crate::ContentId::new("schema-partial"),
+                "burn-record:bin",
+            ),
+            std::io::Cursor::new(payload.clone()),
+            ChunkingScheme::new(128).expect("chunking"),
+        )
+        .expect("store artifact");
+    listener
+        .publish_artifact_from_store(&descriptor.artifact_id)
+        .expect("publish artifact");
+
+    let listener_snapshot = listener_telemetry.snapshot();
+    let listener_peer_id = listener_snapshot
+        .local_peer_id
+        .clone()
+        .expect("listener peer id");
+    let listener_addr = listener_snapshot.listen_addresses[0].clone();
+
+    let dialer = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(dialer_storage_config.clone())
+        .with_bootstrap_peer(listener_addr)
+        .spawn()
+        .expect("dialer spawn");
+    let dialer_telemetry = dialer.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = dialer_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running && snapshot.connected_peers >= 1
+        },
+        "dialer runtime did not connect to listener",
+    );
+
+    let dialer_store = dialer.artifact_store().expect("dialer store");
+    dialer_store
+        .store_manifest(&descriptor)
+        .expect("store partial manifest");
+    let first_chunk = descriptor
+        .chunks
+        .first()
+        .cloned()
+        .expect("artifact should have at least one chunk");
+    let first_payload = dialer
+        .control_handle()
+        .fetch_artifact_chunk(
+            listener_peer_id.as_str(),
+            descriptor.artifact_id.clone(),
+            first_chunk.chunk_id.clone(),
+            Duration::from_secs(2),
+        )
+        .expect("fetch first chunk")
+        .expect("first chunk payload");
+    dialer_store
+        .store_chunk_bytes(&first_payload.chunk, &first_payload.bytes)
+        .expect("store first chunk");
+
+    assert!(dialer_store.has_manifest(&descriptor.artifact_id));
+    assert!(
+        !dialer_store
+            .has_complete_artifact(&descriptor.artifact_id)
+            .expect("partial artifact completeness"),
+        "partial artifact should not count as locally materialized"
+    );
+
+    dialer
+        .wait_for_artifact_from_peers(
+            std::slice::from_ref(&listener_peer_id),
+            &descriptor.artifact_id,
+            Duration::from_secs(10),
+        )
+        .expect("repair partial artifact");
+
+    assert!(
+        dialer_store
+            .has_complete_artifact(&descriptor.artifact_id)
+            .expect("complete artifact after repair"),
+        "artifact prewarm should fetch missing chunks instead of stopping at the manifest"
+    );
+    let materialized = dialer_store
+        .materialize_artifact_bytes(&descriptor)
+        .expect("materialize repaired artifact");
+    assert_eq!(materialized, payload);
+
+    dialer.shutdown().expect("dialer shutdown");
+    let _ = dialer.await_termination().expect("dialer termination");
+    listener.shutdown().expect("listener shutdown");
+    let _ = listener.await_termination().expect("listener termination");
+}
+
+#[test]
 fn native_artifact_sync_rejects_unadmitted_peer() {
     let listener_storage = std::env::temp_dir().join(format!(
         "burn-p2p-auth-artifact-listener-{}",

@@ -107,16 +107,10 @@ impl<P> RunningNode<P> {
             .ok_or_else(|| anyhow::anyhow!("artifact sync requires configured storage"))?;
         store.ensure_layout()?;
 
-        if store.has_manifest(&artifact_id) {
+        if store.has_complete_artifact(&artifact_id)? {
             let descriptor = store.load_manifest(&artifact_id)?;
-            if descriptor
-                .chunks
-                .iter()
-                .all(|chunk| store.has_chunk(&chunk.chunk_id))
-            {
-                self.clear_transfer_state(&artifact_id);
-                return Ok(descriptor);
-            }
+            self.clear_transfer_state(&artifact_id);
+            return Ok(descriptor);
         }
 
         let telemetry_snapshot = self.telemetry().snapshot();

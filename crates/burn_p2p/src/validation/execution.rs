@@ -364,7 +364,7 @@ impl<P> RunningNode<P> {
         }
 
         if let Some((source_peer_id, source_head)) = observation.current_head.as_ref()
-            && !store.has_manifest(&source_head.artifact_id)
+            && !store.has_complete_artifact(&source_head.artifact_id)?
             && source_head.global_step > 0
         {
             self.sync_artifact_from_peer_bounded(
