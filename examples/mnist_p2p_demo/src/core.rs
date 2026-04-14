@@ -693,6 +693,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 Duration::from_secs(15),
                 "trainer-a2 did not observe promoted baseline head on time",
             );
+            wait_for_head_artifacts(
+                &[(TRAINER_A1_LABEL, &trainer_a1), (TRAINER_A2_LABEL, &trainer_a2)],
+                &baseline_head_providers,
+                &baseline_head.artifact_id,
+                Duration::from_secs(20),
+                "baseline trainers could not prewarm the promoted baseline head artifact",
+            )?;
             let _ = wait_for_specific_head(
                 &viewer,
                 &baseline,
@@ -747,6 +754,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
             &baseline,
             FOLLOWER_HEAD_DISCOVERY_TIMEOUT,
             "restarted trainer-a2 did not resync baseline head",
+        )?;
+        wait_for_head_artifacts(
+            &[(TRAINER_A2_LABEL, &trainer_a2)],
+            &baseline_head_providers,
+            &baseline_head.artifact_id,
+            Duration::from_secs(20),
+            "restarted trainer-a2 could not prewarm the promoted baseline head artifact",
         )?;
         trainer_restart_reconnected = true;
         let restarted_outcome = run_training_round(
@@ -840,6 +854,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 Duration::from_secs(15),
                 "trainer-a2 did not observe restart-promoted baseline head on time",
             );
+            wait_for_head_artifacts(
+                &[(TRAINER_A1_LABEL, &trainer_a1), (TRAINER_A2_LABEL, &trainer_a2)],
+                &baseline_head_providers,
+                &baseline_head.artifact_id,
+                Duration::from_secs(20),
+                "baseline trainers could not prewarm the restart-promoted baseline head artifact",
+            )?;
             let _ = wait_for_specific_head(
                 &viewer,
                 &baseline,
@@ -912,6 +933,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         write_demo_phase(
             &output,
             &format!("low-lr-round-{}-trained", round_index + 1),
+        )?;
+        write_demo_phase(
+            &output,
+            &format!("low-lr-round-{}-artifact-prewarm-start", round_index + 1),
         )?;
         wait_for_candidate_artifacts(
             [(TRAINER_B_LABEL, &trainer_b, &low_lr_outcome)],
@@ -994,6 +1019,13 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 Duration::from_secs(15),
                 "trainer-b did not observe promoted low-lr head on time",
             );
+            wait_for_head_artifacts(
+                &[(TRAINER_B_LABEL, &trainer_b)],
+                &low_lr_head_providers,
+                &low_lr_head.artifact_id,
+                Duration::from_secs(20),
+                "low-lr trainer could not prewarm the promoted low-lr head artifact",
+            )?;
             let _ = wait_for_specific_head(
                 &viewer,
                 &low_lr,
@@ -1682,6 +1714,10 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
             &output,
             &format!("low-lr-round-{}-trained", round_index + 1),
         )?;
+        write_demo_phase(
+            &output,
+            &format!("low-lr-round-{}-artifact-prewarm-start", round_index + 1),
+        )?;
         wait_for_candidate_artifacts(
             [(TRAINER_B_LABEL, &trainer_b, &low_lr_outcome)],
             [(TRAINER_B_LABEL, &trainer_b)],
@@ -2216,10 +2252,15 @@ fn wait_for_artifact_from_topology<P>(
                 continue;
             }
 
+            let Some(attempt_timeout) = artifact_sync_attempt_timeout_before(deadline) else {
+                all_ready = false;
+                break;
+            };
+
             match consumer.wait_for_artifact_from_peers(
                 &provider_peer_ids,
                 artifact_id,
-                demo_artifact_sync_attempt_timeout(),
+                attempt_timeout,
             ) {
                 Ok(_) => {}
                 Err(error) => {
@@ -2296,6 +2337,24 @@ fn demo_artifact_sync_attempt_timeout() -> Duration {
     }
 }
 
+fn cap_artifact_sync_attempt_timeout(
+    remaining: Duration,
+    max_attempt_timeout: Duration,
+) -> Option<Duration> {
+    if remaining.is_zero() {
+        None
+    } else {
+        Some(remaining.min(max_attempt_timeout))
+    }
+}
+
+fn artifact_sync_attempt_timeout_before(deadline: Instant) -> Option<Duration> {
+    cap_artifact_sync_attempt_timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        demo_artifact_sync_attempt_timeout(),
+    )
+}
+
 fn demo_candidate_artifact_timeout(timeout: Duration) -> Duration {
     if bounded_ci_mnist_mode() {
         timeout.max(Duration::from_secs(180))
@@ -2332,12 +2391,6 @@ fn require_resilience_drills() -> bool {
     !bounded_ci_mnist_mode()
 }
 
-fn push_provider_list(target: &mut Vec<PeerId>, source: &[PeerId]) {
-    for peer_id in source {
-        push_unique_peer_id(target, peer_id.clone());
-    }
-}
-
 fn wait_for_artifact_from_fixed_providers<P>(
     consumers: &[(&str, &burn_p2p::RunningNode<P>)],
     provider_peer_ids: &[PeerId],
@@ -2363,10 +2416,15 @@ fn wait_for_artifact_from_fixed_providers<P>(
                 continue;
             }
 
+            let Some(attempt_timeout) = artifact_sync_attempt_timeout_before(deadline) else {
+                all_ready = false;
+                break;
+            };
+
             match consumer.wait_for_artifact_from_peers(
                 &provider_peer_ids,
                 artifact_id,
-                demo_artifact_sync_attempt_timeout(),
+                attempt_timeout,
             ) {
                 Ok(_) => {}
                 Err(error) => {
@@ -4402,4 +4460,31 @@ fn shutdown_node<P>(label: &str, node: burn_p2p::RunningNode<P>) -> anyhow::Resu
         .await_termination_timeout(NODE_SHUTDOWN_TIMEOUT)
         .with_context(|| format!("{label} did not terminate cleanly"))?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::cap_artifact_sync_attempt_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn artifact_sync_attempt_timeout_caps_to_remaining_budget() {
+        assert_eq!(
+            cap_artifact_sync_attempt_timeout(Duration::from_secs(90), Duration::from_secs(45)),
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            cap_artifact_sync_attempt_timeout(Duration::from_secs(12), Duration::from_secs(45)),
+            Some(Duration::from_secs(12))
+        );
+    }
+
+    #[test]
+    fn artifact_sync_attempt_timeout_returns_none_when_budget_exhausted() {
+        assert_eq!(
+            cap_artifact_sync_attempt_timeout(Duration::ZERO, Duration::from_secs(45)),
+            None
+        );
+    }
 }
