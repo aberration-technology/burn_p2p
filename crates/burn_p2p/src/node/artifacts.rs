@@ -472,12 +472,11 @@ pub(crate) fn prioritized_artifact_source_peers(
     requested_peer_id: &PeerId,
     provider_peer_id: Option<&PeerId>,
     existing_source_peers: &[PeerId],
-    connected_peers: &BTreeSet<PeerId>,
+    _connected_peers: &BTreeSet<PeerId>,
 ) -> Vec<PeerId> {
     dedupe_peer_ids(
         std::iter::once(requested_peer_id.clone())
             .chain(provider_peer_id.into_iter().cloned())
-            .chain(existing_source_peers.iter().cloned())
-            .chain(connected_peers.iter().cloned()),
+            .chain(existing_source_peers.iter().cloned()),
     )
 }

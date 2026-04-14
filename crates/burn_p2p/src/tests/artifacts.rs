@@ -1323,7 +1323,8 @@ fn prioritized_experiment_snapshot_peer_ids_lead_with_merge_and_quorum_peers() {
 }
 
 #[test]
-fn prioritized_artifact_source_peers_keep_requested_provider_first() {
+fn prioritized_artifact_source_peers_keep_requested_provider_first_without_unrelated_connected_peers()
+ {
     let requested_peer = crate::PeerId::new("peer-requested");
     let selected_provider = crate::PeerId::new("peer-provider");
     let stale_peer = crate::PeerId::new("peer-stale");
@@ -1342,12 +1343,7 @@ fn prioritized_artifact_source_peers_keep_requested_provider_first() {
 
     assert_eq!(
         prioritized,
-        vec![
-            requested_peer,
-            selected_provider,
-            stale_peer,
-            connected_peer
-        ]
+        vec![requested_peer, selected_provider, stale_peer]
     );
 }
 
