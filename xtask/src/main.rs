@@ -1301,26 +1301,37 @@ fn wait_for_path_from_step(
     anyhow::bail!("timed out waiting for {}{}", path.display(), phase_context);
 }
 
+fn mnist_demo_round_plan(profile: Profile, github_actions: bool) -> (u32, u32, bool, bool) {
+    let trainer_windows = profile.settings().trainer_windows.max(1);
+    let bounded_hosted_ci_mnist = github_actions && profile == Profile::CiIntegration;
+    let resilience_drills_expected = !bounded_hosted_ci_mnist;
+    let baseline_rounds = if bounded_hosted_ci_mnist {
+        trainer_windows.min(2)
+    } else {
+        trainer_windows
+    };
+    let low_lr_rounds = if bounded_hosted_ci_mnist {
+        1
+    } else {
+        trainer_windows
+    };
+    (
+        baseline_rounds,
+        low_lr_rounds,
+        bounded_hosted_ci_mnist,
+        resilience_drills_expected,
+    )
+}
+
 fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
     const BOUNDED_CI_MNIST_ENV: &str = "BURN_P2P_BOUNDED_CI_MNIST";
 
     let artifacts = ArtifactLayout::create(&workspace.root, "e2e-mnist", args.profile)?;
     let envs = BTreeMap::new();
     let demo_root = artifacts.root.join("mnist-demo");
-    let trainer_windows = args.profile.settings().trainer_windows.max(1);
     let github_actions = env::var_os("GITHUB_ACTIONS").is_some();
-    let bounded_hosted_ci_mnist = github_actions && args.profile == Profile::CiIntegration;
-    let resilience_drills_expected = !bounded_hosted_ci_mnist;
-    let baseline_rounds = if bounded_hosted_ci_mnist {
-        trainer_windows.min(1)
-    } else {
-        trainer_windows
-    };
-    let low_lr_rounds = if bounded_hosted_ci_mnist {
-        trainer_windows.min(1)
-    } else {
-        trainer_windows
-    };
+    let (baseline_rounds, low_lr_rounds, bounded_hosted_ci_mnist, resilience_drills_expected) =
+        mnist_demo_round_plan(args.profile, github_actions);
     let resilience_rounds = if resilience_drills_expected { 1 } else { 0 };
     let total_training_rounds = u64::from(baseline_rounds)
         .saturating_add(u64::from(low_lr_rounds))
@@ -4547,7 +4558,10 @@ fn generate_chaos_events(seed: u64, count: u32, peer_count: u32) -> Vec<ChaosEve
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_chaos_events, parse_duration_string, publish_crates_from};
+    use super::{
+        generate_chaos_events, mnist_demo_round_plan, parse_duration_string, publish_crates_from,
+    };
+    use crate::profile::Profile;
 
     #[test]
     fn duration_parser_supports_suffixes() {
@@ -4579,5 +4593,31 @@ mod tests {
     fn publish_plan_rejects_unknown_resume_target() {
         let error = publish_crates_from(Some("not-a-real-crate")).expect_err("unknown crate");
         assert!(error.to_string().contains("unknown publish resume target"));
+    }
+
+    #[test]
+    fn mnist_round_plan_strengthens_hosted_ci_baseline_signal() {
+        let (baseline_rounds, low_lr_rounds, bounded, resilience) =
+            mnist_demo_round_plan(Profile::CiIntegration, true);
+        assert_eq!(baseline_rounds, 2);
+        assert_eq!(low_lr_rounds, 1);
+        assert!(bounded);
+        assert!(!resilience);
+    }
+
+    #[test]
+    fn mnist_round_plan_keeps_full_profile_budget_off_hosted_ci() {
+        let (baseline_rounds, low_lr_rounds, bounded, resilience) =
+            mnist_demo_round_plan(Profile::CiIntegration, false);
+        assert_eq!(
+            baseline_rounds,
+            Profile::CiIntegration.settings().trainer_windows
+        );
+        assert_eq!(
+            low_lr_rounds,
+            Profile::CiIntegration.settings().trainer_windows
+        );
+        assert!(!bounded);
+        assert!(resilience);
     }
 }
