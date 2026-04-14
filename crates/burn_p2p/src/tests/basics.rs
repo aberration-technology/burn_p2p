@@ -128,6 +128,55 @@ fn spawn_starts_a_live_runtime_and_shutdown_returns_node() {
 }
 
 #[test]
+fn plain_unit_follower_connects_to_plain_bootstrap_seed() {
+    let _guard = native_swarm_test_guard();
+    let seed_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-plain-seed-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let follower_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-plain-follower-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+
+    let seed = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(seed_storage))
+        .spawn()
+        .expect("seed spawn");
+    let seed_telemetry = seed.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || !seed_telemetry.snapshot().listen_addresses.is_empty(),
+        "plain seed did not start listening",
+    );
+    let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
+
+    let follower = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(follower_storage))
+        .with_bootstrap_peer(seed_addr)
+        .spawn()
+        .expect("follower spawn");
+    let follower_telemetry = follower.telemetry();
+    wait_for(
+        Duration::from_secs(10),
+        || seed_telemetry.snapshot().connected_peers >= 1,
+        "plain seed did not connect to follower",
+    );
+    wait_for(
+        Duration::from_secs(10),
+        || follower_telemetry.snapshot().connected_peers >= 1,
+        "plain follower did not connect to seed",
+    );
+
+    follower.shutdown().expect("follower shutdown");
+    let _ = follower.await_termination().expect("follower termination");
+    seed.shutdown().expect("seed shutdown");
+    let _ = seed.await_termination().expect("seed termination");
+}
+
+#[test]
 fn persistent_identity_survives_restart() {
     let storage_root = std::env::temp_dir().join(format!(
         "burn-p2p-facade-identity-{}",

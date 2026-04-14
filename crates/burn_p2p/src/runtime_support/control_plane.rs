@@ -12,6 +12,7 @@ pub(crate) fn run_control_plane(
     const PEER_DIRECTORY_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
     const TRUST_BUNDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
     const DIFFUSION_SETTLEMENT_INTERVAL: Duration = Duration::from_millis(100);
+    const PENDING_DIAL_DEBOUNCE: Duration = Duration::from_secs(5);
     let signing_keypair = keypair.clone();
     let mut auth = auth;
     let mut diffusion_state = crate::promotion::diffusion::DiffusionStateCache::default();
@@ -58,12 +59,18 @@ pub(crate) fn run_control_plane(
         }
     }
 
+    let mut pending_dial_keys = BTreeMap::<String, Instant>::new();
     for address in &boundary.bootstrap_addresses {
         if let Err(error) = shell.dial(address.clone()) {
             let mut snapshot = lock_telemetry_state(&state);
             snapshot.push_event(LiveControlPlaneEvent::Other {
                 kind: format!("bootstrap-dial-error:{error}"),
             });
+        } else {
+            pending_dial_keys.insert(
+                connectivity_address_key(address),
+                Instant::now() + PENDING_DIAL_DEBOUNCE,
+            );
         }
     }
 
@@ -513,10 +520,15 @@ pub(crate) fn run_control_plane(
                     let _ = reply.send(result);
                 }
                 Ok(RuntimeCommand::DialAddress { address }) => {
-                    if let Err(error) = shell.dial(address) {
+                    if let Err(error) = shell.dial(address.clone()) {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error =
                             Some(format!("failed to dial provider address: {error}"));
+                    } else {
+                        pending_dial_keys.insert(
+                            connectivity_address_key(&address),
+                            Instant::now() + PENDING_DIAL_DEBOUNCE,
+                        );
                     }
                 }
                 Ok(RuntimeCommand::RequestSnapshot { peer_id }) => {
@@ -568,15 +580,27 @@ pub(crate) fn run_control_plane(
         }
 
         if last_connectivity_repair_at.elapsed() >= CONNECTIVITY_REPAIR_INTERVAL {
+            pending_dial_keys.retain(|_, expires_at| *expires_at > Instant::now());
+            let pending_dial_key_set = pending_dial_keys.keys().cloned().collect::<BTreeSet<_>>();
             let (dial_targets, offload_targets) = {
                 let snapshot = lock_telemetry_state(&state);
                 (
-                    connectivity_repair_targets(&boundary, &snapshot, shell.connected_peer_count()),
+                    connectivity_repair_targets(
+                        &boundary,
+                        &snapshot,
+                        shell.connected_peer_count(),
+                        &pending_dial_key_set,
+                    ),
                     bootstrap_offload_targets(&boundary, &snapshot),
                 )
             };
             for address in dial_targets {
-                let _ = shell.dial(address);
+                if shell.dial(address.clone()).is_ok() {
+                    pending_dial_keys.insert(
+                        connectivity_address_key(&address),
+                        Instant::now() + PENDING_DIAL_DEBOUNCE,
+                    );
+                }
             }
             for peer_id in offload_targets {
                 let _ = shell.disconnect_peer(peer_id.as_str());
@@ -956,6 +980,7 @@ fn connectivity_repair_targets(
     boundary: &RuntimeBoundary,
     snapshot: &NodeTelemetrySnapshot,
     connected_peers: usize,
+    pending_dial_keys: &BTreeSet<String>,
 ) -> Vec<SwarmAddress> {
     const STALE_PEER_DIRECTORY_AFTER: chrono::Duration = chrono::Duration::minutes(5);
 
@@ -1008,6 +1033,7 @@ fn connectivity_repair_targets(
                 .iter()
                 .filter(|address| !bootstrap_addresses.contains(*address))
                 .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
+                .filter(|address| !pending_dial_keys.contains(&connectivity_address_key(address)))
                 .min_by(|left, right| {
                     left.is_relay_circuit()
                         .cmp(&right.is_relay_circuit())
@@ -1022,6 +1048,7 @@ fn connectivity_repair_targets(
         .filter(|address| !bootstrap_addresses.contains(*address))
         .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
         .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
+        .filter(|address| !pending_dial_keys.contains(&connectivity_address_key(address)))
         .cloned()
         .collect::<Vec<_>>();
     let mut bootstrap_targets = boundary
@@ -1029,6 +1056,7 @@ fn connectivity_repair_targets(
         .iter()
         .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
         .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
+        .filter(|address| !pending_dial_keys.contains(&connectivity_address_key(address)))
         .cloned()
         .collect::<Vec<_>>();
     peer_directory_targets.sort_by(|left, right| {
@@ -1266,7 +1294,12 @@ mod tests {
                 announced_at: Utc::now(),
             });
 
-        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap]),
+            &snapshot,
+            1,
+            &BTreeSet::new(),
+        );
         assert_eq!(targets, vec![trainer]);
     }
 
@@ -1277,6 +1310,7 @@ mod tests {
             &test_boundary(vec![bootstrap.clone()]),
             &test_snapshot([PeerRole::TrainerCpu]),
             0,
+            &BTreeSet::new(),
         );
         assert_eq!(targets, vec![bootstrap]);
     }
@@ -1289,8 +1323,27 @@ mod tests {
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
         snapshot.known_peer_addresses.insert(discovered.clone());
 
-        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 0);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap]),
+            &snapshot,
+            0,
+            &BTreeSet::new(),
+        );
         assert_eq!(targets, vec![discovered]);
+    }
+
+    #[test]
+    fn connectivity_repair_skips_addresses_with_pending_dials() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/32701").expect("bootstrap");
+        let pending = BTreeSet::from([connectivity_address_key(&bootstrap)]);
+
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap.clone()]),
+            &test_snapshot([PeerRole::TrainerCpu]),
+            0,
+            &pending,
+        );
+        assert!(targets.is_empty());
     }
 
     #[test]
@@ -1301,8 +1354,12 @@ mod tests {
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
         snapshot.observed_peer_ids.insert(trainer_peer);
 
-        let targets =
-            connectivity_repair_targets(&test_boundary(vec![bootstrap.clone()]), &snapshot, 1);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap.clone()]),
+            &snapshot,
+            1,
+            &BTreeSet::new(),
+        );
         assert_eq!(targets, vec![bootstrap]);
     }
 
@@ -1336,7 +1393,12 @@ mod tests {
                 announced_at: Utc::now() - chrono::Duration::minutes(10),
             });
 
-        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap]),
+            &snapshot,
+            1,
+            &BTreeSet::new(),
+        );
         assert!(targets.is_empty());
     }
 
@@ -1371,7 +1433,12 @@ mod tests {
                 announced_at: Utc::now(),
             });
 
-        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap]),
+            &snapshot,
+            1,
+            &BTreeSet::new(),
+        );
         assert_eq!(targets, vec![direct]);
     }
 
@@ -1405,7 +1472,12 @@ mod tests {
                 announced_at: Utc::now(),
             });
 
-        let targets = connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 1);
+        let targets = connectivity_repair_targets(
+            &test_boundary(vec![bootstrap]),
+            &snapshot,
+            1,
+            &BTreeSet::new(),
+        );
         assert_eq!(targets, vec![relay]);
     }
 
