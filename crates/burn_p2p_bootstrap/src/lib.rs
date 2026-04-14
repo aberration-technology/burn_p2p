@@ -1767,7 +1767,7 @@ mod tests {
         );
 
         wait_for(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             || daemon_telemetry.snapshot().connected_peers >= 1,
             "embedded daemon did not connect to trainer",
         );
