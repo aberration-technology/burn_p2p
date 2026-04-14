@@ -8,13 +8,24 @@ mod experiments;
 mod lifecycle;
 mod selected;
 
-use artifacts::{ci_scaled_timeout, is_transient_artifact_sync_error};
+use artifacts::{
+    ci_scaled_timeout, fair_request_timeout as artifact_fair_request_timeout,
+    is_transient_artifact_sync_error,
+};
 
 #[cfg(test)]
-pub(crate) use artifacts::{fair_request_timeout, prioritized_artifact_source_peers};
+pub(crate) use artifacts::prioritized_artifact_source_peers;
 pub use builder::{Node, NodeBuilder};
 pub use lifecycle::RunningNode;
 pub(crate) use lifecycle::TrainingPrefetchTask;
+
+pub(crate) fn fair_request_timeout(
+    deadline: Instant,
+    request_timeout: Duration,
+    candidate_count: usize,
+) -> Option<Duration> {
+    artifact_fair_request_timeout(deadline, request_timeout, candidate_count)
+}
 
 fn slot_assignment_from_state(slot_state: &SlotRuntimeState) -> Option<SlotAssignmentState> {
     match slot_state {
