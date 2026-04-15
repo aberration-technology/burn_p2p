@@ -195,6 +195,16 @@ impl ProviderMappedIdentityConnector {
         self.provider.clone()
     }
 
+    fn authorize_scope(&self) -> Option<&'static str> {
+        if self.is_oidc_provider() {
+            Some("openid profile email")
+        } else if self.provider == AuthProvider::GitHub {
+            Some("read:org user:email")
+        } else {
+            None
+        }
+    }
+
     fn authorize_url(&self, pending: &PendingLogin) -> Result<Option<String>, AuthError> {
         let base = if let Some(base) = self.authorize_base_url.clone() {
             Some(base)
@@ -220,8 +230,8 @@ impl ProviderMappedIdentityConnector {
                 if let Some(redirect_uri) = self.redirect_uri.as_deref() {
                     pairs.append_pair("redirect_uri", redirect_uri);
                 }
-                if self.is_oidc_provider() {
-                    pairs.append_pair("scope", "openid profile email");
+                if let Some(scope) = self.authorize_scope() {
+                    pairs.append_pair("scope", scope);
                 }
                 if let Some(oidc_nonce) = pending.oidc_nonce.as_deref() {
                     pairs.append_pair("nonce", oidc_nonce);

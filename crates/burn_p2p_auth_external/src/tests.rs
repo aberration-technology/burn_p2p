@@ -588,6 +588,21 @@ fn provider_mapped_connector_supports_standard_token_exchange_and_userinfo_mappi
             requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
         })
         .expect("begin provider login");
+    let authorize_url = Url::parse(
+        login
+            .authorize_url
+            .as_deref()
+            .expect("github authorize url should be present"),
+    )
+    .expect("parse github authorize url");
+    let authorize_pairs = authorize_url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        authorize_pairs.get("scope"),
+        Some(&"read:org user:email".to_owned())
+    );
     let session = connector
         .complete_login(CallbackPayload {
             login_id: login.login_id,
