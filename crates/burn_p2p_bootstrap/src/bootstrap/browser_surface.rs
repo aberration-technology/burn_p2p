@@ -1,4 +1,5 @@
 use super::*;
+use std::net::IpAddr;
 
 pub(super) fn browser_edge_mode(plan: &BootstrapPlan) -> BrowserEdgeMode {
     if plan.supports_service(&burn_p2p_bootstrap::BootstrapService::CoherenceSeed) {
@@ -69,18 +70,24 @@ fn browser_seed_transport_policy(
 pub(super) fn current_browser_seed_advertisement(
     plan: &BootstrapPlan,
     config: &BootstrapDaemonConfig,
+    request: &HttpRequest,
 ) -> Option<burn_p2p_core::BrowserSeedAdvertisement> {
     if !browser_join_enabled(config) {
         return None;
     }
     let issued_at = Utc::now();
-    let multiaddrs = plan
-        .runtime
-        .bootstrap_addresses
-        .iter()
-        .filter(|address| !address.is_memory())
-        .map(|address| address.as_str().to_owned())
-        .collect::<Vec<_>>();
+    let surface = browser_transport_surface(plan, config);
+    let multiaddrs = request_public_browser_seed_host(request)
+        .map(|host| browser_seed_multiaddrs_for_host(&host, &surface))
+        .filter(|multiaddrs| !multiaddrs.is_empty())
+        .unwrap_or_else(|| {
+            plan.runtime
+                .bootstrap_addresses
+                .iter()
+                .filter(|address| !address.is_memory())
+                .map(|address| address.as_str().to_owned())
+                .collect::<Vec<_>>()
+        });
     let seeds = if multiaddrs.is_empty() {
         Vec::new()
     } else {
@@ -97,6 +104,46 @@ pub(super) fn current_browser_seed_advertisement(
         transport_policy: browser_seed_transport_policy(plan, config),
         seeds,
     })
+}
+
+fn request_public_browser_seed_host(request: &HttpRequest) -> Option<String> {
+    let host = request
+        .headers
+        .get("x-forwarded-host")
+        .or_else(|| request.headers.get("host"))?
+        .trim();
+    if host.is_empty() {
+        return None;
+    }
+    if let Some(rest) = host.strip_prefix('[') {
+        let end = rest.find(']')?;
+        return Some(rest[..end].to_owned());
+    }
+    if let Some((hostname, port)) = host.rsplit_once(':')
+        && port.chars().all(|value| value.is_ascii_digit())
+    {
+        return Some(hostname.to_owned());
+    }
+    Some(host.to_owned())
+}
+
+fn browser_seed_multiaddrs_for_host(host: &str, surface: &BrowserTransportSurface) -> Vec<String> {
+    let host_prefix = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => format!("/ip4/{host}"),
+        Ok(IpAddr::V6(_)) => format!("/ip6/{host}"),
+        Err(_) => format!("/dns4/{host}"),
+    };
+    let mut multiaddrs = Vec::new();
+    if surface.webrtc_direct {
+        multiaddrs.push(format!("{host_prefix}/udp/4001/webrtc-direct"));
+    }
+    if surface.webtransport_gateway {
+        multiaddrs.push(format!("{host_prefix}/udp/443/webtransport"));
+    }
+    if surface.wss_fallback {
+        multiaddrs.push(format!("{host_prefix}/tcp/443/wss"));
+    }
+    multiaddrs
 }
 
 pub(super) fn browser_login_providers(

@@ -96,6 +96,16 @@ fn browser_portal_client_round_trips_against_live_http_router() {
                 .expect("preferred browser transport"),
             &burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect
         );
+        assert_eq!(signed_seeds.payload.payload.seeds.len(), 1);
+        let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
+        assert!(
+            seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4001/webrtc-direct".to_owned()),
+            "expected browser-capable public webrtc seed in signed advertisement, got {seed_multiaddrs:?}"
+        );
+        assert!(
+            seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
+            "expected browser-capable public wss seed in signed advertisement, got {seed_multiaddrs:?}"
+        );
 
         let login = client
             .begin_login(Some("alice".into()))

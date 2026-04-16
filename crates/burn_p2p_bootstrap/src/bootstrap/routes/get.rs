@@ -337,7 +337,8 @@ pub(crate) fn handle_get_route(
                 )?;
                 return Ok(true);
             }
-            let Some(advertisement) = current_browser_seed_advertisement(plan, current_config)
+            let Some(advertisement) =
+                current_browser_seed_advertisement(plan, current_config, request)
             else {
                 write_response(
                     stream,
