@@ -205,9 +205,23 @@ impl BrowserRuntimeConfig {
 
     /// Builds the shared browser swarm bootstrap contract from the current runtime config.
     pub fn swarm_bootstrap(&self) -> BrowserSwarmBootstrap {
+        let seed_bootstrap = if matches!(
+            self.seed_bootstrap.source,
+            burn_p2p_core::BrowserSeedBootstrapSource::Unavailable
+        ) && !self.site_seed_node_urls.is_empty()
+        {
+            BrowserResolvedSeedBootstrap {
+                source: burn_p2p_core::BrowserSeedBootstrapSource::SiteConfigFallback,
+                seed_node_urls: self.site_seed_node_urls.clone(),
+                advertised_seed_count: 0,
+                last_error: self.seed_bootstrap.last_error.clone(),
+            }
+        } else {
+            self.seed_bootstrap.clone()
+        };
         BrowserSwarmBootstrap {
             network_id: self.network_id.clone(),
-            seed_bootstrap: self.seed_bootstrap.clone(),
+            seed_bootstrap,
             transport_preference: self
                 .transport
                 .preferred

@@ -71,8 +71,8 @@ pub use training::{
     BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingProgress, BrowserTrainingResult,
 };
 pub use transport::{
-    BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus,
-    resolve_browser_seed_bootstrap,
+    BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus, browser_transport_family,
+    browser_transport_kind, resolve_browser_seed_bootstrap,
 };
 pub use ui_bindings::{
     BrowserAppUiState, BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserUiBindings,

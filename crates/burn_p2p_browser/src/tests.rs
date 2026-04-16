@@ -131,6 +131,7 @@ fn browser_conformance_harness_executes_authenticated_training_and_validation() 
     let mut trainer_harness = BrowserConformanceHarness::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            site_seed_node_urls: vec!["/dns4/edge.example/tcp/443/wss".into()],
             ..BrowserRuntimeConfig::new(
                 "https://edge.example",
                 NetworkId::new("net-browser"),
@@ -172,6 +173,7 @@ fn browser_conformance_harness_executes_authenticated_training_and_validation() 
     let mut verifier_harness = BrowserConformanceHarness::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserVerifier,
+            site_seed_node_urls: vec!["/dns4/edge.example/tcp/443/wss".into()],
             ..BrowserRuntimeConfig::new(
                 "https://edge.example",
                 NetworkId::new("net-browser"),
@@ -1420,6 +1422,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -1639,6 +1642,7 @@ fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selec
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -1798,6 +1802,7 @@ fn worker_runtime_apply_command_emits_selection_and_storage_events() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2071,6 +2076,7 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2138,6 +2144,7 @@ fn worker_runtime_waits_for_transport_after_head_sync_until_edge_transport_is_av
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/tcp/443/wss".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2415,6 +2422,7 @@ fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2476,6 +2484,7 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -4253,7 +4262,7 @@ fn browser_app_model_projects_trainer_focused_client_view() {
         view.training.throughput_summary.as_deref(),
         Some("18.0 sample/s")
     );
-    assert_eq!(view.network.transport, "webtransport");
+    assert_eq!(view.network.transport, "planned webtransport");
     assert!(view.network.metrics_live_ready);
     assert_eq!(
         view.network
@@ -4409,6 +4418,7 @@ fn browser_conformance_harness_exposes_persisted_active_training_lease() {
     let mut harness = BrowserConformanceHarness::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            site_seed_node_urls: vec!["/dns4/edge.example/tcp/443/wss".into()],
             ..BrowserRuntimeConfig::new(
                 "https://edge.example",
                 NetworkId::new("net-browser"),
@@ -4666,7 +4676,7 @@ fn browser_app_model_applies_worker_events_to_local_state() {
         view.validation.emitted_receipt_id.as_deref(),
         Some("receipt-browser")
     );
-    assert_eq!(view.network.transport, "webrtc-direct");
+    assert_eq!(view.network.transport, "planned webrtc-direct");
     assert!(view.network.metrics_live_ready);
     assert!(view.network.last_directory_sync_at.is_some());
     assert_eq!(view.network.last_error.as_deref(), Some("edge degraded"));

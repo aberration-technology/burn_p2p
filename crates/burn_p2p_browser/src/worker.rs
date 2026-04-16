@@ -9,6 +9,7 @@ use burn_p2p_core::{
     MetricsLiveEvent, SchemaEnvelope, SignedPayload,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
+use burn_p2p_swarm::{BrowserSwarmDialPlan, plan_browser_seed_dials};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,8 @@ use crate::{
     BrowserRuntimeConfig, BrowserRuntimeState, BrowserSessionState, BrowserStorageSnapshot,
     BrowserStoredAssignment, BrowserTrainingPlan, BrowserTrainingResult, BrowserTransportStatus,
     BrowserValidationPlan, BrowserValidationResult, BrowserWorkerCommand, BrowserWorkerEvent,
-    browser_experiment_candidate_for_selection, recommended_browser_candidate_for_scopes,
+    browser_experiment_candidate_for_selection, browser_transport_kind,
+    recommended_browser_candidate_for_scopes,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -40,6 +42,9 @@ pub struct BrowserWorkerRuntime {
     pub capability: Option<BrowserCapabilityReport>,
     /// The transport.
     pub transport: BrowserTransportStatus,
+    /// The current browser swarm dial plan derived from signed/bootstrap seed material.
+    #[serde(default)]
+    pub swarm_dial_plan: Option<BrowserSwarmDialPlan>,
     /// The storage.
     pub storage: BrowserStorageSnapshot,
 }
@@ -80,7 +85,11 @@ impl BrowserWorkerRuntime {
             assignment_bound,
             head_synced,
             artifact_source,
-            last_error: self.transport.last_error.clone(),
+            last_error: self.transport.last_error.clone().or_else(|| {
+                self.swarm_dial_plan
+                    .as_ref()
+                    .and_then(|plan| plan.warnings.first().cloned())
+            }),
         }
     }
 
@@ -411,6 +420,7 @@ impl BrowserWorkerRuntime {
             state: Some(initial_state),
             capability: Some(capability),
             transport,
+            swarm_dial_plan: None,
             storage: BrowserStorageSnapshot::default(),
         };
         runtime.refresh_transport_selection();
@@ -422,6 +432,9 @@ impl BrowserWorkerRuntime {
         self.config = None;
         self.state = None;
         self.capability = None;
+        self.swarm_dial_plan = None;
+        self.transport.clear_connected_transport();
+        self.transport.selected = None;
         self.transport.active = None;
         self.storage.clear_assignment();
     }
@@ -832,6 +845,9 @@ impl BrowserWorkerRuntime {
     /// Performs the refresh transport selection operation.
     pub fn refresh_transport_selection(&mut self) {
         let Some(config) = self.config.as_ref() else {
+            self.swarm_dial_plan = None;
+            self.transport.clear_connected_transport();
+            self.transport.selected = None;
             self.transport.active = None;
             return;
         };
@@ -839,9 +855,19 @@ impl BrowserWorkerRuntime {
             .state
             .as_ref()
             .is_some_and(BrowserRuntimeState::requires_peer_transport);
-        let selected = self
-            .transport
-            .recommended_transport(&config.transport, requires_peer_transport);
+        let selected = if requires_peer_transport {
+            let dial_plan = plan_browser_seed_dials(&config.swarm_bootstrap());
+            let selected = dial_plan
+                .candidates
+                .iter()
+                .map(|candidate| browser_transport_kind(&candidate.transport))
+                .find(|kind| self.transport.supports(kind));
+            self.swarm_dial_plan = Some(dial_plan);
+            selected
+        } else {
+            self.swarm_dial_plan = None;
+            None
+        };
         self.transport.set_selected_transport(selected);
         self.synchronize_transport_state();
     }

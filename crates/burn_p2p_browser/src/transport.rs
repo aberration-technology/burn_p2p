@@ -208,6 +208,15 @@ pub fn browser_transport_family(kind: &BrowserTransportKind) -> BrowserTransport
     }
 }
 
+/// Maps the shared browser transport family back to the browser-local kind.
+pub fn browser_transport_kind(family: &BrowserTransportFamily) -> BrowserTransportKind {
+    match family {
+        BrowserTransportFamily::WebRtcDirect => BrowserTransportKind::WebRtcDirect,
+        BrowserTransportFamily::WebTransport => BrowserTransportKind::WebTransport,
+        BrowserTransportFamily::WssFallback => BrowserTransportKind::WssFallback,
+    }
+}
+
 fn transport_from_advertisement_label(label: &str) -> Option<BrowserTransportKind> {
     match label {
         "webrtc-direct" => Some(BrowserTransportKind::WebRtcDirect),
