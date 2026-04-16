@@ -127,7 +127,7 @@ impl BootstrapAdminState {
             allowed_target_artifact_hashes: config.allowed_target_artifact_hashes,
             diagnostics: self.diagnostics(plan, config.captured_at, config.remaining_work_units),
             directory: config.directory,
-            heads: self.head_descriptors.clone(),
+            heads: self.export_heads(&crate::HeadQuery::default()),
             leaderboard: self.leaderboard_snapshot(plan, config.captured_at),
             trust_bundle: self.trust_bundle.clone(),
             captured_at: config.captured_at,

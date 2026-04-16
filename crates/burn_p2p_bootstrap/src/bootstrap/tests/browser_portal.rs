@@ -166,6 +166,118 @@ fn browser_portal_client_round_trips_against_live_http_router() {
 }
 
 #[test]
+fn browser_portal_snapshot_includes_live_runtime_heads() {
+    let temp = tempdir().expect("temp dir");
+    let now = Utc::now();
+    let runtime_head = HeadDescriptor {
+        head_id: burn_p2p::HeadId::new("head-runtime"),
+        study_id: burn_p2p::StudyId::new("study-auth"),
+        experiment_id: burn_p2p::ExperimentId::new("exp-auth"),
+        revision_id: burn_p2p::RevisionId::new("rev-auth"),
+        artifact_id: burn_p2p::ArtifactId::new("artifact-runtime"),
+        parent_head_id: None,
+        global_step: 3,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(burn_p2p::NodeTelemetrySnapshot {
+                status: burn_p2p::RuntimeStatus::Running,
+                node_state: burn_p2p::NodeRuntimeState::IdleReady,
+                slot_states: Vec::new(),
+                lag_state: burn_p2p::LagState::Current,
+                head_lag_steps: 0,
+                lag_policy: burn_p2p::LagPolicy::default(),
+                network_id: Some(NetworkId::new("secure-demo")),
+                local_peer_id: Some(PeerId::new("bootstrap-authority")),
+                configured_roles: PeerRoleSet::default_trainer(),
+                connected_peers: 1,
+                observed_peer_ids: BTreeSet::new(),
+                known_peer_addresses: BTreeSet::new(),
+                runtime_boundary: None,
+                listen_addresses: Vec::new(),
+                control_plane: burn_p2p::ControlPlaneSnapshot {
+                    head_announcements: vec![burn_p2p::HeadAnnouncement {
+                        overlay: burn_p2p::OverlayTopic::experiment(
+                            NetworkId::new("secure-demo"),
+                            burn_p2p::StudyId::new("study-auth"),
+                            burn_p2p::ExperimentId::new("exp-auth"),
+                            burn_p2p::OverlayChannel::Heads,
+                        )
+                        .expect("heads overlay"),
+                        provider_peer_id: Some(PeerId::new("head-mirror")),
+                        head: runtime_head.clone(),
+                        announced_at: now,
+                    }],
+                    ..burn_p2p::ControlPlaneSnapshot::default()
+                },
+                recent_events: Vec::new(),
+                last_snapshot_peer_id: None,
+                last_snapshot: None,
+                admitted_peers: BTreeMap::new(),
+                rejected_peers: BTreeMap::new(),
+                peer_reputation: BTreeMap::new(),
+                minimum_revocation_epoch: None,
+                trust_bundle: None,
+                in_flight_transfers: BTreeMap::new(),
+                robustness_policy: None,
+                latest_cohort_robustness: None,
+                trust_scores: Vec::new(),
+                canary_reports: Vec::new(),
+                applied_control_cert_ids: BTreeSet::new(),
+                effective_limit_profile: None,
+                last_error: None,
+                started_at: now,
+                updated_at: now,
+            }),
+            ..BootstrapAdminState::default()
+        })),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("browser-runtime-live-head.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: None,
+    };
+    let server = HttpTestServer::spawn(context);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    runtime.block_on(async move {
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
+            .get(format!("{}/portal/snapshot", server.base_url()))
+            .send()
+            .await
+            .expect("fetch portal snapshot")
+            .error_for_status()
+            .expect("portal snapshot status")
+            .json()
+            .await
+            .expect("decode portal snapshot");
+        assert_eq!(snapshot.heads, vec![runtime_head]);
+    });
+}
+
+#[test]
 fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_http_router() {
     let temp = tempdir().expect("temp dir");
     let mut auth_config = sample_auth_config(temp.path());

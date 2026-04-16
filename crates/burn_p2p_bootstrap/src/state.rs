@@ -762,6 +762,27 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    fn visible_head_descriptors(&self) -> Vec<HeadDescriptor> {
+        let mut heads = BTreeMap::<HeadId, HeadDescriptor>::new();
+        for head in &self.head_descriptors {
+            heads.insert(head.head_id.clone(), head.clone());
+        }
+        if let Some(snapshot) = self.runtime_snapshot.as_ref() {
+            for announcement in &snapshot.control_plane.head_announcements {
+                let candidate = announcement.head.clone();
+                let replace = heads
+                    .get(&candidate.head_id)
+                    .is_none_or(|existing| candidate.created_at >= existing.created_at);
+                if replace {
+                    heads.insert(candidate.head_id.clone(), candidate);
+                }
+            }
+        }
+        let mut visible = heads.into_values().collect::<Vec<_>>();
+        visible.sort_by_key(|head| head.created_at);
+        visible
+    }
+
     #[allow(dead_code)]
     pub(crate) fn provider_peer_ids_for_head(&self, head_id: &HeadId) -> Vec<PeerId> {
         let mut peer_ids = self
@@ -887,13 +908,24 @@ impl BootstrapAdminState {
 
     /// Exports the heads.
     pub fn export_heads(&self, query: &HeadQuery) -> Vec<HeadDescriptor> {
-        self.operator_store().heads(query).unwrap_or_else(|_| {
+        let mut heads = self.operator_store().heads(query).unwrap_or_else(|_| {
             self.head_descriptors
                 .iter()
                 .filter(|head| query.matches(head))
                 .cloned()
                 .collect()
-        })
+        });
+        let mut known_head_ids = heads
+            .iter()
+            .map(|head| head.head_id.clone())
+            .collect::<BTreeSet<_>>();
+        for head in self.visible_head_descriptors() {
+            if query.matches(&head) && known_head_ids.insert(head.head_id.clone()) {
+                heads.push(head);
+            }
+        }
+        heads.sort_by_key(|head| head.created_at);
+        heads
     }
 
     /// Exports one durable page of heads without retaining the full filtered
@@ -1052,7 +1084,7 @@ impl BootstrapAdminState {
             plan: plan.clone(),
             diagnostics: self.diagnostics(plan, captured_at, remaining_work_units),
             runtime_snapshot: self.runtime_snapshot.clone(),
-            heads: self.head_descriptors.clone(),
+            heads: self.visible_head_descriptors(),
             contribution_receipts: self.contribution_receipts.clone(),
             merge_certificates: self.merge_certificates.clone(),
             reducer_load_announcements: self.reducer_load_announcements.clone(),
@@ -1098,6 +1130,87 @@ impl BootstrapAdminState {
         _captured_at: DateTime<Utc>,
     ) -> Option<BootstrapRobustnessRollup> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn_p2p::{
+        ControlPlaneSnapshot, HeadAnnouncement, LagPolicy, LagState, NodeRuntimeState,
+        RuntimeStatus,
+    };
+    use chrono::Utc;
+
+    #[test]
+    fn export_heads_includes_live_runtime_head_announcements() {
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let state = BootstrapAdminState {
+            runtime_snapshot: Some(NodeTelemetrySnapshot {
+                status: RuntimeStatus::Running,
+                node_state: NodeRuntimeState::IdleReady,
+                slot_states: Vec::new(),
+                lag_state: LagState::Current,
+                head_lag_steps: 0,
+                lag_policy: LagPolicy::default(),
+                network_id: Some(NetworkId::new("demo")),
+                local_peer_id: Some(PeerId::new("bootstrap")),
+                configured_roles: burn_p2p::PeerRoleSet::default_trainer(),
+                connected_peers: 1,
+                observed_peer_ids: BTreeSet::new(),
+                known_peer_addresses: BTreeSet::new(),
+                runtime_boundary: None,
+                listen_addresses: Vec::new(),
+                control_plane: ControlPlaneSnapshot {
+                    head_announcements: vec![HeadAnnouncement {
+                        overlay: burn_p2p::OverlayTopic::experiment(
+                            NetworkId::new("demo"),
+                            StudyId::new("study"),
+                            ExperimentId::new("exp"),
+                            burn_p2p::OverlayChannel::Heads,
+                        )
+                        .expect("heads overlay"),
+                        provider_peer_id: Some(PeerId::new("mirror")),
+                        head: runtime_head.clone(),
+                        announced_at: now,
+                    }],
+                    ..ControlPlaneSnapshot::default()
+                },
+                recent_events: Vec::new(),
+                last_snapshot_peer_id: None,
+                last_snapshot: None,
+                admitted_peers: BTreeMap::new(),
+                rejected_peers: BTreeMap::new(),
+                peer_reputation: BTreeMap::new(),
+                minimum_revocation_epoch: None,
+                trust_bundle: None,
+                in_flight_transfers: BTreeMap::new(),
+                robustness_policy: None,
+                latest_cohort_robustness: None,
+                trust_scores: Vec::new(),
+                canary_reports: Vec::new(),
+                applied_control_cert_ids: BTreeSet::new(),
+                effective_limit_profile: None,
+                last_error: None,
+                started_at: now,
+                updated_at: now,
+            }),
+            ..BootstrapAdminState::default()
+        };
+
+        let heads = state.export_heads(&HeadQuery::default());
+        assert_eq!(heads, vec![runtime_head]);
     }
 }
 
