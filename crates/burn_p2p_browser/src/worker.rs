@@ -140,6 +140,13 @@ impl BrowserWorkerRuntime {
             .unwrap_or(false)
     }
 
+    /// Applies one truthful browser swarm status observation to the local runtime.
+    pub fn observe_swarm_status(&mut self, status: BrowserSwarmStatus) {
+        self.swarm_runtime.observe_status(status.clone());
+        self.transport.apply_swarm_status(&status);
+        self.synchronize_transport_state();
+    }
+
     fn assignment_metrics_head(&self, event: &MetricsLiveEvent) -> Option<HeadId> {
         let assignment = self.storage.active_assignment.as_ref()?;
         event
@@ -701,6 +708,7 @@ impl BrowserWorkerRuntime {
         let previous_state = self.state.clone();
         let previous_transport = self.transport.clone();
         let previous_storage = self.storage.clone();
+        let previous_swarm_status = self.swarm_status();
         let directory = signed_directory.payload.payload.clone();
         self.transport = transport;
         self.storage.remember_directory_snapshot(signed_directory);
@@ -725,6 +733,12 @@ impl BrowserWorkerRuntime {
         }
         if self.transport != previous_transport {
             events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
+        }
+        let current_swarm_status = self.swarm_status();
+        if current_swarm_status != previous_swarm_status {
+            events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
+                current_swarm_status,
+            )));
         }
         if self.storage != previous_storage {
             events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
@@ -778,6 +792,7 @@ impl BrowserWorkerRuntime {
         let previous_state = self.state.clone();
         let previous_transport = self.transport.clone();
         let previous_storage = self.storage.clone();
+        let previous_swarm_status = self.swarm_status();
         let mut events = Vec::new();
 
         match command {
@@ -829,6 +844,9 @@ impl BrowserWorkerRuntime {
             BrowserWorkerCommand::ApplyMetricsLiveEvent(event) => {
                 return self.apply_metrics_live_event(*event);
             }
+            BrowserWorkerCommand::ApplySwarmStatus(status) => {
+                self.observe_swarm_status(*status);
+            }
         }
 
         if self.state != previous_state
@@ -838,6 +856,12 @@ impl BrowserWorkerRuntime {
         }
         if self.transport != previous_transport {
             events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
+        }
+        let current_swarm_status = self.swarm_status();
+        if current_swarm_status != previous_swarm_status {
+            events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
+                current_swarm_status,
+            )));
         }
         if self.storage != previous_storage {
             events.push(BrowserWorkerEvent::StorageUpdated(Box::new(

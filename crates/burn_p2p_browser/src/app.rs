@@ -178,6 +178,9 @@ impl BrowserAppModel {
             BrowserWorkerEvent::TransportChanged(transport) => {
                 self.runtime.transport = transport;
             }
+            BrowserWorkerEvent::SwarmStatusChanged(status) => {
+                self.runtime.observe_swarm_status(*status);
+            }
             BrowserWorkerEvent::SessionUpdated(session) => {
                 self.runtime.storage.remember_session(*session);
             }

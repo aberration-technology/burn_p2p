@@ -159,6 +159,11 @@ impl PlannedBrowserSwarmRuntime {
         self.dial_plan = None;
     }
 
+    /// Applies one externally observed browser swarm status snapshot.
+    pub fn observe_status(&mut self, status: BrowserSwarmStatus) {
+        self.status = status;
+    }
+
     /// Returns the current browser swarm status without needing the trait object path.
     pub fn status_ref(&self) -> &BrowserSwarmStatus {
         &self.status

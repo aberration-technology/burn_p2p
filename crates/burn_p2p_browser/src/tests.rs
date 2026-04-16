@@ -21,14 +21,15 @@ use burn_p2p_core::{
     ArtifactProfile, BackendClass, BrowserArtifactSource, BrowserDirectorySnapshot,
     BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot, BrowserLeaderboardEntry,
     BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
-    BrowserSeedAdvertisement, BrowserSeedRecord, BrowserSeedTransportKind,
-    BrowserSeedTransportPolicy, BrowserSwarmPhase, BrowserTransportFamily,
-    BrowserTransportObservationSource, BrowserTransportSurface, ChunkDescriptor,
-    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, HeadEvalReport, LeaseId, MetricValue,
-    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
-    PeerWindowMetrics, Precision, PublicationTargetId, PublishedArtifactId,
-    PublishedArtifactRecord, PublishedArtifactStatus, ReenrollmentStatus, RevocationEpoch, RunId,
-    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
+    BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement, BrowserSeedBootstrapSource,
+    BrowserSeedRecord, BrowserSeedTransportKind, BrowserSeedTransportPolicy, BrowserSwarmPhase,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
+    BrowserTransportSurface, ChunkDescriptor, DownloadDeliveryMode, DownloadTicket,
+    DownloadTicketId, HeadEvalReport, LeaseId, MetricValue, MetricsLiveEvent, MetricsLiveEventKind,
+    MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics, Precision, PublicationTargetId,
+    PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus, ReenrollmentStatus,
+    RevocationEpoch, RunId, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
+    TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
 use burn_p2p_swarm::BrowserSwarmBootstrap;
@@ -3774,6 +3775,80 @@ fn browser_swarm_status_reports_peer_artifact_ready_from_truthful_runtime_state(
 }
 
 #[test]
+fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime.state = Some(BrowserRuntimeState::Joining {
+        role: BrowserRuntimeRole::BrowserObserver,
+        stage: BrowserJoinStage::TransportConnect,
+    });
+
+    let events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(BrowserSwarmStatus {
+            phase: BrowserSwarmPhase::TransportConnected,
+            seed_bootstrap: BrowserResolvedSeedBootstrap {
+                source: BrowserSeedBootstrapSource::EdgeSigned,
+                seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+                advertised_seed_count: 1,
+                last_error: None,
+            },
+            transport_source: BrowserTransportObservationSource::Connected,
+            desired_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_peer_count: 1,
+            connected_peer_ids: vec![PeerId::new("peer-browser-1")],
+            directory_synced: false,
+            assignment_bound: false,
+            head_synced: false,
+            artifact_source: BrowserArtifactSource::Unavailable,
+            last_error: None,
+        })),
+        None,
+        None,
+    );
+
+    assert_eq!(runtime.state, Some(BrowserRuntimeState::Observer));
+    assert_eq!(
+        runtime.transport.connected,
+        Some(BrowserTransportKind::WebRtcDirect)
+    );
+    assert_eq!(
+        runtime.transport.connected_peer_ids,
+        vec![PeerId::new("peer-browser-1")]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::RuntimeStateChanged(BrowserRuntimeState::Observer)
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::TransportChanged(transport)
+            if transport.connected == Some(BrowserTransportKind::WebRtcDirect)
+                && transport.connected_peer_ids == vec![PeerId::new("peer-browser-1")]
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::SwarmStatusChanged(status)
+            if status.connected_transport == Some(BrowserTransportFamily::WebRtcDirect)
+                && status.connected_peer_ids == vec![PeerId::new("peer-browser-1")]
+    )));
+}
+
+#[test]
 fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
     let mut config = BrowserRuntimeConfig::new(
         "https://edge.example",
@@ -4618,6 +4693,27 @@ fn browser_app_model_applies_worker_events_to_local_state() {
             ..BrowserTransportStatus::default()
         },
     ));
+    model.apply_event(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
+        BrowserSwarmStatus {
+            phase: BrowserSwarmPhase::TransportConnected,
+            seed_bootstrap: BrowserResolvedSeedBootstrap {
+                source: BrowserSeedBootstrapSource::EdgeSigned,
+                seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+                advertised_seed_count: 1,
+                last_error: None,
+            },
+            transport_source: BrowserTransportObservationSource::Connected,
+            desired_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_peer_count: 1,
+            connected_peer_ids: vec![PeerId::new("peer-browser-1")],
+            directory_synced: true,
+            assignment_bound: true,
+            head_synced: true,
+            artifact_source: BrowserArtifactSource::PeerSwarm,
+            last_error: None,
+        },
+    )));
     model.apply_event(BrowserWorkerEvent::SessionUpdated(Box::new(
         sample_browser_session_state("principal-verifier"),
     )));
@@ -4676,10 +4772,15 @@ fn browser_app_model_applies_worker_events_to_local_state() {
         view.validation.emitted_receipt_id.as_deref(),
         Some("receipt-browser")
     );
-    assert_eq!(view.network.transport, "planned webrtc-direct");
+    assert_eq!(view.network.transport, "webrtc-direct");
     assert!(view.network.metrics_live_ready);
     assert!(view.network.last_directory_sync_at.is_some());
     assert_eq!(view.network.last_error.as_deref(), Some("edge degraded"));
+    assert_eq!(model.runtime.swarm_status().connected_peer_count, 1);
+    assert_eq!(
+        model.runtime.swarm_status().transport_source,
+        BrowserTransportObservationSource::Connected
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

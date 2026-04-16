@@ -1,8 +1,8 @@
 use burn_p2p::{PeerId, RuntimeTransportPolicy, TransportKind};
 use burn_p2p_core::{
     BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement, BrowserSeedBootstrapSource,
-    BrowserTransportFamily, BrowserTransportObservationSource, NetworkId, SCHEMA_VERSION,
-    SchemaEnvelope, SignedPayload,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource, NetworkId,
+    SCHEMA_VERSION, SchemaEnvelope, SignedPayload,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -185,6 +185,21 @@ impl BrowserTransportStatus {
         self.connected = None;
         self.connected_peer_ids.clear();
         self.active = self.selected.clone();
+    }
+
+    /// Applies one truthful swarm status snapshot onto the browser-local transport view.
+    pub fn apply_swarm_status(&mut self, status: &BrowserSwarmStatus) {
+        self.selected = status
+            .desired_transport
+            .as_ref()
+            .map(browser_transport_kind);
+        self.connected = status
+            .connected_transport
+            .as_ref()
+            .map(browser_transport_kind);
+        self.connected_peer_ids = status.connected_peer_ids.clone();
+        self.active = self.connected.clone().or_else(|| self.selected.clone());
+        self.last_error = status.last_error.clone();
     }
 }
 

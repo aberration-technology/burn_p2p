@@ -2,7 +2,7 @@ use burn_p2p::{
     ContentId, ContributionReceipt, ContributionReceiptId, ExperimentId, HeadId, NetworkId,
     RevisionId,
 };
-use burn_p2p_core::MetricsLiveEvent;
+use burn_p2p_core::{BrowserSwarmStatus, MetricsLiveEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -42,6 +42,8 @@ pub enum BrowserWorkerCommand {
     },
     /// Uses the apply metrics live event variant.
     ApplyMetricsLiveEvent(Box<MetricsLiveEvent>),
+    /// Uses the apply swarm status variant.
+    ApplySwarmStatus(Box<BrowserSwarmStatus>),
     /// Uses the clear caches variant.
     ClearCaches,
 }
@@ -55,6 +57,8 @@ pub enum BrowserWorkerEvent {
     RuntimeStateChanged(BrowserRuntimeState),
     /// Uses the transport changed variant.
     TransportChanged(BrowserTransportStatus),
+    /// Uses the swarm status changed variant.
+    SwarmStatusChanged(Box<BrowserSwarmStatus>),
     /// Uses the session updated variant.
     SessionUpdated(Box<BrowserSessionState>),
     /// Uses the directory updated variant.
