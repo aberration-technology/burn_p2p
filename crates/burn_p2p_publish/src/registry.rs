@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
@@ -133,29 +134,34 @@ impl PublicationStore {
         fs::create_dir_all(root_dir.join("mirror"))?;
         let state_path = state_path(&root_dir);
         let mut state = if state_path.exists() {
-            let legacy =
-                serde_json::from_slice::<PublicationRegistryStateDisk>(&fs::read(&state_path)?)?;
-            let legacy_alias_history = legacy.alias_history.clone();
-            let legacy_published = legacy.published_artifacts.clone();
-            let legacy_jobs = legacy.export_jobs.clone();
-            let mut state = legacy.into_state(&root_dir);
-            let mut store = Self {
-                root_dir: root_dir.clone(),
-                state: state.clone(),
-            };
-            if !legacy_alias_history.is_empty() && !alias_history_path(&root_dir).exists() {
-                store.replace_alias_history(&legacy_alias_history)?;
+            match serde_json::from_slice::<PublicationRegistryStateDisk>(&fs::read(&state_path)?) {
+                Ok(legacy) => {
+                    let legacy_alias_history = legacy.alias_history.clone();
+                    let legacy_published = legacy.published_artifacts.clone();
+                    let legacy_jobs = legacy.export_jobs.clone();
+                    let mut state = legacy.into_state(&root_dir);
+                    let mut store = Self {
+                        root_dir: root_dir.clone(),
+                        state: state.clone(),
+                    };
+                    if !legacy_alias_history.is_empty() && !alias_history_path(&root_dir).exists() {
+                        store.replace_alias_history(&legacy_alias_history)?;
+                    }
+                    if !legacy_published.is_empty()
+                        && !published_artifact_history_path(&root_dir).exists()
+                    {
+                        store.replace_published_artifacts(&legacy_published)?;
+                        state = store.state.clone();
+                    }
+                    if !legacy_jobs.is_empty() && !export_job_history_path(&root_dir).exists() {
+                        store.replace_export_jobs(&legacy_jobs)?;
+                        state = store.state.clone();
+                    }
+                    state
+                }
+                Err(error) if !prune_expired_records => recover_read_only_state(&root_dir, error)?,
+                Err(error) => return Err(error.into()),
             }
-            if !legacy_published.is_empty() && !published_artifact_history_path(&root_dir).exists()
-            {
-                store.replace_published_artifacts(&legacy_published)?;
-                state = store.state.clone();
-            }
-            if !legacy_jobs.is_empty() && !export_job_history_path(&root_dir).exists() {
-                store.replace_export_jobs(&legacy_jobs)?;
-                state = store.state.clone();
-            }
-            state
         } else {
             PublicationRegistryState::new(&root_dir)
         };
@@ -431,6 +437,44 @@ impl PublicationStore {
         );
         Ok(())
     }
+}
+
+fn recover_read_only_state(
+    root_dir: &Path,
+    _error: serde_json::Error,
+) -> Result<PublicationRegistryState, PublishError> {
+    let mut state = PublicationRegistryState::new(root_dir);
+    let alias_history = load_jsonl::<ArtifactAlias>(alias_history_path(root_dir))?;
+    let published_artifacts =
+        load_jsonl::<PublishedArtifactRecord>(published_artifact_history_path(root_dir))?;
+    let export_jobs = load_jsonl::<ExportJob>(export_job_history_path(root_dir))?;
+
+    let mut aliases_by_id = BTreeMap::<_, ArtifactAlias>::new();
+    for alias in alias_history {
+        let alias_id = alias.artifact_alias_id.clone();
+        match aliases_by_id.get(&alias_id) {
+            Some(existing) if existing.resolved_at >= alias.resolved_at => {}
+            _ => {
+                aliases_by_id.insert(alias_id, alias);
+            }
+        }
+    }
+
+    state.aliases = aliases_by_id.into_values().collect();
+    state
+        .aliases
+        .sort_by(|left, right| left.artifact_alias_id.cmp(&right.artifact_alias_id));
+    state.recent_published_artifacts = recent_preview(
+        &published_artifacts,
+        PublicationRegistryState::MAX_RECENT_PUBLISHED_ARTIFACTS,
+        |record| record.created_at,
+    );
+    state.recent_export_jobs = recent_preview(
+        &export_jobs,
+        PublicationRegistryState::MAX_RECENT_EXPORT_JOBS,
+        |job| job.queued_at,
+    );
+    Ok(state)
 }
 
 pub(crate) fn state_path(root_dir: &Path) -> PathBuf {

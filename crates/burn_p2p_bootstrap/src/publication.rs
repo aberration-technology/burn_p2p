@@ -106,8 +106,11 @@ impl BootstrapAdminState {
     ) -> anyhow::Result<Option<HeadArtifactView>> {
         let heads = self.visible_head_descriptors();
         let head_eval_reports = self.stored_head_eval_reports()?;
-        let Some(store) = self.publication_store_without_sync()? else {
-            return self.fallback_head_artifact_view(&heads, &head_eval_reports, head_id);
+        let store = match self.publication_store_without_sync() {
+            Ok(Some(store)) => store,
+            Ok(None) | Err(_) => {
+                return self.fallback_head_artifact_view(&heads, &head_eval_reports, head_id);
+            }
         };
         match store.head_view(&heads, &head_eval_reports, head_id) {
             Ok(mut view) => {
@@ -470,6 +473,48 @@ mod tests {
             .expect("head artifact view should be present");
         assert_eq!(view.head.head_id, runtime_head.head_id);
         assert!(view.published_artifacts.is_empty());
+        assert_eq!(view.provider_peer_ids, vec![PeerId::new("mirror")]);
+    }
+
+    #[test]
+    fn export_head_artifact_view_recovers_when_registry_json_is_corrupt() {
+        let publication_store = tempdir().expect("publication store tempdir");
+        std::fs::write(publication_store.path().join("registry.json"), "")
+            .expect("write corrupt registry");
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let mut state = BootstrapAdminState {
+            publication_store_root: Some(publication_store.path().to_path_buf()),
+            ..BootstrapAdminState::default()
+        };
+        state.register_live_head_announcement(HeadAnnouncement {
+            overlay: OverlayTopic::experiment(
+                NetworkId::new("demo"),
+                StudyId::new("study"),
+                ExperimentId::new("exp"),
+                OverlayChannel::Heads,
+            )
+            .expect("heads overlay"),
+            provider_peer_id: Some(PeerId::new("mirror")),
+            head: runtime_head.clone(),
+            announced_at: now,
+        });
+
+        let view = state
+            .export_head_artifact_view(&runtime_head.head_id)
+            .expect("export head artifact view")
+            .expect("head artifact view should be present");
+        assert_eq!(view.head.head_id, runtime_head.head_id);
         assert_eq!(view.provider_peer_ids, vec![PeerId::new("mirror")]);
     }
 }

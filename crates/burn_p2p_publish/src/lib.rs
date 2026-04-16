@@ -872,6 +872,38 @@ mod tests {
     }
 
     #[test]
+    fn open_without_prune_recovers_from_corrupt_registry_json() {
+        let root = tempdir().expect("tempdir");
+        let artifact_store = FsArtifactStore::new(root.path().join("cas"));
+        artifact_store.ensure_layout().expect("layout");
+        let (_descriptor, head) = sample_artifact(&artifact_store, "artifact-a", "head-a");
+        let protocol = sample_protocol();
+        let reports = vec![sample_report("head-a", &protocol, 0.22)];
+        let mut store = PublicationStore::open(root.path()).expect("open store");
+        store
+            .sync_aliases(
+                std::slice::from_ref(&head),
+                &reports,
+                std::slice::from_ref(&protocol),
+            )
+            .expect("sync aliases");
+        std::fs::write(crate::registry::state_path(root.path()), "").expect("corrupt registry");
+
+        let recovered =
+            PublicationStore::open_without_prune(root.path()).expect("recover corrupt registry");
+        let view = recovered
+            .head_view(std::slice::from_ref(&head), &reports, &head.head_id)
+            .expect("head view");
+
+        assert_eq!(view.head.head_id, head.head_id);
+        assert!(!view.aliases.is_empty());
+        assert!(
+            view.available_profiles
+                .contains(&ArtifactProfile::ServeCheckpoint)
+        );
+    }
+
+    #[test]
     fn eager_sync_exports_serve_aliases_for_hybrid_targets() {
         let root = tempdir().expect("tempdir");
         let artifact_store = FsArtifactStore::new(root.path().join("cas"));
