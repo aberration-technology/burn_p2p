@@ -3849,6 +3849,108 @@ fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
 }
 
 #[test]
+fn worker_runtime_apply_swarm_directory_head_and_metrics_commands_drive_runtime_state() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserObserver,
+            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let session = sample_browser_session_state("principal-browser");
+    runtime.remember_session(session.clone());
+
+    let directory_events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmDirectory(Box::new(
+            signed_browser_directory_snapshot(vec![browser_directory_entry_for_assignment(
+                "exp-browser",
+                "rev-browser",
+                "view-browser",
+            )])
+            .payload
+            .payload,
+        )),
+        None,
+        Some(&session),
+    );
+    assert!(directory_events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::DirectoryUpdated { network_id, visible_entries }
+            if network_id == &NetworkId::new("net-browser") && *visible_entries == 1
+    )));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.state = Some(BrowserRuntimeState::Joining {
+        role: BrowserRuntimeRole::BrowserObserver,
+        stage: BrowserJoinStage::HeadSync,
+    });
+
+    let head_events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmHeads(vec![burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: None,
+            global_step: 1,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        }]),
+        None,
+        None,
+    );
+    assert!(head_events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::HeadUpdated { head_id } if head_id == &HeadId::new("head-browser")
+    )));
+
+    let metrics_events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmMetricsSync(Box::new(BrowserMetricsSyncState {
+            catchup_bundles: Vec::new(),
+            live_event: Some(MetricsLiveEvent {
+                network_id: NetworkId::new("net-browser"),
+                kind: MetricsLiveEventKind::CatchupRefresh,
+                cursors: vec![MetricsSyncCursor {
+                    experiment_id: ExperimentId::new("exp-browser"),
+                    revision_id: RevisionId::new("rev-browser"),
+                    latest_snapshot_seq: Some(1),
+                    latest_ledger_segment_seq: Some(1),
+                    latest_head_id: Some(HeadId::new("head-browser")),
+                    latest_merge_window_id: None,
+                }],
+                generated_at: Utc::now(),
+            }),
+        })),
+        None,
+        None,
+    );
+    assert!(
+        metrics_events
+            .iter()
+            .any(|event| matches!(event, BrowserWorkerEvent::MetricsUpdated(_)))
+    );
+    assert_eq!(
+        runtime.storage.last_head_id,
+        Some(HeadId::new("head-browser"))
+    );
+}
+
+#[test]
 fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
     let mut config = BrowserRuntimeConfig::new(
         "https://edge.example",

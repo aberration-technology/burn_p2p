@@ -172,26 +172,39 @@ impl BrowserWorkerRuntime {
         &mut self,
         metrics: BrowserMetricsSyncState,
     ) -> Vec<BrowserWorkerEvent> {
+        let previous_state = self.state.clone();
+        let previous_transport = self.transport.clone();
         let previous_storage = self.storage.clone();
-        let mut events = Vec::new();
+        let previous_swarm_status = self.swarm_status();
+        let mut metrics_event = None;
+        let mut active_head_id = None;
 
         if !metrics.catchup_bundles.is_empty() {
             self.storage
                 .remember_metrics_catchup(metrics.catchup_bundles);
         }
         if let Some(event) = metrics.live_event {
-            events.extend(self.apply_metrics_live_event(event));
+            if !self.is_duplicate_metrics_event(&event) {
+                if let Some(head_id) = self
+                    .assignment_metrics_head(&event)
+                    .filter(|head_id| self.storage.last_head_id.as_ref() != Some(head_id))
+                {
+                    self.storage.remember_head(head_id.clone());
+                    active_head_id = Some(head_id);
+                }
+                self.storage.remember_metrics_live_event(event.clone());
+                metrics_event = Some(event);
+            }
         }
-        if self.storage != previous_storage
-            && !events
-                .iter()
-                .any(|event| matches!(event, BrowserWorkerEvent::StorageUpdated(_)))
-        {
-            events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
-                self.storage.clone(),
-            )));
-        }
-        events
+        self.collect_runtime_delta_events(
+            previous_state,
+            previous_transport,
+            previous_storage,
+            previous_swarm_status,
+            None,
+            active_head_id,
+            metrics_event,
+        )
     }
 
     fn runtime_role_from_browser_role(role: BrowserRole) -> crate::BrowserRuntimeRole {
@@ -216,6 +229,53 @@ impl BrowserWorkerRuntime {
 
     fn role_requires_peer_transport(role: &crate::BrowserRuntimeRole) -> bool {
         Self::active_state_for_role(role.clone()).requires_peer_transport()
+    }
+
+    fn collect_runtime_delta_events(
+        &self,
+        previous_state: Option<BrowserRuntimeState>,
+        previous_transport: BrowserTransportStatus,
+        previous_storage: BrowserStorageSnapshot,
+        previous_swarm_status: BrowserSwarmStatus,
+        directory: Option<&BrowserDirectorySnapshot>,
+        active_head_id: Option<HeadId>,
+        metrics_event: Option<MetricsLiveEvent>,
+    ) -> Vec<BrowserWorkerEvent> {
+        let mut events = Vec::new();
+
+        if self.state != previous_state
+            && let Some(state) = self.state.clone()
+        {
+            events.push(BrowserWorkerEvent::RuntimeStateChanged(state));
+        }
+        if self.transport != previous_transport {
+            events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
+        }
+        let current_swarm_status = self.swarm_status();
+        if current_swarm_status != previous_swarm_status {
+            events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
+                current_swarm_status,
+            )));
+        }
+        if self.storage != previous_storage {
+            events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
+                self.storage.clone(),
+            )));
+        }
+        if let Some(directory) = directory {
+            events.push(BrowserWorkerEvent::DirectoryUpdated {
+                network_id: directory.network_id.clone(),
+                visible_entries: directory.entries.len(),
+            });
+        }
+        if let Some(head_id) = active_head_id {
+            events.push(BrowserWorkerEvent::HeadUpdated { head_id });
+        }
+        if let Some(event) = metrics_event {
+            events.push(BrowserWorkerEvent::MetricsUpdated(Box::new(event)));
+        }
+
+        events
     }
 
     fn synchronize_transport_state(&mut self) {
@@ -731,56 +791,66 @@ impl BrowserWorkerRuntime {
         }
         self.apply_directory_snapshot(&directory, session);
         let active_head_id = self.apply_head_snapshot(heads);
-
-        let mut events = Vec::new();
-        if self.state != previous_state
-            && let Some(state) = self.state.clone()
-        {
-            events.push(BrowserWorkerEvent::RuntimeStateChanged(state));
-        }
-        if self.transport != previous_transport {
-            events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
-        }
-        let current_swarm_status = self.swarm_status();
-        if current_swarm_status != previous_swarm_status {
-            events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
-                current_swarm_status,
-            )));
-        }
-        if self.storage != previous_storage {
-            events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
-                self.storage.clone(),
-            )));
-        }
-        events.push(BrowserWorkerEvent::DirectoryUpdated {
-            network_id: directory.network_id,
-            visible_entries: directory.entries.len(),
-        });
-        if let Some(head_id) = active_head_id {
-            events.push(BrowserWorkerEvent::HeadUpdated { head_id });
-        }
-        events
+        self.collect_runtime_delta_events(
+            previous_state,
+            previous_transport,
+            previous_storage,
+            previous_swarm_status,
+            Some(&directory),
+            active_head_id,
+            None,
+        )
     }
 
     /// Applies one live metrics event to the browser runtime and storage.
     pub fn apply_metrics_live_event(&mut self, event: MetricsLiveEvent) -> Vec<BrowserWorkerEvent> {
-        if self.is_duplicate_metrics_event(&event) {
-            return Vec::new();
-        }
-        let mut events = Vec::new();
-        let updated_head = self
-            .assignment_metrics_head(&event)
-            .filter(|head_id| self.storage.last_head_id.as_ref() != Some(head_id));
-        self.storage.remember_metrics_live_event(event.clone());
-        if let Some(head_id) = updated_head {
-            self.storage.remember_head(head_id.clone());
-            events.push(BrowserWorkerEvent::HeadUpdated { head_id });
-        }
-        events.push(BrowserWorkerEvent::MetricsUpdated(Box::new(event)));
-        events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
-            self.storage.clone(),
-        )));
-        events
+        self.apply_metrics_sync_state(BrowserMetricsSyncState {
+            catchup_bundles: Vec::new(),
+            live_event: Some(event),
+        })
+    }
+
+    /// Applies one live directory snapshot from the browser swarm path.
+    pub fn apply_swarm_directory_snapshot(
+        &mut self,
+        directory: BrowserDirectorySnapshot,
+        session: Option<&BrowserSessionState>,
+    ) -> Vec<BrowserWorkerEvent> {
+        let previous_state = self.state.clone();
+        let previous_transport = self.transport.clone();
+        let previous_storage = self.storage.clone();
+        let previous_swarm_status = self.swarm_status();
+        self.apply_directory_snapshot(&directory, session);
+        self.collect_runtime_delta_events(
+            previous_state,
+            previous_transport,
+            previous_storage,
+            previous_swarm_status,
+            Some(&directory),
+            None,
+            None,
+        )
+    }
+
+    /// Applies one live head snapshot from the browser swarm path.
+    pub fn apply_swarm_head_snapshot(
+        &mut self,
+        heads: &[HeadDescriptor],
+    ) -> Vec<BrowserWorkerEvent> {
+        let previous_state = self.state.clone();
+        let previous_transport = self.transport.clone();
+        let previous_storage = self.storage.clone();
+        let previous_swarm_status = self.swarm_status();
+        let active_head_id = self.apply_head_snapshot(heads);
+        self.collect_runtime_delta_events(
+            previous_state,
+            previous_transport,
+            previous_storage,
+            previous_swarm_status,
+            None,
+            active_head_id,
+            None,
+        )
     }
 
     /// Performs the update transport status operation.
@@ -851,37 +921,28 @@ impl BrowserWorkerRuntime {
             BrowserWorkerCommand::ApplyMetricsLiveEvent(event) => {
                 return self.apply_metrics_live_event(*event);
             }
+            BrowserWorkerCommand::ApplySwarmDirectory(directory) => {
+                return self.apply_swarm_directory_snapshot(*directory, session);
+            }
+            BrowserWorkerCommand::ApplySwarmHeads(heads) => {
+                return self.apply_swarm_head_snapshot(&heads);
+            }
+            BrowserWorkerCommand::ApplySwarmMetricsSync(metrics) => {
+                return self.apply_metrics_sync_state(*metrics);
+            }
             BrowserWorkerCommand::ApplySwarmStatus(status) => {
                 self.observe_swarm_status(*status);
             }
         }
-
-        if self.state != previous_state
-            && let Some(state) = self.state.clone()
-        {
-            events.push(BrowserWorkerEvent::RuntimeStateChanged(state));
-        }
-        if self.transport != previous_transport {
-            events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
-        }
-        let current_swarm_status = self.swarm_status();
-        if current_swarm_status != previous_swarm_status {
-            events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
-                current_swarm_status,
-            )));
-        }
-        if self.storage != previous_storage {
-            events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
-                self.storage.clone(),
-            )));
-        }
-        if let Some(directory) = directory {
-            events.push(BrowserWorkerEvent::DirectoryUpdated {
-                network_id: directory.network_id.clone(),
-                visible_entries: directory.entries.len(),
-            });
-        }
-
+        events.extend(self.collect_runtime_delta_events(
+            previous_state,
+            previous_transport,
+            previous_storage,
+            previous_swarm_status,
+            directory,
+            None,
+            None,
+        ));
         events
     }
 
