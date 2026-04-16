@@ -14,7 +14,9 @@ pub(crate) fn handle_portal_artifact_route(
     current_config: &BootstrapDaemonConfig,
     request: &HttpRequest,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    if request.method != "GET" || !request.path.starts_with("/portal/artifacts/") {
+    if !matches!(request.method.as_str(), "GET" | "HEAD")
+        || !request.path.starts_with("/portal/artifacts/")
+    {
         return Ok(false);
     }
     if !browser_edge_route_enabled(current_config) {
@@ -50,8 +52,9 @@ pub(crate) fn handle_portal_artifact_route(
                     .lock()
                     .expect("bootstrap admin state should not be poisoned")
                     .export_artifact_run_summaries(&experiment_id)?;
-                write_response(
+                write_response_for_method(
                     stream,
+                    &request.method,
                     "200 OK",
                     "text/html; charset=utf-8",
                     render_artifact_run_summaries_html(&experiment_id, &runs).into_bytes(),
@@ -64,8 +67,9 @@ pub(crate) fn handle_portal_artifact_route(
                     .expect("bootstrap admin state should not be poisoned")
                     .export_artifact_run_view(&experiment_id, &burn_p2p_core::RunId::new(run_id))?;
                 match run_view {
-                    Some(run_view) => write_response(
+                    Some(run_view) => write_response_for_method(
                         stream,
+                        &request.method,
                         "200 OK",
                         "text/html; charset=utf-8",
                         render_artifact_run_view_html(&run_view).into_bytes(),
@@ -91,8 +95,9 @@ pub(crate) fn handle_portal_artifact_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_head_artifact_view(&burn_p2p::HeadId::new(head_id))?;
         match head_view {
-            Some(head_view) => write_response(
+            Some(head_view) => write_response_for_method(
                 stream,
+                &request.method,
                 "200 OK",
                 "text/html; charset=utf-8",
                 render_head_artifact_view_html(&head_view).into_bytes(),
@@ -128,7 +133,7 @@ pub(crate) fn handle_artifact_publish_get_route(
     context: &HttpServerContext,
     request: &HttpRequest,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    if request.method != "GET" {
+    if !matches!(request.method.as_str(), "GET" | "HEAD") {
         return Ok(false);
     }
     if request.path.starts_with("/admin/artifacts/") {
@@ -151,7 +156,7 @@ pub(crate) fn handle_artifact_publish_get_route(
                     .lock()
                     .expect("bootstrap admin state should not be poisoned")
                     .export_published_artifacts()?;
-                write_json(stream, &publications)?;
+                write_json_for_method(stream, &request.method, &publications)?;
                 return Ok(true);
             }
             "/admin/artifacts/jobs" => {
@@ -160,7 +165,7 @@ pub(crate) fn handle_artifact_publish_get_route(
                     .lock()
                     .expect("bootstrap admin state should not be poisoned")
                     .export_artifact_jobs()?;
-                write_json(stream, &jobs)?;
+                write_json_for_method(stream, &request.method, &jobs)?;
                 return Ok(true);
             }
             _ => return Ok(false),
@@ -182,12 +187,22 @@ pub(crate) fn handle_artifact_publish_get_route(
 
     match request.path.as_str() {
         "/artifacts/live" => {
+            if request.method == "HEAD" {
+                write_response_for_method(
+                    stream,
+                    &request.method,
+                    "405 Method Not Allowed",
+                    "text/plain; charset=utf-8",
+                    b"artifact live stream requires GET".to_vec(),
+                )?;
+                return Ok(true);
+            }
             write_artifact_event_stream(stream, &context.state)?;
             return Ok(true);
         }
         "/artifacts/live/latest" => {
             match current_artifact_live_event(&context.state)? {
-                Some(event) => write_json(stream, &event)?,
+                Some(event) => write_json_for_method(stream, &request.method, &event)?,
                 None => {
                     write_response(
                         stream,
@@ -208,7 +223,7 @@ pub(crate) fn handle_artifact_publish_get_route(
             .lock()
             .expect("bootstrap admin state should not be poisoned")
             .export_artifact_alias_statuses()?;
-        write_json(stream, &aliases)?;
+        write_json_for_method(stream, &request.method, &aliases)?;
         return Ok(true);
     }
 
@@ -220,7 +235,7 @@ pub(crate) fn handle_artifact_publish_get_route(
             .export_artifact_alias_statuses_for_experiment(&burn_p2p::ExperimentId::new(
                 experiment_id,
             ))?;
-        write_json(stream, &aliases)?;
+        write_json_for_method(stream, &request.method, &aliases)?;
         return Ok(true);
     }
     if let Some(path) = request.path.strip_prefix("/artifacts/runs/") {
@@ -237,7 +252,7 @@ pub(crate) fn handle_artifact_publish_get_route(
                     .lock()
                     .expect("bootstrap admin state should not be poisoned")
                     .export_artifact_run_summaries(&experiment_id)?;
-                write_json(stream, &runs)?;
+                write_json_for_method(stream, &request.method, &runs)?;
             }
             Some(run_id) => {
                 let run_view = context
@@ -246,7 +261,7 @@ pub(crate) fn handle_artifact_publish_get_route(
                     .expect("bootstrap admin state should not be poisoned")
                     .export_artifact_run_view(&experiment_id, &burn_p2p_core::RunId::new(run_id))?;
                 match run_view {
-                    Some(run_view) => write_json(stream, &run_view)?,
+                    Some(run_view) => write_json_for_method(stream, &request.method, &run_view)?,
                     None => {
                         write_response(
                             stream,
@@ -267,7 +282,7 @@ pub(crate) fn handle_artifact_publish_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_head_artifact_view(&burn_p2p::HeadId::new(head_id))?;
         match head {
-            Some(head) => write_json(stream, &head)?,
+            Some(head) => write_json_for_method(stream, &request.method, &head)?,
             None => {
                 write_response(
                     stream,
@@ -286,7 +301,7 @@ pub(crate) fn handle_artifact_publish_get_route(
             .expect("bootstrap admin state should not be poisoned")
             .export_artifact_job(&burn_p2p_core::ExportJobId::new(export_job_id))?;
         match job {
-            Some(job) => write_json(stream, &job)?,
+            Some(job) => write_json_for_method(stream, &request.method, &job)?,
             None => {
                 write_response(
                     stream,
@@ -309,8 +324,9 @@ pub(crate) fn handle_artifact_publish_get_route(
                 let requested_range =
                     parse_requested_byte_range(request.headers.get("range").map(String::as_str))?;
                 if let Some(redirect_url) = artifact.redirect_url {
-                    write_response_with_headers(
+                    write_response_with_headers_for_method(
                         stream,
+                        &request.method,
                         "302 Found",
                         "text/plain; charset=utf-8",
                         &[("Location", redirect_url)],
@@ -324,8 +340,9 @@ pub(crate) fn handle_artifact_publish_get_route(
                     headers.push(("Accept-Ranges", "bytes".into()));
                     match artifact.body {
                         burn_p2p_publish::DownloadArtifactBody::Empty => {
-                            write_response_with_headers(
+                            write_response_with_headers_for_method(
                                 stream,
+                                &request.method,
                                 "204 No Content",
                                 &artifact.content_type,
                                 &headers,
@@ -340,16 +357,18 @@ pub(crate) fn handle_artifact_publish_get_route(
                                     "Content-Range",
                                     format!("bytes {}-{}/{}", start, end_inclusive, bytes.len()),
                                 ));
-                                write_response_with_headers(
+                                write_response_with_headers_for_method(
                                     stream,
+                                    &request.method,
                                     "206 Partial Content",
                                     &artifact.content_type,
                                     &headers,
                                     bytes[start as usize..=end_inclusive as usize].to_vec(),
                                 )?;
                             } else {
-                                write_response_with_headers(
+                                write_response_with_headers_for_method(
                                     stream,
+                                    &request.method,
                                     "200 OK",
                                     &artifact.content_type,
                                     &headers,
@@ -373,8 +392,9 @@ pub(crate) fn handle_artifact_publish_get_route(
                                 file.seek(std::io::SeekFrom::Start(start))?;
                                 let reader =
                                     std::io::BufReader::new(file.take(end_inclusive - start + 1));
-                                write_stream_response_with_headers(
+                                write_stream_response_with_headers_for_method(
                                     stream,
+                                    &request.method,
                                     "206 Partial Content",
                                     &artifact.content_type,
                                     &headers,
@@ -382,8 +402,9 @@ pub(crate) fn handle_artifact_publish_get_route(
                                     reader,
                                 )?;
                             } else {
-                                write_file_response_with_headers(
+                                write_file_response_with_headers_for_method(
                                     stream,
+                                    &request.method,
                                     "200 OK",
                                     &artifact.content_type,
                                     &headers,
@@ -427,8 +448,9 @@ pub(crate) fn handle_artifact_publish_get_route(
                                 {
                                     headers.push(("Content-Range", content_range.to_owned()));
                                 }
-                                write_stream_response_with_headers(
+                                write_stream_response_with_headers_for_method(
                                     stream,
+                                    &request.method,
                                     if requested_range.is_some() {
                                         "206 Partial Content"
                                     } else {

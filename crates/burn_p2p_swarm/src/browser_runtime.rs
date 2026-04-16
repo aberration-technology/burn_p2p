@@ -7,6 +7,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::SwarmError;
 
+#[cfg(target_arch = "wasm32")]
+use std::{cell::RefCell, rc::Rc};
+
+#[cfg(target_arch = "wasm32")]
+use futures::{
+    FutureExt, StreamExt,
+    channel::{mpsc, oneshot},
+};
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::TimeoutFuture;
+#[cfg(target_arch = "wasm32")]
+use libp2p::Transport;
+#[cfg(target_arch = "wasm32")]
+use libp2p::{
+    Multiaddr, SwarmBuilder,
+    core::upgrade::Version,
+    swarm::{NetworkBehaviour, SwarmEvent},
+};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Bootstrap contract for one browser swarm runtime connection attempt.
 pub struct BrowserSwarmBootstrap {
@@ -232,6 +253,503 @@ impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
             "direct browser swarm artifact chunk fetch is not implemented".into(),
         ))
     }
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn filter_supported_browser_seed_dial_candidates(
+    dial_plan: &BrowserSwarmDialPlan,
+    supported_transports: &[BrowserTransportFamily],
+) -> Vec<BrowserSeedDialCandidate> {
+    dial_plan
+        .candidates
+        .iter()
+        .filter(|candidate| supported_transports.contains(&candidate.transport))
+        .cloned()
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(NetworkBehaviour)]
+#[behaviour(prelude = "libp2p_swarm::derive_prelude")]
+struct WasmBrowserSwarmBehaviour {
+    ping: libp2p::ping::Behaviour,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Default)]
+struct WasmBrowserSwarmSharedState {
+    status: BrowserSwarmStatus,
+    dial_plan: Option<BrowserSwarmDialPlan>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WasmPendingConnect {
+    dial_plan: BrowserSwarmDialPlan,
+    candidates: Vec<BrowserSeedDialCandidate>,
+    next_candidate_index: usize,
+    response_tx: Option<oneshot::Sender<Result<BrowserSwarmDialPlan, SwarmError>>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WasmPendingConnect {
+    fn next_candidate(&mut self) -> Option<BrowserSeedDialCandidate> {
+        let candidate = self.candidates.get(self.next_candidate_index).cloned();
+        if candidate.is_some() {
+            self.next_candidate_index += 1;
+        }
+        candidate
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+enum WasmBrowserSwarmCommand {
+    Connect {
+        bootstrap: BrowserSwarmBootstrap,
+        response_tx: oneshot::Sender<Result<BrowserSwarmDialPlan, SwarmError>>,
+    },
+    Disconnect {
+        response_tx: oneshot::Sender<Result<(), SwarmError>>,
+    },
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+/// Real wasm browser swarm runtime backed by browser-capable libp2p transports.
+pub struct WasmBrowserSwarmRuntime {
+    shared: Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    command_tx: mpsc::UnboundedSender<WasmBrowserSwarmCommand>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::fmt::Debug for WasmBrowserSwarmRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmBrowserSwarmRuntime")
+            .field("status", &self.status())
+            .field("dial_plan", &self.dial_plan())
+            .finish()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for WasmBrowserSwarmRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WasmBrowserSwarmRuntime {
+    pub fn new() -> Self {
+        let shared = Rc::new(RefCell::new(WasmBrowserSwarmSharedState::default()));
+        let (command_tx, command_rx) = mpsc::unbounded();
+        spawn_local(run_wasm_browser_swarm_task(shared.clone(), command_rx));
+        Self { shared, command_tx }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
+    async fn connect(
+        &mut self,
+        bootstrap: BrowserSwarmBootstrap,
+    ) -> Result<BrowserSwarmDialPlan, SwarmError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::Connect {
+                bootstrap,
+                response_tx,
+            })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(15_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime("browser direct swarm connect response was dropped".into())
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm connection".into(),
+            )),
+        }
+    }
+
+    async fn disconnect(&mut self) -> Result<(), SwarmError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::Disconnect { response_tx })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(5_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime("browser direct swarm disconnect response was dropped".into())
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm disconnect".into(),
+            )),
+        }
+    }
+
+    fn status(&self) -> BrowserSwarmStatus {
+        self.shared.borrow().status.clone()
+    }
+
+    fn dial_plan(&self) -> Option<BrowserSwarmDialPlan> {
+        self.shared.borrow().dial_plan.clone()
+    }
+
+    async fn subscribe_directory(&mut self) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm directory subscription is not implemented".into(),
+        ))
+    }
+
+    async fn subscribe_heads(&mut self) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm head subscription is not implemented".into(),
+        ))
+    }
+
+    async fn subscribe_metrics(&mut self) -> Result<(), SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm metrics subscription is not implemented".into(),
+        ))
+    }
+
+    async fn fetch_artifact_manifest(
+        &mut self,
+        _request: BrowserArtifactManifestRequest,
+    ) -> Result<burn_p2p_core::ArtifactDescriptor, SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm artifact manifest fetch is not implemented".into(),
+        ))
+    }
+
+    async fn fetch_artifact_chunk(
+        &mut self,
+        _request: BrowserArtifactChunkRequest,
+    ) -> Result<Vec<u8>, SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm artifact chunk fetch is not implemented".into(),
+        ))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_wasm_browser_swarm_task(
+    shared: Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    mut command_rx: mpsc::UnboundedReceiver<WasmBrowserSwarmCommand>,
+) {
+    let local_key = libp2p::identity::Keypair::generate_ed25519();
+    let mut swarm = match build_wasm_browser_swarm(local_key) {
+        Ok(swarm) => swarm,
+        Err(error) => {
+            shared.borrow_mut().status.last_error = Some(error.to_string());
+            while let Some(command) = command_rx.next().await {
+                match command {
+                    WasmBrowserSwarmCommand::Connect { response_tx, .. } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
+                    WasmBrowserSwarmCommand::Disconnect { response_tx } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
+                }
+            }
+            return;
+        }
+    };
+
+    let mut pending_connect: Option<WasmPendingConnect> = None;
+    let mut active_candidate: Option<BrowserSeedDialCandidate> = None;
+
+    loop {
+        let next_command = command_rx.next().fuse();
+        let next_swarm_event = swarm.select_next_some().fuse();
+        futures::pin_mut!(next_command, next_swarm_event);
+
+        match futures::future::select(next_command, next_swarm_event).await {
+            futures::future::Either::Left((command, _)) => {
+                let Some(command) = command else {
+                    break;
+                };
+                match command {
+                    WasmBrowserSwarmCommand::Connect {
+                        bootstrap,
+                        response_tx,
+                    } => {
+                        for peer_id in swarm.connected_peers().cloned().collect::<Vec<_>>() {
+                            let _ = swarm.disconnect_peer_id(peer_id);
+                        }
+                        let dial_plan = plan_browser_seed_dials(&bootstrap);
+                        let supported = wasm_supported_browser_transport_families();
+                        let candidates =
+                            filter_supported_browser_seed_dial_candidates(&dial_plan, &supported);
+                        let last_error = if candidates.is_empty() {
+                            Some(
+                                "no supported browser-capable libp2p seed candidates were available"
+                                    .to_owned(),
+                            )
+                        } else {
+                            None
+                        };
+                        {
+                            let mut state = shared.borrow_mut();
+                            state.status = BrowserSwarmStatus {
+                                phase: if dial_plan.desired_transport.is_some() {
+                                    BrowserSwarmPhase::TransportSelected
+                                } else if !bootstrap.seed_bootstrap.seed_node_urls.is_empty() {
+                                    BrowserSwarmPhase::SeedResolved
+                                } else {
+                                    BrowserSwarmPhase::Bootstrap
+                                },
+                                seed_bootstrap: bootstrap.seed_bootstrap,
+                                transport_source:
+                                    burn_p2p_core::BrowserTransportObservationSource::Selected,
+                                desired_transport: dial_plan.desired_transport.clone(),
+                                connected_transport: None,
+                                connected_peer_count: 0,
+                                connected_peer_ids: Vec::new(),
+                                directory_synced: false,
+                                assignment_bound: false,
+                                head_synced: false,
+                                artifact_source: burn_p2p_core::BrowserArtifactSource::Unavailable,
+                                last_error: last_error
+                                    .clone()
+                                    .or_else(|| dial_plan.warnings.first().cloned()),
+                            };
+                            state.dial_plan = Some(dial_plan.clone());
+                        }
+                        active_candidate = None;
+                        pending_connect = Some(WasmPendingConnect {
+                            dial_plan,
+                            candidates,
+                            next_candidate_index: 0,
+                            response_tx: Some(response_tx),
+                        });
+                        if let Err(error) = dial_next_wasm_browser_seed_candidate(
+                            &mut swarm,
+                            &shared,
+                            pending_connect.as_mut().expect("pending connect"),
+                            &mut active_candidate,
+                        ) {
+                            if let Some(mut pending) = pending_connect.take()
+                                && let Some(response_tx) = pending.response_tx.take()
+                            {
+                                let _ =
+                                    response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                            }
+                            shared.borrow_mut().status.last_error = Some(error.to_string());
+                        }
+                    }
+                    WasmBrowserSwarmCommand::Disconnect { response_tx } => {
+                        active_candidate = None;
+                        pending_connect = None;
+                        for peer_id in swarm.connected_peers().cloned().collect::<Vec<_>>() {
+                            let _ = swarm.disconnect_peer_id(peer_id);
+                        }
+                        {
+                            let mut state = shared.borrow_mut();
+                            state.status = BrowserSwarmStatus::default();
+                            state.dial_plan = None;
+                        }
+                        let _ = response_tx.send(Ok(()));
+                    }
+                }
+            }
+            futures::future::Either::Right((event, _)) => match event {
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    let connected_transport = active_candidate
+                        .as_ref()
+                        .map(|candidate| candidate.transport.clone())
+                        .or_else(|| {
+                            shared
+                                .borrow()
+                                .dial_plan
+                                .as_ref()
+                                .and_then(|plan| plan.desired_transport.clone())
+                        });
+                    {
+                        let mut state = shared.borrow_mut();
+                        state.status.phase = BrowserSwarmPhase::TransportConnected;
+                        state.status.transport_source =
+                            burn_p2p_core::BrowserTransportObservationSource::Connected;
+                        state.status.connected_transport = connected_transport;
+                        state.status.connected_peer_ids = vec![PeerId::new(peer_id.to_string())];
+                        state.status.connected_peer_count = 1;
+                        state.status.last_error = None;
+                    }
+                    if let Some(mut pending) = pending_connect.take()
+                        && let Some(response_tx) = pending.response_tx.take()
+                    {
+                        let _ = response_tx.send(Ok(pending.dial_plan));
+                    }
+                }
+                SwarmEvent::OutgoingConnectionError { error, .. } => {
+                    let error_message = error.to_string();
+                    shared.borrow_mut().status.last_error = Some(error_message.clone());
+                    if let Some(pending) = pending_connect.as_mut() {
+                        if let Err(next_error) = dial_next_wasm_browser_seed_candidate(
+                            &mut swarm,
+                            &shared,
+                            pending,
+                            &mut active_candidate,
+                        ) {
+                            if let Some(mut pending) = pending_connect.take()
+                                && let Some(response_tx) = pending.response_tx.take()
+                            {
+                                let _ = response_tx
+                                    .send(Err(SwarmError::Runtime(next_error.to_string())));
+                            }
+                            shared.borrow_mut().status.last_error = Some(next_error.to_string());
+                        }
+                    }
+                }
+                SwarmEvent::ConnectionClosed { .. } => {
+                    let desired_transport = shared
+                        .borrow()
+                        .dial_plan
+                        .as_ref()
+                        .and_then(|plan| plan.desired_transport.clone());
+                    let mut state = shared.borrow_mut();
+                    state.status.phase = if desired_transport.is_some() {
+                        BrowserSwarmPhase::TransportSelected
+                    } else if !state.status.seed_bootstrap.seed_node_urls.is_empty() {
+                        BrowserSwarmPhase::SeedResolved
+                    } else {
+                        BrowserSwarmPhase::Bootstrap
+                    };
+                    state.status.transport_source =
+                        burn_p2p_core::BrowserTransportObservationSource::Selected;
+                    state.status.connected_transport = None;
+                    state.status.connected_peer_ids.clear();
+                    state.status.connected_peer_count = 0;
+                }
+                SwarmEvent::Behaviour(_) => {}
+                _ => {}
+            },
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dial_next_wasm_browser_seed_candidate(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    pending: &mut WasmPendingConnect,
+    active_candidate: &mut Option<BrowserSeedDialCandidate>,
+) -> Result<(), SwarmError> {
+    while let Some(candidate) = pending.next_candidate() {
+        let address = candidate
+            .seed_url
+            .parse::<Multiaddr>()
+            .map_err(|error| SwarmError::InvalidAddress(error.to_string()))?;
+        match swarm.dial(address) {
+            Ok(()) => {
+                *active_candidate = Some(candidate.clone());
+                let mut state = shared.borrow_mut();
+                state.status.phase = BrowserSwarmPhase::TransportSelected;
+                state.status.transport_source =
+                    burn_p2p_core::BrowserTransportObservationSource::Selected;
+                state.status.desired_transport = Some(candidate.transport);
+                state.status.connected_transport = None;
+                state.status.connected_peer_ids.clear();
+                state.status.connected_peer_count = 0;
+                state.status.last_error = None;
+                return Ok(());
+            }
+            Err(error) => {
+                shared.borrow_mut().status.last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    Err(SwarmError::Runtime(
+        "browser direct swarm could not dial any supported seed candidate".into(),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_supported_browser_transport_families() -> Vec<BrowserTransportFamily> {
+    vec![
+        BrowserTransportFamily::WebRtcDirect,
+        BrowserTransportFamily::WebTransport,
+        BrowserTransportFamily::WssFallback,
+    ]
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_browser_swarm(
+    keypair: libp2p::identity::Keypair,
+) -> Result<libp2p::Swarm<WasmBrowserSwarmBehaviour>, SwarmError> {
+    SwarmBuilder::with_existing_identity(keypair)
+        .with_wasm_bindgen()
+        .with_other_transport(|key| build_wasm_webrtc_transport(key))
+        .map_err(|error| SwarmError::Runtime(error.to_string()))?
+        .with_other_transport(|key| build_wasm_webtransport_transport(key))
+        .map_err(|error| SwarmError::Runtime(error.to_string()))?
+        .with_other_transport(|key| build_wasm_websocket_transport(key))
+        .map_err(|error| SwarmError::Runtime(error.to_string()))?
+        .with_behaviour(|_| WasmBrowserSwarmBehaviour {
+            ping: libp2p::ping::Behaviour::default(),
+        })
+        .map_err(|error| SwarmError::Runtime(error.to_string()))
+        .map(|builder| builder.build())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_websocket_transport(
+    keypair: &libp2p::identity::Keypair,
+) -> Result<
+    libp2p::core::transport::Boxed<(
+        libp2p::identity::PeerId,
+        libp2p::core::muxing::StreamMuxerBox,
+    )>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    Ok(libp2p::websocket_websys::Transport::default()
+        .upgrade(Version::V1)
+        .authenticate(libp2p::noise::Config::new(keypair)?)
+        .multiplex(libp2p::yamux::Config::default())
+        .boxed())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_webrtc_transport(
+    keypair: &libp2p::identity::Keypair,
+) -> Result<
+    libp2p::core::transport::Boxed<(
+        libp2p::identity::PeerId,
+        libp2p::core::muxing::StreamMuxerBox,
+    )>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    Ok(libp2p::webrtc_websys::Transport::new(libp2p::webrtc_websys::Config::new(keypair)).boxed())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_webtransport_transport(
+    keypair: &libp2p::identity::Keypair,
+) -> Result<
+    libp2p::core::transport::Boxed<(
+        libp2p::identity::PeerId,
+        libp2p::core::muxing::StreamMuxerBox,
+    )>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    Ok(
+        libp2p::webtransport_websys::Transport::new(libp2p::webtransport_websys::Config::new(
+            keypair,
+        ))
+        .boxed(),
+    )
 }
 
 /// Derives one deterministic browser seed dial plan from bootstrap material.

@@ -840,6 +840,32 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
             assert_eq!(head_view.head.head_id.as_str(), "head-candidate");
             assert!(!head_view.alias_history.is_empty());
 
+            let head_response = reqwest::Client::new()
+                .head(format!(
+                    "{}/artifacts/heads/head-candidate",
+                    server.base_url()
+                ))
+                .send()
+                .await
+                .expect("fetch head artifact headers");
+            assert_eq!(head_response.status(), reqwest::StatusCode::OK);
+            assert_eq!(
+                head_response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("application/json; charset=utf-8")
+            );
+            assert!(
+                head_response
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or_default()
+                    > 0
+            );
+
             let run_history_html = reqwest::get(format!(
                 "{}/portal/artifacts/runs/exp-metrics/{}",
                 server.base_url(),

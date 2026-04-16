@@ -33,7 +33,8 @@ use super::{
     PeerDirectoryAnnouncement, PeerObservation, PeerStore, PlannedBrowserSwarmRuntime, ProtocolSet,
     PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
-    browser_transport_family_for_seed_url, plan_browser_seed_dials,
+    browser_transport_family_for_seed_url, filter_supported_browser_seed_dial_candidates,
+    plan_browser_seed_dials,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
@@ -304,6 +305,43 @@ fn browser_seed_dial_plan_prefers_direct_browser_transports_before_fallback() {
         BrowserTransportFamily::WssFallback
     );
     assert!(plan.fallback_allowed);
+}
+
+#[test]
+fn supported_browser_seed_candidates_preserve_order_after_filtering() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("net-browser"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::Merged,
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
+                "/dns4/bootstrap.example/udp/443/webtransport".into(),
+                "/dns4/bootstrap.example/tcp/443/wss".into(),
+            ],
+            advertised_seed_count: 3,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WebTransport,
+            BrowserTransportFamily::WssFallback,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+
+    let plan = plan_browser_seed_dials(&bootstrap);
+    let supported = filter_supported_browser_seed_dial_candidates(
+        &plan,
+        &[
+            BrowserTransportFamily::WebTransport,
+            BrowserTransportFamily::WssFallback,
+        ],
+    );
+
+    assert_eq!(supported.len(), 2);
+    assert_eq!(supported[0].transport, BrowserTransportFamily::WebTransport);
+    assert_eq!(supported[1].transport, BrowserTransportFamily::WssFallback);
 }
 
 #[test]

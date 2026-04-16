@@ -184,6 +184,22 @@ pub(crate) fn write_json(
     Ok(())
 }
 
+#[cfg_attr(not(feature = "artifact-publish"), allow(dead_code))]
+pub(crate) fn write_json_for_method(
+    stream: &mut TcpStream,
+    method: &str,
+    value: &impl Serialize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response_for_method(
+        stream,
+        method,
+        "200 OK",
+        "application/json; charset=utf-8",
+        serde_json::to_vec_pretty(value)?,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn write_response(
     stream: &mut TcpStream,
     status: &str,
@@ -194,8 +210,31 @@ pub(crate) fn write_response(
     Ok(())
 }
 
+#[cfg_attr(not(feature = "artifact-publish"), allow(dead_code))]
+pub(crate) fn write_response_for_method(
+    stream: &mut TcpStream,
+    method: &str,
+    status: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response_with_headers_for_method(stream, method, status, content_type, &[], body)?;
+    Ok(())
+}
+
 pub(crate) fn write_response_with_headers(
     stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response_with_headers_for_method(stream, "GET", status, content_type, headers, body)
+}
+
+pub(crate) fn write_response_with_headers_for_method(
+    stream: &mut TcpStream,
+    method: &str,
     status: &str,
     content_type: &str,
     headers: &[(&str, String)],
@@ -213,14 +252,38 @@ pub(crate) fn write_response_with_headers(
     }
     wire.push_str("\r\n");
     stream.write_all(wire.as_bytes())?;
-    stream.write_all(&body)?;
+    if method != "HEAD" {
+        stream.write_all(&body)?;
+    }
     stream.flush()?;
     Ok(())
 }
 
 #[cfg(feature = "artifact-publish")]
+#[allow(dead_code)]
 pub(crate) fn write_stream_response_with_headers<R: std::io::Read>(
     stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    headers: &[(&str, String)],
+    content_length: u64,
+    mut reader: R,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_stream_response_with_headers_for_method(
+        stream,
+        "GET",
+        status,
+        content_type,
+        headers,
+        content_length,
+        &mut reader,
+    )
+}
+
+#[cfg(feature = "artifact-publish")]
+pub(crate) fn write_stream_response_with_headers_for_method<R: std::io::Read>(
+    stream: &mut TcpStream,
+    method: &str,
     status: &str,
     content_type: &str,
     headers: &[(&str, String)],
@@ -238,12 +301,15 @@ pub(crate) fn write_stream_response_with_headers<R: std::io::Read>(
     }
     wire.push_str("\r\n");
     stream.write_all(wire.as_bytes())?;
-    std::io::copy(&mut reader, stream)?;
+    if method != "HEAD" {
+        std::io::copy(&mut reader, stream)?;
+    }
     stream.flush()?;
     Ok(())
 }
 
 #[cfg(feature = "artifact-publish")]
+#[allow(dead_code)]
 pub(crate) fn write_file_response_with_headers(
     stream: &mut TcpStream,
     status: &str,
@@ -252,10 +318,32 @@ pub(crate) fn write_file_response_with_headers(
     path: &std::path::Path,
     content_length: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    write_file_response_with_headers_for_method(
+        stream,
+        "GET",
+        status,
+        content_type,
+        headers,
+        path,
+        content_length,
+    )
+}
+
+#[cfg(feature = "artifact-publish")]
+pub(crate) fn write_file_response_with_headers_for_method(
+    stream: &mut TcpStream,
+    method: &str,
+    status: &str,
+    content_type: &str,
+    headers: &[(&str, String)],
+    path: &std::path::Path,
+    content_length: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
-    write_stream_response_with_headers(
+    write_stream_response_with_headers_for_method(
         stream,
+        method,
         status,
         content_type,
         headers,

@@ -5,6 +5,8 @@ use burn_p2p_metrics::{
     MetricsCatchupBundle, derive_canonical_head_adoption_curves,
     derive_latest_canonical_head_population_histograms,
 };
+#[cfg(target_arch = "wasm32")]
+use burn_p2p_swarm::{BrowserSwarmRuntime, WasmBrowserSwarmRuntime};
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
     BrowserAppLeaderboardPreview, BrowserAppMetricPreview, BrowserAppNetworkView,
@@ -435,12 +437,19 @@ impl BrowserAppModel {
 pub struct BrowserAppController {
     edge_client: BrowserEdgeClient,
     model: BrowserAppModel,
+    #[cfg(target_arch = "wasm32")]
+    direct_swarm_runtime: Option<WasmBrowserSwarmRuntime>,
 }
 
 impl BrowserAppController {
     #[cfg(test)]
     pub(crate) fn for_tests(edge_client: BrowserEdgeClient, model: BrowserAppModel) -> Self {
-        Self { edge_client, model }
+        Self {
+            edge_client,
+            model,
+            #[cfg(target_arch = "wasm32")]
+            direct_swarm_runtime: None,
+        }
     }
 
     /// Connects the browser app using the target-based connect config.
@@ -543,16 +552,24 @@ impl BrowserAppController {
         runtime.storage.pending_receipts = load_durable_receipt_outbox(&snapshot.network_id)
             .await
             .map_err(BrowserAuthClientError::ArtifactTransport)?;
-        let bootstrap_events = runtime.apply_command(
+        #[allow(unused_mut)]
+        let mut bootstrap_events = runtime.apply_command(
             BrowserWorkerCommand::ApplySwarmStatus(Box::new(
                 runtime.planned_swarm_status_snapshot(),
             )),
             None,
             None,
         );
+        #[cfg(target_arch = "wasm32")]
+        let (direct_swarm_runtime, direct_swarm_events) =
+            establish_direct_swarm_runtime(&mut runtime).await;
+        #[cfg(target_arch = "wasm32")]
+        bootstrap_events.extend(direct_swarm_events);
         let mut controller = Self {
             edge_client,
             model: BrowserAppModel::from_runtime(runtime),
+            #[cfg(target_arch = "wasm32")]
+            direct_swarm_runtime,
         };
         for event in bootstrap_events {
             controller.model.apply_event(event);
@@ -566,6 +583,9 @@ impl BrowserAppController {
         let mut runtime = self.model.runtime.clone();
         let session = runtime.storage.session.clone();
         let previous_error = self.model.last_error.clone();
+        #[cfg(target_arch = "wasm32")]
+        let direct_swarm_events =
+            apply_direct_swarm_status_snapshot(&mut runtime, self.direct_swarm_runtime.as_ref());
         match self
             .edge_client
             .sync_worker_runtime(&mut runtime, Some(&session), true)
@@ -574,6 +594,10 @@ impl BrowserAppController {
             Ok(events) => {
                 let mut model = BrowserAppModel::from_runtime(runtime);
                 model.last_error = previous_error;
+                #[cfg(target_arch = "wasm32")]
+                for event in direct_swarm_events {
+                    model.apply_event(event);
+                }
                 for event in events {
                     model.apply_event(event);
                 }
@@ -585,6 +609,10 @@ impl BrowserAppController {
             Err(error) => {
                 let mut model = BrowserAppModel::from_runtime(runtime);
                 model.last_error = Some(error.to_string());
+                #[cfg(target_arch = "wasm32")]
+                for event in direct_swarm_events {
+                    model.apply_event(event);
+                }
                 self.model = model;
                 let _ = self.persist_receipt_outbox().await;
                 let _ = self.persist_browser_storage().await;
@@ -646,6 +674,51 @@ impl BrowserAppController {
     pub fn active_training_lease(&self) -> Option<&crate::WorkloadTrainingLease> {
         self.model.active_training_lease()
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn establish_direct_swarm_runtime(
+    runtime: &mut BrowserWorkerRuntime,
+) -> (Option<WasmBrowserSwarmRuntime>, Vec<BrowserWorkerEvent>) {
+    let requires_peer_transport = runtime
+        .state
+        .as_ref()
+        .is_some_and(BrowserRuntimeState::requires_peer_transport);
+    let Some(config) = runtime.config.clone() else {
+        return (None, Vec::new());
+    };
+    if !requires_peer_transport {
+        return (None, Vec::new());
+    }
+
+    let mut direct_runtime = WasmBrowserSwarmRuntime::new();
+    let connect_result = direct_runtime.connect(config.swarm_bootstrap()).await;
+    let mut events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
+        None,
+        None,
+    );
+    if let Err(error) = connect_result {
+        events.push(BrowserWorkerEvent::Error {
+            message: format!("browser direct swarm connect failed: {error}"),
+        });
+    }
+    (Some(direct_runtime), events)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn apply_direct_swarm_status_snapshot(
+    runtime: &mut BrowserWorkerRuntime,
+    direct_runtime: Option<&WasmBrowserSwarmRuntime>,
+) -> Vec<BrowserWorkerEvent> {
+    let Some(direct_runtime) = direct_runtime else {
+        return Vec::new();
+    };
+    runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
+        None,
+        None,
+    )
 }
 
 async fn fetch_edge_snapshot(
