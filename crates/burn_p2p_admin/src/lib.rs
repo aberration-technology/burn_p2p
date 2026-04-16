@@ -1,10 +1,10 @@
 //! Transport-safe admin and operator client surface for `burn_p2p` edges.
 #![forbid(unsafe_code)]
 
-use burn_p2p::{ExperimentDirectoryEntry, TrustedIssuer};
+use burn_p2p::{ExperimentDirectoryEntry, HeadAnnouncement, TrustedIssuer};
 use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeSnapshot, ContentId, ReenrollmentStatus, RevocationEpoch,
-    SchemaEnvelope, SignedPayload,
+    BrowserDirectorySnapshot, BrowserEdgeSnapshot, ContentId, HeadId, PeerId, ReenrollmentStatus,
+    RevocationEpoch, SchemaEnvelope, SignedPayload,
 };
 use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
@@ -37,6 +37,8 @@ pub enum AdminAction {
     Schedule(Box<FleetScheduleEpoch>),
     /// Rolls out directory and trust state through the auth policy endpoint.
     RolloutAuthPolicy(AuthPolicyRollout),
+    /// Registers one live head announcement directly on the edge.
+    RegisterLiveHead(HeadAnnouncement),
 }
 
 /// Downstream-facing admin result subset returned by `/admin`.
@@ -58,6 +60,13 @@ pub enum AdminResult {
         trusted_issuers: usize,
         /// Whether the rollout requires client re-enrollment.
         reenrollment_required: bool,
+    },
+    /// Result summary for direct live-head registrations.
+    LiveHeadRegistered {
+        /// Head identifier now visible on the edge.
+        head_id: HeadId,
+        /// Provider peers visible for the head.
+        provider_peer_ids: Vec<PeerId>,
     },
 }
 
@@ -192,6 +201,15 @@ impl AdminClient {
             reenrollment: None,
         }))
         .await
+    }
+
+    /// Registers one live head announcement directly on the edge.
+    pub async fn register_live_head(
+        &self,
+        announcement: HeadAnnouncement,
+    ) -> Result<AdminResult, AdminClientError> {
+        self.post_action(&AdminAction::RegisterLiveHead(announcement))
+            .await
     }
 
     /// Inserts or replaces one directory entry within an in-memory vector.

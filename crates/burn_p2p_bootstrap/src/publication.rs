@@ -259,8 +259,8 @@ mod tests {
     use super::*;
     use burn_p2p::{
         ControlPlaneSnapshot, HeadAnnouncement, HeadDescriptor, LagPolicy, LagState,
-        NodeRuntimeState, NodeTelemetrySnapshot, OverlayChannel, OverlayTopic, PeerId,
-        PeerRoleSet, RuntimeStatus,
+        NodeRuntimeState, NodeTelemetrySnapshot, OverlayChannel, OverlayTopic, PeerId, PeerRoleSet,
+        RuntimeStatus,
     };
     use burn_p2p_core::{ExperimentId, NetworkId, RevisionId, StudyId};
     use chrono::Utc;
@@ -334,6 +334,48 @@ mod tests {
             }),
             ..BootstrapAdminState::default()
         };
+
+        let view = state
+            .export_head_artifact_view(&runtime_head.head_id)
+            .expect("export head artifact view")
+            .expect("head artifact view should be present");
+        assert_eq!(view.head.head_id, runtime_head.head_id);
+        assert!(view.published_artifacts.is_empty());
+        assert_eq!(view.provider_peer_ids, vec![PeerId::new("mirror")]);
+    }
+
+    #[test]
+    fn export_head_artifact_view_includes_directly_registered_live_head_without_publication_record()
+    {
+        let publication_store = tempdir().expect("publication store tempdir");
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let mut state = BootstrapAdminState {
+            publication_store_root: Some(publication_store.path().to_path_buf()),
+            ..BootstrapAdminState::default()
+        };
+        state.register_live_head_announcement(HeadAnnouncement {
+            overlay: OverlayTopic::experiment(
+                NetworkId::new("demo"),
+                StudyId::new("study"),
+                ExperimentId::new("exp"),
+                OverlayChannel::Heads,
+            )
+            .expect("heads overlay"),
+            provider_peer_id: Some(PeerId::new("mirror")),
+            head: runtime_head.clone(),
+            announced_at: now,
+        });
 
         let view = state
             .export_head_artifact_view(&runtime_head.head_id)

@@ -214,6 +214,7 @@ impl Default for AdminApiPlan {
             supported_actions: BTreeSet::from([
                 AdminCapability::Control,
                 AdminCapability::BanPeer,
+                AdminCapability::RegisterLiveHead,
                 AdminCapability::ExportDiagnostics,
                 AdminCapability::ExportDiagnosticsBundle,
                 AdminCapability::ExportOperatorControlReplay,
@@ -239,6 +240,8 @@ pub enum AdminCapability {
     Control,
     /// Uses the ban peer variant.
     BanPeer,
+    /// Uses the register live head variant.
+    RegisterLiveHead,
     /// Uses the export diagnostics variant.
     ExportDiagnostics,
     /// Uses the export diagnostics bundle variant.

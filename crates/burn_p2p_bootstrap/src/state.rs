@@ -13,7 +13,7 @@ use crate::{
 };
 use burn_p2p::{
     ArtifactTransferState, ContributionReceipt, ContributionReceiptId,
-    ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadDescriptor,
+    ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadAnnouncement, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
     RevocationEpoch, SlotRuntimeState,
 };
@@ -696,6 +696,8 @@ impl OperatorControlReplayQuery {
 pub struct BootstrapAdminState {
     /// The head descriptors.
     pub head_descriptors: Vec<HeadDescriptor>,
+    /// Directly registered live head announcements from colocated head mirrors.
+    pub live_head_announcements: Vec<HeadAnnouncement>,
     /// The peer store.
     pub peer_store: PeerStore,
     /// The contribution receipts.
@@ -762,10 +764,31 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
+    pub(crate) fn register_live_head_announcement(
+        &mut self,
+        announcement: HeadAnnouncement,
+    ) -> Vec<PeerId> {
+        self.live_head_announcements.retain(|existing| {
+            existing.head.head_id != announcement.head.head_id
+                || existing.provider_peer_id != announcement.provider_peer_id
+        });
+        self.live_head_announcements.push(announcement.clone());
+        self.provider_peer_ids_for_head(&announcement.head.head_id)
+    }
+
     pub(crate) fn visible_head_descriptors(&self) -> Vec<HeadDescriptor> {
         let mut heads = BTreeMap::<HeadId, HeadDescriptor>::new();
         for head in &self.head_descriptors {
             heads.insert(head.head_id.clone(), head.clone());
+        }
+        for announcement in &self.live_head_announcements {
+            let candidate = announcement.head.clone();
+            let replace = heads
+                .get(&candidate.head_id)
+                .is_none_or(|existing| candidate.created_at >= existing.created_at);
+            if replace {
+                heads.insert(candidate.head_id.clone(), candidate);
+            }
         }
         if let Some(snapshot) = self.runtime_snapshot.as_ref() {
             for announcement in &snapshot.control_plane.head_announcements {
@@ -786,18 +809,21 @@ impl BootstrapAdminState {
     #[allow(dead_code)]
     pub(crate) fn provider_peer_ids_for_head(&self, head_id: &HeadId) -> Vec<PeerId> {
         let mut peer_ids = self
-            .runtime_snapshot
-            .as_ref()
-            .map(|snapshot| {
+            .live_head_announcements
+            .iter()
+            .filter(|announcement| &announcement.head.head_id == head_id)
+            .filter_map(|announcement| announcement.provider_peer_id.clone())
+            .collect::<Vec<_>>();
+        if let Some(snapshot) = self.runtime_snapshot.as_ref() {
+            peer_ids.extend(
                 snapshot
                     .control_plane
                     .head_announcements
                     .iter()
                     .filter(|announcement| &announcement.head.head_id == head_id)
-                    .filter_map(|announcement| announcement.provider_peer_id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+                    .filter_map(|announcement| announcement.provider_peer_id.clone()),
+            );
+        }
         peer_ids.sort();
         peer_ids.dedup();
         peer_ids
@@ -1209,6 +1235,39 @@ mod tests {
             ..BootstrapAdminState::default()
         };
 
+        let heads = state.export_heads(&HeadQuery::default());
+        assert_eq!(heads, vec![runtime_head]);
+    }
+
+    #[test]
+    fn export_heads_includes_directly_registered_live_head_announcements() {
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let mut state = BootstrapAdminState::default();
+        let provider_peer_ids = state.register_live_head_announcement(HeadAnnouncement {
+            overlay: burn_p2p::OverlayTopic::experiment(
+                NetworkId::new("demo"),
+                StudyId::new("study"),
+                ExperimentId::new("exp"),
+                burn_p2p::OverlayChannel::Heads,
+            )
+            .expect("heads overlay"),
+            provider_peer_id: Some(PeerId::new("mirror")),
+            head: runtime_head.clone(),
+            announced_at: now,
+        });
+
+        assert_eq!(provider_peer_ids, vec![PeerId::new("mirror")]);
         let heads = state.export_heads(&HeadQuery::default());
         assert_eq!(heads, vec![runtime_head]);
     }

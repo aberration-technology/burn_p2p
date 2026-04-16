@@ -6,9 +6,11 @@ use crate::{
     OperatorControlReplayRecord, OperatorControlReplaySummary, OperatorRetentionPruneResult,
     ReceiptQuery, ReducerLoadQuery,
 };
-use burn_p2p::{ContributionReceipt, HeadDescriptor, ReducerLoadAnnouncement, TrustedIssuer};
+use burn_p2p::{
+    ContributionReceipt, HeadAnnouncement, HeadDescriptor, ReducerLoadAnnouncement, TrustedIssuer,
+};
 use burn_p2p_core::{
-    ControlCertificate, Page, PageRequest, PeerId, ReenrollmentStatus, RevocationEpoch,
+    ControlCertificate, HeadId, Page, PageRequest, PeerId, ReenrollmentStatus, RevocationEpoch,
     SignatureMetadata, TrustBundleExport, TrustedIssuerStatus,
 };
 use burn_p2p_experiment::{
@@ -47,6 +49,8 @@ pub enum AdminAction {
         /// The reason.
         reason: String,
     },
+    /// Registers one live head announcement directly on the edge.
+    RegisterLiveHead(HeadAnnouncement),
     /// Uses the export diagnostics variant.
     ExportDiagnostics,
     /// Uses the export diagnostics bundle variant.
@@ -96,6 +100,7 @@ impl AdminAction {
         match self {
             Self::Control(_) | Self::Lifecycle(_) | Self::Schedule(_) => AdminCapability::Control,
             Self::BanPeer { .. } => AdminCapability::BanPeer,
+            Self::RegisterLiveHead(_) => AdminCapability::RegisterLiveHead,
             Self::ExportDiagnostics => AdminCapability::ExportDiagnostics,
             Self::ExportDiagnosticsBundle => AdminCapability::ExportDiagnosticsBundle,
             Self::ExportOperatorControlReplayPage { .. }
@@ -129,6 +134,13 @@ pub enum AdminResult {
         peer_id: PeerId,
         /// The reason.
         reason: String,
+    },
+    /// Uses the live head registered variant.
+    LiveHeadRegistered {
+        /// The head ID.
+        head_id: HeadId,
+        /// The provider peers advertised for this head.
+        provider_peer_ids: Vec<PeerId>,
     },
     /// Uses the diagnostics variant.
     Diagnostics(Box<BootstrapDiagnostics>),
@@ -278,6 +290,13 @@ impl BootstrapPlan {
                 state.quarantined_peers.insert(peer_id.clone());
                 state.banned_peers.insert(peer_id.clone());
                 Ok(AdminResult::PeerBanned { peer_id, reason })
+            }
+            AdminAction::RegisterLiveHead(announcement) => {
+                let provider_peer_ids = state.register_live_head_announcement(announcement.clone());
+                Ok(AdminResult::LiveHeadRegistered {
+                    head_id: announcement.head.head_id,
+                    provider_peer_ids,
+                })
             }
             AdminAction::ExportDiagnostics => Ok(AdminResult::Diagnostics(Box::new(
                 state.diagnostics(self, captured_at, remaining_work_units),

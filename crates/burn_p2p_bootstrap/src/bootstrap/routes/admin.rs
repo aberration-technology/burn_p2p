@@ -325,6 +325,7 @@ pub(crate) fn operator_admin_capabilities() -> BTreeSet<AdminCapability> {
     let mut capabilities = export_admin_capabilities();
     capabilities.insert(AdminCapability::Control);
     capabilities.insert(AdminCapability::BanPeer);
+    capabilities.insert(AdminCapability::RegisterLiveHead);
     capabilities
 }
 
@@ -332,6 +333,7 @@ pub(crate) fn all_admin_capabilities() -> BTreeSet<AdminCapability> {
     BTreeSet::from([
         AdminCapability::Control,
         AdminCapability::BanPeer,
+        AdminCapability::RegisterLiveHead,
         AdminCapability::ExportDiagnostics,
         AdminCapability::ExportDiagnosticsBundle,
         AdminCapability::ExportOperatorControlReplay,
@@ -351,6 +353,7 @@ pub(crate) fn parse_admin_capability_token(token: &str) -> Option<AdminCapabilit
     match normalized.as_str() {
         "control" => Some(AdminCapability::Control),
         "banpeer" | "ban_peer" => Some(AdminCapability::BanPeer),
+        "registerlivehead" | "register_live_head" => Some(AdminCapability::RegisterLiveHead),
         "exportdiagnostics" | "export_diagnostics" => Some(AdminCapability::ExportDiagnostics),
         "exportdiagnosticsbundle" | "export_diagnostics_bundle" => {
             Some(AdminCapability::ExportDiagnosticsBundle)
