@@ -1694,6 +1694,13 @@ impl BrowserEdgeClient {
                 app_snapshot.captured_at,
             );
         }
+        let mut events = runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmStatus(Box::new(
+                runtime.planned_swarm_status_snapshot(),
+            )),
+            None,
+            None,
+        );
         let edge_snapshot = self
             .edge_control_plane_client()
             .fetch_snapshot(session_id)
@@ -1756,7 +1763,7 @@ impl BrowserEdgeClient {
             wss_fallback_enabled: app_snapshot.transports.wss_fallback,
             last_error: runtime.transport.last_error.clone(),
         };
-        let mut events = runtime.apply_edge_sync(
+        events.extend(runtime.apply_edge_sync(
             signed_directory,
             &heads,
             signed_leaderboard,
@@ -1766,7 +1773,7 @@ impl BrowserEdgeClient {
             },
             transport,
             session,
-        );
+        ));
         match self
             .sync_active_head_artifact_into_worker(runtime, session)
             .await

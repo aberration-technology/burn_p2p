@@ -18,7 +18,8 @@ use crate::{
     BrowserAuthClientError, BrowserCapabilityReport, BrowserEdgeClient, BrowserEdgeSnapshot,
     BrowserEnrollmentConfig, BrowserGpuSupport, BrowserRuntimeConfig, BrowserRuntimeRole,
     BrowserRuntimeState, BrowserSeedBootstrapSource, BrowserSessionState, BrowserStorageSnapshot,
-    BrowserTransportStatus, BrowserUiBindings, BrowserWorkerEvent, BrowserWorkerRuntime,
+    BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
+    BrowserWorkerRuntime,
     durability::{
         clear_durable_receipt_outbox, load_durable_browser_storage, load_durable_receipt_outbox,
         persist_durable_browser_storage, persist_durable_receipt_outbox,
@@ -542,10 +543,20 @@ impl BrowserAppController {
         runtime.storage.pending_receipts = load_durable_receipt_outbox(&snapshot.network_id)
             .await
             .map_err(BrowserAuthClientError::ArtifactTransport)?;
+        let bootstrap_events = runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmStatus(Box::new(
+                runtime.planned_swarm_status_snapshot(),
+            )),
+            None,
+            None,
+        );
         let mut controller = Self {
             edge_client,
             model: BrowserAppModel::from_runtime(runtime),
         };
+        for event in bootstrap_events {
+            controller.model.apply_event(event);
+        }
         let _ = controller.refresh().await?;
         Ok(controller)
     }

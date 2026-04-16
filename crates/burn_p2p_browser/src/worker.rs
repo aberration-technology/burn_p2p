@@ -140,6 +140,13 @@ impl BrowserWorkerRuntime {
             .unwrap_or(false)
     }
 
+    /// Returns one planned swarm status snapshot derived from current config and transport support.
+    pub fn planned_swarm_status_snapshot(&self) -> BrowserSwarmStatus {
+        let mut snapshot = self.clone();
+        snapshot.refresh_transport_selection();
+        snapshot.swarm_status()
+    }
+
     /// Applies one truthful browser swarm status observation to the local runtime.
     pub fn observe_swarm_status(&mut self, status: BrowserSwarmStatus) {
         self.swarm_runtime.observe_status(status.clone());
