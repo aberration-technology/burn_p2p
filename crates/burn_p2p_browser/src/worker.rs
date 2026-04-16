@@ -9,7 +9,7 @@ use burn_p2p_core::{
     MetricsLiveEvent, SchemaEnvelope, SignedPayload,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
-use burn_p2p_swarm::{BrowserSwarmDialPlan, plan_browser_seed_dials};
+use burn_p2p_swarm::PlannedBrowserSwarmRuntime;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -42,9 +42,9 @@ pub struct BrowserWorkerRuntime {
     pub capability: Option<BrowserCapabilityReport>,
     /// The transport.
     pub transport: BrowserTransportStatus,
-    /// The current browser swarm dial plan derived from signed/bootstrap seed material.
-    #[serde(default)]
-    pub swarm_dial_plan: Option<BrowserSwarmDialPlan>,
+    /// Planning/runtime boundary for browser swarm bootstrap and direct transport selection.
+    #[serde(skip)]
+    pub swarm_runtime: PlannedBrowserSwarmRuntime,
     /// The storage.
     pub storage: BrowserStorageSnapshot,
 }
@@ -54,11 +54,18 @@ impl BrowserWorkerRuntime {
 
     /// Returns a structured browser swarm/runtime status derived from truthful state.
     pub fn swarm_status(&self) -> BrowserSwarmStatus {
-        let seed_bootstrap = self
-            .config
-            .as_ref()
-            .map(|config| config.seed_bootstrap.clone())
-            .unwrap_or_default();
+        let planned_status = self.swarm_runtime.status_ref();
+        let seed_bootstrap = if matches!(
+            planned_status.seed_bootstrap.source,
+            BrowserSeedBootstrapSource::Unavailable
+        ) {
+            self.config
+                .as_ref()
+                .map(|config| config.swarm_bootstrap().seed_bootstrap)
+                .unwrap_or_default()
+        } else {
+            planned_status.seed_bootstrap.clone()
+        };
         let directory_synced = self.storage.last_signed_directory_snapshot.is_some();
         let assignment_bound = self.storage.active_assignment.is_some();
         let head_synced = self.storage.last_head_id.is_some();
@@ -85,11 +92,16 @@ impl BrowserWorkerRuntime {
             assignment_bound,
             head_synced,
             artifact_source,
-            last_error: self.transport.last_error.clone().or_else(|| {
-                self.swarm_dial_plan
-                    .as_ref()
-                    .and_then(|plan| plan.warnings.first().cloned())
-            }),
+            last_error: self
+                .transport
+                .last_error
+                .clone()
+                .or_else(|| planned_status.last_error.clone())
+                .or_else(|| {
+                    self.swarm_runtime
+                        .dial_plan_ref()
+                        .and_then(|plan| plan.warnings.first().cloned())
+                }),
         }
     }
 
@@ -420,7 +432,7 @@ impl BrowserWorkerRuntime {
             state: Some(initial_state),
             capability: Some(capability),
             transport,
-            swarm_dial_plan: None,
+            swarm_runtime: PlannedBrowserSwarmRuntime::default(),
             storage: BrowserStorageSnapshot::default(),
         };
         runtime.refresh_transport_selection();
@@ -432,7 +444,7 @@ impl BrowserWorkerRuntime {
         self.config = None;
         self.state = None;
         self.capability = None;
-        self.swarm_dial_plan = None;
+        self.swarm_runtime.plan_disconnect();
         self.transport.clear_connected_transport();
         self.transport.selected = None;
         self.transport.active = None;
@@ -845,7 +857,7 @@ impl BrowserWorkerRuntime {
     /// Performs the refresh transport selection operation.
     pub fn refresh_transport_selection(&mut self) {
         let Some(config) = self.config.as_ref() else {
-            self.swarm_dial_plan = None;
+            self.swarm_runtime.plan_disconnect();
             self.transport.clear_connected_transport();
             self.transport.selected = None;
             self.transport.active = None;
@@ -856,16 +868,15 @@ impl BrowserWorkerRuntime {
             .as_ref()
             .is_some_and(BrowserRuntimeState::requires_peer_transport);
         let selected = if requires_peer_transport {
-            let dial_plan = plan_browser_seed_dials(&config.swarm_bootstrap());
+            let dial_plan = self.swarm_runtime.plan_connect(config.swarm_bootstrap());
             let selected = dial_plan
                 .candidates
                 .iter()
                 .map(|candidate| browser_transport_kind(&candidate.transport))
                 .find(|kind| self.transport.supports(kind));
-            self.swarm_dial_plan = Some(dial_plan);
             selected
         } else {
-            self.swarm_dial_plan = None;
+            self.swarm_runtime.plan_disconnect();
             None
         };
         self.transport.set_selected_transport(selected);

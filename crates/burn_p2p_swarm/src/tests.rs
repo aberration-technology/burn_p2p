@@ -345,6 +345,44 @@ fn planned_browser_swarm_runtime_connect_reports_transport_selected_from_bootstr
     assert_eq!(status.connected_peer_count, 0);
 }
 
+#[test]
+fn planned_browser_swarm_runtime_plan_connect_matches_async_connect_state() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("net-browser"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::SiteConfigFallback,
+            seed_node_urls: vec!["/dns4/bootstrap.example/tcp/443/wss".into()],
+            advertised_seed_count: 0,
+            last_error: None,
+        },
+        transport_preference: vec![BrowserTransportFamily::WssFallback],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+    let mut runtime = PlannedBrowserSwarmRuntime::default();
+
+    let plan = runtime.plan_connect(bootstrap);
+
+    assert_eq!(
+        plan.desired_transport,
+        Some(BrowserTransportFamily::WssFallback)
+    );
+    assert_eq!(
+        runtime
+            .dial_plan_ref()
+            .and_then(|plan| plan.desired_transport.clone()),
+        Some(BrowserTransportFamily::WssFallback)
+    );
+    assert_eq!(
+        runtime.status_ref().seed_bootstrap.source,
+        BrowserSeedBootstrapSource::SiteConfigFallback
+    );
+    assert_eq!(
+        runtime.status_ref().phase,
+        BrowserSwarmPhase::TransportSelected
+    );
+}
+
 fn semantic_test_overlay() -> OverlayTopic {
     OverlayTopic::experiment(
         NetworkId::new("semantic-net"),

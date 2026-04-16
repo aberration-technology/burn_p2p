@@ -115,7 +115,7 @@ pub trait BrowserSwarmRuntime {
     ) -> Result<Vec<u8>, SwarmError>;
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 /// Planning-only browser swarm runtime used until a real wasm transport backend exists.
 pub struct PlannedBrowserSwarmRuntime {
     status: BrowserSwarmStatus,
@@ -123,18 +123,8 @@ pub struct PlannedBrowserSwarmRuntime {
 }
 
 impl PlannedBrowserSwarmRuntime {
-    /// Returns the current browser swarm status without needing the trait object path.
-    pub fn status_ref(&self) -> &BrowserSwarmStatus {
-        &self.status
-    }
-}
-
-#[async_trait(?Send)]
-impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
-    async fn connect(
-        &mut self,
-        bootstrap: BrowserSwarmBootstrap,
-    ) -> Result<BrowserSwarmDialPlan, SwarmError> {
+    /// Applies one synchronous planning-only bootstrap connect and updates runtime status.
+    pub fn plan_connect(&mut self, bootstrap: BrowserSwarmBootstrap) -> BrowserSwarmDialPlan {
         let dial_plan = plan_browser_seed_dials(&bootstrap);
         let desired_transport = dial_plan.desired_transport.clone();
         let last_error = dial_plan.warnings.first().cloned();
@@ -160,12 +150,37 @@ impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
             last_error,
         };
         self.dial_plan = Some(dial_plan.clone());
-        Ok(dial_plan)
+        dial_plan
+    }
+
+    /// Clears any planning-only bootstrap state.
+    pub fn plan_disconnect(&mut self) {
+        self.status = BrowserSwarmStatus::default();
+        self.dial_plan = None;
+    }
+
+    /// Returns the current browser swarm status without needing the trait object path.
+    pub fn status_ref(&self) -> &BrowserSwarmStatus {
+        &self.status
+    }
+
+    /// Returns the most recent dial plan without cloning.
+    pub fn dial_plan_ref(&self) -> Option<&BrowserSwarmDialPlan> {
+        self.dial_plan.as_ref()
+    }
+}
+
+#[async_trait(?Send)]
+impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
+    async fn connect(
+        &mut self,
+        bootstrap: BrowserSwarmBootstrap,
+    ) -> Result<BrowserSwarmDialPlan, SwarmError> {
+        Ok(self.plan_connect(bootstrap))
     }
 
     async fn disconnect(&mut self) -> Result<(), SwarmError> {
-        self.status = BrowserSwarmStatus::default();
-        self.dial_plan = None;
+        self.plan_disconnect();
         Ok(())
     }
 
