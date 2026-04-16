@@ -125,8 +125,10 @@ impl PublicationRegistryStateDisk {
 }
 
 impl PublicationStore {
-    /// Opens or creates a publication store rooted at the provided path.
-    pub fn open(root_dir: impl AsRef<Path>) -> Result<Self, PublishError> {
+    fn open_impl(
+        root_dir: impl AsRef<Path>,
+        prune_expired_records: bool,
+    ) -> Result<Self, PublishError> {
         let root_dir = root_dir.as_ref().to_path_buf();
         fs::create_dir_all(root_dir.join("mirror"))?;
         let state_path = state_path(&root_dir);
@@ -162,8 +164,23 @@ impl PublicationStore {
         }
         state.clamp_previews();
         let mut store = Self { root_dir, state };
-        store.prune_expired_records()?;
+        if prune_expired_records {
+            store.prune_expired_records()?;
+        }
         Ok(store)
+    }
+
+    /// Opens or creates a publication store rooted at the provided path.
+    pub fn open(root_dir: impl AsRef<Path>) -> Result<Self, PublishError> {
+        Self::open_impl(root_dir, true)
+    }
+
+    /// Opens or creates a publication store without pruning or validating publication history.
+    ///
+    /// This is only appropriate for read-only surfaces that can tolerate stale/corrupt
+    /// publication history and provide their own fallback behavior.
+    pub fn open_without_prune(root_dir: impl AsRef<Path>) -> Result<Self, PublishError> {
+        Self::open_impl(root_dir, false)
     }
 
     /// Returns the configured publication targets.

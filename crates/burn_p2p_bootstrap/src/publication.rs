@@ -1,4 +1,7 @@
 #[cfg(feature = "artifact-publish")]
+use std::collections::BTreeSet;
+
+#[cfg(feature = "artifact-publish")]
 use burn_p2p::FsArtifactStore;
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_core::{
@@ -18,6 +21,31 @@ use crate::{BootstrapAdminState, operator_store::OperatorStore};
 
 #[cfg(feature = "artifact-publish")]
 impl BootstrapAdminState {
+    fn fallback_head_artifact_view(
+        &self,
+        heads: &[burn_p2p::HeadDescriptor],
+        head_eval_reports: &[burn_p2p_core::HeadEvalReport],
+        head_id: &HeadId,
+    ) -> anyhow::Result<Option<HeadArtifactView>> {
+        let Some(head) = heads.iter().find(|head| &head.head_id == head_id).cloned() else {
+            return Ok(None);
+        };
+        Ok(Some(HeadArtifactView {
+            run_id: RunId::derive(&(head.experiment_id.as_str(), head.revision_id.as_str()))?,
+            eval_reports: head_eval_reports
+                .iter()
+                .filter(|report| &report.head_id == head_id)
+                .cloned()
+                .collect(),
+            aliases: Vec::new(),
+            published_artifacts: Vec::new(),
+            available_profiles: BTreeSet::new(),
+            alias_history: Vec::new(),
+            provider_peer_ids: self.provider_peer_ids_for_head(head_id),
+            head,
+        }))
+    }
+
     /// Exports artifact alias statuses across all loaded experiments.
     pub fn export_artifact_alias_statuses(&self) -> anyhow::Result<Vec<ArtifactAliasStatus>> {
         Ok(self
@@ -76,14 +104,18 @@ impl BootstrapAdminState {
         &self,
         head_id: &HeadId,
     ) -> anyhow::Result<Option<HeadArtifactView>> {
-        let Some(store) = self.publication_store()? else {
-            return Ok(None);
-        };
         let heads = self.visible_head_descriptors();
         let head_eval_reports = self.stored_head_eval_reports()?;
-        let mut view = store.head_view(&heads, &head_eval_reports, head_id)?;
-        view.provider_peer_ids = self.provider_peer_ids_for_head(head_id);
-        Ok(Some(view))
+        let Some(store) = self.publication_store_without_sync()? else {
+            return self.fallback_head_artifact_view(&heads, &head_eval_reports, head_id);
+        };
+        match store.head_view(&heads, &head_eval_reports, head_id) {
+            Ok(mut view) => {
+                view.provider_peer_ids = self.provider_peer_ids_for_head(head_id);
+                Ok(Some(view))
+            }
+            Err(_) => self.fallback_head_artifact_view(&heads, &head_eval_reports, head_id),
+        }
     }
 
     /// Queues or deduplicates one export job.
@@ -220,6 +252,15 @@ impl BootstrapAdminState {
         self.operator_store().publication_store()
     }
 
+    fn publication_store_without_sync(&self) -> anyhow::Result<Option<PublicationStore>> {
+        let Some(root) = self.publication_store_root.as_ref() else {
+            return Ok(None);
+        };
+        let mut store = PublicationStore::open_without_prune(root)?;
+        store.configure_targets(self.publication_targets.clone())?;
+        Ok(Some(store))
+    }
+
     pub(crate) fn sync_publication_store(&self) -> anyhow::Result<()> {
         let Some(root) = self.publication_store_root.as_ref() else {
             return Ok(());
@@ -348,6 +389,52 @@ mod tests {
     fn export_head_artifact_view_includes_directly_registered_live_head_without_publication_record()
     {
         let publication_store = tempdir().expect("publication store tempdir");
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let mut state = BootstrapAdminState {
+            publication_store_root: Some(publication_store.path().to_path_buf()),
+            ..BootstrapAdminState::default()
+        };
+        state.register_live_head_announcement(HeadAnnouncement {
+            overlay: OverlayTopic::experiment(
+                NetworkId::new("demo"),
+                StudyId::new("study"),
+                ExperimentId::new("exp"),
+                OverlayChannel::Heads,
+            )
+            .expect("heads overlay"),
+            provider_peer_id: Some(PeerId::new("mirror")),
+            head: runtime_head.clone(),
+            announced_at: now,
+        });
+
+        let view = state
+            .export_head_artifact_view(&runtime_head.head_id)
+            .expect("export head artifact view")
+            .expect("head artifact view should be present");
+        assert_eq!(view.head.head_id, runtime_head.head_id);
+        assert!(view.published_artifacts.is_empty());
+        assert_eq!(view.provider_peer_ids, vec![PeerId::new("mirror")]);
+    }
+
+    #[test]
+    fn export_head_artifact_view_falls_back_when_publication_history_is_corrupt() {
+        let publication_store = tempdir().expect("publication store tempdir");
+        std::fs::write(
+            publication_store.path().join("published-artifacts.jsonl"),
+            "{",
+        )
+        .expect("write corrupt publication history");
         let now = Utc::now();
         let runtime_head = HeadDescriptor {
             head_id: HeadId::new("runtime-head"),
