@@ -79,7 +79,7 @@ impl BootstrapAdminState {
         let Some(store) = self.publication_store()? else {
             return Ok(None);
         };
-        let heads = self.stored_heads()?;
+        let heads = self.visible_head_descriptors();
         let head_eval_reports = self.stored_head_eval_reports()?;
         let mut view = store.head_view(&heads, &head_eval_reports, head_id)?;
         view.provider_peer_ids = self.provider_peer_ids_for_head(head_id);
@@ -249,5 +249,98 @@ impl BootstrapAdminState {
             .iter()
             .map(|record| record.manifest.clone())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::*;
+    use burn_p2p::{
+        ControlPlaneSnapshot, HeadAnnouncement, HeadDescriptor, LagPolicy, LagState,
+        NodeRuntimeState, NodeTelemetrySnapshot, OverlayChannel, OverlayTopic, PeerId,
+        PeerRoleSet, RuntimeStatus,
+    };
+    use burn_p2p_core::{ExperimentId, NetworkId, RevisionId, StudyId};
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    #[test]
+    fn export_head_artifact_view_includes_live_runtime_head_without_publication_record() {
+        let publication_store = tempdir().expect("publication store tempdir");
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let state = BootstrapAdminState {
+            publication_store_root: Some(publication_store.path().to_path_buf()),
+            runtime_snapshot: Some(NodeTelemetrySnapshot {
+                status: RuntimeStatus::Running,
+                node_state: NodeRuntimeState::IdleReady,
+                slot_states: Vec::new(),
+                lag_state: LagState::Current,
+                head_lag_steps: 0,
+                lag_policy: LagPolicy::default(),
+                network_id: Some(NetworkId::new("demo")),
+                local_peer_id: Some(PeerId::new("bootstrap")),
+                configured_roles: PeerRoleSet::default_trainer(),
+                connected_peers: 1,
+                observed_peer_ids: BTreeSet::new(),
+                known_peer_addresses: BTreeSet::new(),
+                runtime_boundary: None,
+                listen_addresses: Vec::new(),
+                control_plane: ControlPlaneSnapshot {
+                    head_announcements: vec![HeadAnnouncement {
+                        overlay: OverlayTopic::experiment(
+                            NetworkId::new("demo"),
+                            StudyId::new("study"),
+                            ExperimentId::new("exp"),
+                            OverlayChannel::Heads,
+                        )
+                        .expect("heads overlay"),
+                        provider_peer_id: Some(PeerId::new("mirror")),
+                        head: runtime_head.clone(),
+                        announced_at: now,
+                    }],
+                    ..ControlPlaneSnapshot::default()
+                },
+                recent_events: Vec::new(),
+                last_snapshot_peer_id: None,
+                last_snapshot: None,
+                admitted_peers: BTreeMap::new(),
+                rejected_peers: BTreeMap::new(),
+                peer_reputation: BTreeMap::new(),
+                minimum_revocation_epoch: None,
+                trust_bundle: None,
+                in_flight_transfers: BTreeMap::new(),
+                robustness_policy: None,
+                latest_cohort_robustness: None,
+                trust_scores: Vec::new(),
+                canary_reports: Vec::new(),
+                applied_control_cert_ids: BTreeSet::new(),
+                effective_limit_profile: None,
+                last_error: None,
+                started_at: now,
+                updated_at: now,
+            }),
+            ..BootstrapAdminState::default()
+        };
+
+        let view = state
+            .export_head_artifact_view(&runtime_head.head_id)
+            .expect("export head artifact view")
+            .expect("head artifact view should be present");
+        assert_eq!(view.head.head_id, runtime_head.head_id);
+        assert!(view.published_artifacts.is_empty());
+        assert_eq!(view.provider_peer_ids, vec![PeerId::new("mirror")]);
     }
 }

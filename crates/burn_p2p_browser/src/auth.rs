@@ -400,6 +400,8 @@ impl std::fmt::Debug for BrowserEdgeClient {
 }
 
 impl BrowserEdgeClient {
+    const PEER_SWARM_DIRECT_TARGET: &'static str = "peer-swarm-direct";
+
     fn preferred_head_artifact_publication(
         view: &HeadArtifactView,
     ) -> Option<(ArtifactProfile, &PublishedArtifactRecord)> {
@@ -420,6 +422,20 @@ impl BrowserEdgeClient {
                 .max_by_key(|record| record.created_at)
                 .map(|record| (profile, record))
         })
+    }
+
+    fn preferred_head_artifact_profile(view: &HeadArtifactView) -> Option<ArtifactProfile> {
+        const PROFILE_PREFERENCE: [ArtifactProfile; 4] = [
+            ArtifactProfile::BrowserSnapshot,
+            ArtifactProfile::ManifestOnly,
+            ArtifactProfile::ServeCheckpoint,
+            ArtifactProfile::FullTrainingCheckpoint,
+        ];
+
+        PROFILE_PREFERENCE
+            .into_iter()
+            .find(|profile| view.available_profiles.contains(profile))
+            .or_else(|| view.available_profiles.iter().next().cloned())
     }
 
     /// Creates a new value.
@@ -1528,8 +1544,17 @@ impl BrowserEdgeClient {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
 
-        let Some((artifact_profile, publication)) =
-            Self::preferred_head_artifact_publication(&view)
+        let publication = Self::preferred_head_artifact_publication(&view);
+        let Some(artifact_profile) = publication
+            .as_ref()
+            .map(|(profile, _)| profile.clone())
+            .or_else(|| {
+                if view.provider_peer_ids.is_empty() {
+                    None
+                } else {
+                    Self::preferred_head_artifact_profile(&view)
+                }
+            })
         else {
             return Ok(Vec::new());
         };
@@ -1541,9 +1566,18 @@ impl BrowserEdgeClient {
             head_id: view.head.head_id.clone(),
             artifact_id: view.head.artifact_id.clone(),
             artifact_profile: artifact_profile.clone(),
-            publication_target_id: publication.publication_target_id.clone(),
-            publication_content_hash: Some(publication.content_hash.clone()),
-            publication_content_length: Some(publication.content_length),
+            publication_target_id: publication
+                .as_ref()
+                .map(|(_, publication)| publication.publication_target_id.clone())
+                .unwrap_or_else(|| {
+                    PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET)
+                }),
+            publication_content_hash: publication
+                .as_ref()
+                .map(|(_, publication)| publication.content_hash.clone()),
+            publication_content_length: publication
+                .as_ref()
+                .map(|(_, publication)| publication.content_length),
             provider_peer_ids: view.provider_peer_ids.clone(),
         };
         Self::apply_replay_checkpoint(&mut replay_request, existing_checkpoint.as_ref());
@@ -1576,31 +1610,37 @@ impl BrowserEdgeClient {
             }
         }
         if transport.is_none() {
-            match self
-                .request_and_download_artifact_resumable(
-                    &DownloadTicketRequest {
-                        principal_id: principal_id.clone(),
-                        experiment_id: view.head.experiment_id.clone(),
-                        run_id: Some(view.run_id.clone()),
-                        head_id: view.head.head_id.clone(),
-                        artifact_profile,
-                        publication_target_id: publication.publication_target_id.clone(),
-                        artifact_alias_id: publication.artifact_alias_id.clone(),
-                    },
-                    Some(session_id),
-                    runtime,
-                )
-                .await
-            {
-                Ok(_) => transport = Some("edge-download-ticket".to_owned()),
-                Err(edge_error) => {
-                    if let Some(peer_error) = peer_transport_error {
-                        return Err(BrowserAuthClientError::ArtifactTransport(format!(
-                            "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"
-                        )));
+            if let Some((artifact_profile, publication)) = publication {
+                match self
+                    .request_and_download_artifact_resumable(
+                        &DownloadTicketRequest {
+                            principal_id: principal_id.clone(),
+                            experiment_id: view.head.experiment_id.clone(),
+                            run_id: Some(view.run_id.clone()),
+                            head_id: view.head.head_id.clone(),
+                            artifact_profile,
+                            publication_target_id: publication.publication_target_id.clone(),
+                            artifact_alias_id: publication.artifact_alias_id.clone(),
+                        },
+                        Some(session_id),
+                        runtime,
+                    )
+                    .await
+                {
+                    Ok(_) => transport = Some("edge-download-ticket".to_owned()),
+                    Err(edge_error) => {
+                        if let Some(peer_error) = peer_transport_error {
+                            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                                "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"
+                            )));
+                        }
+                        return Err(edge_error);
                     }
-                    return Err(edge_error);
                 }
+            } else if let Some(peer_error) = peer_transport_error {
+                return Err(peer_error);
+            } else {
+                return Ok(Vec::new());
             }
         }
 

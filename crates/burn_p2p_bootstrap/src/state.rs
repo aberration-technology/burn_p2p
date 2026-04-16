@@ -762,7 +762,7 @@ pub struct BootstrapAdminState {
 }
 
 impl BootstrapAdminState {
-    fn visible_head_descriptors(&self) -> Vec<HeadDescriptor> {
+    pub(crate) fn visible_head_descriptors(&self) -> Vec<HeadDescriptor> {
         let mut heads = BTreeMap::<HeadId, HeadDescriptor>::new();
         for head in &self.head_descriptors {
             heads.insert(head.head_id.clone(), head.clone());
