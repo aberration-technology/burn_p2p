@@ -8,7 +8,7 @@ use burn_p2p_metrics::{
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_swarm::{
     BrowserArtifactChunkRequest, BrowserArtifactManifestRequest, BrowserSwarmRuntime,
-    ControlPlaneSnapshot, WasmBrowserSwarmRuntime,
+    BrowserSwarmUpdate, ControlPlaneSnapshot, WasmBrowserSwarmRuntime,
 };
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
@@ -746,6 +746,18 @@ async fn establish_direct_swarm_runtime(
         events.push(BrowserWorkerEvent::Error {
             message: format!("browser direct swarm connect failed: {error}"),
         });
+    } else {
+        for (label, subscribe_result) in [
+            ("directory", direct_runtime.subscribe_directory().await),
+            ("heads", direct_runtime.subscribe_heads().await),
+            ("metrics", direct_runtime.subscribe_metrics().await),
+        ] {
+            if let Err(error) = subscribe_result {
+                events.push(BrowserWorkerEvent::Error {
+                    message: format!("browser direct swarm {label} subscription failed: {error}"),
+                });
+            }
+        }
     }
     (Some(direct_runtime), events)
 }
@@ -842,7 +854,8 @@ impl BrowserPeerArtifactFetcher for DirectSwarmPeerArtifactFetcher {
                     descriptor.bytes_len
                 )));
             }
-            let root_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
+            let root_hash =
+                ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
             if root_hash != descriptor.root_hash {
                 return Err(BrowserAuthClientError::ArtifactTransport(format!(
                     "browser direct swarm reconstructed {} with unexpected root hash {}",
@@ -862,23 +875,64 @@ async fn sync_worker_runtime_from_direct_swarm(
     session: Option<&BrowserSessionState>,
     direct_runtime: &mut WasmBrowserSwarmRuntime,
 ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
-    let snapshot = direct_runtime
-        .fetch_snapshot()
-        .await
-        .map_err(|error| BrowserAuthClientError::Swarm(error.to_string()))?;
     let mut events = runtime.apply_command(
         BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
         None,
         None,
     );
-    if let Some(directory) = browser_directory_snapshot_from_control_snapshot(&snapshot, runtime) {
+    let mut updates = direct_runtime.drain_updates();
+    if updates.is_empty()
+        && (runtime.storage.last_signed_directory_snapshot.is_none()
+            || runtime.storage.last_head_id.is_none())
+    {
+        let snapshot = direct_runtime
+            .fetch_snapshot()
+            .await
+            .map_err(|error| BrowserAuthClientError::Swarm(error.to_string()))?;
+        updates.push(BrowserSwarmUpdate::Snapshot(Box::new(snapshot)));
+    }
+    for update in updates {
+        match update {
+            BrowserSwarmUpdate::Snapshot(snapshot) => {
+                let needs_artifact_sync = apply_control_snapshot_to_browser_runtime(
+                    runtime,
+                    session,
+                    snapshot.as_ref(),
+                    &mut events,
+                );
+                if needs_artifact_sync {
+                    match edge_client
+                        .sync_active_head_artifact_into_worker(runtime, session)
+                        .await
+                    {
+                        Ok(artifact_events) => events.extend(artifact_events),
+                        Err(error) => events.push(BrowserWorkerEvent::Error {
+                            message: format!("browser artifact sync failed: {error}"),
+                        }),
+                    }
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn apply_control_snapshot_to_browser_runtime(
+    runtime: &mut BrowserWorkerRuntime,
+    session: Option<&BrowserSessionState>,
+    snapshot: &ControlPlaneSnapshot,
+    events: &mut Vec<BrowserWorkerEvent>,
+) -> bool {
+    let previous_head_id = runtime.storage.last_head_id.clone();
+    if let Some(directory) = browser_directory_snapshot_from_control_snapshot(snapshot, runtime) {
         events.extend(runtime.apply_command(
             BrowserWorkerCommand::ApplySwarmDirectory(Box::new(directory)),
             None,
             session,
         ));
     }
-    let heads = browser_heads_from_control_snapshot(&snapshot, runtime);
+    let heads = browser_heads_from_control_snapshot(snapshot, runtime);
     if !heads.is_empty() {
         events.extend(runtime.apply_command(
             BrowserWorkerCommand::ApplySwarmHeads(heads),
@@ -886,23 +940,21 @@ async fn sync_worker_runtime_from_direct_swarm(
             session,
         ));
     }
-    if let Some(metrics) = browser_metrics_sync_from_control_snapshot(&snapshot, runtime) {
+    if let Some(metrics) = browser_metrics_sync_from_control_snapshot(snapshot, runtime) {
         events.extend(runtime.apply_command(
             BrowserWorkerCommand::ApplySwarmMetricsSync(Box::new(metrics)),
             None,
             session,
         ));
     }
-    match edge_client
-        .sync_active_head_artifact_into_worker(runtime, session)
-        .await
-    {
-        Ok(artifact_events) => events.extend(artifact_events),
-        Err(error) => events.push(BrowserWorkerEvent::Error {
-            message: format!("browser artifact sync failed: {error}"),
-        }),
-    }
-    Ok(events)
+    runtime
+        .storage
+        .last_head_id
+        .as_ref()
+        .is_some_and(|head_id| {
+            previous_head_id.as_ref() != Some(head_id)
+                || !runtime.storage.cached_head_artifact_heads.contains(head_id)
+        })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -910,7 +962,10 @@ fn browser_directory_snapshot_from_control_snapshot(
     snapshot: &ControlPlaneSnapshot,
     runtime: &BrowserWorkerRuntime,
 ) -> Option<burn_p2p_core::BrowserDirectorySnapshot> {
-    let network_id = runtime.config.as_ref().map(|config| config.network_id.clone())?;
+    let network_id = runtime
+        .config
+        .as_ref()
+        .map(|config| config.network_id.clone())?;
     snapshot
         .directory_announcements
         .iter()
@@ -928,7 +983,11 @@ fn browser_heads_from_control_snapshot(
     snapshot: &ControlPlaneSnapshot,
     runtime: &BrowserWorkerRuntime,
 ) -> Vec<burn_p2p::HeadDescriptor> {
-    let Some(network_id) = runtime.config.as_ref().map(|config| config.network_id.clone()) else {
+    let Some(network_id) = runtime
+        .config
+        .as_ref()
+        .map(|config| config.network_id.clone())
+    else {
         return Vec::new();
     };
     let visible_experiments = snapshot
@@ -955,11 +1014,13 @@ fn browser_heads_from_control_snapshot(
         .iter()
         .map(|announcement| announcement.head.clone())
         .filter(|head| {
-            visible_experiments.iter().any(|(study_id, experiment_id, revision_id)| {
-                &head.study_id == study_id
-                    && &head.experiment_id == experiment_id
-                    && &head.revision_id == revision_id
-            })
+            visible_experiments
+                .iter()
+                .any(|(study_id, experiment_id, revision_id)| {
+                    &head.study_id == study_id
+                        && &head.experiment_id == experiment_id
+                        && &head.revision_id == revision_id
+                })
         })
         .collect::<Vec<_>>();
     heads.sort_by(|left, right| {

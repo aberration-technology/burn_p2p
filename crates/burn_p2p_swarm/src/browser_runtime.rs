@@ -5,11 +5,11 @@ use burn_p2p_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ControlPlaneSnapshot, SwarmError};
-#[cfg(target_arch = "wasm32")]
-use crate::{ControlPlaneRequest, ControlPlaneResponse, ProtocolSet};
 #[cfg(target_arch = "wasm32")]
 use crate::runtime_helpers::stream_protocol;
+#[cfg(target_arch = "wasm32")]
+use crate::{ControlPlaneRequest, ControlPlaneResponse, ProtocolSet};
+use crate::{ControlPlaneSnapshot, SwarmError};
 
 #[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
@@ -100,6 +100,13 @@ pub struct BrowserArtifactChunkRequest {
     pub provider_peer_ids: Vec<PeerId>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One browser swarm update delivered from the direct swarm runtime.
+pub enum BrowserSwarmUpdate {
+    /// One fresh control-plane snapshot observed through the direct swarm.
+    Snapshot(Box<ControlPlaneSnapshot>),
+}
+
 #[async_trait(?Send)]
 /// Browser swarm runtime boundary implemented by direct browser transport backends.
 pub trait BrowserSwarmRuntime {
@@ -117,6 +124,9 @@ pub trait BrowserSwarmRuntime {
 
     /// Returns the most recent browser seed dial plan, when one exists.
     fn dial_plan(&self) -> Option<BrowserSwarmDialPlan>;
+
+    /// Drains any queued browser swarm updates accumulated since the last read.
+    fn drain_updates(&mut self) -> Vec<BrowserSwarmUpdate>;
 
     /// Fetches one control-plane snapshot through the browser swarm path.
     async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError>;
@@ -225,6 +235,10 @@ impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
         self.dial_plan.clone()
     }
 
+    fn drain_updates(&mut self) -> Vec<BrowserSwarmUpdate> {
+        Vec::new()
+    }
+
     async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError> {
         Err(SwarmError::Runtime(
             "direct browser swarm control snapshot fetch is not implemented".into(),
@@ -295,6 +309,7 @@ struct WasmBrowserSwarmBehaviour {
 struct WasmBrowserSwarmSharedState {
     status: BrowserSwarmStatus,
     dial_plan: Option<BrowserSwarmDialPlan>,
+    updates: Vec<BrowserSwarmUpdate>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -325,6 +340,16 @@ enum WasmBrowserSwarmCommand {
     Disconnect {
         response_tx: oneshot::Sender<Result<(), SwarmError>>,
     },
+    SubscribeDirectory {
+        response_tx: oneshot::Sender<Result<(), SwarmError>>,
+    },
+    SubscribeHeads {
+        response_tx: oneshot::Sender<Result<(), SwarmError>>,
+    },
+    SubscribeMetrics {
+        response_tx: oneshot::Sender<Result<(), SwarmError>>,
+    },
+    PollSubscriptions,
     FetchSnapshot {
         response_tx: oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>,
     },
@@ -361,7 +386,12 @@ impl WasmBrowserSwarmRuntime {
     pub fn new(network_id: NetworkId) -> Self {
         let shared = Rc::new(RefCell::new(WasmBrowserSwarmSharedState::default()));
         let (command_tx, command_rx) = mpsc::unbounded();
-        spawn_local(run_wasm_browser_swarm_task(shared.clone(), command_rx, network_id));
+        spawn_local(run_wasm_browser_swarm_task(
+            shared.clone(),
+            command_rx,
+            network_id,
+        ));
+        spawn_local(run_wasm_browser_swarm_poll_task(command_tx.clone()));
         Self { shared, command_tx }
     }
 }
@@ -425,6 +455,10 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
         self.shared.borrow().dial_plan.clone()
     }
 
+    fn drain_updates(&mut self) -> Vec<BrowserSwarmUpdate> {
+        std::mem::take(&mut self.shared.borrow_mut().updates)
+    }
+
     async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError> {
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
@@ -447,21 +481,69 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
     }
 
     async fn subscribe_directory(&mut self) -> Result<(), SwarmError> {
-        Err(SwarmError::Runtime(
-            "direct browser swarm directory subscription is not implemented".into(),
-        ))
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::SubscribeDirectory { response_tx })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(5_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime(
+                    "browser direct swarm directory subscription response was dropped".into(),
+                )
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm directory subscription".into(),
+            )),
+        }
     }
 
     async fn subscribe_heads(&mut self) -> Result<(), SwarmError> {
-        Err(SwarmError::Runtime(
-            "direct browser swarm head subscription is not implemented".into(),
-        ))
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::SubscribeHeads { response_tx })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(5_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime(
+                    "browser direct swarm head subscription response was dropped".into(),
+                )
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm head subscription".into(),
+            )),
+        }
     }
 
     async fn subscribe_metrics(&mut self) -> Result<(), SwarmError> {
-        Err(SwarmError::Runtime(
-            "direct browser swarm metrics subscription is not implemented".into(),
-        ))
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::SubscribeMetrics { response_tx })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(5_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime(
+                    "browser direct swarm metrics subscription response was dropped".into(),
+                )
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm metrics subscription".into(),
+            )),
+        }
     }
 
     async fn fetch_artifact_manifest(
@@ -542,6 +624,12 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
+                    WasmBrowserSwarmCommand::SubscribeDirectory { response_tx }
+                    | WasmBrowserSwarmCommand::SubscribeHeads { response_tx }
+                    | WasmBrowserSwarmCommand::SubscribeMetrics { response_tx } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
+                    WasmBrowserSwarmCommand::PollSubscriptions => {}
                     WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
@@ -559,6 +647,11 @@ async fn run_wasm_browser_swarm_task(
 
     let mut pending_connect: Option<WasmPendingConnect> = None;
     let mut active_candidate: Option<BrowserSeedDialCandidate> = None;
+    let mut directory_subscribed = false;
+    let mut heads_subscribed = false;
+    let mut metrics_subscribed = false;
+    let mut last_subscription_snapshot: Option<ControlPlaneSnapshot> = None;
+    let mut pending_subscription_snapshot_request_id: Option<String> = None;
     let mut pending_snapshot_requests =
         BTreeMap::<String, oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>>::new();
     let mut pending_manifest_requests = BTreeMap::<
@@ -670,6 +763,8 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
                         active_candidate = None;
                         pending_connect = None;
+                        pending_subscription_snapshot_request_id = None;
+                        last_subscription_snapshot = None;
                         fail_pending_wasm_snapshot_requests(
                             &mut pending_snapshot_requests,
                             "browser direct swarm disconnected before snapshot request completed",
@@ -691,6 +786,52 @@ async fn run_wasm_browser_swarm_task(
                             state.dial_plan = None;
                         }
                         let _ = response_tx.send(Ok(()));
+                    }
+                    WasmBrowserSwarmCommand::SubscribeDirectory { response_tx } => {
+                        directory_subscribed = true;
+                        let _ = response_tx.send(Ok(()));
+                        try_issue_wasm_subscription_snapshot_request(
+                            &mut swarm,
+                            &shared,
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut pending_subscription_snapshot_request_id,
+                        );
+                    }
+                    WasmBrowserSwarmCommand::SubscribeHeads { response_tx } => {
+                        heads_subscribed = true;
+                        let _ = response_tx.send(Ok(()));
+                        try_issue_wasm_subscription_snapshot_request(
+                            &mut swarm,
+                            &shared,
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut pending_subscription_snapshot_request_id,
+                        );
+                    }
+                    WasmBrowserSwarmCommand::SubscribeMetrics { response_tx } => {
+                        metrics_subscribed = true;
+                        let _ = response_tx.send(Ok(()));
+                        try_issue_wasm_subscription_snapshot_request(
+                            &mut swarm,
+                            &shared,
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut pending_subscription_snapshot_request_id,
+                        );
+                    }
+                    WasmBrowserSwarmCommand::PollSubscriptions => {
+                        try_issue_wasm_subscription_snapshot_request(
+                            &mut swarm,
+                            &shared,
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut pending_subscription_snapshot_request_id,
+                        );
                     }
                     WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
                         match resolve_wasm_browser_request_peer_id(
@@ -792,6 +933,14 @@ async fn run_wasm_browser_swarm_task(
                     {
                         let _ = response_tx.send(Ok(pending.dial_plan));
                     }
+                    try_issue_wasm_subscription_snapshot_request(
+                        &mut swarm,
+                        &shared,
+                        directory_subscribed,
+                        heads_subscribed,
+                        metrics_subscribed,
+                        &mut pending_subscription_snapshot_request_id,
+                    );
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
                     let error_message = error.to_string();
@@ -832,6 +981,8 @@ async fn run_wasm_browser_swarm_task(
                     state.status.connected_transport = None;
                     state.status.connected_peer_ids.clear();
                     state.status.connected_peer_count = 0;
+                    pending_subscription_snapshot_request_id = None;
+                    last_subscription_snapshot = None;
                     fail_pending_wasm_snapshot_requests(
                         &mut pending_snapshot_requests,
                         "browser direct swarm connection closed before snapshot request completed",
@@ -857,7 +1008,24 @@ async fn run_wasm_browser_swarm_task(
                                     let request_id = request_id.to_string();
                                     match response {
                                         ControlPlaneResponse::Snapshot(snapshot) => {
-                                            if let Some(response_tx) =
+                                            if pending_subscription_snapshot_request_id
+                                                .as_ref()
+                                                .is_some_and(|pending_id| pending_id == &request_id)
+                                            {
+                                                pending_subscription_snapshot_request_id = None;
+                                                if last_subscription_snapshot
+                                                    .as_ref()
+                                                    .is_none_or(|previous| previous != &snapshot)
+                                                {
+                                                    last_subscription_snapshot =
+                                                        Some(snapshot.clone());
+                                                    shared.borrow_mut().updates.push(
+                                                        BrowserSwarmUpdate::Snapshot(Box::new(
+                                                            snapshot,
+                                                        )),
+                                                    );
+                                                }
+                                            } else if let Some(response_tx) =
                                                 pending_snapshot_requests.remove(&request_id)
                                             {
                                                 let _ = response_tx.send(Ok(snapshot));
@@ -897,18 +1065,24 @@ async fn run_wasm_browser_swarm_task(
                             }
                         }
                         libp2p_request_response::Event::OutboundFailure {
-                            request_id, error, ..
+                            request_id,
+                            error,
+                            ..
                         } => {
                             let request_id = request_id.to_string();
                             let error_message = error.to_string();
-                            if let Some(response_tx) =
-                                pending_snapshot_requests.remove(&request_id)
+                            if pending_subscription_snapshot_request_id
+                                .as_ref()
+                                .is_some_and(|pending_id| pending_id == &request_id)
+                            {
+                                pending_subscription_snapshot_request_id = None;
+                            }
+                            if let Some(response_tx) = pending_snapshot_requests.remove(&request_id)
                             {
                                 let _ = response_tx
                                     .send(Err(SwarmError::Request(error_message.clone())));
                             }
-                            if let Some(response_tx) =
-                                pending_manifest_requests.remove(&request_id)
+                            if let Some(response_tx) = pending_manifest_requests.remove(&request_id)
                             {
                                 let _ = response_tx
                                     .send(Err(SwarmError::Request(error_message.clone())));
@@ -926,6 +1100,21 @@ async fn run_wasm_browser_swarm_task(
                 SwarmEvent::Behaviour(_) => {}
                 _ => {}
             },
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_wasm_browser_swarm_poll_task(
+    command_tx: mpsc::UnboundedSender<WasmBrowserSwarmCommand>,
+) {
+    loop {
+        TimeoutFuture::new(3_000).await;
+        if command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::PollSubscriptions)
+            .is_err()
+        {
+            break;
         }
     }
 }
@@ -993,7 +1182,10 @@ fn build_wasm_browser_swarm(
         .with_behaviour(|_| WasmBrowserSwarmBehaviour {
             ping: libp2p::ping::Behaviour::default(),
             request_response: libp2p_request_response::cbor::Behaviour::new(
-                [(control_protocol, libp2p_request_response::ProtocolSupport::Outbound)],
+                [(
+                    control_protocol,
+                    libp2p_request_response::ProtocolSupport::Outbound,
+                )],
                 libp2p_request_response::Config::default(),
             ),
         })
@@ -1010,13 +1202,45 @@ fn resolve_wasm_browser_request_peer_id(
         .iter()
         .find(|peer_id| connected_peer_ids.contains(peer_id))
         .or_else(|| connected_peer_ids.first())
-        .ok_or_else(|| SwarmError::Runtime("browser direct swarm has no connected peer to service the request".into()))
+        .ok_or_else(|| {
+            SwarmError::Runtime(
+                "browser direct swarm has no connected peer to service the request".into(),
+            )
+        })
         .and_then(|peer_id| {
             peer_id
                 .as_str()
                 .parse::<libp2p::identity::PeerId>()
                 .map_err(|_| SwarmError::InvalidPeerId(peer_id.as_str().to_owned()))
         })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn try_issue_wasm_subscription_snapshot_request(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    directory_subscribed: bool,
+    heads_subscribed: bool,
+    metrics_subscribed: bool,
+    pending_subscription_snapshot_request_id: &mut Option<String>,
+) {
+    if pending_subscription_snapshot_request_id.is_some() {
+        return;
+    }
+    if !(directory_subscribed || heads_subscribed || metrics_subscribed) {
+        return;
+    }
+    let Ok(peer_id) =
+        resolve_wasm_browser_request_peer_id(&shared.borrow().status.connected_peer_ids, &[])
+    else {
+        return;
+    };
+    let request_id = swarm
+        .behaviour_mut()
+        .request_response
+        .send_request(&peer_id, ControlPlaneRequest::Snapshot)
+        .to_string();
+    *pending_subscription_snapshot_request_id = Some(request_id);
 }
 
 #[cfg(target_arch = "wasm32")]
