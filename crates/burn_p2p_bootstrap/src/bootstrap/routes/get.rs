@@ -327,6 +327,34 @@ pub(crate) fn handle_get_route(
             )?;
             write_json(stream, &snapshot)?;
         }
+        ("GET", "/browser/seeds/signed") => {
+            if !browser_join_enabled(current_config) {
+                write_response(
+                    stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"browser join disabled".to_vec(),
+                )?;
+                return Ok(true);
+            }
+            let Some(advertisement) = current_browser_seed_advertisement(plan, current_config)
+            else {
+                write_response(
+                    stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"browser seed advertisement unavailable".to_vec(),
+                )?;
+                return Ok(true);
+            };
+            let signed = sign_browser_snapshot(
+                plan,
+                admin_signer_peer_id,
+                "burn_p2p.browser_seed_advertisement",
+                advertisement,
+            )?;
+            write_json(stream, &signed)?;
+        }
         ("GET", "/leaderboard") => {
             if !social_enabled(current_config) {
                 write_response(

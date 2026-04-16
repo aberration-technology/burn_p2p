@@ -44,10 +44,12 @@ pub use burn_p2p::{
     EdgeLogoutResponse, EdgePeerEnrollmentRequest, EdgePeerIdentity, EdgeSessionState,
 };
 pub use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
-    BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
-    BrowserLoginProvider, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
-    ReenrollmentStatus, TrustBundleExport,
+    BrowserArtifactSource, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
+    BrowserEdgeSnapshot, BrowserLeaderboardEntry, BrowserLeaderboardIdentity,
+    BrowserLeaderboardSnapshot, BrowserLoginProvider, BrowserReceiptSubmissionResponse,
+    BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
+    BrowserTransportSurface, ReenrollmentStatus, TrustBundleExport,
 };
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
 pub use conformance::{
@@ -68,7 +70,10 @@ pub use storage::{
 pub use training::{
     BrowserTrainingBudget, BrowserTrainingPlan, BrowserTrainingProgress, BrowserTrainingResult,
 };
-pub use transport::{BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus};
+pub use transport::{
+    BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus,
+    resolve_browser_seed_bootstrap,
+};
 pub use ui_bindings::{
     BrowserAppUiState, BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserUiBindings,
     browser_app_ui_state_from_directory, browser_experiment_candidate_for_selection,

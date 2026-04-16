@@ -1,3 +1,4 @@
+use burn_p2p_core::BrowserSwarmStatus;
 use serde::{Deserialize, Serialize};
 
 fn default_browser_app_refresh_interval_ms() -> u64 {
@@ -389,6 +390,8 @@ pub struct BrowserAppNetworkView {
     pub in_flight_transfers: usize,
     /// Human-readable note explaining browser-visible network scope.
     pub network_note: String,
+    /// Structured browser swarm/runtime status derived from truthful browser state.
+    pub swarm_status: BrowserSwarmStatus,
     /// Whether metrics catchup or live state has been observed locally.
     pub metrics_live_ready: bool,
     /// Last directory sync timestamp, when available.

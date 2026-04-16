@@ -597,6 +597,7 @@ fn browser_app_static_bootstrap_and_client_view_serialize_for_cdn_use() {
             certified_merges: 8,
             in_flight_transfers: 2,
             network_note: "5 direct peers; browser clients stay scoped to edge visibility instead of full-network fanout.".into(),
+            swarm_status: BrowserSwarmStatus::default(),
             metrics_live_ready: true,
             last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
             last_error: None,
@@ -1000,3 +1001,4 @@ fn operator_rollout_views_serialize_directory_and_draft_state() {
     assert_eq!(encoded[2]["entries"][0]["revision_id"], "rev");
     assert_eq!(encoded[3]["status_label"], "rollout applied");
 }
+use burn_p2p_core::BrowserSwarmStatus;

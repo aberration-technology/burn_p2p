@@ -4,7 +4,7 @@ use burn_p2p::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::BrowserTransportPolicy;
+use crate::{BrowserResolvedSeedBootstrap, BrowserTransportPolicy};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates the supported browser runtime roles.
@@ -163,6 +163,12 @@ pub struct BrowserRuntimeConfig {
     pub role: BrowserRuntimeRole,
     /// The transport.
     pub transport: BrowserTransportPolicy,
+    /// Seed bootstrap material resolved for the current browser session.
+    #[serde(default)]
+    pub seed_bootstrap: BrowserResolvedSeedBootstrap,
+    /// Site-config fallback seeds embedded into the browser artifact.
+    #[serde(default)]
+    pub site_seed_node_urls: Vec<String>,
     /// The selected experiment.
     pub selected_experiment: Option<ExperimentId>,
     /// The selected revision.
@@ -189,6 +195,8 @@ impl BrowserRuntimeConfig {
             transport: BrowserTransportPolicy::from(RuntimeTransportPolicy::browser_for_roles(
                 &PeerRoleSet::new([PeerRole::BrowserObserver]),
             )),
+            seed_bootstrap: BrowserResolvedSeedBootstrap::default(),
+            site_seed_node_urls: Vec::new(),
             selected_experiment: None,
             selected_revision: None,
         }

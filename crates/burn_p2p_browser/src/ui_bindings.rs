@@ -32,6 +32,8 @@ pub struct BrowserEdgeEndpoints {
     pub signed_leaderboard_path: String,
     /// The receipt submit path.
     pub receipt_submit_path: String,
+    /// The signed browser seed advertisement path.
+    pub browser_seed_advertisement_path: String,
     /// The login path.
     pub login_path: String,
     /// The callback path.
@@ -100,6 +102,7 @@ impl Default for BrowserEdgeEndpoints {
             leaderboard_path: "/leaderboard".into(),
             signed_leaderboard_path: "/leaderboard/signed".into(),
             receipt_submit_path: "/receipts/browser".into(),
+            browser_seed_advertisement_path: "/browser/seeds/signed".into(),
             login_path: "/login/static".into(),
             callback_path: "/callback/static".into(),
             enroll_path: "/enroll".into(),
@@ -166,6 +169,10 @@ impl BrowserUiBindings {
                 leaderboard_path: snapshot.paths.leaderboard_path.clone(),
                 signed_leaderboard_path: snapshot.paths.signed_leaderboard_path.clone(),
                 receipt_submit_path: snapshot.paths.receipt_submit_path.clone(),
+                browser_seed_advertisement_path: snapshot
+                    .paths
+                    .browser_seed_advertisement_path
+                    .clone(),
                 login_path: primary_provider
                     .map(|provider| provider.login_path.clone())
                     .unwrap_or_else(|| snapshot.paths.login_path.clone()),

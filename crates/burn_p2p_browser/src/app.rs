@@ -17,13 +17,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BrowserAuthClientError, BrowserCapabilityReport, BrowserEdgeClient, BrowserEdgeSnapshot,
     BrowserEnrollmentConfig, BrowserGpuSupport, BrowserRuntimeConfig, BrowserRuntimeRole,
-    BrowserRuntimeState, BrowserSessionState, BrowserStorageSnapshot, BrowserTransportKind,
+    BrowserRuntimeState, BrowserSeedBootstrapSource, BrowserSessionState, BrowserStorageSnapshot,
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerEvent, BrowserWorkerRuntime,
     durability::{
         clear_durable_receipt_outbox, load_durable_browser_storage, load_durable_receipt_outbox,
         persist_durable_browser_storage, persist_durable_receipt_outbox,
     },
+    resolve_browser_seed_bootstrap,
 };
+use burn_p2p_core::{BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the browser app target preset.
@@ -66,6 +68,8 @@ pub struct BrowserAppConnectConfig {
     pub selected_experiment_id: Option<String>,
     /// Optional selected revision id.
     pub selected_revision_id: Option<String>,
+    /// Optional site-config fallback seed urls embedded into the browser artifact.
+    pub seed_node_urls: Vec<String>,
 }
 
 impl BrowserAppConnectConfig {
@@ -81,6 +85,7 @@ impl BrowserAppConnectConfig {
             target,
             selected_experiment_id: None,
             selected_revision_id: None,
+            seed_node_urls: Vec::new(),
         }
     }
 
@@ -121,6 +126,12 @@ impl BrowserAppConnectConfig {
     ) -> Self {
         self.selected_experiment_id = Some(experiment_id.into());
         self.selected_revision_id = revision_id.map(Into::into);
+        self
+    }
+
+    /// Adds site-config fallback seeds to the browser connect config.
+    pub fn with_seed_node_urls(mut self, seed_node_urls: Vec<String>) -> Self {
+        self.seed_node_urls = seed_node_urls;
         self
     }
 
@@ -256,7 +267,8 @@ impl BrowserAppModel {
                     .count()
             })
             .unwrap_or(0);
-        let direct_peers = usize::from(self.runtime.transport.active.is_some());
+        let swarm_status = self.runtime.swarm_status();
+        let direct_peers = swarm_status.connected_peer_count;
         let selected_experiment = selected_experiment_summary(
             directory,
             &self.runtime,
@@ -395,7 +407,8 @@ impl BrowserAppModel {
                 accepted_receipts,
                 certified_merges: visible_heads,
                 in_flight_transfers: 0,
-                network_note: "Tracks one edge and its signed snapshots.".into(),
+                network_note: network_note(&self.runtime),
+                swarm_status,
                 metrics_live_ready: storage.last_metrics_live_event.is_some()
                     || !storage.metrics_catchup_bundles.is_empty(),
                 last_directory_sync_at: storage
@@ -436,12 +449,14 @@ impl BrowserAppController {
             target,
             selected_experiment_id,
             selected_revision_id,
+            seed_node_urls,
         } = config;
         Self::connect(
             edge_base_url,
             capability,
             target.preferred_role(),
             selected_experiment_id.map(|experiment_id| (experiment_id, selected_revision_id)),
+            seed_node_urls,
         )
         .await
     }
@@ -484,9 +499,12 @@ impl BrowserAppController {
         capability: BrowserCapabilityReport,
         requested_role: BrowserRuntimeRole,
         selected_experiment: Option<(String, Option<String>)>,
+        site_seed_node_urls: Vec<String>,
     ) -> Result<Self, BrowserAuthClientError> {
         let edge_base_url = edge_base_url.into().trim_end_matches('/').to_owned();
         let snapshot = fetch_edge_snapshot(&edge_base_url).await?;
+        let signed_seed_advertisement =
+            fetch_signed_seed_advertisement(&edge_base_url, &snapshot).await?;
         let bindings = BrowserUiBindings::from_edge_snapshot(&edge_base_url, &snapshot);
         let edge_client = BrowserEdgeClient::new(
             bindings.clone(),
@@ -499,10 +517,15 @@ impl BrowserAppController {
                 &capability,
                 requested_role,
                 selected_experiment,
+                &site_seed_node_urls,
+                signed_seed_advertisement.as_ref(),
             ),
             capability,
             BrowserTransportStatus {
                 active: None,
+                selected: None,
+                connected: None,
+                connected_peer_ids: Vec::new(),
                 webrtc_direct_enabled: snapshot.transports.webrtc_direct,
                 webtransport_enabled: snapshot.transports.webtransport_gateway,
                 wss_fallback_enabled: snapshot.transports.wss_fallback,
@@ -624,12 +647,35 @@ async fn fetch_edge_snapshot(
         .map_err(Into::into)
 }
 
+async fn fetch_signed_seed_advertisement(
+    edge_base_url: &str,
+    snapshot: &BrowserEdgeSnapshot,
+) -> Result<Option<SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>, BrowserAuthClientError>
+{
+    let bindings = BrowserUiBindings::from_edge_snapshot(edge_base_url, snapshot);
+    let response = reqwest::Client::new()
+        .get(bindings.endpoint_url(&bindings.paths.browser_seed_advertisement_path))
+        .send()
+        .await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    response
+        .error_for_status()?
+        .json::<SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>()
+        .await
+        .map(Some)
+        .map_err(Into::into)
+}
+
 fn runtime_config_from_snapshot(
     edge_base_url: &str,
     snapshot: &BrowserEdgeSnapshot,
     capability: &BrowserCapabilityReport,
     requested_role: BrowserRuntimeRole,
     selected_experiment: Option<(String, Option<String>)>,
+    site_seed_node_urls: &[String],
+    signed_seed_advertisement: Option<&SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>,
 ) -> BrowserRuntimeConfig {
     let target_artifact_hash = snapshot
         .allowed_target_artifact_hashes
@@ -662,6 +708,13 @@ fn runtime_config_from_snapshot(
     );
     config.role = preferred_runtime_role(snapshot, capability, requested_role);
     config.receipt_submit_path = snapshot.paths.receipt_submit_path.clone();
+    config.site_seed_node_urls = site_seed_node_urls.to_vec();
+    config.seed_bootstrap = resolve_browser_seed_bootstrap(
+        &snapshot.network_id,
+        signed_seed_advertisement,
+        site_seed_node_urls,
+        snapshot.captured_at,
+    );
     if let Some((experiment_id, revision_id)) = selected_experiment {
         config.selected_experiment = Some(ExperimentId::new(&experiment_id));
         config.selected_revision = revision_id.map(|revision_id| RevisionId::new(&revision_id));
@@ -1200,11 +1253,35 @@ fn session_label(session: &BrowserSessionState) -> String {
 }
 
 fn transport_label(transport: &BrowserTransportStatus) -> String {
-    match transport.active.as_ref() {
-        Some(BrowserTransportKind::WebRtcDirect) => "webrtc-direct".into(),
-        Some(BrowserTransportKind::WebTransport) => "webtransport".into(),
-        Some(BrowserTransportKind::WssFallback) => "wss-fallback".into(),
+    if let Some(connected) = transport.connected.as_ref() {
+        return connected.label().into();
+    }
+    match transport.selected.as_ref().or(transport.active.as_ref()) {
+        Some(selected) => format!("planned {}", selected.label()),
         None => "offline".into(),
+    }
+}
+
+fn network_note(runtime: &BrowserWorkerRuntime) -> String {
+    let Some(config) = runtime.config.as_ref() else {
+        return "tracks one edge and its signed snapshots.".into();
+    };
+    match config.seed_bootstrap.source {
+        BrowserSeedBootstrapSource::Unavailable => {
+            "tracks one edge and its signed snapshots.".into()
+        }
+        BrowserSeedBootstrapSource::EdgeSigned => format!(
+            "edge published {} browser seed addrs.",
+            config.seed_bootstrap.seed_node_urls.len()
+        ),
+        BrowserSeedBootstrapSource::SiteConfigFallback => format!(
+            "using {} site-config seed addrs.",
+            config.seed_bootstrap.seed_node_urls.len()
+        ),
+        BrowserSeedBootstrapSource::Merged => format!(
+            "edge + site seeds merged ({} total).",
+            config.seed_bootstrap.seed_node_urls.len()
+        ),
     }
 }
 

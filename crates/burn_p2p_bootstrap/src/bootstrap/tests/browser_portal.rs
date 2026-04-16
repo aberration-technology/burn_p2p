@@ -73,6 +73,29 @@ fn browser_portal_client_round_trips_against_live_http_router() {
             session_ttl_secs: 300,
         };
         let client = BrowserEdgeClient::new(bindings, enrollment);
+        let signed_seeds = client
+            .fetch_browser_seed_advertisement()
+            .await
+            .expect("fetch browser seed advertisement")
+            .expect("browser seed advertisement");
+        assert_eq!(
+            signed_seeds.payload.schema,
+            "burn_p2p.browser_seed_advertisement"
+        );
+        assert_eq!(
+            signed_seeds.payload.payload.network_id.as_str(),
+            "secure-demo"
+        );
+        assert_eq!(
+            signed_seeds
+                .payload
+                .payload
+                .transport_policy
+                .preferred
+                .first()
+                .expect("preferred browser transport"),
+            &burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect
+        );
 
         let login = client
             .begin_login(Some("alice".into()))
@@ -432,6 +455,9 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
             BrowserCapabilityReport::default(),
             BrowserTransportStatus {
                 active: None,
+                selected: None,
+                connected: None,
+                connected_peer_ids: Vec::new(),
                 webrtc_direct_enabled: false,
                 webtransport_enabled: true,
                 wss_fallback_enabled: true,

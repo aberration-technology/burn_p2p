@@ -266,6 +266,53 @@ pub enum BrowserEdgeMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates the transport families that can be advertised to browser peers.
+pub enum BrowserSeedTransportKind {
+    /// Direct browser-compatible WebRTC transport.
+    WebRtcDirect,
+    /// Browser-compatible WebTransport transport.
+    WebTransport,
+    /// Secure WebSocket fallback transport.
+    WssFallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes one ordered browser transport policy advertised by the edge.
+pub struct BrowserSeedTransportPolicy {
+    /// Ordered preferred browser transport families.
+    pub preferred: Vec<BrowserSeedTransportKind>,
+    /// Whether secure websocket fallback is allowed.
+    pub allow_fallback_wss: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One browser-dialable seed record surfaced by the edge.
+pub struct BrowserSeedRecord {
+    /// Peer identifier, when the edge can surface it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<PeerId>,
+    /// Browser-dialable multiaddrs for this seed.
+    pub multiaddrs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Signed browser bootstrap advertisement emitted by the edge.
+pub struct BrowserSeedAdvertisement {
+    /// Schema version for the browser seed contract.
+    pub schema_version: u32,
+    /// Network identifier the advertisement applies to.
+    pub network_id: NetworkId,
+    /// Time at which the advertisement was issued.
+    pub issued_at: DateTime<Utc>,
+    /// Time after which the advertisement must be treated as stale.
+    pub expires_at: DateTime<Utc>,
+    /// Ordered transport preference for browser peers.
+    pub transport_policy: BrowserSeedTransportPolicy,
+    /// Browser-dialable seeds advertised by the edge.
+    pub seeds: Vec<BrowserSeedRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents browser-edge path bindings.
 pub struct BrowserEdgePaths {
     /// The capabilities path.
@@ -284,6 +331,8 @@ pub struct BrowserEdgePaths {
     pub signed_leaderboard_path: String,
     /// The receipt submit path.
     pub receipt_submit_path: String,
+    /// The signed browser seed advertisement path.
+    pub browser_seed_advertisement_path: String,
     /// The login path.
     pub login_path: String,
     /// The callback path.
@@ -353,6 +402,7 @@ impl Default for BrowserEdgePaths {
             leaderboard_path: "/leaderboard".into(),
             signed_leaderboard_path: "/leaderboard/signed".into(),
             receipt_submit_path: "/receipts/browser".into(),
+            browser_seed_advertisement_path: "/browser/seeds/signed".into(),
             login_path: "/login/static".into(),
             callback_path: "/callback/static".into(),
             enroll_path: "/enroll".into(),

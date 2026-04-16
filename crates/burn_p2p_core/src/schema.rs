@@ -15,6 +15,7 @@ use crate::{
     },
 };
 
+mod browser_swarm;
 mod capabilities;
 mod edge;
 mod manifests;
@@ -24,6 +25,7 @@ mod publication;
 mod robustness;
 mod runtime;
 
+pub use browser_swarm::*;
 pub use capabilities::*;
 pub use edge::*;
 pub use manifests::*;

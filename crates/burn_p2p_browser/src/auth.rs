@@ -11,9 +11,9 @@ use burn_p2p::{
 use burn_p2p_core::ChunkDescriptor;
 use burn_p2p_core::{
     ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
-    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, MetricsLiveEvent,
-    PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId, SchemaEnvelope,
-    SignedPayload, TrustBundleExport,
+    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
+    MetricsLiveEvent, PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId,
+    SchemaEnvelope, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
     CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::{
     BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportStatus,
     BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
+    resolve_browser_seed_bootstrap,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -596,6 +597,17 @@ impl BrowserEdgeClient {
         &self,
     ) -> Result<BrowserEdgeSnapshot, BrowserAuthClientError> {
         self.get_json(&self.bindings.paths.app_snapshot_path, None)
+            .await
+    }
+
+    /// Fetches the signed browser seed advertisement, when the edge exposes it.
+    pub async fn fetch_browser_seed_advertisement(
+        &self,
+    ) -> Result<
+        Option<SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>,
+        BrowserAuthClientError,
+    > {
+        self.get_optional_json(&self.bindings.paths.browser_seed_advertisement_path, None)
             .await
     }
 
@@ -1569,9 +1581,7 @@ impl BrowserEdgeClient {
             publication_target_id: publication
                 .as_ref()
                 .map(|(_, publication)| publication.publication_target_id.clone())
-                .unwrap_or_else(|| {
-                    PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET)
-                }),
+                .unwrap_or_else(|| PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET)),
             publication_content_hash: publication
                 .as_ref()
                 .map(|(_, publication)| publication.content_hash.clone()),
@@ -1675,6 +1685,15 @@ impl BrowserEdgeClient {
     ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
         let session_id = session.and_then(BrowserSessionState::session_id);
         let app_snapshot = self.fetch_browser_edge_snapshot().await?;
+        let signed_seed_advertisement = self.fetch_browser_seed_advertisement().await?;
+        if let Some(config) = runtime.config.as_mut() {
+            config.seed_bootstrap = resolve_browser_seed_bootstrap(
+                &config.network_id,
+                signed_seed_advertisement.as_ref(),
+                &config.site_seed_node_urls,
+                app_snapshot.captured_at,
+            );
+        }
         let edge_snapshot = self
             .edge_control_plane_client()
             .fetch_snapshot(session_id)
@@ -1729,6 +1748,9 @@ impl BrowserEdgeClient {
             .collect::<Vec<_>>();
         let transport = BrowserTransportStatus {
             active: None,
+            selected: runtime.transport.selected.clone(),
+            connected: runtime.transport.connected.clone(),
+            connected_peer_ids: runtime.transport.connected_peer_ids.clone(),
             webrtc_direct_enabled: app_snapshot.transports.webrtc_direct,
             webtransport_enabled: app_snapshot.transports.webtransport_gateway,
             wss_fallback_enabled: app_snapshot.transports.wss_fallback,

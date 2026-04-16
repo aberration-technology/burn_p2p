@@ -4,7 +4,10 @@ use burn_p2p::{
     ArtifactId, BrowserRole, ContentId, ContributionReceipt, ContributionReceiptId, ExperimentId,
     HeadDescriptor, HeadId, MetricValue, PeerId, RevisionId, StudyId,
 };
-use burn_p2p_core::{MetricsLiveEvent, SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{
+    BrowserArtifactSource, BrowserSeedBootstrapSource, BrowserSwarmPhase, BrowserSwarmStatus,
+    MetricsLiveEvent, SchemaEnvelope, SignedPayload,
+};
 use burn_p2p_metrics::MetricsCatchupBundle;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,43 @@ pub struct BrowserWorkerRuntime {
 
 impl BrowserWorkerRuntime {
     const MAX_RECEIPT_SUBMISSION_BATCH: usize = 64;
+
+    /// Returns a structured browser swarm/runtime status derived from truthful state.
+    pub fn swarm_status(&self) -> BrowserSwarmStatus {
+        let seed_bootstrap = self
+            .config
+            .as_ref()
+            .map(|config| config.seed_bootstrap.clone())
+            .unwrap_or_default();
+        let directory_synced = self.storage.last_signed_directory_snapshot.is_some();
+        let assignment_bound = self.storage.active_assignment.is_some();
+        let head_synced = self.storage.last_head_id.is_some();
+        let artifact_source = browser_artifact_source(&self.storage);
+        let phase = browser_swarm_phase(
+            self.state.as_ref(),
+            &seed_bootstrap.source,
+            &self.transport,
+            directory_synced,
+            assignment_bound,
+            head_synced,
+            &artifact_source,
+        );
+
+        BrowserSwarmStatus {
+            phase,
+            seed_bootstrap,
+            transport_source: self.transport.truth_source(),
+            desired_transport: self.transport.desired_family(),
+            connected_transport: self.transport.connected_family(),
+            connected_peer_count: self.transport.connected_peer_ids.len(),
+            connected_peer_ids: self.transport.connected_peer_ids.clone(),
+            directory_synced,
+            assignment_bound,
+            head_synced,
+            artifact_source,
+            last_error: self.transport.last_error.clone(),
+        }
+    }
 
     fn validate_training_lease(
         &self,
@@ -799,9 +839,51 @@ impl BrowserWorkerRuntime {
             .state
             .as_ref()
             .is_some_and(BrowserRuntimeState::requires_peer_transport);
-        self.transport.active = self
+        let selected = self
             .transport
             .recommended_transport(&config.transport, requires_peer_transport);
+        self.transport.set_selected_transport(selected);
         self.synchronize_transport_state();
     }
+}
+
+fn browser_artifact_source(storage: &BrowserStorageSnapshot) -> BrowserArtifactSource {
+    match storage.last_head_artifact_transport.as_deref() {
+        Some(transport) if transport.starts_with("peer-") => BrowserArtifactSource::PeerSwarm,
+        Some(transport) if transport.starts_with("edge-") => BrowserArtifactSource::EdgeHttp,
+        _ => BrowserArtifactSource::Unavailable,
+    }
+}
+
+fn browser_swarm_phase(
+    state: Option<&BrowserRuntimeState>,
+    seed_source: &BrowserSeedBootstrapSource,
+    transport: &BrowserTransportStatus,
+    directory_synced: bool,
+    assignment_bound: bool,
+    head_synced: bool,
+    artifact_source: &BrowserArtifactSource,
+) -> BrowserSwarmPhase {
+    if matches!(state, Some(BrowserRuntimeState::Blocked { .. })) {
+        return BrowserSwarmPhase::Blocked;
+    }
+    if !matches!(artifact_source, BrowserArtifactSource::Unavailable) {
+        return BrowserSwarmPhase::ArtifactReady;
+    }
+    if head_synced {
+        return BrowserSwarmPhase::HeadSynced;
+    }
+    if directory_synced || assignment_bound {
+        return BrowserSwarmPhase::DirectorySynced;
+    }
+    if transport.connected.is_some() {
+        return BrowserSwarmPhase::TransportConnected;
+    }
+    if transport.selected.is_some() {
+        return BrowserSwarmPhase::TransportSelected;
+    }
+    if !matches!(seed_source, BrowserSeedBootstrapSource::Unavailable) {
+        return BrowserSwarmPhase::SeedResolved;
+    }
+    BrowserSwarmPhase::Bootstrap
 }

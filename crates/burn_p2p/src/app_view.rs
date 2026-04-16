@@ -1,3 +1,4 @@
+use burn_p2p_core::BrowserSwarmStatus;
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppExperimentSummary, BrowserAppMetricPreview,
     BrowserAppNetworkView, BrowserAppSurface, BrowserAppTrainingView, BrowserAppValidationView,
@@ -137,6 +138,7 @@ pub fn build_node_app_view(
             certified_merges: snapshot.control_plane.merge_announcements.len(),
             in_flight_transfers: snapshot.in_flight_transfers.len(),
             network_note: network_note(snapshot),
+            swarm_status: BrowserSwarmStatus::default(),
             metrics_live_ready: !snapshot.control_plane.metrics_announcements.is_empty(),
             last_directory_sync_at: Some(snapshot.updated_at.to_rfc3339()),
             last_error: snapshot.last_error.clone(),

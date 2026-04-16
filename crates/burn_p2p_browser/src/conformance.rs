@@ -19,6 +19,9 @@ use crate::{
 pub fn browser_conformance_transport() -> BrowserTransportStatus {
     BrowserTransportStatus {
         active: Some(BrowserTransportKind::WssFallback),
+        selected: Some(BrowserTransportKind::WssFallback),
+        connected: None,
+        connected_peer_ids: Vec::new(),
         webrtc_direct_enabled: false,
         webtransport_enabled: false,
         wss_fallback_enabled: true,
