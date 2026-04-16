@@ -11,10 +11,10 @@ use std::{
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactId, ArtifactKind, ChunkDescriptor, ChunkId, ContentId,
     ContributionReceipt, ContributionReceiptId, HeadDescriptor, HeadId, MergePolicy, MetricValue,
-    Precision, codec::multihash_sha256,
+    Precision,
+    codec::{multihash_from_sha256_digest, multihash_sha256},
 };
 use chrono::{DateTime, Utc};
-use multihash::Multihash;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -794,9 +794,7 @@ where
 }
 
 pub(crate) fn content_id_from_sha256_digest(digest: impl AsRef<[u8]>) -> ContentId {
-    let multihash =
-        Multihash::<64>::wrap(0x12, digest.as_ref()).expect("sha256 digest should be valid");
-    ContentId::from_multihash(multihash)
+    ContentId::from_multihash(multihash_from_sha256_digest(digest))
 }
 
 #[cfg(test)]

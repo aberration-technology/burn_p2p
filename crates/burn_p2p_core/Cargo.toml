@@ -14,9 +14,8 @@ readme = "../../README.md"
 ciborium.workspace = true
 chrono.workspace = true
 hex.workspace = true
-multihash.workspace = true
-multihash-codetable.workspace = true
 semver.workspace = true
+sha2.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

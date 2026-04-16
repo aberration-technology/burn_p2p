@@ -1,6 +1,5 @@
 use std::{fmt, str::FromStr};
 
-use multihash::Multihash;
 use serde::{Deserialize, Serialize};
 
 use crate::codec::{SchemaError, content_id_for};
@@ -16,9 +15,9 @@ impl ContentId {
         Self(value.into())
     }
 
-    /// Creates a content identifier from a multihash digest.
-    pub fn from_multihash(multihash: Multihash<64>) -> Self {
-        Self(hex::encode(multihash.to_bytes()))
+    /// Creates a content identifier from a multihash byte sequence.
+    pub fn from_multihash(multihash: impl AsRef<[u8]>) -> Self {
+        Self(hex::encode(multihash.as_ref()))
     }
 
     /// Derives a canonical content identifier from a serializable value.

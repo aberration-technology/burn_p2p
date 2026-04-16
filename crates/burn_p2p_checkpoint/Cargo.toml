@@ -14,10 +14,9 @@ readme = "../../README.md"
 burn_p2p_core.workspace = true
 burn_p2p_experiment.workspace = true
 chrono.workspace = true
-multihash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
