@@ -1324,6 +1324,7 @@ dependencies = [
 name = "burn_p2p_swarm"
 version = "0.21.0-pre.15"
 dependencies = [
+ "async-trait",
  "burn_p2p_core",
  "burn_p2p_experiment",
  "chrono",

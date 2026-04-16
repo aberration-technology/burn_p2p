@@ -2,6 +2,7 @@ use burn_p2p::{
     BrowserJoinPolicy, BrowserRole, ContentId, ExperimentId, NetworkId, PeerRole, PeerRoleSet,
     RevisionId, RuntimeTransportPolicy,
 };
+use burn_p2p_swarm::BrowserSwarmBootstrap;
 use serde::{Deserialize, Serialize};
 
 use crate::{BrowserResolvedSeedBootstrap, BrowserTransportPolicy};
@@ -199,6 +200,22 @@ impl BrowserRuntimeConfig {
             site_seed_node_urls: Vec::new(),
             selected_experiment: None,
             selected_revision: None,
+        }
+    }
+
+    /// Builds the shared browser swarm bootstrap contract from the current runtime config.
+    pub fn swarm_bootstrap(&self) -> BrowserSwarmBootstrap {
+        BrowserSwarmBootstrap {
+            network_id: self.network_id.clone(),
+            seed_bootstrap: self.seed_bootstrap.clone(),
+            transport_preference: self
+                .transport
+                .preferred
+                .iter()
+                .map(crate::transport::browser_transport_family)
+                .collect(),
+            selected_experiment: self.selected_experiment.clone(),
+            selected_revision: self.selected_revision.clone(),
         }
     }
 }

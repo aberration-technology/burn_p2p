@@ -11,25 +11,29 @@ use std::time::{Duration, Instant};
 
 use burn_p2p_core::{
     AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
-    CapabilityCard, CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform,
-    ContentId, DatasetViewId, ExperimentDirectoryEntry, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentVisibility, HeadDescriptor, HeadId, MetricValue,
-    MetricsLiveEvent, MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet,
-    PersistenceClass, Precision, ReductionCertificate, RevisionId, StudyId, TelemetrySummary,
-    ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
+    BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
+    BrowserTransportFamily, BrowserTransportObservationSource, CapabilityCard, CapabilityCardId,
+    CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform, ContentId, DatasetViewId,
+    ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
+    ExperimentVisibility, HeadDescriptor, HeadId, MetricValue, MetricsLiveEvent,
+    MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision,
+    ReductionCertificate, RevisionId, StudyId, TelemetrySummary, ValidationQuorumCertificate,
+    WindowActivation, WindowId, WorkloadId,
 };
 use chrono::Utc;
 use futures::{executor::block_on, future};
 use semver::Version;
 
 use super::{
-    AggregateProposalAnnouncement, ArtifactChunkPayload, ControlAnnouncement, ControlPlaneSnapshot,
-    ExperimentControlEnvelope, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
-    FleetScheduleAnnouncement, HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
-    MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell,
-    OverlayChannel, OverlayTopic, PeerDirectoryAnnouncement, PeerObservation, PeerStore,
-    ProtocolSet, PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
+    AggregateProposalAnnouncement, ArtifactChunkPayload, BrowserSwarmBootstrap,
+    BrowserSwarmRuntime, ControlAnnouncement, ControlPlaneSnapshot, ExperimentControlEnvelope,
+    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, FleetScheduleAnnouncement,
+    HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell,
+    MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
+    PeerDirectoryAnnouncement, PeerObservation, PeerStore, PlannedBrowserSwarmRuntime, ProtocolSet,
+    PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
+    browser_transport_family_for_seed_url, plan_browser_seed_dials,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
@@ -236,6 +240,109 @@ fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
     assert!(policy.enable_rendezvous_client);
     assert!(policy.enable_rendezvous_server);
     assert!(policy.enable_kademlia);
+}
+
+#[test]
+fn browser_transport_family_for_seed_url_classifies_browser_capable_multiaddrs() {
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/4001/webrtc-direct"),
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/443/webtransport"),
+        Some(BrowserTransportFamily::WebTransport)
+    );
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/tcp/443/wss"),
+        Some(BrowserTransportFamily::WssFallback)
+    );
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/tcp/4001/quic-v1"),
+        None
+    );
+}
+
+#[test]
+fn browser_seed_dial_plan_prefers_direct_browser_transports_before_fallback() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("net-browser"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::Merged,
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/tcp/443/wss".into(),
+                "/dns4/bootstrap.example/udp/443/webtransport".into(),
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
+            ],
+            advertised_seed_count: 3,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WebTransport,
+            BrowserTransportFamily::WssFallback,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+
+    let plan = plan_browser_seed_dials(&bootstrap);
+    assert_eq!(
+        plan.desired_transport,
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+    assert_eq!(plan.candidates.len(), 3);
+    assert_eq!(
+        plan.candidates[0].transport,
+        BrowserTransportFamily::WebRtcDirect
+    );
+    assert_eq!(
+        plan.candidates[1].transport,
+        BrowserTransportFamily::WebTransport
+    );
+    assert_eq!(
+        plan.candidates[2].transport,
+        BrowserTransportFamily::WssFallback
+    );
+    assert!(plan.fallback_allowed);
+}
+
+#[test]
+fn planned_browser_swarm_runtime_connect_reports_transport_selected_from_bootstrap() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("net-browser"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::EdgeSigned,
+            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            advertised_seed_count: 1,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WebTransport,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+    let mut runtime = PlannedBrowserSwarmRuntime::default();
+
+    let plan = block_on(runtime.connect(bootstrap)).expect("planned connect");
+    let status = runtime.status();
+
+    assert_eq!(
+        plan.desired_transport,
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+    assert_eq!(status.phase, BrowserSwarmPhase::TransportSelected);
+    assert_eq!(
+        status.transport_source,
+        BrowserTransportObservationSource::Selected
+    );
+    assert_eq!(
+        status.desired_transport,
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+    assert_eq!(status.connected_transport, None);
+    assert_eq!(status.connected_peer_count, 0);
 }
 
 fn semantic_test_overlay() -> OverlayTopic {

@@ -116,20 +116,23 @@ pub use burn_p2p_security::{
 };
 pub use burn_p2p_swarm::{
     AggregateProposalAnnouncement, AlertNotice, AlertSeverity, ArtifactChunkPayload,
-    ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, ChunkFetchRequest,
-    ChunkFetchResponse, ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse,
-    ControlPlaneShell, ControlPlaneSnapshot, DiffusionPromotionCertificateAnnouncement,
+    ArtifactProviderRecord, ArtifactSyncRequest, ArtifactSyncResponse, BrowserArtifactChunkRequest,
+    BrowserArtifactManifestRequest, BrowserSeedDialCandidate, BrowserSwarmBootstrap,
+    BrowserSwarmDialPlan, BrowserSwarmRuntime, ChunkFetchRequest, ChunkFetchResponse,
+    ControlAnnouncement, ControlPlaneRequest, ControlPlaneResponse, ControlPlaneShell,
+    ControlPlaneSnapshot, DiffusionPromotionCertificateAnnouncement,
     ExperimentDirectoryAnnouncement, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
     FleetScheduleAnnouncement, HeadAnnouncement, LeaseAnnouncement, LiveControlPlaneEvent,
     LiveSwarmEvent, MemoryControlPlaneShell, MemorySwarmShell, MergeAnnouncement,
     MergeWindowAnnouncement, MetricsAnnouncement, MicroShardFetchRequest, MicroShardFetchResponse,
     MicroShardProviderRecord, MigrationCoordinator, MigrationPlan, NativeControlPlaneShell,
     OverlayChannel, OverlayTopic, PeerAuthAnnouncement, PeerDirectoryAnnouncement, PeerObservation,
-    PeerStore, ProtocolId, ProtocolSet, ProviderPointer, PubsubPayload,
+    PeerStore, PlannedBrowserSwarmRuntime, ProtocolId, ProtocolSet, ProviderPointer, PubsubPayload,
     ReducerAssignmentAnnouncement, ReducerLoadAnnouncement, ReductionCertificateAnnouncement,
     RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy, SwarmAddress, SwarmError,
     SwarmStats, TelemetryAnnouncement, TrainerPromotionAttestationAnnouncement, TransportKind,
     UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
+    browser_transport_family_for_seed_url, plan_browser_seed_dials,
 };
 pub use burn_p2p_workload::{
     ContinuousTrainerPolicy, DirectoryMetadataAttachment, EvalSplit,

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod browser_edge;
+mod browser_runtime;
 mod control_shell;
 mod events;
 mod memory_control;
@@ -64,6 +65,7 @@ use tokio::{
 };
 
 pub use browser_edge::*;
+pub use browser_runtime::*;
 pub use control_shell::*;
 #[cfg(test)]
 pub(crate) use events::apply_pubsub_payload;

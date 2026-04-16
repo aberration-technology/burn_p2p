@@ -31,6 +31,7 @@ use burn_p2p_core::{
     SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
+use burn_p2p_swarm::BrowserSwarmBootstrap;
 use chrono::Utc;
 use semver::Version;
 
@@ -3761,6 +3762,54 @@ fn browser_swarm_status_reports_peer_artifact_ready_from_truthful_runtime_state(
     assert_eq!(status.connected_peer_count, 1);
     assert_eq!(status.artifact_source, BrowserArtifactSource::PeerSwarm);
     assert!(status.head_synced);
+}
+
+#[test]
+fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
+    let mut config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    config.seed_bootstrap.source = BrowserSeedBootstrapSource::Merged;
+    config.seed_bootstrap.seed_node_urls = vec![
+        "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
+        "/dns4/bootstrap.example/tcp/443/wss".into(),
+    ];
+    config.selected_experiment = Some(ExperimentId::new("exp-browser"));
+    config.selected_revision = Some(RevisionId::new("rev-browser"));
+
+    let bootstrap: BrowserSwarmBootstrap = config.swarm_bootstrap();
+    assert_eq!(bootstrap.network_id.as_str(), "net-browser");
+    assert_eq!(
+        bootstrap.seed_bootstrap.source,
+        BrowserSeedBootstrapSource::Merged
+    );
+    assert_eq!(bootstrap.seed_bootstrap.seed_node_urls.len(), 2);
+    assert_eq!(
+        bootstrap.transport_preference,
+        vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WebTransport,
+            BrowserTransportFamily::WssFallback,
+        ]
+    );
+    assert_eq!(
+        bootstrap
+            .selected_experiment
+            .expect("selected experiment")
+            .as_str(),
+        "exp-browser"
+    );
+    assert_eq!(
+        bootstrap
+            .selected_revision
+            .expect("selected revision")
+            .as_str(),
+        "rev-browser"
+    );
 }
 
 fn sample_browser_session_state(principal_id: &str) -> BrowserSessionState {
