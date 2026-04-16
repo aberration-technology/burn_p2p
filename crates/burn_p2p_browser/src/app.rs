@@ -6,7 +6,10 @@ use burn_p2p_metrics::{
     derive_latest_canonical_head_population_histograms,
 };
 #[cfg(target_arch = "wasm32")]
-use burn_p2p_swarm::{BrowserSwarmRuntime, WasmBrowserSwarmRuntime};
+use burn_p2p_swarm::{
+    BrowserArtifactChunkRequest, BrowserArtifactManifestRequest, BrowserSwarmRuntime,
+    ControlPlaneSnapshot, WasmBrowserSwarmRuntime,
+};
 use burn_p2p_views::{
     BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
     BrowserAppLeaderboardPreview, BrowserAppMetricPreview, BrowserAppNetworkView,
@@ -27,6 +30,10 @@ use crate::{
         persist_durable_browser_storage, persist_durable_receipt_outbox,
     },
     resolve_browser_seed_bootstrap,
+};
+#[cfg(target_arch = "wasm32")]
+use crate::{
+    BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
 };
 use burn_p2p_core::{BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload};
 
@@ -565,6 +572,14 @@ impl BrowserAppController {
             establish_direct_swarm_runtime(&mut runtime).await;
         #[cfg(target_arch = "wasm32")]
         bootstrap_events.extend(direct_swarm_events);
+        #[cfg(target_arch = "wasm32")]
+        let edge_client = if let Some(direct_swarm_runtime) = direct_swarm_runtime.as_ref() {
+            edge_client.with_peer_artifact_fetcher(DirectSwarmPeerArtifactFetcher::new(
+                direct_swarm_runtime.clone(),
+            ))
+        } else {
+            edge_client
+        };
         let mut controller = Self {
             edge_client,
             model: BrowserAppModel::from_runtime(runtime),
@@ -586,6 +601,35 @@ impl BrowserAppController {
         #[cfg(target_arch = "wasm32")]
         let direct_swarm_events =
             apply_direct_swarm_status_snapshot(&mut runtime, self.direct_swarm_runtime.as_ref());
+        #[cfg(target_arch = "wasm32")]
+        if let Some(direct_swarm_runtime) = self.direct_swarm_runtime.as_mut() {
+            match sync_worker_runtime_from_direct_swarm(
+                &self.edge_client,
+                &mut runtime,
+                Some(&session),
+                direct_swarm_runtime,
+            )
+            .await
+            {
+                Ok(mut events) => {
+                    let mut model = BrowserAppModel::from_runtime(runtime);
+                    model.last_error = previous_error;
+                    for event in direct_swarm_events {
+                        model.apply_event(event);
+                    }
+                    for event in events.drain(..) {
+                        model.apply_event(event);
+                    }
+                    self.model = model;
+                    self.persist_receipt_outbox().await?;
+                    self.persist_browser_storage().await?;
+                    return Ok(self.view());
+                }
+                Err(error) => {
+                    runtime.transport.last_error = Some(error.to_string());
+                }
+            }
+        }
         match self
             .edge_client
             .sync_worker_runtime(&mut runtime, Some(&session), true)
@@ -691,7 +735,7 @@ async fn establish_direct_swarm_runtime(
         return (None, Vec::new());
     }
 
-    let mut direct_runtime = WasmBrowserSwarmRuntime::new();
+    let mut direct_runtime = WasmBrowserSwarmRuntime::new(config.network_id.clone());
     let connect_result = direct_runtime.connect(config.swarm_bootstrap()).await;
     let mut events = runtime.apply_command(
         BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
@@ -719,6 +763,262 @@ fn apply_direct_swarm_status_snapshot(
         None,
         None,
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct DirectSwarmPeerArtifactFetcher {
+    runtime: WasmBrowserSwarmRuntime,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl DirectSwarmPeerArtifactFetcher {
+    fn new(runtime: WasmBrowserSwarmRuntime) -> Self {
+        Self { runtime }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserPeerArtifactFetcher for DirectSwarmPeerArtifactFetcher {
+    fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+        let mut runtime = self.runtime.clone();
+        Box::pin(async move {
+            let descriptor = runtime
+                .fetch_artifact_manifest(BrowserArtifactManifestRequest {
+                    artifact_id: request.artifact_id.clone(),
+                    provider_peer_ids: request.provider_peer_ids.clone(),
+                })
+                .await
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+            if descriptor.artifact_id != request.artifact_id {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "browser direct swarm returned descriptor for unexpected artifact {}",
+                    descriptor.artifact_id.as_str()
+                )));
+            }
+
+            let mut chunks = descriptor.chunks.clone();
+            chunks.sort_by(|left, right| {
+                left.offset_bytes
+                    .cmp(&right.offset_bytes)
+                    .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+            });
+            let mut bytes = Vec::with_capacity(descriptor.bytes_len as usize);
+            for chunk in &chunks {
+                let chunk_bytes = runtime
+                    .fetch_artifact_chunk(BrowserArtifactChunkRequest {
+                        artifact_id: request.artifact_id.clone(),
+                        chunk_id: chunk.chunk_id.clone(),
+                        provider_peer_ids: request.provider_peer_ids.clone(),
+                    })
+                    .await
+                    .map_err(|error| {
+                        BrowserAuthClientError::ArtifactTransport(error.to_string())
+                    })?;
+                if chunk_bytes.len() as u64 != chunk.length_bytes {
+                    return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                        "browser direct swarm returned chunk {} with unexpected length {} (expected {})",
+                        chunk.chunk_id.as_str(),
+                        chunk_bytes.len(),
+                        chunk.length_bytes
+                    )));
+                }
+                let chunk_hash =
+                    ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+                if chunk_hash != chunk.chunk_hash {
+                    return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                        "browser direct swarm returned chunk {} with unexpected hash {}",
+                        chunk.chunk_id.as_str(),
+                        chunk_hash.as_str()
+                    )));
+                }
+                bytes.extend_from_slice(&chunk_bytes);
+            }
+            if bytes.len() as u64 != descriptor.bytes_len {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "browser direct swarm reconstructed {} bytes for {} but descriptor expected {}",
+                    bytes.len(),
+                    descriptor.artifact_id.as_str(),
+                    descriptor.bytes_len
+                )));
+            }
+            let root_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
+            if root_hash != descriptor.root_hash {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "browser direct swarm reconstructed {} with unexpected root hash {}",
+                    descriptor.artifact_id.as_str(),
+                    root_hash.as_str()
+                )));
+            }
+            Ok(bytes)
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn sync_worker_runtime_from_direct_swarm(
+    edge_client: &BrowserEdgeClient,
+    runtime: &mut BrowserWorkerRuntime,
+    session: Option<&BrowserSessionState>,
+    direct_runtime: &mut WasmBrowserSwarmRuntime,
+) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+    let snapshot = direct_runtime
+        .fetch_snapshot()
+        .await
+        .map_err(|error| BrowserAuthClientError::Swarm(error.to_string()))?;
+    let mut events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
+        None,
+        None,
+    );
+    if let Some(directory) = browser_directory_snapshot_from_control_snapshot(&snapshot, runtime) {
+        events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmDirectory(Box::new(directory)),
+            None,
+            session,
+        ));
+    }
+    let heads = browser_heads_from_control_snapshot(&snapshot, runtime);
+    if !heads.is_empty() {
+        events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmHeads(heads),
+            None,
+            session,
+        ));
+    }
+    if let Some(metrics) = browser_metrics_sync_from_control_snapshot(&snapshot, runtime) {
+        events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmMetricsSync(Box::new(metrics)),
+            None,
+            session,
+        ));
+    }
+    match edge_client
+        .sync_active_head_artifact_into_worker(runtime, session)
+        .await
+    {
+        Ok(artifact_events) => events.extend(artifact_events),
+        Err(error) => events.push(BrowserWorkerEvent::Error {
+            message: format!("browser artifact sync failed: {error}"),
+        }),
+    }
+    Ok(events)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_directory_snapshot_from_control_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    runtime: &BrowserWorkerRuntime,
+) -> Option<burn_p2p_core::BrowserDirectorySnapshot> {
+    let network_id = runtime.config.as_ref().map(|config| config.network_id.clone())?;
+    snapshot
+        .directory_announcements
+        .iter()
+        .rev()
+        .find(|announcement| announcement.network_id == network_id)
+        .map(|announcement| burn_p2p_core::BrowserDirectorySnapshot {
+            network_id,
+            generated_at: announcement.announced_at,
+            entries: announcement.entries.clone(),
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_heads_from_control_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    runtime: &BrowserWorkerRuntime,
+) -> Vec<burn_p2p::HeadDescriptor> {
+    let Some(network_id) = runtime.config.as_ref().map(|config| config.network_id.clone()) else {
+        return Vec::new();
+    };
+    let visible_experiments = snapshot
+        .directory_announcements
+        .iter()
+        .rev()
+        .find(|announcement| announcement.network_id == network_id)
+        .map(|announcement| {
+            announcement
+                .entries
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.study_id.clone(),
+                        entry.experiment_id.clone(),
+                        entry.current_revision_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut heads = snapshot
+        .head_announcements
+        .iter()
+        .map(|announcement| announcement.head.clone())
+        .filter(|head| {
+            visible_experiments.iter().any(|(study_id, experiment_id, revision_id)| {
+                &head.study_id == study_id
+                    && &head.experiment_id == experiment_id
+                    && &head.revision_id == revision_id
+            })
+        })
+        .collect::<Vec<_>>();
+    heads.sort_by(|left, right| {
+        left.head_id
+            .cmp(&right.head_id)
+            .then_with(|| left.created_at.cmp(&right.created_at))
+    });
+    heads.dedup_by(|left, right| left.head_id == right.head_id);
+    heads
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_metrics_sync_from_control_snapshot(
+    snapshot: &ControlPlaneSnapshot,
+    runtime: &BrowserWorkerRuntime,
+) -> Option<crate::BrowserMetricsSyncState> {
+    let selected_experiment = runtime
+        .storage
+        .active_assignment
+        .as_ref()
+        .map(|assignment| assignment.experiment_id.clone())
+        .or_else(|| {
+            runtime
+                .config
+                .as_ref()
+                .and_then(|config| config.selected_experiment.clone())
+        });
+    let selected_revision = runtime
+        .storage
+        .active_assignment
+        .as_ref()
+        .map(|assignment| assignment.revision_id.clone())
+        .or_else(|| {
+            runtime
+                .config
+                .as_ref()
+                .and_then(|config| config.selected_revision.clone())
+        });
+    let live_event = snapshot
+        .metrics_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.event.cursors.iter().any(|cursor| {
+                selected_experiment
+                    .as_ref()
+                    .map(|experiment_id| &cursor.experiment_id == experiment_id)
+                    .unwrap_or(true)
+                    && selected_revision
+                        .as_ref()
+                        .map(|revision_id| &cursor.revision_id == revision_id)
+                        .unwrap_or(true)
+            })
+        })
+        .max_by_key(|announcement| announcement.event.generated_at)
+        .map(|announcement| announcement.event.clone())?;
+    Some(crate::BrowserMetricsSyncState {
+        catchup_bundles: Vec::new(),
+        live_event: Some(live_event),
+    })
 }
 
 async fn fetch_edge_snapshot(

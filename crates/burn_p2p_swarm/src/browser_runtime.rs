@@ -5,10 +5,14 @@ use burn_p2p_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::SwarmError;
+use crate::{ControlPlaneSnapshot, SwarmError};
+#[cfg(target_arch = "wasm32")]
+use crate::{ControlPlaneRequest, ControlPlaneResponse, ProtocolSet};
+#[cfg(target_arch = "wasm32")]
+use crate::runtime_helpers::stream_protocol;
 
 #[cfg(target_arch = "wasm32")]
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 #[cfg(target_arch = "wasm32")]
 use futures::{
@@ -114,6 +118,9 @@ pub trait BrowserSwarmRuntime {
     /// Returns the most recent browser seed dial plan, when one exists.
     fn dial_plan(&self) -> Option<BrowserSwarmDialPlan>;
 
+    /// Fetches one control-plane snapshot through the browser swarm path.
+    async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError>;
+
     /// Subscribes the browser runtime to directory assignment propagation.
     async fn subscribe_directory(&mut self) -> Result<(), SwarmError>;
 
@@ -218,6 +225,12 @@ impl BrowserSwarmRuntime for PlannedBrowserSwarmRuntime {
         self.dial_plan.clone()
     }
 
+    async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError> {
+        Err(SwarmError::Runtime(
+            "direct browser swarm control snapshot fetch is not implemented".into(),
+        ))
+    }
+
     async fn subscribe_directory(&mut self) -> Result<(), SwarmError> {
         Err(SwarmError::Runtime(
             "direct browser swarm directory subscription is not implemented".into(),
@@ -273,6 +286,8 @@ pub(crate) fn filter_supported_browser_seed_dial_candidates(
 #[behaviour(prelude = "libp2p_swarm::derive_prelude")]
 struct WasmBrowserSwarmBehaviour {
     ping: libp2p::ping::Behaviour,
+    request_response:
+        libp2p_request_response::cbor::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -310,6 +325,17 @@ enum WasmBrowserSwarmCommand {
     Disconnect {
         response_tx: oneshot::Sender<Result<(), SwarmError>>,
     },
+    FetchSnapshot {
+        response_tx: oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>,
+    },
+    FetchArtifactManifest {
+        request: BrowserArtifactManifestRequest,
+        response_tx: oneshot::Sender<Result<burn_p2p_core::ArtifactDescriptor, SwarmError>>,
+    },
+    FetchArtifactChunk {
+        request: BrowserArtifactChunkRequest,
+        response_tx: oneshot::Sender<Result<Vec<u8>, SwarmError>>,
+    },
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -331,18 +357,11 @@ impl std::fmt::Debug for WasmBrowserSwarmRuntime {
 }
 
 #[cfg(target_arch = "wasm32")]
-impl Default for WasmBrowserSwarmRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 impl WasmBrowserSwarmRuntime {
-    pub fn new() -> Self {
+    pub fn new(network_id: NetworkId) -> Self {
         let shared = Rc::new(RefCell::new(WasmBrowserSwarmSharedState::default()));
         let (command_tx, command_rx) = mpsc::unbounded();
-        spawn_local(run_wasm_browser_swarm_task(shared.clone(), command_rx));
+        spawn_local(run_wasm_browser_swarm_task(shared.clone(), command_rx, network_id));
         Self { shared, command_tx }
     }
 }
@@ -406,6 +425,27 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
         self.shared.borrow().dial_plan.clone()
     }
 
+    async fn fetch_snapshot(&mut self) -> Result<ControlPlaneSnapshot, SwarmError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::FetchSnapshot { response_tx })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(10_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime("browser direct swarm snapshot response was dropped".into())
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm snapshot".into(),
+            )),
+        }
+    }
+
     async fn subscribe_directory(&mut self) -> Result<(), SwarmError> {
         Err(SwarmError::Runtime(
             "direct browser swarm directory subscription is not implemented".into(),
@@ -426,20 +466,60 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
 
     async fn fetch_artifact_manifest(
         &mut self,
-        _request: BrowserArtifactManifestRequest,
+        request: BrowserArtifactManifestRequest,
     ) -> Result<burn_p2p_core::ArtifactDescriptor, SwarmError> {
-        Err(SwarmError::Runtime(
-            "direct browser swarm artifact manifest fetch is not implemented".into(),
-        ))
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::FetchArtifactManifest {
+                request,
+                response_tx,
+            })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(15_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime(
+                    "browser direct swarm artifact manifest response was dropped".into(),
+                )
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm artifact manifest".into(),
+            )),
+        }
     }
 
     async fn fetch_artifact_chunk(
         &mut self,
-        _request: BrowserArtifactChunkRequest,
+        request: BrowserArtifactChunkRequest,
     ) -> Result<Vec<u8>, SwarmError> {
-        Err(SwarmError::Runtime(
-            "direct browser swarm artifact chunk fetch is not implemented".into(),
-        ))
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .unbounded_send(WasmBrowserSwarmCommand::FetchArtifactChunk {
+                request,
+                response_tx,
+            })
+            .map_err(|_| {
+                SwarmError::Runtime("browser direct swarm command channel closed".into())
+            })?;
+
+        let response = response_rx.fuse();
+        let timeout = TimeoutFuture::new(15_000).fuse();
+        futures::pin_mut!(response, timeout);
+        match futures::future::select(response, timeout).await {
+            futures::future::Either::Left((result, _)) => result.map_err(|_| {
+                SwarmError::Runtime(
+                    "browser direct swarm artifact chunk response was dropped".into(),
+                )
+            })?,
+            futures::future::Either::Right((_, _)) => Err(SwarmError::Runtime(
+                "timed out waiting for browser direct swarm artifact chunk".into(),
+            )),
+        }
     }
 }
 
@@ -447,9 +527,10 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
 async fn run_wasm_browser_swarm_task(
     shared: Rc<RefCell<WasmBrowserSwarmSharedState>>,
     mut command_rx: mpsc::UnboundedReceiver<WasmBrowserSwarmCommand>,
+    network_id: NetworkId,
 ) {
     let local_key = libp2p::identity::Keypair::generate_ed25519();
-    let mut swarm = match build_wasm_browser_swarm(local_key) {
+    let mut swarm = match build_wasm_browser_swarm(local_key, &network_id) {
         Ok(swarm) => swarm,
         Err(error) => {
             shared.borrow_mut().status.last_error = Some(error.to_string());
@@ -461,6 +542,15 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
+                    WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
+                    WasmBrowserSwarmCommand::FetchArtifactManifest { response_tx, .. } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
+                    WasmBrowserSwarmCommand::FetchArtifactChunk { response_tx, .. } => {
+                        let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
+                    }
                 }
             }
             return;
@@ -469,6 +559,14 @@ async fn run_wasm_browser_swarm_task(
 
     let mut pending_connect: Option<WasmPendingConnect> = None;
     let mut active_candidate: Option<BrowserSeedDialCandidate> = None;
+    let mut pending_snapshot_requests =
+        BTreeMap::<String, oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>>::new();
+    let mut pending_manifest_requests = BTreeMap::<
+        String,
+        oneshot::Sender<Result<burn_p2p_core::ArtifactDescriptor, SwarmError>>,
+    >::new();
+    let mut pending_chunk_requests =
+        BTreeMap::<String, oneshot::Sender<Result<Vec<u8>, SwarmError>>>::new();
 
     loop {
         let next_command = command_rx.next().fuse();
@@ -485,9 +583,29 @@ async fn run_wasm_browser_swarm_task(
                         bootstrap,
                         response_tx,
                     } => {
+                        if bootstrap.network_id != network_id {
+                            let _ = response_tx.send(Err(SwarmError::Runtime(format!(
+                                "browser direct swarm runtime was created for {} but connect requested {}",
+                                network_id.as_str(),
+                                bootstrap.network_id.as_str()
+                            ))));
+                            continue;
+                        }
                         for peer_id in swarm.connected_peers().cloned().collect::<Vec<_>>() {
                             let _ = swarm.disconnect_peer_id(peer_id);
                         }
+                        fail_pending_wasm_snapshot_requests(
+                            &mut pending_snapshot_requests,
+                            "browser direct swarm reconnect discarded pending snapshot request",
+                        );
+                        fail_pending_wasm_manifest_requests(
+                            &mut pending_manifest_requests,
+                            "browser direct swarm reconnect discarded pending artifact manifest request",
+                        );
+                        fail_pending_wasm_chunk_requests(
+                            &mut pending_chunk_requests,
+                            "browser direct swarm reconnect discarded pending artifact chunk request",
+                        );
                         let dial_plan = plan_browser_seed_dials(&bootstrap);
                         let supported = wasm_supported_browser_transport_families();
                         let candidates =
@@ -552,6 +670,18 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
                         active_candidate = None;
                         pending_connect = None;
+                        fail_pending_wasm_snapshot_requests(
+                            &mut pending_snapshot_requests,
+                            "browser direct swarm disconnected before snapshot request completed",
+                        );
+                        fail_pending_wasm_manifest_requests(
+                            &mut pending_manifest_requests,
+                            "browser direct swarm disconnected before artifact manifest request completed",
+                        );
+                        fail_pending_wasm_chunk_requests(
+                            &mut pending_chunk_requests,
+                            "browser direct swarm disconnected before artifact chunk request completed",
+                        );
                         for peer_id in swarm.connected_peers().cloned().collect::<Vec<_>>() {
                             let _ = swarm.disconnect_peer_id(peer_id);
                         }
@@ -561,6 +691,77 @@ async fn run_wasm_browser_swarm_task(
                             state.dial_plan = None;
                         }
                         let _ = response_tx.send(Ok(()));
+                    }
+                    WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
+                        match resolve_wasm_browser_request_peer_id(
+                            &shared.borrow().status.connected_peer_ids,
+                            &[],
+                        ) {
+                            Ok(peer_id) => {
+                                let request_id = swarm
+                                    .behaviour_mut()
+                                    .request_response
+                                    .send_request(&peer_id, ControlPlaneRequest::Snapshot)
+                                    .to_string();
+                                pending_snapshot_requests.insert(request_id, response_tx);
+                            }
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error));
+                            }
+                        }
+                    }
+                    WasmBrowserSwarmCommand::FetchArtifactManifest {
+                        request,
+                        response_tx,
+                    } => {
+                        match resolve_wasm_browser_request_peer_id(
+                            &shared.borrow().status.connected_peer_ids,
+                            &request.provider_peer_ids,
+                        ) {
+                            Ok(peer_id) => {
+                                let request_id = swarm
+                                    .behaviour_mut()
+                                    .request_response
+                                    .send_request(
+                                        &peer_id,
+                                        ControlPlaneRequest::ArtifactManifest {
+                                            artifact_id: request.artifact_id,
+                                        },
+                                    )
+                                    .to_string();
+                                pending_manifest_requests.insert(request_id, response_tx);
+                            }
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error));
+                            }
+                        }
+                    }
+                    WasmBrowserSwarmCommand::FetchArtifactChunk {
+                        request,
+                        response_tx,
+                    } => {
+                        match resolve_wasm_browser_request_peer_id(
+                            &shared.borrow().status.connected_peer_ids,
+                            &request.provider_peer_ids,
+                        ) {
+                            Ok(peer_id) => {
+                                let request_id = swarm
+                                    .behaviour_mut()
+                                    .request_response
+                                    .send_request(
+                                        &peer_id,
+                                        ControlPlaneRequest::ArtifactChunk {
+                                            artifact_id: request.artifact_id,
+                                            chunk_id: request.chunk_id,
+                                        },
+                                    )
+                                    .to_string();
+                                pending_chunk_requests.insert(request_id, response_tx);
+                            }
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error));
+                            }
+                        }
                     }
                 }
             }
@@ -631,6 +832,96 @@ async fn run_wasm_browser_swarm_task(
                     state.status.connected_transport = None;
                     state.status.connected_peer_ids.clear();
                     state.status.connected_peer_count = 0;
+                    fail_pending_wasm_snapshot_requests(
+                        &mut pending_snapshot_requests,
+                        "browser direct swarm connection closed before snapshot request completed",
+                    );
+                    fail_pending_wasm_manifest_requests(
+                        &mut pending_manifest_requests,
+                        "browser direct swarm connection closed before artifact manifest request completed",
+                    );
+                    fail_pending_wasm_chunk_requests(
+                        &mut pending_chunk_requests,
+                        "browser direct swarm connection closed before artifact chunk request completed",
+                    );
+                }
+                SwarmEvent::Behaviour(WasmBrowserSwarmBehaviourEvent::RequestResponse(event)) => {
+                    match event {
+                        libp2p_request_response::Event::Message { peer, message, .. } => {
+                            let peer_id = PeerId::new(peer.to_string());
+                            match message {
+                                libp2p_request_response::Message::Response {
+                                    request_id,
+                                    response,
+                                } => {
+                                    let request_id = request_id.to_string();
+                                    match response {
+                                        ControlPlaneResponse::Snapshot(snapshot) => {
+                                            if let Some(response_tx) =
+                                                pending_snapshot_requests.remove(&request_id)
+                                            {
+                                                let _ = response_tx.send(Ok(snapshot));
+                                            }
+                                        }
+                                        ControlPlaneResponse::ArtifactManifest(descriptor) => {
+                                            if let Some(response_tx) =
+                                                pending_manifest_requests.remove(&request_id)
+                                            {
+                                                let _ = response_tx.send(descriptor.ok_or_else(
+                                                    || {
+                                                        SwarmError::Request(format!(
+                                                            "peer {} did not advertise the requested artifact manifest",
+                                                            peer_id.as_str()
+                                                        ))
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                        ControlPlaneResponse::ArtifactChunk(payload) => {
+                                            if let Some(response_tx) =
+                                                pending_chunk_requests.remove(&request_id)
+                                            {
+                                                let _ = response_tx.send(payload
+                                                    .map(|payload| payload.bytes)
+                                                    .ok_or_else(|| {
+                                                        SwarmError::Request(format!(
+                                                            "peer {} did not advertise the requested artifact chunk",
+                                                            peer_id.as_str()
+                                                        ))
+                                                    }));
+                                            }
+                                        }
+                                    }
+                                }
+                                libp2p_request_response::Message::Request { .. } => {}
+                            }
+                        }
+                        libp2p_request_response::Event::OutboundFailure {
+                            request_id, error, ..
+                        } => {
+                            let request_id = request_id.to_string();
+                            let error_message = error.to_string();
+                            if let Some(response_tx) =
+                                pending_snapshot_requests.remove(&request_id)
+                            {
+                                let _ = response_tx
+                                    .send(Err(SwarmError::Request(error_message.clone())));
+                            }
+                            if let Some(response_tx) =
+                                pending_manifest_requests.remove(&request_id)
+                            {
+                                let _ = response_tx
+                                    .send(Err(SwarmError::Request(error_message.clone())));
+                            }
+                            if let Some(response_tx) = pending_chunk_requests.remove(&request_id) {
+                                let _ = response_tx
+                                    .send(Err(SwarmError::Request(error_message.clone())));
+                            }
+                            shared.borrow_mut().status.last_error = Some(error_message);
+                        }
+                        libp2p_request_response::Event::InboundFailure { .. }
+                        | libp2p_request_response::Event::ResponseSent { .. } => {}
+                    }
                 }
                 SwarmEvent::Behaviour(_) => {}
                 _ => {}
@@ -688,7 +979,9 @@ fn wasm_supported_browser_transport_families() -> Vec<BrowserTransportFamily> {
 #[cfg(target_arch = "wasm32")]
 fn build_wasm_browser_swarm(
     keypair: libp2p::identity::Keypair,
+    network_id: &NetworkId,
 ) -> Result<libp2p::Swarm<WasmBrowserSwarmBehaviour>, SwarmError> {
+    let control_protocol = stream_protocol(&ProtocolSet::for_network(network_id)?.control)?;
     SwarmBuilder::with_existing_identity(keypair)
         .with_wasm_bindgen()
         .with_other_transport(|key| build_wasm_webrtc_transport(key))
@@ -699,9 +992,64 @@ fn build_wasm_browser_swarm(
         .map_err(|error| SwarmError::Runtime(error.to_string()))?
         .with_behaviour(|_| WasmBrowserSwarmBehaviour {
             ping: libp2p::ping::Behaviour::default(),
+            request_response: libp2p_request_response::cbor::Behaviour::new(
+                [(control_protocol, libp2p_request_response::ProtocolSupport::Outbound)],
+                libp2p_request_response::Config::default(),
+            ),
         })
         .map_err(|error| SwarmError::Runtime(error.to_string()))
         .map(|builder| builder.build())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resolve_wasm_browser_request_peer_id(
+    connected_peer_ids: &[PeerId],
+    requested_provider_peer_ids: &[PeerId],
+) -> Result<libp2p::identity::PeerId, SwarmError> {
+    requested_provider_peer_ids
+        .iter()
+        .find(|peer_id| connected_peer_ids.contains(peer_id))
+        .or_else(|| connected_peer_ids.first())
+        .ok_or_else(|| SwarmError::Runtime("browser direct swarm has no connected peer to service the request".into()))
+        .and_then(|peer_id| {
+            peer_id
+                .as_str()
+                .parse::<libp2p::identity::PeerId>()
+                .map_err(|_| SwarmError::InvalidPeerId(peer_id.as_str().to_owned()))
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn fail_pending_wasm_snapshot_requests(
+    pending: &mut BTreeMap<String, oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>>,
+    message: &str,
+) {
+    for (_, response_tx) in std::mem::take(pending) {
+        let _ = response_tx.send(Err(SwarmError::Runtime(message.to_owned())));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn fail_pending_wasm_manifest_requests(
+    pending: &mut BTreeMap<
+        String,
+        oneshot::Sender<Result<burn_p2p_core::ArtifactDescriptor, SwarmError>>,
+    >,
+    message: &str,
+) {
+    for (_, response_tx) in std::mem::take(pending) {
+        let _ = response_tx.send(Err(SwarmError::Runtime(message.to_owned())));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn fail_pending_wasm_chunk_requests(
+    pending: &mut BTreeMap<String, oneshot::Sender<Result<Vec<u8>, SwarmError>>>,
+    message: &str,
+) {
+    for (_, response_tx) in std::mem::take(pending) {
+        let _ = response_tx.send(Err(SwarmError::Runtime(message.to_owned())));
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
