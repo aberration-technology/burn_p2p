@@ -632,6 +632,20 @@ impl BrowserAppController {
                 }
                 Err(error) => {
                     runtime.transport.last_error = Some(error.to_string());
+                    if !should_fallback_to_edge_control_sync(&runtime) {
+                        let mut model = BrowserAppModel::from_runtime(runtime);
+                        model.last_error = Some(error.to_string());
+                        for event in direct_swarm_events {
+                            model.apply_event(event);
+                        }
+                        for event in reconnect_events {
+                            model.apply_event(event);
+                        }
+                        self.model = model;
+                        self.persist_receipt_outbox().await?;
+                        self.persist_browser_storage().await?;
+                        return Ok(self.view());
+                    }
                 }
             }
         }
@@ -950,7 +964,10 @@ async fn sync_worker_runtime_from_direct_swarm(
                 );
                 if needs_artifact_sync {
                     match edge_client
-                        .sync_active_head_artifact_into_worker(runtime, session)
+                        .sync_active_head_artifact_from_control_snapshot_into_worker(
+                            runtime,
+                            snapshot.as_ref(),
+                        )
                         .await
                     {
                         Ok(artifact_events) => events.extend(artifact_events),
@@ -963,6 +980,13 @@ async fn sync_worker_runtime_from_direct_swarm(
         }
     }
     Ok(events)
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn should_fallback_to_edge_control_sync(runtime: &BrowserWorkerRuntime) -> bool {
+    runtime.transport.connected.is_none()
+        || runtime.storage.last_signed_directory_snapshot.is_none()
+        || runtime.storage.last_head_id.is_none()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1759,24 +1783,35 @@ fn transport_label(transport: &BrowserTransportStatus) -> String {
 }
 
 fn network_note(runtime: &BrowserWorkerRuntime) -> String {
+    let swarm_status = runtime.swarm_status();
+    let artifact_note = match swarm_status.artifact_source {
+        burn_p2p_core::BrowserArtifactSource::PeerSwarm => "artifact via peer swarm",
+        burn_p2p_core::BrowserArtifactSource::EdgeHttp => "artifact via edge fallback",
+        burn_p2p_core::BrowserArtifactSource::Unavailable => "artifact pending",
+    };
+    if swarm_status.connected_transport.is_some()
+        && runtime.storage.last_signed_directory_snapshot.is_some()
+    {
+        return format!("swarm control live · {artifact_note}.");
+    }
     let Some(config) = runtime.config.as_ref() else {
-        return "tracks one edge and its signed snapshots.".into();
+        return format!("tracks one edge and its signed snapshots · {artifact_note}.");
     };
     match config.seed_bootstrap.source {
         BrowserSeedBootstrapSource::Unavailable => {
-            "tracks one edge and its signed snapshots.".into()
+            format!("tracks one edge and its signed snapshots · {artifact_note}.")
         }
         BrowserSeedBootstrapSource::EdgeSigned => format!(
-            "edge published {} browser seed addrs.",
-            config.seed_bootstrap.seed_node_urls.len()
+            "edge published {} browser seed addrs · {artifact_note}.",
+            config.seed_bootstrap.seed_node_urls.len(),
         ),
         BrowserSeedBootstrapSource::SiteConfigFallback => format!(
-            "using {} site-config seed addrs.",
-            config.seed_bootstrap.seed_node_urls.len()
+            "using {} site-config seed addrs · {artifact_note}.",
+            config.seed_bootstrap.seed_node_urls.len(),
         ),
         BrowserSeedBootstrapSource::Merged => format!(
-            "edge + site seeds merged ({} total).",
-            config.seed_bootstrap.seed_node_urls.len()
+            "edge + site seeds merged ({} total) · {artifact_note}.",
+            config.seed_bootstrap.seed_node_urls.len(),
         ),
     }
 }

@@ -3,9 +3,9 @@ use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::ArtifactDescriptor;
 use burn_p2p::{
-    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ExperimentId,
-    ExperimentScope, HeadId, LoginRequest, LoginStart, NetworkId, NodeCertificate, PeerId,
-    PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
+    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ControlPlaneSnapshot,
+    ExperimentId, ExperimentScope, HeadDescriptor, HeadId, LoginRequest, LoginStart, NetworkId,
+    NodeCertificate, PeerId, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
 };
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_core::ChunkDescriptor;
@@ -29,10 +29,23 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportStatus,
-    BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
-    resolve_browser_seed_bootstrap,
+    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportKind,
+    BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
+    BrowserWorkerRuntime, resolve_browser_seed_bootstrap,
 };
+
+#[derive(Clone, Debug)]
+struct ActiveHeadArtifactSyncPlan {
+    head: HeadDescriptor,
+    run_id: RunId,
+    request: BrowserPeerArtifactRequest,
+    edge_fallback: Option<ActiveHeadArtifactEdgeFallback>,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveHeadArtifactEdgeFallback {
+    publication: PublishedArtifactRecord,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures browser enrollment.
@@ -437,6 +450,281 @@ impl BrowserEdgeClient {
             .into_iter()
             .find(|profile| view.available_profiles.contains(profile))
             .or_else(|| view.available_profiles.iter().next().cloned())
+    }
+
+    fn direct_peer_artifact_request_seed(
+        head: &HeadDescriptor,
+        checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
+    ) -> Option<(
+        RunId,
+        ArtifactProfile,
+        PublicationTargetId,
+        Option<ContentId>,
+        Option<u64>,
+    )> {
+        if let Some(checkpoint) = checkpoint.filter(|checkpoint| {
+            checkpoint.experiment_id == head.experiment_id
+                && checkpoint.revision_id == head.revision_id
+                && checkpoint.head_id == head.head_id
+                && checkpoint.artifact_id == head.artifact_id
+        }) {
+            return Some((
+                checkpoint.run_id.clone(),
+                checkpoint.artifact_profile.clone(),
+                checkpoint.publication_target_id.clone(),
+                checkpoint.publication_content_hash.clone(),
+                checkpoint.publication_content_length,
+            ));
+        }
+
+        Some((
+            RunId::derive(&(head.experiment_id.as_str(), head.revision_id.as_str())).ok()?,
+            ArtifactProfile::BrowserSnapshot,
+            PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET),
+            None,
+            None,
+        ))
+    }
+
+    fn provider_peer_ids_from_control_snapshot(
+        snapshot: &ControlPlaneSnapshot,
+        head_id: &HeadId,
+    ) -> Vec<PeerId> {
+        let mut provider_peer_ids = Vec::new();
+        for announcement in snapshot.head_announcements.iter().rev() {
+            if &announcement.head.head_id != head_id {
+                continue;
+            }
+            let Some(peer_id) = announcement.provider_peer_id.as_ref() else {
+                continue;
+            };
+            if !provider_peer_ids.contains(peer_id) {
+                provider_peer_ids.push(peer_id.clone());
+            }
+        }
+        provider_peer_ids
+    }
+
+    fn can_attempt_peer_transport_without_provider_hints(runtime: &BrowserWorkerRuntime) -> bool {
+        matches!(
+            runtime.transport.connected,
+            Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
+        )
+    }
+
+    fn build_active_head_artifact_sync_plan_from_view(
+        runtime: &BrowserWorkerRuntime,
+        view: &HeadArtifactView,
+    ) -> Option<ActiveHeadArtifactSyncPlan> {
+        let active_assignment = runtime.storage.active_assignment.as_ref()?;
+        let active_head_id = runtime.storage.last_head_id.as_ref()?;
+        if runtime
+            .storage
+            .cached_head_artifact_heads
+            .contains(active_head_id)
+        {
+            return None;
+        }
+        if &view.head.head_id != active_head_id
+            || view.head.study_id != active_assignment.study_id
+            || view.head.experiment_id != active_assignment.experiment_id
+            || view.head.revision_id != active_assignment.revision_id
+        {
+            return None;
+        }
+
+        let publication = Self::preferred_head_artifact_publication(view);
+        let artifact_profile = publication
+            .as_ref()
+            .map(|(profile, _)| profile.clone())
+            .or_else(|| {
+                if view.provider_peer_ids.is_empty() {
+                    None
+                } else {
+                    Self::preferred_head_artifact_profile(view)
+                }
+            })?;
+        let request = BrowserPeerArtifactRequest {
+            experiment_id: view.head.experiment_id.clone(),
+            revision_id: view.head.revision_id.clone(),
+            run_id: view.run_id.clone(),
+            head_id: view.head.head_id.clone(),
+            artifact_id: view.head.artifact_id.clone(),
+            artifact_profile: artifact_profile.clone(),
+            publication_target_id: publication
+                .as_ref()
+                .map(|(_, publication)| publication.publication_target_id.clone())
+                .unwrap_or_else(|| PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET)),
+            publication_content_hash: publication
+                .as_ref()
+                .map(|(_, publication)| publication.content_hash.clone()),
+            publication_content_length: publication
+                .as_ref()
+                .map(|(_, publication)| publication.content_length),
+            provider_peer_ids: view.provider_peer_ids.clone(),
+        };
+        Some(ActiveHeadArtifactSyncPlan {
+            head: view.head.clone(),
+            run_id: view.run_id.clone(),
+            request,
+            edge_fallback: publication.as_ref().map(|(_, publication)| {
+                ActiveHeadArtifactEdgeFallback {
+                    publication: (*publication).clone(),
+                }
+            }),
+        })
+    }
+
+    fn build_active_head_artifact_sync_plan_from_control_snapshot(
+        runtime: &BrowserWorkerRuntime,
+        snapshot: &ControlPlaneSnapshot,
+    ) -> Option<ActiveHeadArtifactSyncPlan> {
+        let active_assignment = runtime.storage.active_assignment.as_ref()?;
+        let active_head_id = runtime.storage.last_head_id.as_ref()?;
+        if runtime
+            .storage
+            .cached_head_artifact_heads
+            .contains(active_head_id)
+        {
+            return None;
+        }
+        let head = snapshot
+            .head_announcements
+            .iter()
+            .rev()
+            .map(|announcement| &announcement.head)
+            .find(|head| {
+                &head.head_id == active_head_id
+                    && head.study_id == active_assignment.study_id
+                    && head.experiment_id == active_assignment.experiment_id
+                    && head.revision_id == active_assignment.revision_id
+            })?
+            .clone();
+        let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.as_ref();
+        let (
+            run_id,
+            artifact_profile,
+            publication_target_id,
+            publication_content_hash,
+            publication_content_length,
+        ) = Self::direct_peer_artifact_request_seed(&head, existing_checkpoint)?;
+
+        Some(ActiveHeadArtifactSyncPlan {
+            request: BrowserPeerArtifactRequest {
+                experiment_id: head.experiment_id.clone(),
+                revision_id: head.revision_id.clone(),
+                run_id: run_id.clone(),
+                head_id: head.head_id.clone(),
+                artifact_id: head.artifact_id.clone(),
+                artifact_profile,
+                publication_target_id,
+                publication_content_hash,
+                publication_content_length,
+                provider_peer_ids: Self::provider_peer_ids_from_control_snapshot(
+                    snapshot,
+                    &head.head_id,
+                ),
+            },
+            head,
+            run_id,
+            edge_fallback: None,
+        })
+    }
+
+    async fn sync_active_head_artifact_plan_into_worker(
+        &self,
+        runtime: &mut BrowserWorkerRuntime,
+        session: Option<&BrowserSessionState>,
+        plan: ActiveHeadArtifactSyncPlan,
+        previous_storage: &crate::BrowserStorageSnapshot,
+    ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+        let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.clone();
+        let mut replay_request = plan.request;
+        Self::apply_replay_checkpoint(&mut replay_request, existing_checkpoint.as_ref());
+        runtime
+            .storage
+            .remember_artifact_replay_checkpoint(Self::replay_checkpoint_for_request(
+                &replay_request,
+                existing_checkpoint.as_ref(),
+            ));
+
+        let mut transport = None;
+        let mut peer_transport_error = None;
+        if !replay_request.provider_peer_ids.is_empty()
+            || Self::can_attempt_peer_transport_without_provider_hints(runtime)
+        {
+            match self
+                .try_download_artifact_via_peer_transport(&replay_request, runtime)
+                .await
+            {
+                Ok(Some(result)) => {
+                    if result.bytes.is_empty() {
+                        peer_transport_error = Some(BrowserAuthClientError::ArtifactTransport(
+                            "peer transport returned an empty artifact payload".into(),
+                        ));
+                    } else {
+                        transport = Some(result.kind.label().to_owned());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    peer_transport_error = Some(error);
+                }
+            }
+        }
+
+        if transport.is_none() {
+            if let Some(edge_fallback) = plan.edge_fallback.as_ref() {
+                let (Some(session), Some(principal_id)) =
+                    (session, session.and_then(BrowserSessionState::principal_id))
+                else {
+                    return Ok(Self::storage_update_if_changed(runtime, previous_storage));
+                };
+                let Some(session_id) = session.session_id() else {
+                    return Ok(Self::storage_update_if_changed(runtime, previous_storage));
+                };
+                match self
+                    .request_and_download_artifact_resumable(
+                        &DownloadTicketRequest {
+                            principal_id: principal_id.clone(),
+                            experiment_id: replay_request.experiment_id.clone(),
+                            run_id: Some(plan.run_id.clone()),
+                            head_id: plan.head.head_id.clone(),
+                            artifact_profile: replay_request.artifact_profile.clone(),
+                            publication_target_id: edge_fallback
+                                .publication
+                                .publication_target_id
+                                .clone(),
+                            artifact_alias_id: edge_fallback.publication.artifact_alias_id.clone(),
+                        },
+                        Some(session_id),
+                        runtime,
+                    )
+                    .await
+                {
+                    Ok(_) => transport = Some("edge-download-ticket".to_owned()),
+                    Err(edge_error) => {
+                        if let Some(peer_error) = peer_transport_error {
+                            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                                "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"
+                            )));
+                        }
+                        return Err(edge_error);
+                    }
+                }
+            } else if let Some(peer_error) = peer_transport_error {
+                return Err(peer_error);
+            } else {
+                return Ok(Self::storage_update_if_changed(runtime, previous_storage));
+            }
+        }
+
+        runtime.storage.remember_synced_head_artifact(
+            plan.head.head_id,
+            plan.head.artifact_id,
+            transport.unwrap_or_else(|| "unknown".into()),
+        );
+        Ok(Self::storage_update_if_changed(runtime, previous_storage))
     }
 
     /// Creates a new value.
@@ -1530,13 +1818,9 @@ impl BrowserEdgeClient {
         let Some(session) = session else {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
-        let (Some(session_id), Some(principal_id)) = (session.session_id(), session.principal_id())
-        else {
+        if session.session_id().is_none() || session.principal_id().is_none() {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
-        };
-        let Some(active_assignment) = runtime.storage.active_assignment.as_ref() else {
-            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
-        };
+        }
         let Some(active_head_id) = runtime.storage.last_head_id.as_ref() else {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
@@ -1547,119 +1831,34 @@ impl BrowserEdgeClient {
         {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
-
         let view = self.fetch_head_artifact_view(active_head_id).await?;
-        if view.head.study_id != active_assignment.study_id
-            || view.head.experiment_id != active_assignment.experiment_id
-            || view.head.revision_id != active_assignment.revision_id
-        {
-            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
-        }
-
-        let publication = Self::preferred_head_artifact_publication(&view);
-        let Some(artifact_profile) = publication
-            .as_ref()
-            .map(|(profile, _)| profile.clone())
-            .or_else(|| {
-                if view.provider_peer_ids.is_empty() {
-                    None
-                } else {
-                    Self::preferred_head_artifact_profile(&view)
-                }
-            })
+        let Some(plan) = Self::build_active_head_artifact_sync_plan_from_view(runtime, &view)
         else {
-            return Ok(Vec::new());
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
-        let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.clone();
-        let mut replay_request = BrowserPeerArtifactRequest {
-            experiment_id: view.head.experiment_id.clone(),
-            revision_id: view.head.revision_id.clone(),
-            run_id: view.run_id.clone(),
-            head_id: view.head.head_id.clone(),
-            artifact_id: view.head.artifact_id.clone(),
-            artifact_profile: artifact_profile.clone(),
-            publication_target_id: publication
-                .as_ref()
-                .map(|(_, publication)| publication.publication_target_id.clone())
-                .unwrap_or_else(|| PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET)),
-            publication_content_hash: publication
-                .as_ref()
-                .map(|(_, publication)| publication.content_hash.clone()),
-            publication_content_length: publication
-                .as_ref()
-                .map(|(_, publication)| publication.content_length),
-            provider_peer_ids: view.provider_peer_ids.clone(),
-        };
-        Self::apply_replay_checkpoint(&mut replay_request, existing_checkpoint.as_ref());
-        runtime
-            .storage
-            .remember_artifact_replay_checkpoint(Self::replay_checkpoint_for_request(
-                &replay_request,
-                existing_checkpoint.as_ref(),
-            ));
-        let mut transport = None;
-        let mut peer_transport_error = None;
-        if !replay_request.provider_peer_ids.is_empty() {
-            match self
-                .try_download_artifact_via_peer_transport(&replay_request, runtime)
-                .await
-            {
-                Ok(Some(result)) => {
-                    if result.bytes.is_empty() {
-                        peer_transport_error = Some(BrowserAuthClientError::ArtifactTransport(
-                            "peer transport returned an empty artifact payload".into(),
-                        ));
-                    } else {
-                        transport = Some(result.kind.label().to_owned());
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    peer_transport_error = Some(error);
-                }
-            }
-        }
-        if transport.is_none() {
-            if let Some((artifact_profile, publication)) = publication {
-                match self
-                    .request_and_download_artifact_resumable(
-                        &DownloadTicketRequest {
-                            principal_id: principal_id.clone(),
-                            experiment_id: view.head.experiment_id.clone(),
-                            run_id: Some(view.run_id.clone()),
-                            head_id: view.head.head_id.clone(),
-                            artifact_profile,
-                            publication_target_id: publication.publication_target_id.clone(),
-                            artifact_alias_id: publication.artifact_alias_id.clone(),
-                        },
-                        Some(session_id),
-                        runtime,
-                    )
-                    .await
-                {
-                    Ok(_) => transport = Some("edge-download-ticket".to_owned()),
-                    Err(edge_error) => {
-                        if let Some(peer_error) = peer_transport_error {
-                            return Err(BrowserAuthClientError::ArtifactTransport(format!(
-                                "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"
-                            )));
-                        }
-                        return Err(edge_error);
-                    }
-                }
-            } else if let Some(peer_error) = peer_transport_error {
-                return Err(peer_error);
-            } else {
-                return Ok(Vec::new());
-            }
-        }
+        self.sync_active_head_artifact_plan_into_worker(
+            runtime,
+            Some(session),
+            plan,
+            &previous_storage,
+        )
+        .await
+    }
 
-        runtime.storage.remember_synced_head_artifact(
-            view.head.head_id.clone(),
-            view.head.artifact_id.clone(),
-            transport.unwrap_or_else(|| "unknown".into()),
-        );
-        Ok(Self::storage_update_if_changed(runtime, &previous_storage))
+    pub(crate) async fn sync_active_head_artifact_from_control_snapshot_into_worker(
+        &self,
+        runtime: &mut BrowserWorkerRuntime,
+        snapshot: &ControlPlaneSnapshot,
+    ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+        let previous_storage = runtime.storage.clone();
+        runtime.storage.invalidate_stale_assignment_replay_state();
+        let Some(plan) =
+            Self::build_active_head_artifact_sync_plan_from_control_snapshot(runtime, snapshot)
+        else {
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
+        };
+        self.sync_active_head_artifact_plan_into_worker(runtime, None, plan, &previous_storage)
+            .await
     }
 
     /// Submits the receipts.

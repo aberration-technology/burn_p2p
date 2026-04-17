@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::should_fallback_to_edge_control_sync;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -4889,6 +4890,29 @@ fn browser_app_model_applies_worker_events_to_local_state() {
     );
 }
 
+#[test]
+fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    assert!(should_fallback_to_edge_control_sync(&runtime));
+
+    runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(Vec::new()));
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    assert!(!should_fallback_to_edge_control_sync(&runtime));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn browser_portal_client_pumps_metrics_events_into_worker_without_duplicate_replays() {
@@ -5603,6 +5627,240 @@ fn browser_portal_client_syncs_live_head_via_peer_transport_without_publication_
         requests[0].provider_peer_ids[0].as_str(),
         "peer-browser-provider"
     );
+    let storage = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert_eq!(
+        storage.last_head_artifact_transport.as_deref(),
+        Some("peer-native")
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view() {
+    #[derive(Clone)]
+    struct StaticPeerArtifactFetcher {
+        requests: Arc<Mutex<Vec<BrowserPeerArtifactRequest>>>,
+    }
+
+    impl BrowserPeerArtifactFetcher for StaticPeerArtifactFetcher {
+        fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+            self.requests
+                .lock()
+                .expect("peer artifact requests should not be poisoned")
+                .push(request);
+            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+        }
+    }
+
+    let requests = Arc::new(Mutex::new(Vec::<BrowserPeerArtifactRequest>::new()));
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new("https://edge.example"),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_peer_artifact_fetcher(StaticPeerArtifactFetcher {
+        requests: Arc::clone(&requests),
+    });
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus {
+            connected: Some(BrowserTransportKind::WebRtcDirect),
+            connected_peer_ids: vec![PeerId::new("peer-browser-direct")],
+            ..BrowserTransportStatus::default()
+        },
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    let snapshot = burn_p2p::ControlPlaneSnapshot {
+        head_announcements: vec![burn_p2p::HeadAnnouncement {
+            overlay: burn_p2p::OverlayTopic::control(NetworkId::new("net-browser")),
+            provider_peer_id: Some(PeerId::new("peer-browser-provider")),
+            head: burn_p2p::HeadDescriptor {
+                head_id: HeadId::new("head-browser"),
+                study_id: StudyId::new("study-browser"),
+                experiment_id: ExperimentId::new("exp-browser"),
+                revision_id: RevisionId::new("rev-browser"),
+                artifact_id: ArtifactId::new("artifact-browser"),
+                parent_head_id: Some(HeadId::new("head-parent")),
+                global_step: 3,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: Utc::now(),
+        }],
+        ..burn_p2p::ControlPlaneSnapshot::default()
+    };
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_from_control_snapshot_into_worker(
+                    &mut runtime,
+                    &snapshot,
+                )
+                .await
+                .expect("direct snapshot head artifact sync")
+        });
+
+    let requests = requests
+        .lock()
+        .expect("peer artifact requests should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].artifact_id.as_str(), "artifact-browser");
+    assert_eq!(
+        requests[0].provider_peer_ids,
+        vec![PeerId::new("peer-browser-provider")]
+    );
+    let storage = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert_eq!(
+        storage.last_head_artifact_transport.as_deref(),
+        Some("peer-native")
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_hints() {
+    #[derive(Clone)]
+    struct StaticPeerArtifactFetcher {
+        requests: Arc<Mutex<Vec<BrowserPeerArtifactRequest>>>,
+    }
+
+    impl BrowserPeerArtifactFetcher for StaticPeerArtifactFetcher {
+        fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+            self.requests
+                .lock()
+                .expect("peer artifact requests should not be poisoned")
+                .push(request);
+            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+        }
+    }
+
+    let requests = Arc::new(Mutex::new(Vec::<BrowserPeerArtifactRequest>::new()));
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new("https://edge.example"),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_peer_artifact_fetcher(StaticPeerArtifactFetcher {
+        requests: Arc::clone(&requests),
+    });
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus {
+            connected: Some(BrowserTransportKind::WebRtcDirect),
+            connected_peer_ids: vec![PeerId::new("peer-browser-direct")],
+            ..BrowserTransportStatus::default()
+        },
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    let snapshot = burn_p2p::ControlPlaneSnapshot {
+        head_announcements: vec![burn_p2p::HeadAnnouncement {
+            overlay: burn_p2p::OverlayTopic::control(NetworkId::new("net-browser")),
+            provider_peer_id: None,
+            head: burn_p2p::HeadDescriptor {
+                head_id: HeadId::new("head-browser"),
+                study_id: StudyId::new("study-browser"),
+                experiment_id: ExperimentId::new("exp-browser"),
+                revision_id: RevisionId::new("rev-browser"),
+                artifact_id: ArtifactId::new("artifact-browser"),
+                parent_head_id: Some(HeadId::new("head-parent")),
+                global_step: 3,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: Utc::now(),
+        }],
+        ..burn_p2p::ControlPlaneSnapshot::default()
+    };
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_from_control_snapshot_into_worker(
+                    &mut runtime,
+                    &snapshot,
+                )
+                .await
+                .expect("direct snapshot head artifact sync without provider hints")
+        });
+
+    let requests = requests
+        .lock()
+        .expect("peer artifact requests should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].provider_peer_ids.is_empty());
     let storage = events
         .iter()
         .rev()
