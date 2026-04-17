@@ -29,12 +29,17 @@ pub(super) fn browser_transport_surface(
     }
     let edge_mode = browser_edge_mode(plan);
     BrowserTransportSurface {
-        webrtc_direct: matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
+        webrtc_direct: native_browser_webrtc_direct_supported()
+            && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
         webtransport_gateway: native_browser_webtransport_supported()
             && matches!(edge_mode, BrowserEdgeMode::Full),
         wss_fallback: native_browser_wss_supported()
             && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
     }
+}
+
+fn native_browser_webrtc_direct_supported() -> bool {
+    false
 }
 
 fn native_browser_webtransport_supported() -> bool {

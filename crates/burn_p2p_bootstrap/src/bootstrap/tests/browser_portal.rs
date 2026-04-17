@@ -94,7 +94,16 @@ fn browser_portal_client_round_trips_against_live_http_router() {
                 .preferred
                 .first()
                 .expect("preferred browser transport"),
-            &burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect
+            &burn_p2p_core::BrowserSeedTransportKind::WssFallback
+        );
+        assert!(
+            !signed_seeds
+                .payload
+                .payload
+                .transport_policy
+                .preferred
+                .contains(&burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect),
+            "browser seed advertisement should not claim webrtc-direct until native runtime support exists"
         );
         assert!(
             !signed_seeds
@@ -107,10 +116,6 @@ fn browser_portal_client_round_trips_against_live_http_router() {
         );
         assert_eq!(signed_seeds.payload.payload.seeds.len(), 1);
         let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
-        assert!(
-            seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4001/webrtc-direct".to_owned()),
-            "expected browser-capable public webrtc seed in signed advertisement, got {seed_multiaddrs:?}"
-        );
         assert!(
             seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
             "expected browser-capable public wss seed in signed advertisement, got {seed_multiaddrs:?}"
