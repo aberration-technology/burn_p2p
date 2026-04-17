@@ -32,12 +32,17 @@ pub(super) fn browser_transport_surface(
         webrtc_direct: matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
         webtransport_gateway: native_browser_webtransport_supported()
             && matches!(edge_mode, BrowserEdgeMode::Full),
-        wss_fallback: true,
+        wss_fallback: native_browser_wss_supported()
+            && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
     }
 }
 
 fn native_browser_webtransport_supported() -> bool {
     false
+}
+
+fn native_browser_wss_supported() -> bool {
+    true
 }
 
 fn browser_seed_transport_policy(

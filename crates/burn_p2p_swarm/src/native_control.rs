@@ -159,50 +159,56 @@ impl NativeControlPlaneShell {
         } else {
             None
         };
-        let swarm = {
-            let _guard = runtime.enter();
-            SwarmBuilder::with_existing_identity(keypair)
-                .with_tokio()
-                .with_tcp(
-                    libp2p::tcp::Config::default(),
-                    tls_config,
-                    yamux::Config::default,
-                )
-                .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                .with_quic()
-                .with_relay_client(tls_config, yamux::Config::default)
-                .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                .with_behaviour(move |_, relay_client| NativeControlPlaneBehaviour {
-                    request_response: request_response::cbor::Behaviour::new(
-                        [(protocol, ProtocolSupport::Full)],
-                        request_response::Config::default(),
-                    ),
-                    gossipsub: gossipsub_behaviour,
-                    identify: identify::Behaviour::new(identify_config.clone()),
-                    kademlia: kademlia_behaviour.into(),
-                    rendezvous_client: rendezvous_client_behaviour.into(),
-                    rendezvous_server: rendezvous_server_behaviour.into(),
-                    relay_client,
-                    relay_server: relay_server_behaviour.into(),
-                    dcutr: dcutr_behaviour.into(),
-                    autonat: autonat_behaviour.into(),
-                    ping: ping::Behaviour::default(),
-                    connection_limits: connection_limits::Behaviour::new(
-                        connection_limits::ConnectionLimits::default()
-                            .with_max_established_incoming(
-                                transport_policy.max_established_incoming,
-                            )
-                            .with_max_established(transport_policy.max_established_total)
-                            .with_max_established_per_peer(
-                                transport_policy.max_established_per_peer,
-                            ),
-                    ),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    mdns: mdns_behaviour.into(),
-                })
-                .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                .build()
-        };
+        let swarm = runtime.block_on(async move {
+            Ok::<_, SwarmError>(
+                SwarmBuilder::with_existing_identity(keypair)
+                    .with_tokio()
+                    .with_tcp(
+                        libp2p::tcp::Config::default(),
+                        tls_config,
+                        yamux::Config::default,
+                    )
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .with_quic()
+                    .with_dns()
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .with_websocket(tls_config, yamux::Config::default)
+                    .await
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .with_relay_client(tls_config, yamux::Config::default)
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .with_behaviour(move |_, relay_client| NativeControlPlaneBehaviour {
+                        request_response: request_response::cbor::Behaviour::new(
+                            [(protocol, ProtocolSupport::Full)],
+                            request_response::Config::default(),
+                        ),
+                        gossipsub: gossipsub_behaviour,
+                        identify: identify::Behaviour::new(identify_config.clone()),
+                        kademlia: kademlia_behaviour.into(),
+                        rendezvous_client: rendezvous_client_behaviour.into(),
+                        rendezvous_server: rendezvous_server_behaviour.into(),
+                        relay_client,
+                        relay_server: relay_server_behaviour.into(),
+                        dcutr: dcutr_behaviour.into(),
+                        autonat: autonat_behaviour.into(),
+                        ping: ping::Behaviour::default(),
+                        connection_limits: connection_limits::Behaviour::new(
+                            connection_limits::ConnectionLimits::default()
+                                .with_max_established_incoming(
+                                    transport_policy.max_established_incoming,
+                                )
+                                .with_max_established(transport_policy.max_established_total)
+                                .with_max_established_per_peer(
+                                    transport_policy.max_established_per_peer,
+                                ),
+                        ),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        mdns: mdns_behaviour.into(),
+                    })
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .build(),
+            )
+        })?;
 
         Ok(Self {
             runtime,

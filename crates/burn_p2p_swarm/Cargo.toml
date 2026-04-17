@@ -28,7 +28,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-libp2p = { version = "0.56.0", default-features = false, features = ["autonat", "dcutr", "gossipsub", "identify", "kad", "macros", "ping", "quic", "relay", "request-response", "tcp", "tls", "tokio", "yamux"] }
+libp2p = { version = "0.56.0", default-features = false, features = ["autonat", "dcutr", "dns", "gossipsub", "identify", "kad", "macros", "ping", "quic", "relay", "request-response", "tcp", "tls", "tokio", "websocket", "yamux"] }
 libp2p-gossipsub = "0.49.2"
 libp2p-identify = "0.47.0"
 libp2p-kad = "0.48.0"
