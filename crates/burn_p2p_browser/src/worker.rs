@@ -31,6 +31,14 @@ pub struct BrowserMetricsSyncState {
     pub live_event: Option<MetricsLiveEvent>,
 }
 
+#[derive(Clone, Debug)]
+struct BrowserWorkerDeltaCheckpoint {
+    previous_state: Option<BrowserRuntimeState>,
+    previous_transport: BrowserTransportStatus,
+    previous_storage: BrowserStorageSnapshot,
+    previous_swarm_status: BrowserSwarmStatus,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 /// Represents a browser worker runtime.
 pub struct BrowserWorkerRuntime {
@@ -166,16 +174,22 @@ impl BrowserWorkerRuntime {
             .and_then(|cursor| cursor.latest_head_id.clone())
     }
 
+    fn delta_checkpoint(&self) -> BrowserWorkerDeltaCheckpoint {
+        BrowserWorkerDeltaCheckpoint {
+            previous_state: self.state.clone(),
+            previous_transport: self.transport.clone(),
+            previous_storage: self.storage.clone(),
+            previous_swarm_status: self.swarm_status(),
+        }
+    }
+
     /// Applies one metrics-only sync update without requiring a full edge
     /// directory or head refresh.
     pub fn apply_metrics_sync_state(
         &mut self,
         metrics: BrowserMetricsSyncState,
     ) -> Vec<BrowserWorkerEvent> {
-        let previous_state = self.state.clone();
-        let previous_transport = self.transport.clone();
-        let previous_storage = self.storage.clone();
-        let previous_swarm_status = self.swarm_status();
+        let checkpoint = self.delta_checkpoint();
         let mut metrics_event = None;
         let mut active_head_id = None;
 
@@ -183,28 +197,20 @@ impl BrowserWorkerRuntime {
             self.storage
                 .remember_metrics_catchup(metrics.catchup_bundles);
         }
-        if let Some(event) = metrics.live_event {
-            if !self.is_duplicate_metrics_event(&event) {
-                if let Some(head_id) = self
-                    .assignment_metrics_head(&event)
-                    .filter(|head_id| self.storage.last_head_id.as_ref() != Some(head_id))
-                {
-                    self.storage.remember_head(head_id.clone());
-                    active_head_id = Some(head_id);
-                }
-                self.storage.remember_metrics_live_event(event.clone());
-                metrics_event = Some(event);
+        if let Some(event) = metrics.live_event
+            && !self.is_duplicate_metrics_event(&event)
+        {
+            if let Some(head_id) = self
+                .assignment_metrics_head(&event)
+                .filter(|head_id| self.storage.last_head_id.as_ref() != Some(head_id))
+            {
+                self.storage.remember_head(head_id.clone());
+                active_head_id = Some(head_id);
             }
+            self.storage.remember_metrics_live_event(event.clone());
+            metrics_event = Some(event);
         }
-        self.collect_runtime_delta_events(
-            previous_state,
-            previous_transport,
-            previous_storage,
-            previous_swarm_status,
-            None,
-            active_head_id,
-            metrics_event,
-        )
+        self.collect_runtime_delta_events(checkpoint, None, active_head_id, metrics_event)
     }
 
     fn runtime_role_from_browser_role(role: BrowserRole) -> crate::BrowserRuntimeRole {
@@ -233,31 +239,28 @@ impl BrowserWorkerRuntime {
 
     fn collect_runtime_delta_events(
         &self,
-        previous_state: Option<BrowserRuntimeState>,
-        previous_transport: BrowserTransportStatus,
-        previous_storage: BrowserStorageSnapshot,
-        previous_swarm_status: BrowserSwarmStatus,
+        checkpoint: BrowserWorkerDeltaCheckpoint,
         directory: Option<&BrowserDirectorySnapshot>,
         active_head_id: Option<HeadId>,
         metrics_event: Option<MetricsLiveEvent>,
     ) -> Vec<BrowserWorkerEvent> {
         let mut events = Vec::new();
 
-        if self.state != previous_state
+        if self.state != checkpoint.previous_state
             && let Some(state) = self.state.clone()
         {
             events.push(BrowserWorkerEvent::RuntimeStateChanged(state));
         }
-        if self.transport != previous_transport {
+        if self.transport != checkpoint.previous_transport {
             events.push(BrowserWorkerEvent::TransportChanged(self.transport.clone()));
         }
         let current_swarm_status = self.swarm_status();
-        if current_swarm_status != previous_swarm_status {
+        if current_swarm_status != checkpoint.previous_swarm_status {
             events.push(BrowserWorkerEvent::SwarmStatusChanged(Box::new(
                 current_swarm_status,
             )));
         }
-        if self.storage != previous_storage {
+        if self.storage != checkpoint.previous_storage {
             events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
                 self.storage.clone(),
             )));
@@ -772,10 +775,7 @@ impl BrowserWorkerRuntime {
         transport: BrowserTransportStatus,
         session: Option<&BrowserSessionState>,
     ) -> Vec<BrowserWorkerEvent> {
-        let previous_state = self.state.clone();
-        let previous_transport = self.transport.clone();
-        let previous_storage = self.storage.clone();
-        let previous_swarm_status = self.swarm_status();
+        let checkpoint = self.delta_checkpoint();
         let directory = signed_directory.payload.payload.clone();
         self.transport = transport;
         self.storage.remember_directory_snapshot(signed_directory);
@@ -791,15 +791,7 @@ impl BrowserWorkerRuntime {
         }
         self.apply_directory_snapshot(&directory, session);
         let active_head_id = self.apply_head_snapshot(heads);
-        self.collect_runtime_delta_events(
-            previous_state,
-            previous_transport,
-            previous_storage,
-            previous_swarm_status,
-            Some(&directory),
-            active_head_id,
-            None,
-        )
+        self.collect_runtime_delta_events(checkpoint, Some(&directory), active_head_id, None)
     }
 
     /// Applies one live metrics event to the browser runtime and storage.
@@ -816,20 +808,9 @@ impl BrowserWorkerRuntime {
         directory: BrowserDirectorySnapshot,
         session: Option<&BrowserSessionState>,
     ) -> Vec<BrowserWorkerEvent> {
-        let previous_state = self.state.clone();
-        let previous_transport = self.transport.clone();
-        let previous_storage = self.storage.clone();
-        let previous_swarm_status = self.swarm_status();
+        let checkpoint = self.delta_checkpoint();
         self.apply_directory_snapshot(&directory, session);
-        self.collect_runtime_delta_events(
-            previous_state,
-            previous_transport,
-            previous_storage,
-            previous_swarm_status,
-            Some(&directory),
-            None,
-            None,
-        )
+        self.collect_runtime_delta_events(checkpoint, Some(&directory), None, None)
     }
 
     /// Applies one live head snapshot from the browser swarm path.
@@ -837,20 +818,9 @@ impl BrowserWorkerRuntime {
         &mut self,
         heads: &[HeadDescriptor],
     ) -> Vec<BrowserWorkerEvent> {
-        let previous_state = self.state.clone();
-        let previous_transport = self.transport.clone();
-        let previous_storage = self.storage.clone();
-        let previous_swarm_status = self.swarm_status();
+        let checkpoint = self.delta_checkpoint();
         let active_head_id = self.apply_head_snapshot(heads);
-        self.collect_runtime_delta_events(
-            previous_state,
-            previous_transport,
-            previous_storage,
-            previous_swarm_status,
-            None,
-            active_head_id,
-            None,
-        )
+        self.collect_runtime_delta_events(checkpoint, None, active_head_id, None)
     }
 
     /// Performs the update transport status operation.
@@ -866,10 +836,7 @@ impl BrowserWorkerRuntime {
         directory: Option<&BrowserDirectorySnapshot>,
         session: Option<&BrowserSessionState>,
     ) -> Vec<BrowserWorkerEvent> {
-        let previous_state = self.state.clone();
-        let previous_transport = self.transport.clone();
-        let previous_storage = self.storage.clone();
-        let previous_swarm_status = self.swarm_status();
+        let checkpoint = self.delta_checkpoint();
         let mut events = Vec::new();
 
         match command {
@@ -934,15 +901,7 @@ impl BrowserWorkerRuntime {
                 self.observe_swarm_status(*status);
             }
         }
-        events.extend(self.collect_runtime_delta_events(
-            previous_state,
-            previous_transport,
-            previous_storage,
-            previous_swarm_status,
-            directory,
-            None,
-            None,
-        ));
+        events.extend(self.collect_runtime_delta_events(checkpoint, directory, None, None));
         events
     }
 
@@ -961,12 +920,11 @@ impl BrowserWorkerRuntime {
             .is_some_and(BrowserRuntimeState::requires_peer_transport);
         let selected = if requires_peer_transport {
             let dial_plan = self.swarm_runtime.plan_connect(config.swarm_bootstrap());
-            let selected = dial_plan
+            dial_plan
                 .candidates
                 .iter()
                 .map(|candidate| browser_transport_kind(&candidate.transport))
-                .find(|kind| self.transport.supports(kind));
-            selected
+                .find(|kind| self.transport.supports(kind))
         } else {
             self.swarm_runtime.plan_disconnect();
             None
