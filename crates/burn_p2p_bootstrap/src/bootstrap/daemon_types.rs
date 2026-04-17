@@ -148,6 +148,25 @@ pub(super) struct BootstrapAuthProviderPolicyConfig {
 pub(super) struct BootstrapGitHubAuthPolicyConfig {
     #[serde(default)]
     pub rules: Vec<BootstrapGitHubPrincipalRule>,
+    #[serde(default)]
+    pub trusted_callback: Option<BootstrapTrustedCallbackConfig>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct BootstrapTrustedCallbackConfig {
+    pub principal_id: PrincipalId,
+    pub token_header: String,
+    pub token_value: String,
+}
+
+impl std::fmt::Debug for BootstrapTrustedCallbackConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapTrustedCallbackConfig")
+            .field("principal_id", &self.principal_id)
+            .field("token_header", &self.token_header)
+            .field("token_value", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +366,8 @@ pub(super) struct EdgeIdentityConnector {
     pub(super) login_paths: BTreeSet<String>,
     pub(super) callback_paths: BTreeSet<String>,
     pub(super) trusted_principal_header: Option<String>,
+    pub(super) trusted_callback: Option<BootstrapTrustedCallbackConfig>,
+    pub(super) allow_request_body_callback_principal: bool,
     pub(super) inner: Box<dyn IdentityConnector + Send + Sync>,
 }
 
@@ -357,6 +378,11 @@ impl std::fmt::Debug for EdgeIdentityConnector {
             .field("login_paths", &self.login_paths)
             .field("callback_paths", &self.callback_paths)
             .field("trusted_principal_header", &self.trusted_principal_header)
+            .field("trusted_callback", &self.trusted_callback)
+            .field(
+                "allow_request_body_callback_principal",
+                &self.allow_request_body_callback_principal,
+            )
             .finish()
     }
 }
@@ -364,7 +390,6 @@ impl std::fmt::Debug for EdgeIdentityConnector {
 impl EdgeIdentityConnector {
     pub(super) fn new(
         login_providers: Vec<BrowserLoginProvider>,
-        trusted_principal_header: Option<String>,
         inner: Box<dyn IdentityConnector + Send + Sync>,
     ) -> Self {
         let login_paths = login_providers
@@ -384,10 +409,35 @@ impl EdgeIdentityConnector {
             login_providers,
             login_paths,
             callback_paths,
-            trusted_principal_header: trusted_principal_header
-                .map(|header| header.to_ascii_lowercase()),
+            trusted_principal_header: None,
+            trusted_callback: None,
+            allow_request_body_callback_principal: false,
             inner,
         }
+    }
+
+    pub(super) fn allow_request_body_callback_principal(mut self) -> Self {
+        self.allow_request_body_callback_principal = true;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn with_trusted_callback_header(mut self, header: String) -> Self {
+        self.trusted_principal_header = Some(header.to_ascii_lowercase());
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn with_trusted_callback(
+        mut self,
+        trusted_callback: BootstrapTrustedCallbackConfig,
+    ) -> Self {
+        self.trusted_callback = Some(BootstrapTrustedCallbackConfig {
+            principal_id: trusted_callback.principal_id,
+            token_header: trusted_callback.token_header.to_ascii_lowercase(),
+            token_value: trusted_callback.token_value,
+        });
+        self
     }
 
     pub(super) fn matches_login_path(&self, path: &str) -> bool {
@@ -402,7 +452,26 @@ impl EdgeIdentityConnector {
         self.login_providers.clone()
     }
 
+    pub(super) fn apply_callback_principal_policy(
+        &self,
+        request: &HttpRequest,
+        callback: &mut burn_p2p::CallbackPayload,
+    ) {
+        if !self.allow_request_body_callback_principal {
+            callback.principal_id = None;
+        }
+        if callback.principal_id.is_none() {
+            callback.principal_id = self.trusted_callback_principal(request);
+        }
+    }
+
     pub(super) fn trusted_callback_principal(&self, request: &HttpRequest) -> Option<PrincipalId> {
+        if let Some(trusted_callback) = self.trusted_callback.as_ref() {
+            let provided = request.headers.get(&trusted_callback.token_header)?;
+            if provided == &trusted_callback.token_value {
+                return Some(trusted_callback.principal_id.clone());
+            }
+        }
         self.trusted_principal_header
             .as_ref()
             .and_then(|header| request.headers.get(header))

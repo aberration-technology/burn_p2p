@@ -105,9 +105,8 @@ pub(crate) fn handle_auth_post_route(
         }
         ("POST", path) if auth.connector.matches_callback_path(path) => {
             let mut callback: burn_p2p::CallbackPayload = serde_json::from_slice(&request.body)?;
-            if callback.principal_id.is_none() {
-                callback.principal_id = auth.connector.trusted_callback_principal(request);
-            }
+            auth.connector
+                .apply_callback_principal_policy(request, &mut callback);
             match auth.complete_login(callback) {
                 Ok(session) => write_json(stream, &session)?,
                 Err(error) => write_auth_error_response(stream, error.as_ref())?,

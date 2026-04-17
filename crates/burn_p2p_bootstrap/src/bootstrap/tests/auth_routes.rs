@@ -389,24 +389,35 @@ fn http_routes_serve_status_and_static_auth_flow() {
 #[test]
 fn github_and_oidc_routes_issue_provider_specific_sessions() {
     let temp = tempdir().expect("temp dir");
+    let mut github_config = sample_auth_config_with_connector(
+        temp.path(),
+        BootstrapAuthConnectorConfig::GitHub {
+            authorize_base_url: Some("https://github.example/login/oauth/authorize".into()),
+            exchange_url: None,
+            token_url: None,
+            client_id: None,
+            client_secret: None,
+            redirect_uri: None,
+            userinfo_url: None,
+            refresh_url: None,
+            revoke_url: None,
+            jwks_url: None,
+            api_base_url: None,
+        },
+    );
+    github_config.provider_policy = Some(BootstrapAuthProviderPolicyConfig {
+        github: Some(BootstrapGitHubAuthPolicyConfig {
+            rules: Vec::new(),
+            trusted_callback: Some(BootstrapTrustedCallbackConfig {
+                principal_id: PrincipalId::new("alice"),
+                token_header: "x-burn-p2p-canary-token".into(),
+                token_value: "trusted-github-token".into(),
+            }),
+        }),
+    });
     let github_auth = Arc::new(
         build_auth_portal(
-            &sample_auth_config_with_connector(
-                temp.path(),
-                BootstrapAuthConnectorConfig::GitHub {
-                    authorize_base_url: Some("https://github.example/login/oauth/authorize".into()),
-                    exchange_url: None,
-                    token_url: None,
-                    client_id: None,
-                    client_secret: None,
-                    redirect_uri: None,
-                    userinfo_url: None,
-                    refresh_url: None,
-                    revoke_url: None,
-                    jwks_url: None,
-                    api_base_url: None,
-                },
-            ),
+            &github_config,
             NetworkId::new("secure-demo"),
             Version::new(0, 1, 0),
         )
@@ -465,9 +476,8 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
             body: Some(serde_json::json!({
                 "login_id": github_login["login_id"],
                 "state": github_login["state"],
-                "principal_id": "alice",
             })),
-            headers: &[],
+            headers: &[("x-burn-p2p-canary-token", "trusted-github-token")],
         },
     ));
     assert_eq!(github_session["claims"]["provider"], "GitHub");
@@ -498,12 +508,10 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
         },
     );
     assert!(
-        github_unknown_principal.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        github_unknown_principal.starts_with("HTTP/1.1 401 Unauthorized\r\n"),
         "expected typed auth failure response, got: {github_unknown_principal}"
     );
-    assert!(
-        response_body(&github_unknown_principal).contains("unknown principal: unknown-principal")
-    );
+    assert!(response_body(&github_unknown_principal).contains("missing provider principal"));
     let github_snapshot = response_json(&issue_request(
         github_context,
         IssueRequestSpec {

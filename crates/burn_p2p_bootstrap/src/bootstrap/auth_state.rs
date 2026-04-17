@@ -452,6 +452,11 @@ pub(super) fn build_auth_portal(
         .collect::<Result<BTreeMap<_, _>, Box<dyn std::error::Error>>>()?;
 
     let session_ttl = chrono::Duration::seconds(config.session_ttl_seconds.max(1));
+    let github_trusted_callback = config
+        .provider_policy
+        .as_ref()
+        .and_then(|policy| policy.github.as_ref())
+        .and_then(|github| github.trusted_callback.clone());
     let connector = match &config.connector {
         BootstrapAuthConnectorConfig::Static => EdgeIdentityConnector::new(
             vec![BrowserLoginProvider {
@@ -460,13 +465,13 @@ pub(super) fn build_auth_portal(
                 callback_path: Some("/callback/static".into()),
                 device_path: None,
             }],
-            None,
             Box::new(StaticIdentityConnector::new(
                 config.authority_name.clone(),
                 session_ttl,
                 principals.clone(),
             )),
-        ),
+        )
+        .allow_request_body_callback_principal(),
         BootstrapAuthConnectorConfig::GitHub {
             authorize_base_url,
             exchange_url,
@@ -495,6 +500,7 @@ pub(super) fn build_auth_portal(
                 revoke_url: revoke_url.clone(),
                 jwks_url: jwks_url.clone(),
                 persist_remote_tokens: config.persist_provider_tokens,
+                trusted_callback: github_trusted_callback,
             },
         )?,
         BootstrapAuthConnectorConfig::Oidc {
@@ -526,6 +532,7 @@ pub(super) fn build_auth_portal(
                 revoke_url: revoke_url.clone(),
                 jwks_url: jwks_url.clone(),
                 persist_remote_tokens: config.persist_provider_tokens,
+                trusted_callback: None,
             },
         )?,
         BootstrapAuthConnectorConfig::OAuth {
@@ -557,6 +564,7 @@ pub(super) fn build_auth_portal(
                 revoke_url: revoke_url.clone(),
                 jwks_url: jwks_url.clone(),
                 persist_remote_tokens: config.persist_provider_tokens,
+                trusted_callback: None,
             },
         )?,
         BootstrapAuthConnectorConfig::External {
@@ -656,6 +664,20 @@ fn provider_policy_principals(
                 "github provider policy requires the github auth connector",
             )
             .into());
+        }
+        if let Some(trusted_callback) = github.trusted_callback.as_ref() {
+            if trusted_callback.token_header.trim().is_empty() {
+                return Err(std::io::Error::other(
+                    "github trusted callback requires a non-empty token_header",
+                )
+                .into());
+            }
+            if trusted_callback.token_value.trim().is_empty() {
+                return Err(std::io::Error::other(
+                    "github trusted callback requires a non-empty token_value",
+                )
+                .into());
+            }
         }
         principals.extend(
             github
@@ -841,6 +863,7 @@ mod tests {
                             "community-web".into(),
                         )]),
                     }],
+                    trusted_callback: None,
                 }),
             }),
             directory_entries: Vec::new(),
