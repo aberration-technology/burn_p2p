@@ -30,9 +30,14 @@ pub(super) fn browser_transport_surface(
     let edge_mode = browser_edge_mode(plan);
     BrowserTransportSurface {
         webrtc_direct: matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
-        webtransport_gateway: matches!(edge_mode, BrowserEdgeMode::Full),
+        webtransport_gateway: native_browser_webtransport_supported()
+            && matches!(edge_mode, BrowserEdgeMode::Full),
         wss_fallback: true,
     }
+}
+
+fn native_browser_webtransport_supported() -> bool {
+    false
 }
 
 fn browser_seed_transport_policy(

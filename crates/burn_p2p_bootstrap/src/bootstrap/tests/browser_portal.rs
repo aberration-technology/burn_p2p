@@ -96,6 +96,15 @@ fn browser_portal_client_round_trips_against_live_http_router() {
                 .expect("preferred browser transport"),
             &burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect
         );
+        assert!(
+            !signed_seeds
+                .payload
+                .payload
+                .transport_policy
+                .preferred
+                .contains(&burn_p2p_core::BrowserSeedTransportKind::WebTransport),
+            "browser seed advertisement should not claim webtransport until native runtime support exists"
+        );
         assert_eq!(signed_seeds.payload.payload.seeds.len(), 1);
         let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
         assert!(

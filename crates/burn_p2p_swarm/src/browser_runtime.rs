@@ -15,16 +15,12 @@ use crate::{
     ControlPlaneRequest, ControlPlaneResponse, ProtocolSet, PubsubEnvelope, apply_pubsub_payload,
     pubsub_semantic_message_id,
 };
-use crate::{OverlayChannel, OverlayTopic};
 use crate::{ControlPlaneSnapshot, SwarmError};
+use crate::{OverlayChannel, OverlayTopic};
 
-#[cfg(target_arch = "wasm32")]
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    rc::Rc,
-};
 use std::collections::BTreeSet;
+#[cfg(target_arch = "wasm32")]
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 #[cfg(target_arch = "wasm32")]
 use futures::{
@@ -37,8 +33,9 @@ use gloo_timers::future::TimeoutFuture;
 use libp2p::Transport;
 #[cfg(target_arch = "wasm32")]
 use libp2p::{
-    Multiaddr, SwarmBuilder, gossipsub,
+    Multiaddr, SwarmBuilder,
     core::upgrade::Version,
+    gossipsub,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 #[cfg(target_arch = "wasm32")]
@@ -1017,7 +1014,10 @@ async fn run_wasm_browser_swarm_task(
                     }
                 }
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                    swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .remove_explicit_peer(&peer_id);
                     let desired_transport = shared
                         .borrow()
                         .dial_plan
@@ -1031,8 +1031,7 @@ async fn run_wasm_browser_swarm_task(
                     } else {
                         BrowserSwarmPhase::Bootstrap
                     };
-                    state.status.transport_source =
-                        BrowserTransportObservationSource::Selected;
+                    state.status.transport_source = BrowserTransportObservationSource::Selected;
                     let closed_peer_id = PeerId::new(peer_id.to_string());
                     state
                         .status
@@ -1095,8 +1094,9 @@ async fn run_wasm_browser_swarm_task(
                                     }
                                 }
                                 Err(error) => {
-                                    shared.borrow_mut().status.last_error =
-                                        Some(format!("browser direct swarm pubsub decode failed: {error}"));
+                                    shared.borrow_mut().status.last_error = Some(format!(
+                                        "browser direct swarm pubsub decode failed: {error}"
+                                    ));
                                 }
                             }
                         }
@@ -1104,7 +1104,10 @@ async fn run_wasm_browser_swarm_task(
                             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                         }
                         gossipsub::Event::Unsubscribed { peer_id, .. } => {
-                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                            swarm
+                                .behaviour_mut()
+                                .gossipsub
+                                .remove_explicit_peer(&peer_id);
                         }
                         _ => {}
                     }
@@ -1135,16 +1138,15 @@ async fn run_wasm_browser_swarm_task(
                                                         &snapshot,
                                                         current_bootstrap.as_ref(),
                                                     );
-                                                    let _ =
-                                                        ensure_wasm_browser_topic_subscriptions(
-                                                            &mut swarm,
-                                                            current_bootstrap.as_ref(),
-                                                            Some(&snapshot),
-                                                            directory_subscribed,
-                                                            heads_subscribed,
-                                                            metrics_subscribed,
-                                                            &mut subscribed_topic_paths,
-                                                        );
+                                                    let _ = ensure_wasm_browser_topic_subscriptions(
+                                                        &mut swarm,
+                                                        current_bootstrap.as_ref(),
+                                                        Some(&snapshot),
+                                                        directory_subscribed,
+                                                        heads_subscribed,
+                                                        metrics_subscribed,
+                                                        &mut subscribed_topic_paths,
+                                                    );
                                                     shared.borrow_mut().updates.push(
                                                         BrowserSwarmUpdate::Snapshot(Box::new(
                                                             snapshot.clone(),
@@ -1527,11 +1529,14 @@ pub(crate) fn update_wasm_browser_status_from_snapshot(
         .rev()
         .any(|announcement| announcement.network_id == bootstrap.network_id);
     let assignment = selected_browser_study_and_experiment(bootstrap, snapshot);
-    let head_synced = assignment.as_ref().is_some_and(|(study_id, experiment_id)| {
-        snapshot.head_announcements.iter().any(|announcement| {
-            announcement.head.study_id == *study_id && announcement.head.experiment_id == *experiment_id
-        })
-    });
+    let head_synced = assignment
+        .as_ref()
+        .is_some_and(|(study_id, experiment_id)| {
+            snapshot.head_announcements.iter().any(|announcement| {
+                announcement.head.study_id == *study_id
+                    && announcement.head.experiment_id == *experiment_id
+            })
+        });
     status.directory_synced = directory_synced;
     status.assignment_bound = assignment.is_some();
     status.head_synced = head_synced;

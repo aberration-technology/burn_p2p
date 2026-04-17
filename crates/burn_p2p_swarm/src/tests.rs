@@ -12,14 +12,13 @@ use std::time::{Duration, Instant};
 use burn_p2p_core::{
     AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
     BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
-    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
-    CapabilityCard, CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform,
-    ContentId, DatasetViewId, ExperimentId,
-    ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
-    ExperimentVisibility, HeadDescriptor, HeadId, MetricValue, MetricsLiveEvent,
-    MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision,
-    ReductionCertificate, RevisionId, StudyId, TelemetrySummary, ValidationQuorumCertificate,
-    WindowActivation, WindowId, WorkloadId,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource, CapabilityCard,
+    CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform, ContentId,
+    DatasetViewId, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
+    ExperimentResourceRequirements, ExperimentVisibility, HeadDescriptor, HeadId, MetricValue,
+    MetricsLiveEvent, MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet,
+    PersistenceClass, Precision, ReductionCertificate, RevisionId, StudyId, TelemetrySummary,
+    ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
 };
 use chrono::Utc;
 use futures::{executor::block_on, future};
@@ -445,23 +444,30 @@ fn browser_subscription_topics_follow_selected_experiment_after_directory_seed()
         true,
         true,
     );
-    let paths = topics.into_iter().map(|topic| topic.path).collect::<Vec<_>>();
+    let paths = topics
+        .into_iter()
+        .map(|topic| topic.path)
+        .collect::<Vec<_>>();
     assert!(paths.contains(&OverlayTopic::control(network_id.clone()).path));
-    assert!(paths.contains(
-        &OverlayTopic::experiment(
-            network_id.clone(),
-            study_id.clone(),
-            experiment_id.clone(),
-            OverlayChannel::Heads,
-        )
-        .expect("heads topic")
-        .path
-    ));
-    assert!(paths.contains(
-        &OverlayTopic::experiment(network_id, study_id, experiment_id, OverlayChannel::Metrics)
-            .expect("metrics topic")
+    assert!(
+        paths.contains(
+            &OverlayTopic::experiment(
+                network_id.clone(),
+                study_id.clone(),
+                experiment_id.clone(),
+                OverlayChannel::Heads,
+            )
+            .expect("heads topic")
             .path
-    ));
+        )
+    );
+    assert!(
+        paths.contains(
+            &OverlayTopic::experiment(network_id, study_id, experiment_id, OverlayChannel::Metrics)
+                .expect("metrics topic")
+                .path
+        )
+    );
 }
 
 #[test]

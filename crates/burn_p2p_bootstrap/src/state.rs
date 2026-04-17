@@ -20,6 +20,7 @@ use burn_p2p::{
 use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
     PeerWindowMetrics, ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport, WindowId,
+    operator_visible_last_error,
 };
 #[cfg(feature = "metrics-indexer")]
 use burn_p2p_metrics::{RobustnessRollup, derive_robustness_rollup};
@@ -1090,7 +1091,7 @@ impl BootstrapAdminState {
             quarantined_peers: effective_quarantined,
             banned_peers: self.banned_peers.clone(),
             minimum_revocation_epoch: self.minimum_revocation_epoch,
-            last_error: self.last_error.clone(),
+            last_error: operator_visible_last_error(self.last_error.as_deref()),
             node_state: self.node_state.clone(),
             slot_states: self.slot_states.clone(),
             robustness_panel: self.robustness_panel(),
@@ -1163,10 +1164,11 @@ impl BootstrapAdminState {
 mod tests {
     use super::*;
     use burn_p2p::{
-        ControlPlaneSnapshot, HeadAnnouncement, LagPolicy, LagState, NodeRuntimeState,
-        RuntimeStatus,
+        ClientPlatform, ControlPlaneSnapshot, HeadAnnouncement, LagPolicy, LagState,
+        NodeRuntimeState, RuntimeStatus,
     };
     use chrono::Utc;
+    use semver::Version;
 
     #[test]
     fn export_heads_includes_live_runtime_head_announcements() {
@@ -1270,6 +1272,37 @@ mod tests {
         assert_eq!(provider_peer_ids, vec![PeerId::new("mirror")]);
         let heads = state.export_heads(&HeadQuery::default());
         assert_eq!(heads, vec![runtime_head]);
+    }
+
+    #[test]
+    fn diagnostics_hide_benign_runtime_noise() {
+        let state = BootstrapAdminState {
+            last_error: Some("pubsub error: NoPeersSubscribedToTopic".into()),
+            ..BootstrapAdminState::default()
+        };
+        let diagnostics = state.diagnostics(
+            &crate::deploy::BootstrapSpec {
+                preset: crate::BootstrapPreset::BootstrapOnly,
+                genesis: burn_p2p_core::GenesisSpec {
+                    network_id: NetworkId::new("demo"),
+                    protocol_version: Version::new(0, 1, 0),
+                    display_name: "demo".into(),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                },
+                platform: ClientPlatform::Native,
+                bootstrap_addresses: Vec::new(),
+                listen_addresses: Vec::new(),
+                authority: None,
+                archive: crate::ArchivePlan::default(),
+                admin_api: crate::AdminApiPlan::default(),
+            }
+            .plan()
+            .expect("plan"),
+            Utc::now(),
+            None,
+        );
+        assert_eq!(diagnostics.last_error, None);
     }
 }
 
