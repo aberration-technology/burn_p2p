@@ -40,7 +40,7 @@ tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "time"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
-libp2p = { version = "0.56.0", default-features = false, features = ["macros", "noise", "ping", "request-response", "wasm-bindgen", "webrtc-websys", "websocket-websys", "webtransport-websys", "yamux"] }
+libp2p = { version = "0.56.0", default-features = false, features = ["gossipsub", "macros", "noise", "ping", "request-response", "wasm-bindgen", "webrtc-websys", "websocket-websys", "webtransport-websys", "yamux"] }
 wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
