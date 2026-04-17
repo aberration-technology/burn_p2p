@@ -28,6 +28,12 @@ pub struct EdgeEnrollmentConfig {
     pub device_path: Option<String>,
     /// Callback completion path.
     pub callback_path: String,
+    /// Optional trusted callback header for non-interactive callback completion.
+    #[serde(default)]
+    pub trusted_callback_header: Option<String>,
+    /// Optional trusted callback token for non-interactive callback completion.
+    #[serde(default)]
+    pub trusted_callback_token: Option<String>,
     /// Enrollment path that issues node certificates.
     pub enroll_path: String,
     /// Trust-bundle fetch path.
@@ -79,6 +85,8 @@ impl EdgeEnrollmentConfig {
             login_path: provider.login_path.clone(),
             device_path: provider.device_path.clone(),
             callback_path: provider.callback_path.clone().unwrap_or_default(),
+            trusted_callback_header: None,
+            trusted_callback_token: None,
             enroll_path: snapshot.paths.enroll_path.clone(),
             trust_bundle_path: snapshot.paths.trust_bundle_path.clone(),
             requested_scopes,
@@ -259,6 +267,8 @@ pub enum EdgeAuthClientError {
 ///         login_path: "/login/oidc".into(),
 ///         device_path: Some("/device/oidc".into()),
 ///         callback_path: "/callback/oidc".into(),
+///         trusted_callback_header: None,
+///         trusted_callback_token: None,
 ///         enroll_path: "/enroll".into(),
 ///         trust_bundle_path: "/trust".into(),
 ///         requested_scopes: BTreeSet::new(),
@@ -296,6 +306,18 @@ impl EdgeAuthClient {
     /// Returns the configured enrollment contract.
     pub fn enrollment(&self) -> &EdgeEnrollmentConfig {
         &self.enrollment
+    }
+
+    /// Returns a cloned client that attaches one trusted callback header
+    /// during callback completion.
+    pub fn with_trusted_callback(
+        mut self,
+        header: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        self.enrollment.trusted_callback_header = Some(header.into());
+        self.enrollment.trusted_callback_token = Some(token.into());
+        self
     }
 
     /// Builds the enrollment request for one authenticated session and one
@@ -390,16 +412,24 @@ impl EdgeAuthClient {
             return Err(EdgeAuthClientError::MissingCallbackPath);
         }
 
-        self.post_json(
-            &self.enrollment.callback_path,
-            &CallbackPayload {
-                login_id: login.login_id.clone(),
-                state: login.state.clone(),
-                principal_id,
-                provider_code,
-            },
-        )
-        .await
+        let payload = CallbackPayload {
+            login_id: login.login_id.clone(),
+            state: login.state.clone(),
+            principal_id,
+            provider_code,
+        };
+
+        if let (Some(header), Some(token)) = (
+            self.enrollment.trusted_callback_header.as_deref(),
+            self.enrollment.trusted_callback_token.as_deref(),
+        ) {
+            return self
+                .post_json_with_header(&self.enrollment.callback_path, &payload, header, token)
+                .await;
+        }
+
+        self.post_json(&self.enrollment.callback_path, &payload)
+            .await
     }
 
     /// Exchanges an authenticated session for a node certificate.
@@ -513,6 +543,24 @@ impl EdgeAuthClient {
             .error_for_status()?;
         Ok(response.json().await?)
     }
+
+    async fn post_json_with_header<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+        header: &str,
+        value: &str,
+    ) -> Result<T, EdgeAuthClientError> {
+        let response = self
+            .http
+            .post(self.endpoint_url(path))
+            .header(header, value)
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.json().await?)
+    }
 }
 
 #[cfg(test)]
@@ -579,5 +627,7 @@ mod tests {
         assert_eq!(config.device_path.as_deref(), Some("/device/oidc"));
         assert_eq!(config.login_path, "/login/oidc");
         assert_eq!(config.callback_path, "/callback/oidc");
+        assert_eq!(config.trusted_callback_header, None);
+        assert_eq!(config.trusted_callback_token, None);
     }
 }

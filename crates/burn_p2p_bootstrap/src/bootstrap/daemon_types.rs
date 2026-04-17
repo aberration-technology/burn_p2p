@@ -457,7 +457,8 @@ impl EdgeIdentityConnector {
         request: &HttpRequest,
         callback: &mut burn_p2p::CallbackPayload,
     ) {
-        if !self.allow_request_body_callback_principal {
+        if !self.allow_request_body_callback_principal && !self.has_trusted_callback_token(request)
+        {
             callback.principal_id = None;
         }
         if callback.principal_id.is_none() {
@@ -465,12 +466,23 @@ impl EdgeIdentityConnector {
         }
     }
 
+    fn has_trusted_callback_token(&self, request: &HttpRequest) -> bool {
+        let Some(trusted_callback) = self.trusted_callback.as_ref() else {
+            return false;
+        };
+        request
+            .headers
+            .get(&trusted_callback.token_header)
+            .map(|provided| provided == &trusted_callback.token_value)
+            .unwrap_or(false)
+    }
+
     pub(super) fn trusted_callback_principal(&self, request: &HttpRequest) -> Option<PrincipalId> {
-        if let Some(trusted_callback) = self.trusted_callback.as_ref() {
-            let provided = request.headers.get(&trusted_callback.token_header)?;
-            if provided == &trusted_callback.token_value {
-                return Some(trusted_callback.principal_id.clone());
-            }
+        if self.has_trusted_callback_token(request) {
+            return self
+                .trusted_callback
+                .as_ref()
+                .map(|trusted_callback| trusted_callback.principal_id.clone());
         }
         self.trusted_principal_header
             .as_ref()

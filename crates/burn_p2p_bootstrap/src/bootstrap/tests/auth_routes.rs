@@ -1,4 +1,9 @@
 use super::shared::*;
+#[cfg(any(feature = "auth-github", feature = "auth-oidc"))]
+use crate::{
+    BootstrapAuthProviderPolicyConfig, BootstrapGitHubAuthPolicyConfig,
+    BootstrapTrustedCallbackConfig,
+};
 
 #[cfg(all(
     feature = "browser-edge",
@@ -405,6 +410,12 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
             api_base_url: None,
         },
     );
+    let mut bootstrap_head_mirror_principal = github_config.principals[0].clone();
+    bootstrap_head_mirror_principal.principal_id = PrincipalId::new("bootstrap-head-mirror");
+    bootstrap_head_mirror_principal.display_name = "Bootstrap Head Mirror".into();
+    github_config
+        .principals
+        .push(bootstrap_head_mirror_principal);
     github_config.provider_policy = Some(BootstrapAuthProviderPolicyConfig {
         github: Some(BootstrapGitHubAuthPolicyConfig {
             rules: Vec::new(),
@@ -481,6 +492,37 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
         },
     ));
     assert_eq!(github_session["claims"]["provider"], "GitHub");
+    let github_head_mirror_login = response_json(&issue_request(
+        github_context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/login/github",
+            body: Some(serde_json::json!({
+                "network_id": "secure-demo",
+                "principal_hint": "bootstrap-head-mirror",
+                "requested_scopes": ["Connect"],
+            })),
+            headers: &[],
+        },
+    ));
+    let github_head_mirror_session = response_json(&issue_request(
+        github_context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/callback/github",
+            body: Some(serde_json::json!({
+                "login_id": github_head_mirror_login["login_id"],
+                "state": github_head_mirror_login["state"],
+                "principal_id": "bootstrap-head-mirror",
+            })),
+            headers: &[("x-burn-p2p-canary-token", "trusted-github-token")],
+        },
+    ));
+    assert_eq!(
+        github_head_mirror_session["claims"]["principal_id"],
+        "bootstrap-head-mirror"
+    );
+    assert_eq!(github_head_mirror_session["claims"]["provider"], "GitHub");
     let github_unknown_principal_login = response_json(&issue_request(
         github_context.clone(),
         IssueRequestSpec {

@@ -281,7 +281,7 @@ pub(super) fn build_external_portal_connector(
         }],
         Box::new(ExternalProxyIdentityConnector::new(
             authority,
-            trusted_principal_header,
+            trusted_principal_header.clone(),
             session_ttl,
             principals,
         )),
