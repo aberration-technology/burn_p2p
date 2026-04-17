@@ -338,6 +338,13 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
             "browser seed advertisement should continue to include wss fallback"
         );
         let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
+        assert_eq!(
+            seed_multiaddrs.first().map(String::as_str),
+            Some(
+                "/ip4/127.0.0.1/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+            ),
+            "browser seed advertisement should publish direct browser transports before fallback seeds"
+        );
         assert!(
             seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w".to_owned()),
             "expected public WebRTC direct seed in signed advertisement, got {seed_multiaddrs:?}"

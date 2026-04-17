@@ -174,9 +174,17 @@ fn browser_seed_multiaddrs_for_host(
     if surface.wss_fallback {
         multiaddrs.push(format!("{host_prefix}/tcp/443/wss"));
     }
-    multiaddrs.sort();
-    multiaddrs.dedup();
-    multiaddrs
+    dedupe_browser_seed_multiaddrs(multiaddrs)
+}
+
+fn dedupe_browser_seed_multiaddrs(multiaddrs: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for multiaddr in multiaddrs {
+        if !deduped.contains(&multiaddr) {
+            deduped.push(multiaddr);
+        }
+    }
+    deduped
 }
 
 fn browser_seed_host_prefix(host: &str) -> String {
