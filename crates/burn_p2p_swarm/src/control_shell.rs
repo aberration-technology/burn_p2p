@@ -51,6 +51,14 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Registers one externally reachable address with the underlying swarm runtime.
+    pub fn add_external_address(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.add_external_address(address),
+            Self::Native(shell) => shell.add_external_address(address),
+        }
+    }
+
     /// Disconnects one peer from the local swarm.
     pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
         match self {

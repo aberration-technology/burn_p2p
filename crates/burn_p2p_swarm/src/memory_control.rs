@@ -82,6 +82,11 @@ impl MemoryControlPlaneShell {
             .map_err(|error| SwarmError::Dial(error.to_string()))
     }
 
+    /// Registers one externally reachable address with the in-memory control plane.
+    pub fn add_external_address(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Ok(())
+    }
+
     /// Disconnects one peer from the local swarm.
     pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
         let peer_id = peer_id
@@ -660,6 +665,11 @@ impl MemoryControlPlaneShell {
         Err(SwarmError::Runtime(
             "memory control-plane transport is unavailable on wasm targets".into(),
         ))
+    }
+
+    /// Registers one externally reachable address with the wasm memory stub.
+    pub fn add_external_address(&mut self, _address: SwarmAddress) -> Result<(), SwarmError> {
+        Ok(())
     }
 
     pub fn disconnect_peer(&mut self, _peer_id: &str) -> Result<(), SwarmError> {

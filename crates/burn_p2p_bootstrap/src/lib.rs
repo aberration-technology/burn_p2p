@@ -1735,6 +1735,7 @@ mod tests {
                         metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
                         bootstrap_peers: Vec::new(),
                         listen_addresses: vec![bootstrap_addr.clone()],
+                        external_addresses: Vec::new(),
                     },
                     active_experiment: active.clone(),
                     initialize_head_on_start: true,
@@ -1851,6 +1852,7 @@ mod tests {
                         burn_p2p_swarm::SwarmAddress::new("/ip4/127.0.0.1/tcp/0")
                             .expect("listen address"),
                     ],
+                    external_addresses: Vec::new(),
                 },
             })
             .expect("spawn bootstrap peer daemon");

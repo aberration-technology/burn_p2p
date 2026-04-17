@@ -58,6 +58,7 @@ impl<P> RunningNode<P> {
             &node.mainnet.roles,
             bootstrap_addresses,
             listen_addresses.clone(),
+            node.config.external_addresses.clone(),
         )?;
         snapshot.runtime_boundary = Some(boundary.clone());
         snapshot.listen_addresses = Vec::new();

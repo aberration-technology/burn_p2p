@@ -469,6 +469,16 @@ impl NativeControlPlaneShell {
             .map_err(|error| SwarmError::Dial(error.to_string()))
     }
 
+    /// Registers one externally reachable address with the native swarm.
+    pub fn add_external_address(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
+        let address: Multiaddr = address
+            .as_str()
+            .parse()
+            .map_err(|_| SwarmError::InvalidAddress(address.as_str().to_owned()))?;
+        self.swarm.add_external_address(address);
+        Ok(())
+    }
+
     /// Disconnects one peer from the local swarm.
     pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
         let peer_id = peer_id

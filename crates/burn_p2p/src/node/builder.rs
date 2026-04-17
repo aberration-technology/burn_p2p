@@ -94,6 +94,21 @@ impl<P> NodeBuilder<P> {
         self
     }
 
+    /// Adds one explicit externally reachable address for swarm advertisement.
+    pub fn with_external_address(mut self, address: SwarmAddress) -> Self {
+        self.config.external_addresses.push(address);
+        self
+    }
+
+    /// Extends the explicit externally reachable address list.
+    pub fn with_external_addresses(
+        mut self,
+        addresses: impl IntoIterator<Item = SwarmAddress>,
+    ) -> Self {
+        self.config.external_addresses.extend(addresses);
+        self
+    }
+
     /// Returns the current accumulated node configuration.
     pub fn config(&self) -> &NodeConfig {
         &self.config

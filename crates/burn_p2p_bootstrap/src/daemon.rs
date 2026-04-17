@@ -75,6 +75,7 @@ impl Default for BootstrapEmbeddedDaemonConfig {
                 metrics_retention: MetricsRetentionConfig::default(),
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
+                external_addresses: Vec::new(),
             },
             active_experiment: ActiveExperiment {
                 study_id: StudyId::new("study"),
@@ -114,6 +115,7 @@ impl Default for BootstrapPeerDaemonConfig {
                 },
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
+                external_addresses: Vec::new(),
             },
         }
     }
@@ -411,6 +413,7 @@ fn apply_runtime_node_config<P>(
         } else {
             config.listen_addresses.clone()
         })
+        .with_external_addresses(config.external_addresses.clone())
 }
 
 fn bootstrap_peer_daemon_loop(
@@ -675,4 +678,59 @@ fn wait_for_runtime_ready(telemetry: &TelemetryHandle, timeout: Duration) -> any
         "runtime did not become ready within {}ms",
         timeout.as_millis()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn_p2p::{ClientPlatform, GenesisSpec};
+    use burn_p2p_core::NetworkId;
+    use semver::Version;
+
+    fn test_plan() -> BootstrapPlan {
+        let genesis = GenesisSpec {
+            network_id: NetworkId::new("test-net"),
+            protocol_version: Version::new(1, 0, 0),
+            display_name: "test".into(),
+            created_at: Utc::now(),
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let roles = crate::BootstrapPreset::BootstrapOnly.roles();
+        BootstrapPlan {
+            preset: crate::BootstrapPreset::BootstrapOnly,
+            genesis: genesis.clone(),
+            services: crate::BootstrapPreset::BootstrapOnly.services(),
+            roles: roles.clone(),
+            runtime: burn_p2p_swarm::RuntimeBoundary::for_platform_and_roles(
+                &genesis,
+                ClientPlatform::Native,
+                &roles,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("runtime"),
+            telemetry: crate::TelemetryExportPlan {
+                openmetrics_enabled: true,
+            },
+            authority: None,
+            archive: crate::ArchivePlan::default(),
+            admin_api: crate::AdminApiPlan::default(),
+        }
+    }
+
+    #[test]
+    fn apply_runtime_node_config_preserves_external_addresses() {
+        let plan = test_plan();
+        let external = burn_p2p::SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct")
+            .expect("external");
+        let config = NodeConfig {
+            external_addresses: vec![external.clone()],
+            ..NodeConfig::default()
+        };
+
+        let builder = apply_runtime_node_config(burn_p2p::NodeBuilder::new(()), &plan, &config);
+
+        assert_eq!(builder.config().external_addresses, vec![external]);
+    }
 }

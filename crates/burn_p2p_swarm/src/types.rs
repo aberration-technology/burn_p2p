@@ -445,6 +445,8 @@ pub struct RuntimeBoundary {
     pub bootstrap_addresses: Vec<SwarmAddress>,
     /// The listen addresses.
     pub listen_addresses: Vec<SwarmAddress>,
+    /// Explicit externally reachable addresses that should be advertised by the runtime.
+    pub external_addresses: Vec<SwarmAddress>,
     /// The protocols.
     pub protocols: ProtocolSet,
     /// The control overlay.
@@ -459,12 +461,14 @@ impl RuntimeBoundary {
         roles: &PeerRoleSet,
         bootstrap_addresses: Vec<SwarmAddress>,
         listen_addresses: Vec<SwarmAddress>,
+        external_addresses: Vec<SwarmAddress>,
     ) -> Result<Self, SwarmError> {
         Ok(Self {
             environment: platform.clone().into(),
             transport_policy: RuntimeTransportPolicy::for_platform_and_roles(platform, roles),
             bootstrap_addresses,
             listen_addresses,
+            external_addresses,
             protocols: ProtocolSet::for_network(&genesis.network_id)?,
             control_overlay: OverlayTopic::control(genesis.network_id.clone()),
         })

@@ -315,6 +315,7 @@ impl BootstrapSpec {
                 &self.preset.roles(),
                 self.bootstrap_addresses,
                 self.listen_addresses,
+                Vec::new(),
             )?,
             telemetry: TelemetryExportPlan {
                 openmetrics_enabled: true,

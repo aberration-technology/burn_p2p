@@ -792,6 +792,7 @@ fn handle_control_plane_event(
             if !snapshot.listen_addresses.contains(address) {
                 snapshot.listen_addresses.push(address.clone());
             }
+            publish_configured_external_addresses(shell, boundary, &mut snapshot, address);
             publish_local_peer_directory(shell, boundary, &mut snapshot);
             snapshot.control_plane = shell.snapshot().clone();
             if let Some(storage) = storage
@@ -1100,6 +1101,74 @@ fn connectivity_address_key(address: &SwarmAddress) -> String {
         .unwrap_or_else(|| address.as_str().to_owned())
 }
 
+fn publish_configured_external_addresses(
+    shell: &mut ControlPlaneShell,
+    boundary: &RuntimeBoundary,
+    snapshot: &mut NodeTelemetrySnapshot,
+    listen_address: &SwarmAddress,
+) {
+    for external_address in configured_external_addresses_for(boundary, listen_address) {
+        if let Err(error) = shell.add_external_address(external_address.clone()) {
+            snapshot.last_error = Some(format!(
+                "failed to register configured external address {}: {error}",
+                external_address.as_str()
+            ));
+            continue;
+        }
+        if !snapshot.listen_addresses.contains(&external_address) {
+            snapshot.listen_addresses.push(external_address);
+        }
+    }
+}
+
+fn configured_external_addresses_for(
+    boundary: &RuntimeBoundary,
+    listen_address: &SwarmAddress,
+) -> Vec<SwarmAddress> {
+    let mut addresses = Vec::new();
+    for external_address in &boundary.external_addresses {
+        if let Some(address) =
+            rewrite_configured_external_address(external_address, listen_address)
+            && !addresses.contains(&address)
+        {
+            addresses.push(address);
+        }
+    }
+    addresses
+}
+
+fn rewrite_configured_external_address(
+    external_address: &SwarmAddress,
+    listen_address: &SwarmAddress,
+) -> Option<SwarmAddress> {
+    let external_segments = external_address
+        .as_str()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let listen_segments = listen_address
+        .as_str()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if external_segments.len() < 3 || listen_segments.len() < 3 {
+        return None;
+    }
+    let external_suffix = &external_segments[2..];
+    let listen_suffix = &listen_segments[2..];
+    if external_suffix.len() > listen_suffix.len()
+        || listen_suffix[..external_suffix.len()] != *external_suffix
+    {
+        return None;
+    }
+    SwarmAddress::new(format!(
+        "/{}/{}",
+        external_segments[..2].join("/"),
+        listen_suffix.join("/")
+    ))
+    .ok()
+}
+
 fn bootstrap_offload_targets(
     boundary: &RuntimeBoundary,
     snapshot: &NodeTelemetrySnapshot,
@@ -1257,9 +1326,36 @@ mod tests {
             ),
             bootstrap_addresses,
             listen_addresses: Vec::new(),
+            external_addresses: Vec::new(),
             protocols: ProtocolSet::for_network(&network_id).expect("protocols"),
             control_overlay: OverlayTopic::control(network_id),
         }
+    }
+
+    #[test]
+    fn configured_external_address_rewrites_webrtc_certhash_suffix() {
+        let external = SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct")
+            .expect("external");
+        let listen = SwarmAddress::new(
+            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("listen");
+        let rewritten =
+            rewrite_configured_external_address(&external, &listen).expect("rewritten");
+        assert_eq!(
+            rewritten.as_str(),
+            "/dns4/bootstrap.example/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+    }
+
+    #[test]
+    fn configured_external_address_rejects_mismatched_transport_suffix() {
+        let external = SwarmAddress::new("/dns4/bootstrap.example/tcp/443/wss").expect("external");
+        let listen = SwarmAddress::new(
+            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("listen");
+        assert!(rewrite_configured_external_address(&external, &listen).is_none());
     }
 
     #[test]

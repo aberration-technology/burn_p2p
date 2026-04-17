@@ -685,4 +685,7 @@ pub struct NodeConfig {
     pub bootstrap_peers: Vec<SwarmAddress>,
     /// The listen addresses.
     pub listen_addresses: Vec<SwarmAddress>,
+    /// Explicit externally reachable addresses that should be advertised for this node.
+    #[serde(default)]
+    pub external_addresses: Vec<SwarmAddress>,
 }

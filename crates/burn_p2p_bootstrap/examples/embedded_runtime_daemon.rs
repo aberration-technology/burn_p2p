@@ -341,6 +341,7 @@ fn main() -> anyhow::Result<()> {
                 metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
+                external_addresses: Vec::new(),
             },
             active_experiment: ActiveExperiment {
                 study_id: burn_p2p::StudyId::new("study"),
