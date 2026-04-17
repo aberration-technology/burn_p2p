@@ -4439,7 +4439,7 @@ fn browser_app_model_projects_trainer_focused_client_view() {
         view.training.throughput_summary.as_deref(),
         Some("18.0 sample/s")
     );
-    assert_eq!(view.network.transport, "planned webtransport");
+    assert_eq!(view.network.transport, "dialing webtransport");
     assert!(view.network.metrics_live_ready);
     assert_eq!(
         view.network

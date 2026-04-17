@@ -603,6 +603,8 @@ impl BrowserAppController {
             apply_direct_swarm_status_snapshot(&mut runtime, self.direct_swarm_runtime.as_ref());
         #[cfg(target_arch = "wasm32")]
         if let Some(direct_swarm_runtime) = self.direct_swarm_runtime.as_mut() {
+            let reconnect_events =
+                ensure_direct_swarm_runtime_connected(&mut runtime, direct_swarm_runtime).await;
             match sync_worker_runtime_from_direct_swarm(
                 &self.edge_client,
                 &mut runtime,
@@ -615,6 +617,9 @@ impl BrowserAppController {
                     let mut model = BrowserAppModel::from_runtime(runtime);
                     model.last_error = previous_error;
                     for event in direct_swarm_events {
+                        model.apply_event(event);
+                    }
+                    for event in reconnect_events {
                         model.apply_event(event);
                     }
                     for event in events.drain(..) {
@@ -760,6 +765,49 @@ async fn establish_direct_swarm_runtime(
         }
     }
     (Some(direct_runtime), events)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn ensure_direct_swarm_runtime_connected(
+    runtime: &mut BrowserWorkerRuntime,
+    direct_runtime: &mut WasmBrowserSwarmRuntime,
+) -> Vec<BrowserWorkerEvent> {
+    let status = direct_runtime.status();
+    if status.connected_transport.is_some() || status.last_error.is_none() {
+        return Vec::new();
+    }
+    let Some(config) = runtime.config.clone() else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    match direct_runtime.connect(config.swarm_bootstrap()).await {
+        Ok(_) => {
+            events.extend(runtime.apply_command(
+                BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
+                None,
+                None,
+            ));
+            for (label, subscribe_result) in [
+                ("directory", direct_runtime.subscribe_directory().await),
+                ("heads", direct_runtime.subscribe_heads().await),
+                ("metrics", direct_runtime.subscribe_metrics().await),
+            ] {
+                if let Err(error) = subscribe_result {
+                    events.push(BrowserWorkerEvent::Error {
+                        message: format!(
+                            "browser direct swarm {label} subscription retry failed: {error}"
+                        ),
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            events.push(BrowserWorkerEvent::Error {
+                message: format!("browser direct swarm reconnect failed: {error}"),
+            });
+        }
+    }
+    events
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1705,7 +1753,7 @@ fn transport_label(transport: &BrowserTransportStatus) -> String {
         return connected.label().into();
     }
     match transport.selected.as_ref().or(transport.active.as_ref()) {
-        Some(selected) => format!("planned {}", selected.label()),
+        Some(selected) => format!("dialing {}", selected.label()),
         None => "offline".into(),
     }
 }
