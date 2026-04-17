@@ -132,6 +132,8 @@ pub use burn_p2p_swarm::{
     RuntimeBoundary, RuntimeEnvironment, RuntimeTransportPolicy, SwarmAddress, SwarmError,
     SwarmStats, TelemetryAnnouncement, TrainerPromotionAttestationAnnouncement, TransportKind,
     UpdateEnvelopeAnnouncement, ValidationQuorumAnnouncement,
+    native_browser_webtransport_gateway_runtime_supported,
+    native_browser_webrtc_direct_runtime_supported,
     browser_transport_family_for_seed_url, plan_browser_seed_dials,
 };
 pub use burn_p2p_workload::{

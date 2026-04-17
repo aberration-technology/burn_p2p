@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
+#[cfg(not(target_arch = "wasm32"))]
+use rand::thread_rng;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct NativeControlPlaneShell {
@@ -32,6 +36,14 @@ const KADEMLIA_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
 const PEER_DIRECTORY_RECORD_LOOKUP_DEBOUNCE: Duration = Duration::from_secs(30);
 #[cfg(not(target_arch = "wasm32"))]
 const PEER_DIRECTORY_RECORD_TTL: Duration = Duration::from_secs(90);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_native_webrtc_transport(
+    keypair: &Keypair,
+) -> Result<WebRtcTransport, Box<dyn std::error::Error + Send + Sync>> {
+    let certificate = WebRtcCertificate::generate(&mut thread_rng())?;
+    Ok(WebRtcTransport::new(keypair.clone(), certificate))
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeControlPlaneShell {
@@ -170,6 +182,8 @@ impl NativeControlPlaneShell {
                     )
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_quic()
+                    .with_other_transport(|key| build_native_webrtc_transport(key))
+                    .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_dns()
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_websocket(tls_config, yamux::Config::default)

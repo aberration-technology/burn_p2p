@@ -103,7 +103,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
                 .transport_policy
                 .preferred
                 .contains(&burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect),
-            "browser seed advertisement should not claim webrtc-direct until native runtime support exists"
+            "browser seed advertisement should not claim webrtc-direct without an explicit native WebRTC listener"
         );
         assert!(
             !signed_seeds
@@ -209,6 +209,107 @@ fn browser_portal_client_round_trips_against_live_http_router() {
             .await
             .expect("logout session");
         assert!(logout.logged_out);
+    });
+}
+
+#[test]
+fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_configured() {
+    let temp = tempdir().expect("temp dir");
+    let auth = Arc::new(
+        build_auth_portal(
+            &sample_auth_config(temp.path()),
+            NetworkId::new("secure-demo"),
+            Version::new(0, 1, 0),
+        )
+        .expect("build auth portal"),
+    );
+    let mut spec = sample_spec();
+    spec.listen_addresses = vec![
+        burn_p2p::SwarmAddress::new("/ip4/0.0.0.0/udp/4101/webrtc-direct").expect("webrtc addr"),
+    ];
+    let context = HttpServerContext {
+        plan: Arc::new(spec.clone().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec,
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("browser-client-webrtc.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: Some(auth),
+        control_handle: None,
+    };
+    let server = HttpTestServer::spawn(context);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    runtime.block_on(async move {
+        let snapshot: BrowserEdgeSnapshot = reqwest::Client::new()
+            .get(format!("{}/portal/snapshot", server.base_url()))
+            .send()
+            .await
+            .expect("fetch portal snapshot")
+            .error_for_status()
+            .expect("portal snapshot status")
+            .json()
+            .await
+            .expect("decode portal snapshot");
+        assert!(snapshot.transports.webrtc_direct);
+        assert!(snapshot.transports.wss_fallback);
+
+        let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
+        let enrollment = BrowserEnrollmentConfig {
+            network_id: NetworkId::new("secure-demo"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            release_train_hash: ContentId::new("demo-train"),
+            target_artifact_id: "native-test-client".into(),
+            target_artifact_hash: ContentId::new("demo-artifact-native"),
+            login_path: "/login/static".into(),
+            callback_path: "/callback/static".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::from([ExperimentScope::Connect]),
+            session_ttl_secs: 300,
+        };
+        let client = BrowserEdgeClient::new(bindings, enrollment);
+        let signed_seeds = client
+            .fetch_browser_seed_advertisement()
+            .await
+            .expect("fetch browser seed advertisement")
+            .expect("browser seed advertisement");
+        let preferred = &signed_seeds.payload.payload.transport_policy.preferred;
+        assert!(
+            preferred.contains(&burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect),
+            "browser seed advertisement should include webrtc-direct when a native listener is configured"
+        );
+        assert!(
+            preferred.contains(&burn_p2p_core::BrowserSeedTransportKind::WssFallback),
+            "browser seed advertisement should continue to include wss fallback"
+        );
+        let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
+        assert!(
+            seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4101/webrtc-direct".to_owned()),
+            "expected public WebRTC direct seed in signed advertisement, got {seed_multiaddrs:?}"
+        );
+        assert!(
+            seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
+            "expected public wss fallback seed in signed advertisement, got {seed_multiaddrs:?}"
+        );
     });
 }
 

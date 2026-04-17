@@ -103,5 +103,15 @@ pub use types::{
     RuntimeEnvironment, RuntimeTransportPolicy, SwarmAddress, TransportKind,
 };
 
+/// Returns whether the native swarm runtime can honestly advertise browser WebRTC direct support.
+pub fn native_browser_webrtc_direct_runtime_supported() -> bool {
+    cfg!(not(target_arch = "wasm32"))
+}
+
+/// Returns whether the native swarm runtime can honestly advertise browser WebTransport support.
+pub fn native_browser_webtransport_gateway_runtime_supported() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests;

@@ -34,6 +34,8 @@ libp2p-identify = "0.47.0"
 libp2p-kad = "0.48.0"
 libp2p-mdns = { version = "0.48.0", features = ["tokio"] }
 libp2p-rendezvous = "0.17.1"
+libp2p-webrtc = { version = "0.9.0-alpha.1", features = ["tokio"] }
+rand = "0.8"
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

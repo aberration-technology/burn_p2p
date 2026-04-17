@@ -240,6 +240,34 @@ pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, 
             concrete.push(MultiaddrProtocol::QuicV1);
             Ok(concrete)
         }
+        [
+            MultiaddrProtocol::Ip4(ip),
+            MultiaddrProtocol::Udp(0),
+            MultiaddrProtocol::WebRTCDirect,
+        ] => {
+            let socket = UdpSocket::bind((*ip, 0))?;
+            let port = socket.local_addr()?.port();
+            drop(socket);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip4(*ip));
+            concrete.push(MultiaddrProtocol::Udp(port));
+            concrete.push(MultiaddrProtocol::WebRTCDirect);
+            Ok(concrete)
+        }
+        [
+            MultiaddrProtocol::Ip6(ip),
+            MultiaddrProtocol::Udp(0),
+            MultiaddrProtocol::WebRTCDirect,
+        ] => {
+            let socket = UdpSocket::bind((*ip, 0))?;
+            let port = socket.local_addr()?.port();
+            drop(socket);
+            let mut concrete = Multiaddr::empty();
+            concrete.push(MultiaddrProtocol::Ip6(*ip));
+            concrete.push(MultiaddrProtocol::Udp(port));
+            concrete.push(MultiaddrProtocol::WebRTCDirect);
+            Ok(concrete)
+        }
         _ => Ok(address.clone()),
     }
 }
