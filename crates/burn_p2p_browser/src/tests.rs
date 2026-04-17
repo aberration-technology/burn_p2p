@@ -36,6 +36,10 @@ use burn_p2p_swarm::BrowserSwarmBootstrap;
 use chrono::Utc;
 use semver::Version;
 
+const TEST_EDGE_WEBRTC_DIRECT_SEED: &str = "/dns4/edge.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const TEST_BOOTSTRAP_WEBRTC_DIRECT_SEED: &str = "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const TEST_EDGE_WEBTRANSPORT_SEED: &str = "/dns4/edge.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
 fn conformance_revision_manifest() -> burn_p2p::RevisionManifest {
     burn_p2p::RevisionManifest {
         experiment_id: ExperimentId::new("exp-browser"),
@@ -1423,7 +1427,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserTrainerWgpu,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -1643,7 +1647,7 @@ fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selec
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -1803,7 +1807,7 @@ fn worker_runtime_apply_command_emits_selection_and_storage_events() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2077,7 +2081,7 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2423,7 +2427,7 @@ fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -2485,7 +2489,7 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -3590,7 +3594,7 @@ fn resolve_browser_seed_bootstrap_prefers_signed_edge_and_merges_site_fallback()
                 seeds: vec![BrowserSeedRecord {
                     peer_id: Some(PeerId::new("seed-browser")),
                     multiaddrs: vec![
-                        "/dns4/edge.example/udp/4001/webrtc-direct".into(),
+                        TEST_EDGE_WEBRTC_DIRECT_SEED.into(),
                         "/dns4/edge.example/tcp/443/wss".into(),
                     ],
                 }],
@@ -3621,7 +3625,7 @@ fn resolve_browser_seed_bootstrap_prefers_signed_edge_and_merges_site_fallback()
     assert_eq!(
         resolved.seed_node_urls,
         vec![
-            "/dns4/edge.example/udp/4001/webrtc-direct".to_owned(),
+            TEST_EDGE_WEBRTC_DIRECT_SEED.to_owned(),
             "/dns4/edge.example/tcp/443/wss".to_owned(),
             "/dns4/site.example/tcp/443/wss".to_owned(),
         ]
@@ -3646,7 +3650,7 @@ fn resolve_browser_seed_bootstrap_falls_back_to_site_config_when_edge_payload_is
                 },
                 seeds: vec![BrowserSeedRecord {
                     peer_id: None,
-                    multiaddrs: vec!["/dns4/edge.example/udp/443/webtransport".into()],
+                    multiaddrs: vec![TEST_EDGE_WEBTRANSPORT_SEED.into()],
                 }],
             },
         ),
@@ -3693,7 +3697,7 @@ fn browser_swarm_status_reports_selected_transport_without_fake_connection() {
         ContentId::new("artifact-browser"),
     );
     config.seed_bootstrap.source = BrowserSeedBootstrapSource::EdgeSigned;
-    config.seed_bootstrap.seed_node_urls = vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()];
+    config.seed_bootstrap.seed_node_urls = vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()];
     let runtime = BrowserWorkerRuntime::start(
         config,
         BrowserCapabilityReport::default(),
@@ -3734,7 +3738,7 @@ fn browser_swarm_status_reports_peer_artifact_ready_from_truthful_runtime_state(
     );
     config.seed_bootstrap.source = BrowserSeedBootstrapSource::Merged;
     config.seed_bootstrap.seed_node_urls = vec![
-        "/dns4/edge.example/udp/4001/webrtc-direct".into(),
+        TEST_EDGE_WEBRTC_DIRECT_SEED.into(),
         "/dns4/edge.example/tcp/443/wss".into(),
     ];
     let mut runtime = BrowserWorkerRuntime::start(
@@ -3786,7 +3790,7 @@ fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -3802,7 +3806,7 @@ fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
             phase: BrowserSwarmPhase::TransportConnected,
             seed_bootstrap: BrowserResolvedSeedBootstrap {
                 source: BrowserSeedBootstrapSource::EdgeSigned,
-                seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+                seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
                 advertised_seed_count: 1,
                 last_error: None,
             },
@@ -3860,7 +3864,7 @@ fn worker_runtime_apply_swarm_directory_head_and_metrics_commands_drive_runtime_
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserObserver,
-            site_seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
             ..config
         },
         BrowserCapabilityReport::default(),
@@ -3961,7 +3965,7 @@ fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
     );
     config.seed_bootstrap.source = BrowserSeedBootstrapSource::Merged;
     config.seed_bootstrap.seed_node_urls = vec![
-        "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
+        TEST_BOOTSTRAP_WEBRTC_DIRECT_SEED.into(),
         "/dns4/bootstrap.example/tcp/443/wss".into(),
     ];
     config.selected_experiment = Some(ExperimentId::new("exp-browser"));
@@ -4800,7 +4804,7 @@ fn browser_app_model_applies_worker_events_to_local_state() {
             phase: BrowserSwarmPhase::TransportConnected,
             seed_bootstrap: BrowserResolvedSeedBootstrap {
                 source: BrowserSeedBootstrapSource::EdgeSigned,
-                seed_node_urls: vec!["/dns4/edge.example/udp/4001/webrtc-direct".into()],
+                seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
                 advertised_seed_count: 1,
                 last_error: None,
             },

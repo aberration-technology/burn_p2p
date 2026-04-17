@@ -337,9 +337,17 @@ pub(crate) fn handle_get_route(
                 )?;
                 return Ok(true);
             }
-            let Some(advertisement) =
-                current_browser_seed_advertisement(plan, current_config, request)
-            else {
+            let Some(advertisement) = ({
+                let state = state
+                    .lock()
+                    .expect("bootstrap admin state should not be poisoned");
+                current_browser_seed_advertisement(
+                    plan,
+                    current_config,
+                    request,
+                    state.runtime_snapshot.as_ref(),
+                )
+            }) else {
                 write_response(
                     stream,
                     "404 Not Found",

@@ -247,16 +247,28 @@ fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
 #[test]
 fn browser_transport_family_for_seed_url_classifies_browser_capable_multiaddrs() {
     assert_eq!(
-        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/4001/webrtc-direct"),
+        browser_transport_family_for_seed_url(
+            "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ),
         Some(BrowserTransportFamily::WebRtcDirect)
     );
     assert_eq!(
-        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/443/webtransport"),
+        browser_transport_family_for_seed_url(
+            "/dns4/bootstrap.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        ),
         Some(BrowserTransportFamily::WebTransport)
     );
     assert_eq!(
         browser_transport_family_for_seed_url("/dns4/bootstrap.example/tcp/443/wss"),
         Some(BrowserTransportFamily::WssFallback)
+    );
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/4001/webrtc-direct"),
+        None
+    );
+    assert_eq!(
+        browser_transport_family_for_seed_url("/dns4/bootstrap.example/udp/443/webtransport"),
+        None
     );
     assert_eq!(
         browser_transport_family_for_seed_url("/dns4/bootstrap.example/tcp/4001/quic-v1"),
@@ -272,8 +284,8 @@ fn browser_seed_dial_plan_prefers_direct_browser_transports_before_fallback() {
             source: BrowserSeedBootstrapSource::Merged,
             seed_node_urls: vec![
                 "/dns4/bootstrap.example/tcp/443/wss".into(),
-                "/dns4/bootstrap.example/udp/443/webtransport".into(),
-                "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
+                "/dns4/bootstrap.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".into(),
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
             ],
             advertised_seed_count: 3,
             last_error: None,
@@ -315,8 +327,8 @@ fn supported_browser_seed_candidates_preserve_order_after_filtering() {
         seed_bootstrap: BrowserResolvedSeedBootstrap {
             source: BrowserSeedBootstrapSource::Merged,
             seed_node_urls: vec![
-                "/dns4/bootstrap.example/udp/4001/webrtc-direct".into(),
-                "/dns4/bootstrap.example/udp/443/webtransport".into(),
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                "/dns4/bootstrap.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".into(),
                 "/dns4/bootstrap.example/tcp/443/wss".into(),
             ],
             advertised_seed_count: 3,
@@ -351,7 +363,10 @@ fn planned_browser_swarm_runtime_connect_reports_transport_selected_from_bootstr
         network_id: NetworkId::new("net-browser"),
         seed_bootstrap: BrowserResolvedSeedBootstrap {
             source: BrowserSeedBootstrapSource::EdgeSigned,
-            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    .into(),
+            ],
             advertised_seed_count: 1,
             last_error: None,
         },
@@ -394,7 +409,10 @@ fn browser_subscription_topics_follow_selected_experiment_after_directory_seed()
         network_id: network_id.clone(),
         seed_bootstrap: BrowserResolvedSeedBootstrap {
             source: BrowserSeedBootstrapSource::EdgeSigned,
-            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    .into(),
+            ],
             advertised_seed_count: 1,
             last_error: None,
         },
@@ -480,7 +498,10 @@ fn browser_swarm_status_advances_to_head_synced_from_selected_snapshot() {
         network_id: network_id.clone(),
         seed_bootstrap: BrowserResolvedSeedBootstrap {
             source: BrowserSeedBootstrapSource::EdgeSigned,
-            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    .into(),
+            ],
             advertised_seed_count: 1,
             last_error: None,
         },

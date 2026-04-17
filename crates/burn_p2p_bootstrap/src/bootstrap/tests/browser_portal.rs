@@ -215,6 +215,7 @@ fn browser_portal_client_round_trips_against_live_http_router() {
 #[test]
 fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_configured() {
     let temp = tempdir().expect("temp dir");
+    let now = Utc::now();
     let auth = Arc::new(
         build_auth_portal(
             &sample_auth_config(temp.path()),
@@ -223,15 +224,50 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
         )
         .expect("build auth portal"),
     );
-    let mut spec = sample_spec();
-    spec.listen_addresses = vec![
-        burn_p2p::SwarmAddress::new("/ip4/0.0.0.0/udp/4101/webrtc-direct").expect("webrtc addr"),
-    ];
     let context = HttpServerContext {
-        plan: Arc::new(spec.clone().plan().expect("bootstrap plan")),
-        state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(burn_p2p::NodeTelemetrySnapshot {
+                status: burn_p2p::RuntimeStatus::Running,
+                node_state: burn_p2p::NodeRuntimeState::IdleReady,
+                slot_states: Vec::new(),
+                lag_state: burn_p2p::LagState::Current,
+                head_lag_steps: 0,
+                lag_policy: burn_p2p::LagPolicy::default(),
+                network_id: Some(NetworkId::new("secure-demo")),
+                local_peer_id: Some(PeerId::new("bootstrap-authority")),
+                configured_roles: PeerRoleSet::default_trainer(),
+                connected_peers: 1,
+                observed_peer_ids: BTreeSet::new(),
+                known_peer_addresses: BTreeSet::new(),
+                runtime_boundary: None,
+                listen_addresses: vec![
+                    burn_p2p::SwarmAddress::new("/ip4/10.42.1.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w").expect("webrtc certhash addr"),
+                ],
+                control_plane: burn_p2p::ControlPlaneSnapshot::default(),
+                recent_events: Vec::new(),
+                last_snapshot_peer_id: None,
+                last_snapshot: None,
+                admitted_peers: BTreeMap::new(),
+                rejected_peers: BTreeMap::new(),
+                peer_reputation: BTreeMap::new(),
+                minimum_revocation_epoch: None,
+                trust_bundle: None,
+                in_flight_transfers: BTreeMap::new(),
+                robustness_policy: None,
+                latest_cohort_robustness: None,
+                trust_scores: Vec::new(),
+                canary_reports: Vec::new(),
+                applied_control_cert_ids: BTreeSet::new(),
+                effective_limit_profile: None,
+                last_error: None,
+                started_at: now,
+                updated_at: now,
+            }),
+            ..BootstrapAdminState::default()
+        })),
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
-            spec,
+            spec: sample_spec(),
             http_bind_addr: None,
             admin_token: None,
             allow_dev_admin_token: false,
@@ -303,7 +339,7 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
         );
         let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
         assert!(
-            seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4101/webrtc-direct".to_owned()),
+            seed_multiaddrs.contains(&"/ip4/127.0.0.1/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w".to_owned()),
             "expected public WebRTC direct seed in signed advertisement, got {seed_multiaddrs:?}"
         );
         assert!(

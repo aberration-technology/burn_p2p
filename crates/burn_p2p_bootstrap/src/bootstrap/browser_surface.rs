@@ -19,6 +19,7 @@ pub(super) fn browser_edge_mode(plan: &BootstrapPlan) -> BrowserEdgeMode {
 pub(super) fn browser_transport_surface(
     plan: &BootstrapPlan,
     config: &BootstrapDaemonConfig,
+    runtime_snapshot: Option<&burn_p2p::NodeTelemetrySnapshot>,
 ) -> BrowserTransportSurface {
     if !browser_join_enabled(config) {
         return BrowserTransportSurface {
@@ -30,10 +31,14 @@ pub(super) fn browser_transport_surface(
     let edge_mode = browser_edge_mode(plan);
     BrowserTransportSurface {
         webrtc_direct: native_browser_webrtc_direct_supported()
-            && browser_seed_udp_port(&plan.runtime.listen_addresses, "webrtc-direct").is_some()
+            && browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct")
+                .next()
+                .is_some()
             && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
         webtransport_gateway: native_browser_webtransport_supported()
-            && browser_seed_udp_port(&plan.runtime.listen_addresses, "webtransport").is_some()
+            && browser_runtime_seed_addresses(runtime_snapshot, "webtransport")
+                .next()
+                .is_some()
             && matches!(edge_mode, BrowserEdgeMode::Full),
         wss_fallback: native_browser_wss_supported()
             && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
@@ -55,8 +60,9 @@ fn native_browser_wss_supported() -> bool {
 fn browser_seed_transport_policy(
     plan: &BootstrapPlan,
     config: &BootstrapDaemonConfig,
+    runtime_snapshot: Option<&burn_p2p::NodeTelemetrySnapshot>,
 ) -> burn_p2p_core::BrowserSeedTransportPolicy {
-    let surface = browser_transport_surface(plan, config);
+    let surface = browser_transport_surface(plan, config, runtime_snapshot);
     let mut preferred = Vec::new();
     if surface.webrtc_direct {
         preferred.push(burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect);
@@ -88,14 +94,15 @@ pub(super) fn current_browser_seed_advertisement(
     plan: &BootstrapPlan,
     config: &BootstrapDaemonConfig,
     request: &HttpRequest,
+    runtime_snapshot: Option<&burn_p2p::NodeTelemetrySnapshot>,
 ) -> Option<burn_p2p_core::BrowserSeedAdvertisement> {
     if !browser_join_enabled(config) {
         return None;
     }
     let issued_at = Utc::now();
-    let surface = browser_transport_surface(plan, config);
+    let surface = browser_transport_surface(plan, config, runtime_snapshot);
     let multiaddrs = request_public_browser_seed_host(request)
-        .map(|host| browser_seed_multiaddrs_for_host(&host, plan, &surface))
+        .map(|host| browser_seed_multiaddrs_for_host(&host, plan, &surface, runtime_snapshot))
         .filter(|multiaddrs| !multiaddrs.is_empty())
         .unwrap_or_else(|| {
             plan.runtime
@@ -118,7 +125,7 @@ pub(super) fn current_browser_seed_advertisement(
         network_id: plan.network_id().clone(),
         issued_at,
         expires_at: issued_at + chrono::Duration::minutes(15),
-        transport_policy: browser_seed_transport_policy(plan, config),
+        transport_policy: browser_seed_transport_policy(plan, config, runtime_snapshot),
         seeds,
     })
 }
@@ -146,31 +153,85 @@ fn request_public_browser_seed_host(request: &HttpRequest) -> Option<String> {
 
 fn browser_seed_multiaddrs_for_host(
     host: &str,
-    plan: &BootstrapPlan,
+    _plan: &BootstrapPlan,
     surface: &BrowserTransportSurface,
+    runtime_snapshot: Option<&burn_p2p::NodeTelemetrySnapshot>,
 ) -> Vec<String> {
-    let host_prefix = match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(_)) => format!("/ip4/{host}"),
-        Ok(IpAddr::V6(_)) => format!("/ip6/{host}"),
-        Err(_) => format!("/dns4/{host}"),
-    };
+    let host_prefix = browser_seed_host_prefix(host);
     let mut multiaddrs = Vec::new();
-    if surface.webrtc_direct
-        && let Some(port) = browser_seed_udp_port(&plan.runtime.listen_addresses, "webrtc-direct")
-    {
-        multiaddrs.push(format!("{host_prefix}/udp/{port}/webrtc-direct"));
+    if surface.webrtc_direct {
+        multiaddrs.extend(
+            browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct")
+                .filter_map(|address| rewrite_browser_seed_host(address.as_str(), &host_prefix)),
+        );
     }
-    if surface.webtransport_gateway
-        && let Some(port) = browser_seed_udp_port(&plan.runtime.listen_addresses, "webtransport")
-    {
-        multiaddrs.push(format!("{host_prefix}/udp/{port}/webtransport"));
+    if surface.webtransport_gateway {
+        multiaddrs.extend(
+            browser_runtime_seed_addresses(runtime_snapshot, "webtransport")
+                .filter_map(|address| rewrite_browser_seed_host(address.as_str(), &host_prefix)),
+        );
     }
     if surface.wss_fallback {
         multiaddrs.push(format!("{host_prefix}/tcp/443/wss"));
     }
+    multiaddrs.sort();
+    multiaddrs.dedup();
     multiaddrs
 }
 
+fn browser_seed_host_prefix(host: &str) -> String {
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => format!("/ip4/{host}"),
+        Ok(IpAddr::V6(_)) => format!("/ip6/{host}"),
+        Err(_) => format!("/dns4/{host}"),
+    }
+}
+
+fn browser_runtime_seed_addresses<'a>(
+    runtime_snapshot: Option<&'a burn_p2p::NodeTelemetrySnapshot>,
+    transport_segment: &str,
+) -> impl Iterator<Item = &'a burn_p2p::SwarmAddress> {
+    runtime_snapshot
+        .into_iter()
+        .flat_map(|snapshot| snapshot.listen_addresses.iter())
+        .filter(move |address| {
+            browser_runtime_seed_address_matches(address.as_str(), transport_segment)
+        })
+}
+
+fn browser_runtime_seed_address_matches(address: &str, transport_segment: &str) -> bool {
+    let segments = address
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let browser_transport = segments
+        .windows(3)
+        .any(|window| window[0] == "udp" && window[2] == transport_segment);
+    if !browser_transport {
+        return false;
+    }
+    if matches!(transport_segment, "webrtc-direct" | "webtransport") {
+        return segments.contains(&"certhash");
+    }
+    true
+}
+
+fn rewrite_browser_seed_host(address: &str, host_prefix: &str) -> Option<String> {
+    let segments = address
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 3 {
+        return None;
+    }
+    match segments[0] {
+        "ip4" | "ip6" | "dns4" | "dns6" => {}
+        _ => return None,
+    }
+    Some(format!("{host_prefix}/{}", segments[2..].join("/")))
+}
+
+#[allow(dead_code)]
 fn browser_seed_udp_port(
     listen_addresses: &[burn_p2p_swarm::SwarmAddress],
     transport_segment: &str,

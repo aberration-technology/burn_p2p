@@ -1700,9 +1700,15 @@ pub fn browser_transport_family_for_seed_url(seed_url: &str) -> Option<BrowserTr
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
     if segments.contains(&"webrtc-direct") {
+        if !segments.contains(&"certhash") {
+            return None;
+        }
         return Some(BrowserTransportFamily::WebRtcDirect);
     }
     if segments.contains(&"webtransport") {
+        if !segments.contains(&"quic-v1") || !segments.contains(&"certhash") {
+            return None;
+        }
         return Some(BrowserTransportFamily::WebTransport);
     }
     if segments.contains(&"wss") || segments.contains(&"ws") {
