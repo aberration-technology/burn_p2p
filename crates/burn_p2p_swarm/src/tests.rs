@@ -33,9 +33,9 @@ use super::{
     PeerDirectoryAnnouncement, PeerObservation, PeerStore, PlannedBrowserSwarmRuntime, ProtocolSet,
     PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
-    browser_transport_family_for_seed_url, filter_supported_browser_seed_dial_candidates,
-    plan_browser_seed_dials, selected_browser_study_and_experiment,
-    update_wasm_browser_status_from_snapshot,
+    browser_peer_directory_dial_candidates, browser_transport_family_for_seed_url,
+    filter_supported_browser_seed_dial_candidates, plan_browser_seed_dials,
+    selected_browser_study_and_experiment, update_wasm_browser_status_from_snapshot,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
@@ -355,6 +355,112 @@ fn supported_browser_seed_candidates_preserve_order_after_filtering() {
     assert_eq!(supported.len(), 2);
     assert_eq!(supported[0].transport, BrowserTransportFamily::WebTransport);
     assert_eq!(supported[1].transport, BrowserTransportFamily::WssFallback);
+}
+
+#[test]
+fn browser_peer_directory_candidates_prefer_direct_mesh_peers_before_fallback() {
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "peer-wss",
+                &["/dns4/peer-wss.example/tcp/443/wss"],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-direct",
+                &[
+                    "/dns4/peer-direct.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let candidates = browser_peer_directory_dial_candidates(
+        &snapshot,
+        &[
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        &[
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        &[],
+        &BTreeSet::new(),
+    );
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("peer-direct"))
+    );
+    assert_eq!(
+        candidates[0].transport,
+        BrowserTransportFamily::WebRtcDirect
+    );
+    assert_eq!(
+        candidates[1].peer_id.as_ref(),
+        Some(&PeerId::new("peer-wss"))
+    );
+    assert_eq!(candidates[1].transport, BrowserTransportFamily::WssFallback);
+}
+
+#[test]
+fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
+    let attempted = BTreeSet::from([String::from(
+        "/dns4/peer-attempted.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+    )]);
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "peer-connected",
+                &[
+                    "/dns4/peer-connected.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-attempted",
+                &[
+                    "/dns4/peer-attempted.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-fresh",
+                &[
+                    "/dns4/peer-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let candidates = browser_peer_directory_dial_candidates(
+        &snapshot,
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[PeerId::new("peer-connected")],
+        &attempted,
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("peer-fresh"))
+    );
+    assert_eq!(
+        candidates[0].seed_url,
+        "/dns4/peer-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
 }
 
 #[test]
