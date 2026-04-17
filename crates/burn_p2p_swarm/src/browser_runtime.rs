@@ -18,9 +18,12 @@ use crate::{
 use crate::{ControlPlaneSnapshot, SwarmError};
 use crate::{OverlayChannel, OverlayTopic};
 
-use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, rc::Rc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 #[cfg(target_arch = "wasm32")]
 use futures::{
@@ -42,6 +45,7 @@ use libp2p::{
 use wasm_bindgen_futures::spawn_local;
 
 const WASM_BROWSER_TARGET_CONNECTED_PEERS: usize = 3;
+const WASM_BROWSER_DIRECT_RETRY_COOLDOWN: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Bootstrap contract for one browser swarm runtime connection attempt.
@@ -372,6 +376,7 @@ enum WasmBrowserSwarmCommand {
         request: BrowserArtifactChunkRequest,
         response_tx: oneshot::Sender<Result<Vec<u8>, SwarmError>>,
     },
+    RetryDirectHandoff,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -400,6 +405,7 @@ impl WasmBrowserSwarmRuntime {
         spawn_local(run_wasm_browser_swarm_task(
             shared.clone(),
             command_rx,
+            command_tx.clone(),
             network_id,
         ));
         Self { shared, command_tx }
@@ -619,6 +625,7 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
 async fn run_wasm_browser_swarm_task(
     shared: Rc<RefCell<WasmBrowserSwarmSharedState>>,
     mut command_rx: mpsc::UnboundedReceiver<WasmBrowserSwarmCommand>,
+    command_tx: mpsc::UnboundedSender<WasmBrowserSwarmCommand>,
     network_id: NetworkId,
 ) {
     let local_key = libp2p::identity::Keypair::generate_ed25519();
@@ -648,6 +655,7 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::FetchArtifactChunk { response_tx, .. } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
+                    WasmBrowserSwarmCommand::RetryDirectHandoff => {}
                 }
             }
             return;
@@ -663,8 +671,9 @@ async fn run_wasm_browser_swarm_task(
     let mut heads_subscribed = false;
     let mut metrics_subscribed = false;
     let mut subscribed_topic_paths = BTreeSet::<String>::new();
-    let mut attempted_mesh_candidate_urls = BTreeSet::<String>::new();
+    let mut attempted_mesh_candidate_urls = BTreeMap::<String, Instant>::new();
     let mut pending_subscription_snapshot_request_id: Option<String> = None;
+    let mut pending_direct_retry = false;
     let mut pending_snapshot_requests =
         BTreeMap::<String, oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>>::new();
     let mut pending_manifest_requests = BTreeMap::<
@@ -830,6 +839,7 @@ async fn run_wasm_browser_swarm_task(
                             &mut swarm,
                             &shared,
                             current_snapshot.as_ref(),
+                            &connected_peer_transports,
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -852,6 +862,7 @@ async fn run_wasm_browser_swarm_task(
                             &mut swarm,
                             &shared,
                             current_snapshot.as_ref(),
+                            &connected_peer_transports,
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -874,6 +885,7 @@ async fn run_wasm_browser_swarm_task(
                             &mut swarm,
                             &shared,
                             current_snapshot.as_ref(),
+                            &connected_peer_transports,
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -883,6 +895,7 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
                         match resolve_wasm_browser_request_peer_id(
                             &shared.borrow().status.connected_peer_ids,
+                            &connected_peer_transports,
                             &[],
                         ) {
                             Ok(peer_id) => {
@@ -904,6 +917,7 @@ async fn run_wasm_browser_swarm_task(
                     } => {
                         match resolve_wasm_browser_request_peer_id(
                             &shared.borrow().status.connected_peer_ids,
+                            &connected_peer_transports,
                             &request.provider_peer_ids,
                         ) {
                             Ok(peer_id) => {
@@ -930,6 +944,7 @@ async fn run_wasm_browser_swarm_task(
                     } => {
                         match resolve_wasm_browser_request_peer_id(
                             &shared.borrow().status.connected_peer_ids,
+                            &connected_peer_transports,
                             &request.provider_peer_ids,
                         ) {
                             Ok(peer_id) => {
@@ -950,6 +965,32 @@ async fn run_wasm_browser_swarm_task(
                                 let _ = response_tx.send(Err(error));
                             }
                         }
+                    }
+                    WasmBrowserSwarmCommand::RetryDirectHandoff => {
+                        pending_direct_retry = false;
+                        maybe_dial_wasm_browser_direct_seed_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            &connected_peer_transports,
+                            &mut attempted_mesh_candidate_urls,
+                        );
+                        maybe_dial_wasm_browser_mesh_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &connected_peer_transports,
+                            &mut attempted_mesh_candidate_urls,
+                        );
+                        maybe_schedule_wasm_browser_direct_retry(
+                            &command_tx,
+                            &mut pending_direct_retry,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &shared.borrow().status.connected_peer_ids,
+                            &connected_peer_transports,
+                        );
                     }
                 }
             }
@@ -1007,6 +1048,7 @@ async fn run_wasm_browser_swarm_task(
                         &mut swarm,
                         &shared,
                         current_snapshot.as_ref(),
+                        &connected_peer_transports,
                         directory_subscribed,
                         heads_subscribed,
                         metrics_subscribed,
@@ -1034,6 +1076,14 @@ async fn run_wasm_browser_swarm_task(
                             &connected_peer_transports,
                         ),
                     );
+                    maybe_schedule_wasm_browser_direct_retry(
+                        &command_tx,
+                        &mut pending_direct_retry,
+                        current_bootstrap.as_ref(),
+                        current_snapshot.as_ref(),
+                        &shared.borrow().status.connected_peer_ids,
+                        &connected_peer_transports,
+                    );
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
                     let error_message = error.to_string();
@@ -1054,6 +1104,14 @@ async fn run_wasm_browser_swarm_task(
                             shared.borrow_mut().status.last_error = Some(next_error.to_string());
                         }
                     }
+                    maybe_schedule_wasm_browser_direct_retry(
+                        &command_tx,
+                        &mut pending_direct_retry,
+                        current_bootstrap.as_ref(),
+                        current_snapshot.as_ref(),
+                        &shared.borrow().status.connected_peer_ids,
+                        &connected_peer_transports,
+                    );
                 }
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     swarm
@@ -1123,6 +1181,14 @@ async fn run_wasm_browser_swarm_task(
                                 current_snapshot.as_ref(),
                                 &connected_peer_transports,
                             ),
+                        );
+                        maybe_schedule_wasm_browser_direct_retry(
+                            &command_tx,
+                            &mut pending_direct_retry,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &shared.borrow().status.connected_peer_ids,
+                            &connected_peer_transports,
                         );
                     } else {
                         fail_pending_wasm_snapshot_requests(
@@ -1198,6 +1264,21 @@ async fn run_wasm_browser_swarm_task(
                                             current_snapshot.as_ref(),
                                             &connected_peer_transports,
                                             &mut attempted_mesh_candidate_urls,
+                                        );
+                                        disconnect_wasm_browser_peers(
+                                            &mut swarm,
+                                            browser_wss_fallback_peers_to_disconnect(
+                                                current_snapshot.as_ref(),
+                                                &connected_peer_transports,
+                                            ),
+                                        );
+                                        maybe_schedule_wasm_browser_direct_retry(
+                                            &command_tx,
+                                            &mut pending_direct_retry,
+                                            current_bootstrap.as_ref(),
+                                            current_snapshot.as_ref(),
+                                            &shared.borrow().status.connected_peer_ids,
+                                            &connected_peer_transports,
                                         );
                                     }
                                 }
@@ -1276,6 +1357,21 @@ async fn run_wasm_browser_swarm_task(
                                                         &connected_peer_transports,
                                                         &mut attempted_mesh_candidate_urls,
                                                     );
+                                                    disconnect_wasm_browser_peers(
+                                                        &mut swarm,
+                                                        browser_wss_fallback_peers_to_disconnect(
+                                                            current_snapshot.as_ref(),
+                                                            &connected_peer_transports,
+                                                        ),
+                                                    );
+                                                    maybe_schedule_wasm_browser_direct_retry(
+                                                        &command_tx,
+                                                        &mut pending_direct_retry,
+                                                        current_bootstrap.as_ref(),
+                                                        current_snapshot.as_ref(),
+                                                        &shared.borrow().status.connected_peer_ids,
+                                                        &connected_peer_transports,
+                                                    );
                                                 }
                                             } else if let Some(response_tx) =
                                                 pending_snapshot_requests.remove(&request_id)
@@ -1309,6 +1405,21 @@ async fn run_wasm_browser_swarm_task(
                                                     current_snapshot.as_ref(),
                                                     &connected_peer_transports,
                                                     &mut attempted_mesh_candidate_urls,
+                                                );
+                                                disconnect_wasm_browser_peers(
+                                                    &mut swarm,
+                                                    browser_wss_fallback_peers_to_disconnect(
+                                                        current_snapshot.as_ref(),
+                                                        &connected_peer_transports,
+                                                    ),
+                                                );
+                                                maybe_schedule_wasm_browser_direct_retry(
+                                                    &command_tx,
+                                                    &mut pending_direct_retry,
+                                                    current_bootstrap.as_ref(),
+                                                    current_snapshot.as_ref(),
+                                                    &shared.borrow().status.connected_peer_ids,
+                                                    &connected_peer_transports,
                                                 );
                                                 let _ = response_tx.send(Ok(snapshot));
                                             }
@@ -1430,7 +1541,7 @@ fn dial_next_wasm_browser_seed_candidate(
     ))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 fn wasm_supported_browser_transport_families() -> Vec<BrowserTransportFamily> {
     vec![
         BrowserTransportFamily::WebRtcDirect,
@@ -1480,26 +1591,64 @@ fn build_wasm_browser_swarm(
         .map(|builder| builder.build())
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn resolve_wasm_browser_request_peer_id(
     connected_peer_ids: &[PeerId],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
     requested_provider_peer_ids: &[PeerId],
 ) -> Result<libp2p::identity::PeerId, SwarmError> {
-    requested_provider_peer_ids
+    preferred_wasm_browser_request_peer_id(
+        connected_peer_ids,
+        connected_peer_transports,
+        requested_provider_peer_ids,
+    )
+    .ok_or_else(|| {
+        SwarmError::Runtime(
+            "browser direct swarm has no connected peer to service the request".into(),
+        )
+    })
+    .and_then(|peer_id| {
+        peer_id
+            .as_str()
+            .parse::<libp2p::identity::PeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.as_str().to_owned()))
+    })
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn preferred_wasm_browser_request_peer_id(
+    connected_peer_ids: &[PeerId],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+    requested_provider_peer_ids: &[PeerId],
+) -> Option<PeerId> {
+    let connected_provider_peer_ids = requested_provider_peer_ids
         .iter()
         .find(|peer_id| connected_peer_ids.contains(peer_id))
-        .or_else(|| connected_peer_ids.first())
-        .ok_or_else(|| {
-            SwarmError::Runtime(
-                "browser direct swarm has no connected peer to service the request".into(),
-            )
+        .is_some();
+    let candidate_peer_ids = if connected_provider_peer_ids {
+        requested_provider_peer_ids
+            .iter()
+            .filter(|peer_id| connected_peer_ids.contains(peer_id))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        connected_peer_ids.to_vec()
+    };
+    [
+        BrowserTransportFamily::WebRtcDirect,
+        BrowserTransportFamily::WebTransport,
+        BrowserTransportFamily::WssFallback,
+    ]
+    .into_iter()
+    .find_map(|transport| {
+        candidate_peer_ids.iter().find_map(|peer_id| {
+            connected_peer_transports
+                .get(peer_id)
+                .filter(|family| **family == transport)
+                .map(|_| peer_id.clone())
         })
-        .and_then(|peer_id| {
-            peer_id
-                .as_str()
-                .parse::<libp2p::identity::PeerId>()
-                .map_err(|_| SwarmError::InvalidPeerId(peer_id.as_str().to_owned()))
-        })
+    })
+    .or_else(|| candidate_peer_ids.first().cloned())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1507,6 +1656,7 @@ fn try_issue_wasm_subscription_snapshot_request(
     swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
     current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
     directory_subscribed: bool,
     heads_subscribed: bool,
     metrics_subscribed: bool,
@@ -1521,9 +1671,11 @@ fn try_issue_wasm_subscription_snapshot_request(
     if current_snapshot.is_some() {
         return;
     }
-    let Ok(peer_id) =
-        resolve_wasm_browser_request_peer_id(&shared.borrow().status.connected_peer_ids, &[])
-    else {
+    let Ok(peer_id) = resolve_wasm_browser_request_peer_id(
+        &shared.borrow().status.connected_peer_ids,
+        connected_peer_transports,
+        &[],
+    ) else {
         return;
     };
     let request_id = swarm
@@ -1540,7 +1692,7 @@ fn maybe_dial_wasm_browser_direct_seed_peers(
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
     bootstrap: Option<&BrowserSwarmBootstrap>,
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
-    attempted_mesh_candidate_urls: &mut BTreeSet<String>,
+    attempted_mesh_candidate_urls: &mut BTreeMap<String, Instant>,
 ) {
     let Some(bootstrap) = bootstrap else {
         return;
@@ -1549,6 +1701,7 @@ fn maybe_dial_wasm_browser_direct_seed_peers(
     if connected_peer_ids.is_empty() {
         return;
     }
+    prune_wasm_browser_candidate_attempts(attempted_mesh_candidate_urls);
     let supported_transports = wasm_supported_browser_transport_families();
     let dial_budget =
         browser_additional_direct_connection_budget(&connected_peer_ids, connected_peer_transports);
@@ -1564,10 +1717,11 @@ fn maybe_dial_wasm_browser_direct_seed_peers(
         let Ok(address) = candidate.seed_url.parse::<Multiaddr>() else {
             continue;
         };
-        attempted_mesh_candidate_urls.insert(candidate.seed_url.clone());
+        let seed_url = candidate.seed_url.clone();
         if let Err(error) = swarm.dial(address) {
             shared.borrow_mut().status.last_error = Some(error.to_string());
         }
+        attempted_mesh_candidate_urls.insert(seed_url, Instant::now());
     }
 }
 
@@ -1578,7 +1732,7 @@ fn maybe_dial_wasm_browser_mesh_peers(
     bootstrap: Option<&BrowserSwarmBootstrap>,
     current_snapshot: Option<&ControlPlaneSnapshot>,
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
-    attempted_mesh_candidate_urls: &mut BTreeSet<String>,
+    attempted_mesh_candidate_urls: &mut BTreeMap<String, Instant>,
 ) {
     let Some(bootstrap) = bootstrap else {
         return;
@@ -1592,6 +1746,7 @@ fn maybe_dial_wasm_browser_mesh_peers(
     if available_slots == 0 {
         return;
     }
+    prune_wasm_browser_candidate_attempts(attempted_mesh_candidate_urls);
     let supported_transports = wasm_supported_browser_transport_families();
     for candidate in browser_peer_directory_dial_candidates(
         snapshot,
@@ -1606,10 +1761,11 @@ fn maybe_dial_wasm_browser_mesh_peers(
         let Ok(address) = candidate.seed_url.parse::<Multiaddr>() else {
             continue;
         };
-        attempted_mesh_candidate_urls.insert(candidate.seed_url.clone());
+        let seed_url = candidate.seed_url.clone();
         if let Err(error) = swarm.dial(address) {
             shared.borrow_mut().status.last_error = Some(error.to_string());
         }
+        attempted_mesh_candidate_urls.insert(seed_url, Instant::now());
     }
 }
 
@@ -1721,7 +1877,7 @@ pub(crate) fn browser_peer_directory_dial_candidates(
     transport_preference: &[BrowserTransportFamily],
     supported_transports: &[BrowserTransportFamily],
     connected_peer_ids: &[PeerId],
-    attempted_candidate_urls: &BTreeSet<String>,
+    attempted_candidate_urls: &BTreeMap<String, Instant>,
 ) -> Vec<BrowserSeedDialCandidate> {
     let mut candidates = Vec::new();
     for transport in transport_preference {
@@ -1734,7 +1890,7 @@ pub(crate) fn browser_peer_directory_dial_candidates(
             }
             for address in &announcement.addresses {
                 let seed_url = address.as_str();
-                if attempted_candidate_urls.contains(seed_url) {
+                if !wasm_browser_candidate_retry_ready(seed_url, attempted_candidate_urls) {
                     continue;
                 }
                 let Some(family) = browser_transport_family_for_seed_url(seed_url) else {
@@ -1827,7 +1983,7 @@ pub(crate) fn browser_direct_seed_retry_candidates(
     bootstrap: &BrowserSwarmBootstrap,
     supported_transports: &[BrowserTransportFamily],
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
-    attempted_candidate_urls: &BTreeSet<String>,
+    attempted_candidate_urls: &BTreeMap<String, Instant>,
 ) -> Vec<BrowserSeedDialCandidate> {
     if browser_has_direct_connected_peer(connected_peer_transports) {
         return Vec::new();
@@ -1839,9 +1995,87 @@ pub(crate) fn browser_direct_seed_retry_candidates(
     .into_iter()
     .filter(|candidate| {
         candidate.transport != BrowserTransportFamily::WssFallback
-            && !attempted_candidate_urls.contains(&candidate.seed_url)
+            && wasm_browser_candidate_retry_ready(&candidate.seed_url, attempted_candidate_urls)
     })
     .collect()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_should_retry_direct_handoff(
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_ids: &[PeerId],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) -> bool {
+    if connected_peer_ids.is_empty() || browser_has_direct_connected_peer(connected_peer_transports)
+    {
+        return false;
+    }
+    let Some(bootstrap) = bootstrap else {
+        return false;
+    };
+    let supported_transports = wasm_supported_browser_transport_families();
+    let empty_attempts = BTreeMap::new();
+    !browser_direct_seed_retry_candidates(
+        bootstrap,
+        &supported_transports,
+        connected_peer_transports,
+        &empty_attempts,
+    )
+    .is_empty()
+        || current_snapshot.is_some_and(|snapshot| {
+            !browser_peer_directory_dial_candidates(
+                snapshot,
+                &bootstrap.transport_preference,
+                &supported_transports,
+                connected_peer_ids,
+                &empty_attempts,
+            )
+            .is_empty()
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn maybe_schedule_wasm_browser_direct_retry(
+    command_tx: &mpsc::UnboundedSender<WasmBrowserSwarmCommand>,
+    pending_direct_retry: &mut bool,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_ids: &[PeerId],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) {
+    if *pending_direct_retry
+        || !browser_should_retry_direct_handoff(
+            bootstrap,
+            current_snapshot,
+            connected_peer_ids,
+            connected_peer_transports,
+        )
+    {
+        return;
+    }
+    *pending_direct_retry = true;
+    let command_tx = command_tx.clone();
+    spawn_local(async move {
+        TimeoutFuture::new(WASM_BROWSER_DIRECT_RETRY_COOLDOWN.as_millis() as u32).await;
+        let _ = command_tx.unbounded_send(WasmBrowserSwarmCommand::RetryDirectHandoff);
+    });
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn wasm_browser_candidate_retry_ready(
+    seed_url: &str,
+    attempted_candidate_urls: &BTreeMap<String, Instant>,
+) -> bool {
+    attempted_candidate_urls
+        .get(seed_url)
+        .is_none_or(|attempted_at| attempted_at.elapsed() >= WASM_BROWSER_DIRECT_RETRY_COOLDOWN)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn prune_wasm_browser_candidate_attempts(attempted_candidate_urls: &mut BTreeMap<String, Instant>) {
+    attempted_candidate_urls
+        .retain(|_, attempted_at| attempted_at.elapsed() < WASM_BROWSER_DIRECT_RETRY_COOLDOWN);
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]

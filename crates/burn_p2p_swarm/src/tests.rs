@@ -34,9 +34,10 @@ use super::{
     PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
     browser_additional_direct_connection_budget, browser_direct_seed_retry_candidates,
-    browser_peer_directory_dial_candidates, browser_transport_family_for_seed_url,
-    browser_wss_fallback_peers_to_disconnect, filter_supported_browser_seed_dial_candidates,
-    plan_browser_seed_dials, preferred_connected_browser_transport,
+    browser_peer_directory_dial_candidates, browser_should_retry_direct_handoff,
+    browser_transport_family_for_seed_url, browser_wss_fallback_peers_to_disconnect,
+    filter_supported_browser_seed_dial_candidates, plan_browser_seed_dials,
+    preferred_connected_browser_transport, preferred_wasm_browser_request_peer_id,
     selected_browser_study_and_experiment, update_wasm_browser_status_from_snapshot,
 };
 use burn_p2p_experiment::{
@@ -392,7 +393,7 @@ fn browser_peer_directory_candidates_prefer_direct_mesh_peers_before_fallback() 
             BrowserTransportFamily::WssFallback,
         ],
         &[],
-        &BTreeSet::new(),
+        &BTreeMap::new(),
     );
 
     assert_eq!(candidates.len(), 2);
@@ -413,8 +414,11 @@ fn browser_peer_directory_candidates_prefer_direct_mesh_peers_before_fallback() 
 
 #[test]
 fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
-    let attempted = BTreeSet::from([String::from(
-        "/dns4/peer-attempted.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+    let attempted = BTreeMap::from([(
+        String::from(
+            "/dns4/peer-attempted.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+        ),
+        Instant::now(),
     )]);
     let snapshot = ControlPlaneSnapshot {
         peer_directory_announcements: vec![
@@ -539,7 +543,7 @@ fn browser_direct_seed_retry_candidates_prefer_direct_transports_after_wss_conne
             BrowserTransportFamily::WssFallback,
         ],
         &connected,
-        &BTreeSet::new(),
+        &BTreeMap::new(),
     );
 
     assert_eq!(candidates.len(), 1);
@@ -575,6 +579,135 @@ fn browser_wss_fallback_peers_disconnect_once_direct_snapshot_path_exists() {
         browser_wss_fallback_peers_to_disconnect(None, &connected).is_empty(),
         "the bootstrap wss peer should only be dropped after the direct swarm has actual state"
     );
+}
+
+#[test]
+fn preferred_wasm_browser_request_peer_id_promotes_direct_peer_over_oldest_wss_peer() {
+    let connected_peer_ids = vec![PeerId::new("peer-wss"), PeerId::new("peer-direct")];
+    let connected = BTreeMap::from([
+        (PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback),
+        (
+            PeerId::new("peer-direct"),
+            BrowserTransportFamily::WebRtcDirect,
+        ),
+    ]);
+
+    assert_eq!(
+        preferred_wasm_browser_request_peer_id(&connected_peer_ids, &connected, &[]),
+        Some(PeerId::new("peer-direct"))
+    );
+}
+
+#[test]
+fn browser_direct_seed_retry_candidates_reappear_after_retry_cooldown() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("browser-handoff"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::EdgeSigned,
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                "/dns4/bootstrap.example/tcp/443/wss".into(),
+            ],
+            advertised_seed_count: 2,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+    let connected =
+        BTreeMap::from([(PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback)]);
+    let recent_attempts = BTreeMap::from([(
+        String::from(
+            "/dns4/bootstrap.example/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ),
+        Instant::now(),
+    )]);
+    assert!(
+        browser_direct_seed_retry_candidates(
+            &bootstrap,
+            &[
+                BrowserTransportFamily::WebRtcDirect,
+                BrowserTransportFamily::WssFallback,
+            ],
+            &connected,
+            &recent_attempts,
+        )
+        .is_empty(),
+        "recent direct attempts should observe a cooldown"
+    );
+
+    let stale_attempts = BTreeMap::from([(
+        String::from(
+            "/dns4/bootstrap.example/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ),
+        Instant::now() - Duration::from_secs(10),
+    )]);
+    let candidates = browser_direct_seed_retry_candidates(
+        &bootstrap,
+        &[
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        &connected,
+        &stale_attempts,
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].transport,
+        BrowserTransportFamily::WebRtcDirect
+    );
+}
+
+#[test]
+fn browser_should_retry_direct_handoff_while_only_wss_is_connected() {
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("browser-handoff"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::EdgeSigned,
+            seed_node_urls: vec![
+                "/dns4/bootstrap.example/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                "/dns4/bootstrap.example/tcp/443/wss".into(),
+            ],
+            advertised_seed_count: 2,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+    let connected_peer_ids = vec![PeerId::new("peer-wss")];
+    let connected =
+        BTreeMap::from([(PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback)]);
+
+    assert!(browser_should_retry_direct_handoff(
+        Some(&bootstrap),
+        None,
+        &connected_peer_ids,
+        &connected,
+    ));
+
+    let connected_direct = BTreeMap::from([
+        (PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback),
+        (
+            PeerId::new("peer-direct"),
+            BrowserTransportFamily::WebRtcDirect,
+        ),
+    ]);
+    let connected_direct_peer_ids = vec![PeerId::new("peer-wss"), PeerId::new("peer-direct")];
+    assert!(!browser_should_retry_direct_handoff(
+        Some(&bootstrap),
+        None,
+        &connected_direct_peer_ids,
+        &connected_direct,
+    ));
 }
 
 #[test]
