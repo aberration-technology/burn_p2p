@@ -1,6 +1,11 @@
 use super::*;
 
-fn auth_error_status(error: &(dyn std::error::Error + 'static)) -> &'static str {
+struct AuthErrorHttpResponse {
+    status: &'static str,
+    body: &'static str,
+}
+
+fn auth_error_http_response(error: &(dyn std::error::Error + 'static)) -> AuthErrorHttpResponse {
     if let Some(auth_error) = error.downcast_ref::<burn_p2p::AuthError>() {
         return match auth_error {
             burn_p2p::AuthError::UnknownLogin(_)
@@ -8,51 +13,58 @@ fn auth_error_status(error: &(dyn std::error::Error + 'static)) -> &'static str 
             | burn_p2p::AuthError::LoginExpired(_)
             | burn_p2p::AuthError::SessionExpired(_)
             | burn_p2p::AuthError::MissingProviderPrincipal
-            | burn_p2p::AuthError::MissingProviderCode => "401 Unauthorized",
+            | burn_p2p::AuthError::MissingProviderCode => AuthErrorHttpResponse {
+                status: "401 Unauthorized",
+                body: match auth_error {
+                    burn_p2p::AuthError::UnknownLogin(_) => "unknown login",
+                    burn_p2p::AuthError::StateMismatch => "state mismatch",
+                    burn_p2p::AuthError::LoginExpired(_) => "login expired",
+                    burn_p2p::AuthError::SessionExpired(_) => "session expired",
+                    burn_p2p::AuthError::MissingProviderPrincipal => "missing provider principal",
+                    burn_p2p::AuthError::MissingProviderCode => "missing provider code",
+                    _ => unreachable!("match arm restricts auth error variants"),
+                },
+            },
             burn_p2p::AuthError::UnknownPrincipal(_)
             | burn_p2p::AuthError::NetworkNotGranted(_)
-            | burn_p2p::AuthError::ScopeNotGranted(_) => "403 Forbidden",
+            | burn_p2p::AuthError::ScopeNotGranted(_) => AuthErrorHttpResponse {
+                status: "403 Forbidden",
+                body: match auth_error {
+                    burn_p2p::AuthError::UnknownPrincipal(_) => "unknown principal",
+                    burn_p2p::AuthError::NetworkNotGranted(_) => "network not granted",
+                    burn_p2p::AuthError::ScopeNotGranted(_) => "scope not granted",
+                    _ => unreachable!("match arm restricts auth error variants"),
+                },
+            },
             burn_p2p::AuthError::ProviderExchange(_)
             | burn_p2p::AuthError::ProviderUserInfo(_)
             | burn_p2p::AuthError::ProviderRefresh(_)
-            | burn_p2p::AuthError::ProviderRevoke(_) => "502 Bad Gateway",
-            _ => "400 Bad Request",
+            | burn_p2p::AuthError::ProviderRevoke(_) => AuthErrorHttpResponse {
+                status: "502 Bad Gateway",
+                body: "provider authentication failed",
+            },
+            _ => AuthErrorHttpResponse {
+                status: "400 Bad Request",
+                body: "authentication request failed",
+            },
         };
     }
-    "500 Internal Server Error"
-}
-
-fn auth_error_response_body(error: &(dyn std::error::Error + 'static)) -> &'static str {
-    if let Some(auth_error) = error.downcast_ref::<burn_p2p::AuthError>() {
-        return match auth_error {
-            burn_p2p::AuthError::UnknownLogin(_) => "unknown login",
-            burn_p2p::AuthError::StateMismatch => "state mismatch",
-            burn_p2p::AuthError::LoginExpired(_) => "login expired",
-            burn_p2p::AuthError::SessionExpired(_) => "session expired",
-            burn_p2p::AuthError::MissingProviderPrincipal => "missing provider principal",
-            burn_p2p::AuthError::MissingProviderCode => "missing provider code",
-            burn_p2p::AuthError::UnknownPrincipal(_) => "unknown principal",
-            burn_p2p::AuthError::NetworkNotGranted(_) => "network not granted",
-            burn_p2p::AuthError::ScopeNotGranted(_) => "scope not granted",
-            burn_p2p::AuthError::ProviderExchange(_)
-            | burn_p2p::AuthError::ProviderUserInfo(_)
-            | burn_p2p::AuthError::ProviderRefresh(_)
-            | burn_p2p::AuthError::ProviderRevoke(_) => "provider authentication failed",
-            _ => "authentication request failed",
-        };
+    AuthErrorHttpResponse {
+        status: "500 Internal Server Error",
+        body: "internal server error",
     }
-    "internal server error"
 }
 
 fn write_auth_error_response(
     stream: &mut TcpStream,
     error: &(dyn std::error::Error + 'static),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let response = auth_error_http_response(error);
     write_response(
         stream,
-        auth_error_status(error),
+        response.status,
         "text/plain; charset=utf-8",
-        auth_error_response_body(error).as_bytes().to_vec(),
+        response.body.as_bytes().to_vec(),
     )?;
     Ok(())
 }
@@ -106,33 +118,6 @@ pub(crate) fn handle_browser_post_route(
         },
     )?;
     Ok(true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{auth_error_response_body, auth_error_status};
-
-    #[test]
-    fn provider_failures_are_sanitized_for_http_clients() {
-        let error = burn_p2p::AuthError::ProviderExchange(
-            "upstream oauth error: invalid_client secret=top-secret".into(),
-        );
-        assert_eq!(auth_error_status(&error), "502 Bad Gateway");
-        assert_eq!(
-            auth_error_response_body(&error),
-            "provider authentication failed"
-        );
-    }
-
-    #[test]
-    fn missing_provider_principal_keeps_a_specific_client_message() {
-        let error = burn_p2p::AuthError::MissingProviderPrincipal;
-        assert_eq!(auth_error_status(&error), "401 Unauthorized");
-        assert_eq!(
-            auth_error_response_body(&error),
-            "missing provider principal"
-        );
-    }
 }
 
 pub(crate) fn handle_auth_post_route(
@@ -435,5 +420,28 @@ pub(crate) fn execute_admin_action(
             publish_admin_result(&context.plan, context.control_handle.as_ref(), &result)?;
             Ok(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auth_error_http_response;
+
+    #[test]
+    fn provider_failures_are_sanitized_for_http_clients() {
+        let error = burn_p2p::AuthError::ProviderExchange(
+            "upstream oauth error: invalid_client secret=top-secret".into(),
+        );
+        let response = auth_error_http_response(&error);
+        assert_eq!(response.status, "502 Bad Gateway");
+        assert_eq!(response.body, "provider authentication failed");
+    }
+
+    #[test]
+    fn missing_provider_principal_keeps_a_specific_client_message() {
+        let error = burn_p2p::AuthError::MissingProviderPrincipal;
+        let response = auth_error_http_response(&error);
+        assert_eq!(response.status, "401 Unauthorized");
+        assert_eq!(response.body, "missing provider principal");
     }
 }
