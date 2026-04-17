@@ -41,7 +41,6 @@ use libp2p::{
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
-#[cfg(target_arch = "wasm32")]
 const WASM_BROWSER_TARGET_CONNECTED_PEERS: usize = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1013,11 +1012,19 @@ async fn run_wasm_browser_swarm_task(
                         metrics_subscribed,
                         &mut pending_subscription_snapshot_request_id,
                     );
+                    maybe_dial_wasm_browser_direct_seed_peers(
+                        &mut swarm,
+                        &shared,
+                        current_bootstrap.as_ref(),
+                        &connected_peer_transports,
+                        &mut attempted_mesh_candidate_urls,
+                    );
                     maybe_dial_wasm_browser_mesh_peers(
                         &mut swarm,
                         &shared,
                         current_bootstrap.as_ref(),
                         current_snapshot.as_ref(),
+                        &connected_peer_transports,
                         &mut attempted_mesh_candidate_urls,
                     );
                     disconnect_wasm_browser_peers(
@@ -1095,11 +1102,19 @@ async fn run_wasm_browser_swarm_task(
                     drop(state);
                     pending_subscription_snapshot_request_id = None;
                     if has_connected_peers {
+                        maybe_dial_wasm_browser_direct_seed_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            &connected_peer_transports,
+                            &mut attempted_mesh_candidate_urls,
+                        );
                         maybe_dial_wasm_browser_mesh_peers(
                             &mut swarm,
                             &shared,
                             current_bootstrap.as_ref(),
                             current_snapshot.as_ref(),
+                            &connected_peer_transports,
                             &mut attempted_mesh_candidate_urls,
                         );
                         disconnect_wasm_browser_peers(
@@ -1128,6 +1143,7 @@ async fn run_wasm_browser_swarm_task(
                             &shared,
                             current_bootstrap.as_ref(),
                             current_snapshot.as_ref(),
+                            &connected_peer_transports,
                             &mut attempted_mesh_candidate_urls,
                         );
                         reconnect_wasm_browser_seed_candidates(
@@ -1168,11 +1184,19 @@ async fn run_wasm_browser_swarm_task(
                                             )),
                                         );
                                         current_snapshot = Some(next_snapshot);
+                                        maybe_dial_wasm_browser_direct_seed_peers(
+                                            &mut swarm,
+                                            &shared,
+                                            current_bootstrap.as_ref(),
+                                            &connected_peer_transports,
+                                            &mut attempted_mesh_candidate_urls,
+                                        );
                                         maybe_dial_wasm_browser_mesh_peers(
                                             &mut swarm,
                                             &shared,
                                             current_bootstrap.as_ref(),
                                             current_snapshot.as_ref(),
+                                            &connected_peer_transports,
                                             &mut attempted_mesh_candidate_urls,
                                         );
                                     }
@@ -1237,11 +1261,19 @@ async fn run_wasm_browser_swarm_task(
                                                         )),
                                                     );
                                                     current_snapshot = Some(snapshot);
+                                                    maybe_dial_wasm_browser_direct_seed_peers(
+                                                        &mut swarm,
+                                                        &shared,
+                                                        current_bootstrap.as_ref(),
+                                                        &connected_peer_transports,
+                                                        &mut attempted_mesh_candidate_urls,
+                                                    );
                                                     maybe_dial_wasm_browser_mesh_peers(
                                                         &mut swarm,
                                                         &shared,
                                                         current_bootstrap.as_ref(),
                                                         current_snapshot.as_ref(),
+                                                        &connected_peer_transports,
                                                         &mut attempted_mesh_candidate_urls,
                                                     );
                                                 }
@@ -1263,11 +1295,19 @@ async fn run_wasm_browser_swarm_task(
                                                     &mut subscribed_topic_paths,
                                                 );
                                                 current_snapshot = Some(snapshot.clone());
+                                                maybe_dial_wasm_browser_direct_seed_peers(
+                                                    &mut swarm,
+                                                    &shared,
+                                                    current_bootstrap.as_ref(),
+                                                    &connected_peer_transports,
+                                                    &mut attempted_mesh_candidate_urls,
+                                                );
                                                 maybe_dial_wasm_browser_mesh_peers(
                                                     &mut swarm,
                                                     &shared,
                                                     current_bootstrap.as_ref(),
                                                     current_snapshot.as_ref(),
+                                                    &connected_peer_transports,
                                                     &mut attempted_mesh_candidate_urls,
                                                 );
                                                 let _ = response_tx.send(Ok(snapshot));
@@ -1495,11 +1535,49 @@ fn try_issue_wasm_subscription_snapshot_request(
 }
 
 #[cfg(target_arch = "wasm32")]
+fn maybe_dial_wasm_browser_direct_seed_peers(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+    attempted_mesh_candidate_urls: &mut BTreeSet<String>,
+) {
+    let Some(bootstrap) = bootstrap else {
+        return;
+    };
+    let connected_peer_ids = shared.borrow().status.connected_peer_ids.clone();
+    if connected_peer_ids.is_empty() {
+        return;
+    }
+    let supported_transports = wasm_supported_browser_transport_families();
+    let dial_budget =
+        browser_additional_direct_connection_budget(&connected_peer_ids, connected_peer_transports);
+    for candidate in browser_direct_seed_retry_candidates(
+        bootstrap,
+        &supported_transports,
+        connected_peer_transports,
+        attempted_mesh_candidate_urls,
+    )
+    .into_iter()
+    .take(dial_budget)
+    {
+        let Ok(address) = candidate.seed_url.parse::<Multiaddr>() else {
+            continue;
+        };
+        attempted_mesh_candidate_urls.insert(candidate.seed_url.clone());
+        if let Err(error) = swarm.dial(address) {
+            shared.borrow_mut().status.last_error = Some(error.to_string());
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn maybe_dial_wasm_browser_mesh_peers(
     swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
     bootstrap: Option<&BrowserSwarmBootstrap>,
     current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
     attempted_mesh_candidate_urls: &mut BTreeSet<String>,
 ) {
     let Some(bootstrap) = bootstrap else {
@@ -1509,11 +1587,11 @@ fn maybe_dial_wasm_browser_mesh_peers(
         return;
     };
     let connected_peer_ids = shared.borrow().status.connected_peer_ids.clone();
-    if connected_peer_ids.len() >= WASM_BROWSER_TARGET_CONNECTED_PEERS {
+    let available_slots =
+        browser_additional_direct_connection_budget(&connected_peer_ids, connected_peer_transports);
+    if available_slots == 0 {
         return;
     }
-    let available_slots =
-        WASM_BROWSER_TARGET_CONNECTED_PEERS.saturating_sub(connected_peer_ids.len());
     let supported_transports = wasm_supported_browser_transport_families();
     for candidate in browser_peer_directory_dial_candidates(
         snapshot,
@@ -1706,12 +1784,7 @@ pub(crate) fn browser_wss_fallback_peers_to_disconnect(
     current_snapshot: Option<&ControlPlaneSnapshot>,
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
 ) -> Vec<PeerId> {
-    let has_direct_peer = connected_peer_transports.values().any(|family| {
-        matches!(
-            family,
-            BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport
-        )
-    });
+    let has_direct_peer = browser_has_direct_connected_peer(connected_peer_transports);
     if current_snapshot.is_none() || !has_direct_peer {
         return Vec::new();
     }
@@ -1721,6 +1794,54 @@ pub(crate) fn browser_wss_fallback_peers_to_disconnect(
             (*family == BrowserTransportFamily::WssFallback).then(|| peer_id.clone())
         })
         .collect()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_has_direct_connected_peer(
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) -> bool {
+    connected_peer_transports.values().any(|family| {
+        matches!(
+            family,
+            BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport
+        )
+    })
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_additional_direct_connection_budget(
+    connected_peer_ids: &[PeerId],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) -> usize {
+    let available_slots =
+        WASM_BROWSER_TARGET_CONNECTED_PEERS.saturating_sub(connected_peer_ids.len());
+    if browser_has_direct_connected_peer(connected_peer_transports) {
+        available_slots
+    } else {
+        available_slots.max(1)
+    }
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_direct_seed_retry_candidates(
+    bootstrap: &BrowserSwarmBootstrap,
+    supported_transports: &[BrowserTransportFamily],
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+    attempted_candidate_urls: &BTreeSet<String>,
+) -> Vec<BrowserSeedDialCandidate> {
+    if browser_has_direct_connected_peer(connected_peer_transports) {
+        return Vec::new();
+    }
+    filter_supported_browser_seed_dial_candidates(
+        &plan_browser_seed_dials(bootstrap),
+        supported_transports,
+    )
+    .into_iter()
+    .filter(|candidate| {
+        candidate.transport != BrowserTransportFamily::WssFallback
+            && !attempted_candidate_urls.contains(&candidate.seed_url)
+    })
+    .collect()
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
