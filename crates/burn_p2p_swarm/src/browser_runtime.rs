@@ -18,9 +18,9 @@ use crate::{
 use crate::{ControlPlaneSnapshot, SwarmError};
 use crate::{OverlayChannel, OverlayTopic};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_arch = "wasm32")]
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 #[cfg(target_arch = "wasm32")]
 use futures::{
@@ -659,6 +659,7 @@ async fn run_wasm_browser_swarm_task(
     let mut active_candidate: Option<BrowserSeedDialCandidate> = None;
     let mut current_bootstrap: Option<BrowserSwarmBootstrap> = None;
     let mut current_snapshot: Option<ControlPlaneSnapshot> = None;
+    let mut connected_peer_transports = BTreeMap::<PeerId, BrowserTransportFamily>::new();
     let mut directory_subscribed = false;
     let mut heads_subscribed = false;
     let mut metrics_subscribed = false;
@@ -714,6 +715,7 @@ async fn run_wasm_browser_swarm_task(
                         );
                         current_bootstrap = Some(bootstrap.clone());
                         current_snapshot = None;
+                        connected_peer_transports.clear();
                         subscribed_topic_paths.clear();
                         attempted_mesh_candidate_urls.clear();
                         let dial_plan = plan_browser_seed_dials(&bootstrap);
@@ -784,6 +786,7 @@ async fn run_wasm_browser_swarm_task(
                         pending_connect = None;
                         current_bootstrap = None;
                         current_snapshot = None;
+                        connected_peer_transports.clear();
                         pending_subscription_snapshot_request_id = None;
                         directory_subscribed = false;
                         heads_subscribed = false;
@@ -952,25 +955,35 @@ async fn run_wasm_browser_swarm_task(
                 }
             }
             futures::future::Either::Right((event, _)) => match event {
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    let connected_transport = active_candidate
-                        .as_ref()
-                        .map(|candidate| candidate.transport.clone())
-                        .or_else(|| {
-                            shared
-                                .borrow()
-                                .dial_plan
+                SwarmEvent::ConnectionEstablished {
+                    peer_id, endpoint, ..
+                } => {
+                    let observed_peer_id = PeerId::new(peer_id.to_string());
+                    let connected_transport =
+                        browser_transport_family_for_connected_point(&endpoint).or_else(|| {
+                            active_candidate
                                 .as_ref()
-                                .and_then(|plan| plan.desired_transport.clone())
+                                .map(|candidate| candidate.transport.clone())
+                                .or_else(|| {
+                                    shared
+                                        .borrow()
+                                        .dial_plan
+                                        .as_ref()
+                                        .and_then(|plan| plan.desired_transport.clone())
+                                })
                         });
+                    if let Some(transport) = connected_transport.clone() {
+                        connected_peer_transports.insert(observed_peer_id.clone(), transport);
+                    }
                     swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     {
                         let mut state = shared.borrow_mut();
                         state.status.phase = BrowserSwarmPhase::TransportConnected;
                         state.status.transport_source =
                             BrowserTransportObservationSource::Connected;
-                        state.status.connected_transport = connected_transport;
-                        let observed_peer_id = PeerId::new(peer_id.to_string());
+                        state.status.connected_transport =
+                            preferred_connected_browser_transport(&connected_peer_transports)
+                                .or(connected_transport);
                         if !state.status.connected_peer_ids.contains(&observed_peer_id) {
                             state.status.connected_peer_ids.push(observed_peer_id);
                         }
@@ -1007,6 +1020,13 @@ async fn run_wasm_browser_swarm_task(
                         current_snapshot.as_ref(),
                         &mut attempted_mesh_candidate_urls,
                     );
+                    disconnect_wasm_browser_peers(
+                        &mut swarm,
+                        browser_wss_fallback_peers_to_disconnect(
+                            current_snapshot.as_ref(),
+                            &connected_peer_transports,
+                        ),
+                    );
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
                     let error_message = error.to_string();
@@ -1038,43 +1058,85 @@ async fn run_wasm_browser_swarm_task(
                         .dial_plan
                         .as_ref()
                         .and_then(|plan| plan.desired_transport.clone());
-                    let mut state = shared.borrow_mut();
-                    state.status.phase = if desired_transport.is_some() {
-                        BrowserSwarmPhase::TransportSelected
-                    } else if !state.status.seed_bootstrap.seed_node_urls.is_empty() {
-                        BrowserSwarmPhase::SeedResolved
-                    } else {
-                        BrowserSwarmPhase::Bootstrap
-                    };
-                    state.status.transport_source = BrowserTransportObservationSource::Selected;
                     let closed_peer_id = PeerId::new(peer_id.to_string());
+                    connected_peer_transports.remove(&closed_peer_id);
+                    let connected_transport =
+                        preferred_connected_browser_transport(&connected_peer_transports);
+                    let mut state = shared.borrow_mut();
                     state
                         .status
                         .connected_peer_ids
                         .retain(|existing| existing != &closed_peer_id);
+                    let has_connected_peers = !state.status.connected_peer_ids.is_empty();
                     state.status.connected_peer_count = state.status.connected_peer_ids.len();
-                    if state.status.connected_peer_ids.is_empty() {
+                    state.status.connected_transport = connected_transport;
+                    if has_connected_peers {
+                        update_wasm_browser_status_from_snapshot(
+                            &mut state.status,
+                            current_snapshot.as_ref(),
+                            current_bootstrap.as_ref(),
+                        );
+                    } else {
+                        state.status.phase = if desired_transport.is_some() {
+                            BrowserSwarmPhase::TransportSelected
+                        } else if !state.status.seed_bootstrap.seed_node_urls.is_empty() {
+                            BrowserSwarmPhase::SeedResolved
+                        } else {
+                            BrowserSwarmPhase::Bootstrap
+                        };
+                        state.status.transport_source = BrowserTransportObservationSource::Selected;
                         state.status.connected_transport = None;
+                        update_wasm_browser_status_from_snapshot(
+                            &mut state.status,
+                            None,
+                            current_bootstrap.as_ref(),
+                        );
                     }
+                    drop(state);
                     pending_subscription_snapshot_request_id = None;
-                    current_snapshot = None;
-                    fail_pending_wasm_snapshot_requests(
-                        &mut pending_snapshot_requests,
-                        "browser direct swarm connection closed before snapshot request completed",
-                    );
-                    fail_pending_wasm_manifest_requests(
-                        &mut pending_manifest_requests,
-                        "browser direct swarm connection closed before artifact manifest request completed",
-                    );
-                    fail_pending_wasm_chunk_requests(
-                        &mut pending_chunk_requests,
-                        "browser direct swarm connection closed before artifact chunk request completed",
-                    );
-                    update_wasm_browser_status_from_snapshot(
-                        &mut state.status,
-                        None,
-                        current_bootstrap.as_ref(),
-                    );
+                    if has_connected_peers {
+                        maybe_dial_wasm_browser_mesh_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &mut attempted_mesh_candidate_urls,
+                        );
+                        disconnect_wasm_browser_peers(
+                            &mut swarm,
+                            browser_wss_fallback_peers_to_disconnect(
+                                current_snapshot.as_ref(),
+                                &connected_peer_transports,
+                            ),
+                        );
+                    } else {
+                        fail_pending_wasm_snapshot_requests(
+                            &mut pending_snapshot_requests,
+                            "browser direct swarm disconnected before snapshot request completed",
+                        );
+                        fail_pending_wasm_manifest_requests(
+                            &mut pending_manifest_requests,
+                            "browser direct swarm disconnected before artifact manifest request completed",
+                        );
+                        fail_pending_wasm_chunk_requests(
+                            &mut pending_chunk_requests,
+                            "browser direct swarm disconnected before artifact chunk request completed",
+                        );
+                        attempted_mesh_candidate_urls.clear();
+                        maybe_dial_wasm_browser_mesh_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &mut attempted_mesh_candidate_urls,
+                        );
+                        reconnect_wasm_browser_seed_candidates(
+                            &mut swarm,
+                            &shared,
+                            &mut pending_connect,
+                            &mut active_candidate,
+                        );
+                    }
                 }
                 SwarmEvent::Behaviour(WasmBrowserSwarmBehaviourEvent::Gossipsub(event)) => {
                     match event {
@@ -1623,6 +1685,45 @@ pub(crate) fn browser_peer_directory_dial_candidates(
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn preferred_connected_browser_transport(
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) -> Option<BrowserTransportFamily> {
+    [
+        BrowserTransportFamily::WebRtcDirect,
+        BrowserTransportFamily::WebTransport,
+        BrowserTransportFamily::WssFallback,
+    ]
+    .into_iter()
+    .find(|transport| {
+        connected_peer_transports
+            .values()
+            .any(|family| family == transport)
+    })
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_wss_fallback_peers_to_disconnect(
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+) -> Vec<PeerId> {
+    let has_direct_peer = connected_peer_transports.values().any(|family| {
+        matches!(
+            family,
+            BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport
+        )
+    });
+    if current_snapshot.is_none() || !has_direct_peer {
+        return Vec::new();
+    }
+    connected_peer_transports
+        .iter()
+        .filter_map(|(peer_id, family)| {
+            (*family == BrowserTransportFamily::WssFallback).then(|| peer_id.clone())
+        })
+        .collect()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 pub(crate) fn update_wasm_browser_status_from_snapshot(
     status: &mut BrowserSwarmStatus,
     snapshot: Option<&ControlPlaneSnapshot>,
@@ -1686,6 +1787,58 @@ fn update_wasm_browser_status_and_snapshot(
 ) {
     let mut state = shared.borrow_mut();
     update_wasm_browser_status_from_snapshot(&mut state.status, Some(snapshot), bootstrap);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_transport_family_for_connected_point(
+    endpoint: &libp2p::core::ConnectedPoint,
+) -> Option<BrowserTransportFamily> {
+    browser_transport_family_for_seed_url(&endpoint.get_remote_address().to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn disconnect_wasm_browser_peers(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    peer_ids: impl IntoIterator<Item = PeerId>,
+) {
+    for peer_id in peer_ids {
+        if let Ok(libp2p_peer_id) = peer_id.as_str().parse::<libp2p::identity::PeerId>() {
+            let _ = swarm.disconnect_peer_id(libp2p_peer_id);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn reconnect_wasm_browser_seed_candidates(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    pending_connect: &mut Option<WasmPendingConnect>,
+    active_candidate: &mut Option<BrowserSeedDialCandidate>,
+) {
+    if pending_connect.is_some() {
+        return;
+    }
+    let Some(dial_plan) = shared.borrow().dial_plan.clone() else {
+        return;
+    };
+    let supported = wasm_supported_browser_transport_families();
+    let candidates = filter_supported_browser_seed_dial_candidates(&dial_plan, &supported);
+    if candidates.is_empty() {
+        return;
+    }
+    *pending_connect = Some(WasmPendingConnect {
+        dial_plan,
+        candidates,
+        next_candidate_index: 0,
+        response_tx: None,
+    });
+    if let Some(pending) = pending_connect.as_mut()
+        && let Err(error) =
+            dial_next_wasm_browser_seed_candidate(swarm, shared, pending, active_candidate)
+    {
+        shared.borrow_mut().status.last_error = Some(error.to_string());
+        *pending_connect = None;
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

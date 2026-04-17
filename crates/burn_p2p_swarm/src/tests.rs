@@ -34,7 +34,8 @@ use super::{
     PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
     browser_peer_directory_dial_candidates, browser_transport_family_for_seed_url,
-    filter_supported_browser_seed_dial_candidates, plan_browser_seed_dials,
+    browser_wss_fallback_peers_to_disconnect, filter_supported_browser_seed_dial_candidates,
+    plan_browser_seed_dials, preferred_connected_browser_transport,
     selected_browser_study_and_experiment, update_wasm_browser_status_from_snapshot,
 };
 use burn_p2p_experiment::{
@@ -460,6 +461,50 @@ fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
     assert_eq!(
         candidates[0].seed_url,
         "/dns4/peer-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
+}
+
+#[test]
+fn preferred_connected_browser_transport_promotes_direct_peers_over_wss() {
+    let connected = BTreeMap::from([
+        (PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback),
+        (
+            PeerId::new("peer-direct"),
+            BrowserTransportFamily::WebRtcDirect,
+        ),
+    ]);
+
+    assert_eq!(
+        preferred_connected_browser_transport(&connected),
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+}
+
+#[test]
+fn browser_wss_fallback_peers_disconnect_once_direct_snapshot_path_exists() {
+    let connected = BTreeMap::from([
+        (PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback),
+        (
+            PeerId::new("peer-direct"),
+            BrowserTransportFamily::WebRtcDirect,
+        ),
+    ]);
+    let snapshot = ControlPlaneSnapshot {
+        directory_announcements: vec![super::ExperimentDirectoryAnnouncement {
+            network_id: NetworkId::new("browser-handoff"),
+            entries: Vec::new(),
+            announced_at: Utc::now(),
+        }],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    assert_eq!(
+        browser_wss_fallback_peers_to_disconnect(Some(&snapshot), &connected),
+        vec![PeerId::new("peer-wss")]
+    );
+    assert!(
+        browser_wss_fallback_peers_to_disconnect(None, &connected).is_empty(),
+        "the bootstrap wss peer should only be dropped after the direct swarm has actual state"
     );
 }
 
