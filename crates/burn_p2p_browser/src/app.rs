@@ -37,7 +37,10 @@ use crate::{
 use crate::{
     BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
 };
-use burn_p2p_core::{BrowserSeedAdvertisement, BrowserSwarmStatus, SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{
+    BrowserSeedAdvertisement, BrowserSwarmStatus, BrowserTransportFamily, SchemaEnvelope,
+    SignedPayload,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the browser app target preset.
@@ -453,7 +456,7 @@ pub struct BrowserAppController {
 #[cfg(target_arch = "wasm32")]
 const DIRECT_SWARM_BOOTSTRAP_POLL_MS: u32 = 250;
 #[cfg(target_arch = "wasm32")]
-const DIRECT_SWARM_BOOTSTRAP_WAIT_MS: u32 = 5_000;
+const DIRECT_SWARM_BOOTSTRAP_WAIT_MS: u32 = 8_000;
 
 impl BrowserAppController {
     #[cfg(test)]
@@ -859,15 +862,20 @@ pub(crate) fn should_wait_for_direct_swarm_bootstrap(
     runtime: &BrowserWorkerRuntime,
     swarm_status: &BrowserSwarmStatus,
 ) -> bool {
+    let direct_handoff_pending = matches!(
+        swarm_status.desired_transport,
+        Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
+    ) && matches!(
+        swarm_status.connected_transport,
+        None | Some(BrowserTransportFamily::WssFallback)
+    );
     runtime
         .state
         .as_ref()
         .is_some_and(BrowserRuntimeState::requires_peer_transport)
-        && runtime.transport.connected.is_none()
         && runtime.storage.last_signed_directory_snapshot.is_none()
         && runtime.storage.last_head_id.is_none()
-        && swarm_status.connected_transport.is_none()
-        && swarm_status.desired_transport.is_some()
+        && direct_handoff_pending
         && swarm_status.last_error.is_none()
 }
 

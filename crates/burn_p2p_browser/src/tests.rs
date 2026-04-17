@@ -4942,9 +4942,27 @@ fn browser_direct_sync_waits_for_swarm_bootstrap_before_edge_fallback() {
         connected_transport: Some(BrowserTransportFamily::WssFallback),
         ..waiting_status.clone()
     };
-    assert!(!should_wait_for_direct_swarm_bootstrap(
+    assert!(should_wait_for_direct_swarm_bootstrap(
         &runtime,
         &connected_status
+    ));
+
+    let direct_connected_status = BrowserSwarmStatus {
+        connected_transport: Some(BrowserTransportFamily::WebRtcDirect),
+        ..waiting_status.clone()
+    };
+    assert!(!should_wait_for_direct_swarm_bootstrap(
+        &runtime,
+        &direct_connected_status
+    ));
+
+    let failed_status = BrowserSwarmStatus {
+        last_error: Some("direct dial timeout".into()),
+        ..connected_status.clone()
+    };
+    assert!(!should_wait_for_direct_swarm_bootstrap(
+        &runtime,
+        &failed_status
     ));
 
     runtime

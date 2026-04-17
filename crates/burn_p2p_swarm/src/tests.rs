@@ -384,6 +384,7 @@ fn browser_peer_directory_candidates_prefer_direct_mesh_peers_before_fallback() 
 
     let candidates = browser_peer_directory_dial_candidates(
         &snapshot,
+        None,
         &[
             BrowserTransportFamily::WebRtcDirect,
             BrowserTransportFamily::WssFallback,
@@ -452,6 +453,7 @@ fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
 
     let candidates = browser_peer_directory_dial_candidates(
         &snapshot,
+        None,
         &[BrowserTransportFamily::WebRtcDirect],
         &[BrowserTransportFamily::WebRtcDirect],
         &[PeerId::new("peer-connected")],
@@ -466,6 +468,68 @@ fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
     assert_eq!(
         candidates[0].seed_url,
         "/dns4/peer-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
+}
+
+#[test]
+fn browser_peer_directory_candidates_skip_bootstrap_host_direct_ports_not_in_signed_seeds() {
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "peer-edge-bad-port",
+                &[
+                    "/dns4/edge.dragon.aberration.technology/udp/4003/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-public-direct",
+                &[
+                    "/ip4/203.0.113.10/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: NetworkId::new("net-browser"),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::SiteConfigFallback,
+            seed_node_urls: vec![
+                "/dns4/edge.dragon.aberration.technology/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                "/dns4/edge.dragon.aberration.technology/tcp/443/wss".into(),
+            ],
+            advertised_seed_count: 1,
+            last_error: None,
+        },
+        transport_preference: vec![
+            BrowserTransportFamily::WebRtcDirect,
+            BrowserTransportFamily::WssFallback,
+        ],
+        selected_experiment: None,
+        selected_revision: None,
+    };
+
+    let candidates = browser_peer_directory_dial_candidates(
+        &snapshot,
+        Some(&bootstrap),
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[],
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("peer-public-direct"))
+    );
+    assert_eq!(
+        candidates[0].seed_url,
+        "/ip4/203.0.113.10/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
     );
 }
 

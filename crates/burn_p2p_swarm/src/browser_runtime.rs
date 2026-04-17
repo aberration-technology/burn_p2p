@@ -19,6 +19,8 @@ use crate::{ControlPlaneSnapshot, SwarmError};
 use crate::{OverlayChannel, OverlayTopic};
 
 #[cfg(target_arch = "wasm32")]
+use std::num::NonZeroU8;
+#[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, rc::Rc};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -46,6 +48,8 @@ use wasm_bindgen_futures::spawn_local;
 
 const WASM_BROWSER_TARGET_CONNECTED_PEERS: usize = 3;
 const WASM_BROWSER_DIRECT_RETRY_COOLDOWN: Duration = Duration::from_secs(5);
+#[cfg(target_arch = "wasm32")]
+const WASM_BROWSER_CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Bootstrap contract for one browser swarm runtime connection attempt.
@@ -1586,7 +1590,16 @@ fn build_wasm_browser_swarm(
             ),
         })
         .map_err(|error| SwarmError::Runtime(error.to_string()))
-        .map(|builder| builder.build())
+        .map(|builder| {
+            builder
+                .with_swarm_config(|config| {
+                    config.with_dial_concurrency_factor(
+                        NonZeroU8::new(16).expect("browser dial concurrency factor"),
+                    )
+                })
+                .with_connection_timeout(WASM_BROWSER_CONNECTION_TIMEOUT)
+                .build()
+        })
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1748,6 +1761,7 @@ fn maybe_dial_wasm_browser_mesh_peers(
     let supported_transports = wasm_supported_browser_transport_families();
     for candidate in browser_peer_directory_dial_candidates(
         snapshot,
+        Some(bootstrap),
         &bootstrap.transport_preference,
         &supported_transports,
         &connected_peer_ids,
@@ -1872,6 +1886,7 @@ pub(crate) fn desired_wasm_browser_subscription_topics(
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 pub(crate) fn browser_peer_directory_dial_candidates(
     snapshot: &ControlPlaneSnapshot,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
     transport_preference: &[BrowserTransportFamily],
     supported_transports: &[BrowserTransportFamily],
     connected_peer_ids: &[PeerId],
@@ -1889,6 +1904,9 @@ pub(crate) fn browser_peer_directory_dial_candidates(
             for address in &announcement.addresses {
                 let seed_url = address.as_str();
                 if !wasm_browser_candidate_retry_ready(seed_url, attempted_candidate_urls) {
+                    continue;
+                }
+                if !browser_peer_directory_candidate_allowed(seed_url, bootstrap) {
                     continue;
                 }
                 let Some(family) = browser_transport_family_for_seed_url(seed_url) else {
@@ -2024,6 +2042,7 @@ pub(crate) fn browser_should_retry_direct_handoff(
         || current_snapshot.is_some_and(|snapshot| {
             !browser_peer_directory_dial_candidates(
                 snapshot,
+                Some(bootstrap),
                 &bootstrap.transport_preference,
                 &supported_transports,
                 connected_peer_ids,
@@ -2341,6 +2360,79 @@ pub fn browser_transport_family_for_seed_url(seed_url: &str) -> Option<BrowserTr
     }
     if segments.contains(&"wss") || segments.contains(&"ws") {
         return Some(BrowserTransportFamily::WssFallback);
+    }
+    None
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn browser_peer_directory_candidate_allowed(
+    seed_url: &str,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+) -> bool {
+    let Some(family) = browser_transport_family_for_seed_url(seed_url) else {
+        return false;
+    };
+    if !matches!(
+        family,
+        BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport
+    ) {
+        return true;
+    }
+    let Some(bootstrap) = bootstrap else {
+        return true;
+    };
+    let Some((candidate_host, candidate_port)) = browser_seed_host_port(seed_url) else {
+        return true;
+    };
+    let published_direct_sockets = bootstrap
+        .seed_bootstrap
+        .seed_node_urls
+        .iter()
+        .filter(|seed_url| {
+            matches!(
+                browser_transport_family_for_seed_url(seed_url),
+                Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
+            )
+        })
+        .filter_map(|seed_url| browser_seed_host_port(seed_url))
+        .collect::<Vec<_>>();
+    if published_direct_sockets.is_empty() {
+        return true;
+    }
+    let published_ports_for_host = published_direct_sockets
+        .iter()
+        .filter(|(host, _)| host == &candidate_host)
+        .map(|(_, port)| port.as_str())
+        .collect::<Vec<_>>();
+    if published_ports_for_host.is_empty() {
+        return true;
+    }
+    published_ports_for_host.contains(&candidate_port.as_str())
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn browser_seed_host_port(seed_url: &str) -> Option<(String, String)> {
+    let segments = seed_url
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 4 {
+        return None;
+    }
+    let host_protocol = segments[0];
+    if !matches!(
+        host_protocol,
+        "ip4" | "ip6" | "dns" | "dns4" | "dns6" | "dnsaddr"
+    ) {
+        return None;
+    }
+    let host = segments[1].to_owned();
+    let mut iter = segments.iter().skip(2);
+    while let Some(protocol) = iter.next() {
+        if matches!(*protocol, "tcp" | "udp") {
+            let port = iter.next()?.to_string();
+            return Some((host, port));
+        }
     }
     None
 }
