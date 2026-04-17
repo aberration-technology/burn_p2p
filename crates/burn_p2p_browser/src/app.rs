@@ -17,6 +17,8 @@ use burn_p2p_views::{
     BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
 };
 use chrono::Utc;
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -35,7 +37,7 @@ use crate::{
 use crate::{
     BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
 };
-use burn_p2p_core::{BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{BrowserSeedAdvertisement, BrowserSwarmStatus, SchemaEnvelope, SignedPayload};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the browser app target preset.
@@ -448,6 +450,11 @@ pub struct BrowserAppController {
     direct_swarm_runtime: Option<WasmBrowserSwarmRuntime>,
 }
 
+#[cfg(target_arch = "wasm32")]
+const DIRECT_SWARM_BOOTSTRAP_POLL_MS: u32 = 250;
+#[cfg(target_arch = "wasm32")]
+const DIRECT_SWARM_BOOTSTRAP_WAIT_MS: u32 = 5_000;
+
 impl BrowserAppController {
     #[cfg(test)]
     pub(crate) fn for_tests(edge_client: BrowserEdgeClient, model: BrowserAppModel) -> Self {
@@ -605,6 +612,8 @@ impl BrowserAppController {
         if let Some(direct_swarm_runtime) = self.direct_swarm_runtime.as_mut() {
             let reconnect_events =
                 ensure_direct_swarm_runtime_connected(&mut runtime, direct_swarm_runtime).await;
+            let bootstrap_wait_events =
+                wait_for_direct_swarm_bootstrap(&mut runtime, direct_swarm_runtime).await;
             match sync_worker_runtime_from_direct_swarm(
                 &self.edge_client,
                 &mut runtime,
@@ -620,6 +629,9 @@ impl BrowserAppController {
                         model.apply_event(event);
                     }
                     for event in reconnect_events {
+                        model.apply_event(event);
+                    }
+                    for event in bootstrap_wait_events {
                         model.apply_event(event);
                     }
                     for event in events.drain(..) {
@@ -639,6 +651,9 @@ impl BrowserAppController {
                             model.apply_event(event);
                         }
                         for event in reconnect_events {
+                            model.apply_event(event);
+                        }
+                        for event in bootstrap_wait_events {
                             model.apply_event(event);
                         }
                         self.model = model;
@@ -837,6 +852,45 @@ fn apply_direct_swarm_status_snapshot(
         None,
         None,
     )
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn should_wait_for_direct_swarm_bootstrap(
+    runtime: &BrowserWorkerRuntime,
+    swarm_status: &BrowserSwarmStatus,
+) -> bool {
+    runtime
+        .state
+        .as_ref()
+        .is_some_and(BrowserRuntimeState::requires_peer_transport)
+        && runtime.transport.connected.is_none()
+        && runtime.storage.last_signed_directory_snapshot.is_none()
+        && runtime.storage.last_head_id.is_none()
+        && swarm_status.connected_transport.is_none()
+        && swarm_status.desired_transport.is_some()
+        && swarm_status.last_error.is_none()
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn wait_for_direct_swarm_bootstrap(
+    runtime: &mut BrowserWorkerRuntime,
+    direct_runtime: &WasmBrowserSwarmRuntime,
+) -> Vec<BrowserWorkerEvent> {
+    let mut events = Vec::new();
+    let polls = DIRECT_SWARM_BOOTSTRAP_WAIT_MS / DIRECT_SWARM_BOOTSTRAP_POLL_MS;
+    for _ in 0..polls {
+        let status = direct_runtime.status();
+        if !should_wait_for_direct_swarm_bootstrap(runtime, &status) {
+            break;
+        }
+        TimeoutFuture::new(DIRECT_SWARM_BOOTSTRAP_POLL_MS).await;
+        events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
+            None,
+            None,
+        ));
+    }
+    events
 }
 
 #[cfg(target_arch = "wasm32")]

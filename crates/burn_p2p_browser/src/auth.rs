@@ -29,9 +29,9 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportKind,
-    BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
-    BrowserWorkerRuntime, resolve_browser_seed_bootstrap,
+    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportStatus,
+    BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
+    resolve_browser_seed_bootstrap,
 };
 
 #[derive(Clone, Debug)]
@@ -506,10 +506,7 @@ impl BrowserEdgeClient {
     }
 
     fn can_attempt_peer_transport_without_provider_hints(runtime: &BrowserWorkerRuntime) -> bool {
-        matches!(
-            runtime.transport.connected,
-            Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
-        )
+        runtime.transport.connected.is_some()
     }
 
     fn build_active_head_artifact_sync_plan_from_view(

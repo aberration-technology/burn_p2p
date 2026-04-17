@@ -770,7 +770,7 @@ async fn run_wasm_browser_swarm_task(
                             dial_plan: dial_plan.clone(),
                             candidates,
                             next_candidate_index: 0,
-                            response_tx: None,
+                            response_tx: Some(response_tx),
                         });
                         if let Err(error) = dial_next_wasm_browser_seed_candidate(
                             &mut swarm,
@@ -785,8 +785,6 @@ async fn run_wasm_browser_swarm_task(
                                     response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                             }
                             shared.borrow_mut().status.last_error = Some(error.to_string());
-                        } else {
-                            let _ = response_tx.send(Ok(dial_plan));
                         }
                     }
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
