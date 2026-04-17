@@ -1668,6 +1668,10 @@ impl NativeControlPlaneShell {
         self.inner.dial(address)
     }
 
+    pub fn add_external_address(&mut self, address: SwarmAddress) -> Result<(), SwarmError> {
+        self.inner.add_external_address(address)
+    }
+
     pub fn disconnect_peer(&mut self, peer_id: &str) -> Result<(), SwarmError> {
         self.inner.disconnect_peer(peer_id)
     }
