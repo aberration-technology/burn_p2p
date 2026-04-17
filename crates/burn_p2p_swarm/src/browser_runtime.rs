@@ -1063,7 +1063,7 @@ async fn run_wasm_browser_swarm_task(
                     );
                 }
                 SwarmEvent::Behaviour(WasmBrowserSwarmBehaviourEvent::Gossipsub(event)) => {
-                    match *event {
+                    match event {
                         gossipsub::Event::Message { message, .. } => {
                             match serde_json::from_slice::<PubsubEnvelope>(&message.data) {
                                 Ok(envelope) => {
