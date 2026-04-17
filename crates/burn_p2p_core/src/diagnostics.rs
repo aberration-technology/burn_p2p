@@ -7,10 +7,17 @@ pub fn is_benign_operator_runtime_error(message: &str) -> bool {
     }
 
     normalized.contains("nopeerssubscribedtotopic")
-        || ((normalized.contains("/ip4/127.0.0.1")
-            || normalized.contains("/ip6/::1")
-            || normalized.contains("localhost"))
+        || (targets_non_public_peer_address(&normalized)
             && normalized.contains("connection refused"))
+}
+
+fn targets_non_public_peer_address(message: &str) -> bool {
+    message.contains("/ip4/127.")
+        || message.contains("/ip4/10.")
+        || message.contains("/ip4/192.168.")
+        || message.contains("/ip6/::1")
+        || message.contains("localhost")
+        || (16..=31).any(|segment| message.contains(&format!("/ip4/172.{segment}.")))
 }
 
 /// Filters one runtime error for public/operator-facing status surfaces.
@@ -43,6 +50,20 @@ mod tests {
         assert!(
             operator_visible_last_error(Some("dial /ip6/::1/tcp/4001 failed: Connection refused"))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn suppresses_private_address_connection_refused_noise() {
+        assert!(operator_visible_last_error(Some(
+            "Failed to negotiate transport protocol(s): [(/ip4/10.42.1.10/tcp/45368/p2p/12D3KooWPeer: Connection refused (os error 111))]"
+        ))
+        .is_none());
+        assert!(
+            operator_visible_last_error(Some(
+                "dial /ip4/172.20.8.4/tcp/4001 failed: Connection refused"
+            ))
+            .is_none()
         );
     }
 
