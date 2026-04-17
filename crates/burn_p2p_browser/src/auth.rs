@@ -29,9 +29,9 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportStatus,
-    BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
-    resolve_browser_seed_bootstrap,
+    BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportKind,
+    BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
+    BrowserWorkerRuntime, resolve_browser_seed_bootstrap,
 };
 
 #[derive(Clone, Debug)]
@@ -509,6 +509,23 @@ impl BrowserEdgeClient {
         runtime.transport.connected.is_some()
     }
 
+    fn should_defer_edge_artifact_fallback(runtime: &BrowserWorkerRuntime) -> bool {
+        let direct_target = runtime
+            .transport
+            .selected
+            .as_ref()
+            .or(runtime.transport.active.as_ref());
+        let direct_selected = matches!(
+            direct_target,
+            Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
+        );
+        let direct_connected = matches!(
+            runtime.transport.connected,
+            Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
+        );
+        direct_selected && !direct_connected && runtime.transport.last_error.is_none()
+    }
+
     fn build_active_head_artifact_sync_plan_from_view(
         runtime: &BrowserWorkerRuntime,
         view: &HeadArtifactView,
@@ -672,6 +689,9 @@ impl BrowserEdgeClient {
 
         if transport.is_none() {
             if let Some(edge_fallback) = plan.edge_fallback.as_ref() {
+                if Self::should_defer_edge_artifact_fallback(runtime) {
+                    return Ok(Self::storage_update_if_changed(runtime, previous_storage));
+                }
                 let (Some(session), Some(principal_id)) =
                     (session, session.and_then(BrowserSessionState::principal_id))
                 else {
