@@ -3,6 +3,10 @@ use super::*;
 use libp2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
 #[cfg(not(target_arch = "wasm32"))]
 use rand::thread_rng;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs, path::Path};
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct NativeControlPlaneShell {
@@ -40,9 +44,81 @@ const PEER_DIRECTORY_RECORD_TTL: Duration = Duration::from_secs(90);
 #[cfg(not(target_arch = "wasm32"))]
 fn build_native_webrtc_transport(
     keypair: &Keypair,
+    certificate_pem_path: Option<&Path>,
 ) -> Result<WebRtcTransport, Box<dyn std::error::Error + Send + Sync>> {
-    let certificate = WebRtcCertificate::generate(&mut thread_rng())?;
+    let certificate = load_or_create_native_webrtc_certificate(certificate_pem_path)?;
     Ok(WebRtcTransport::new(keypair.clone(), certificate))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_or_create_native_webrtc_certificate(
+    certificate_pem_path: Option<&Path>,
+) -> Result<WebRtcCertificate, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(path) = certificate_pem_path {
+        if let Ok(pem) = fs::read_to_string(path) {
+            match WebRtcCertificate::from_pem(&pem) {
+                Ok(certificate) => return Ok(certificate),
+                Err(error) => {
+                    eprintln!(
+                        "failed to load persisted WebRTC certificate from {}: {error}; regenerating",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    let certificate = WebRtcCertificate::generate(&mut thread_rng())?;
+    if let Some(path) = certificate_pem_path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, certificate.serialize_pem())?;
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(certificate)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod certificate_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn persisted_webrtc_certificate_keeps_the_same_fingerprint() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("webrtc-certificate.pem");
+
+        let first =
+            load_or_create_native_webrtc_certificate(Some(&path)).expect("first certificate");
+        let first_fingerprint = first.fingerprint();
+        let first_pem = fs::read_to_string(&path).expect("persisted pem");
+
+        let second =
+            load_or_create_native_webrtc_certificate(Some(&path)).expect("second certificate");
+
+        assert_eq!(second.fingerprint(), first_fingerprint);
+        assert_eq!(fs::read_to_string(&path).expect("persisted pem"), first_pem);
+    }
+
+    #[test]
+    fn corrupt_persisted_webrtc_certificate_is_regenerated() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("webrtc-certificate.pem");
+        fs::write(&path, "not a certificate").expect("write corrupt pem");
+
+        let certificate =
+            load_or_create_native_webrtc_certificate(Some(&path)).expect("regenerated certificate");
+        let persisted = fs::read_to_string(&path).expect("persisted regenerated pem");
+
+        assert_eq!(
+            WebRtcCertificate::from_pem(&persisted)
+                .expect("regenerated certificate should parse")
+                .fingerprint(),
+            certificate.fingerprint()
+        );
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,10 +128,11 @@ impl NativeControlPlaneShell {
         control_protocol: ProtocolId,
         transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
-        Self::with_keypair(
+        Self::with_keypair_and_webrtc_certificate_path(
             control_protocol,
             Keypair::generate_ed25519(),
             transport_policy,
+            None,
         )
     }
 
@@ -64,6 +141,21 @@ impl NativeControlPlaneShell {
         control_protocol: ProtocolId,
         keypair: Keypair,
         transport_policy: RuntimeTransportPolicy,
+    ) -> Result<Self, SwarmError> {
+        Self::with_keypair_and_webrtc_certificate_path(
+            control_protocol,
+            keypair,
+            transport_policy,
+            None,
+        )
+    }
+
+    /// Returns a copy configured with the keypair and an optional persisted WebRTC certificate.
+    pub fn with_keypair_and_webrtc_certificate_path(
+        control_protocol: ProtocolId,
+        keypair: Keypair,
+        transport_policy: RuntimeTransportPolicy,
+        webrtc_certificate_pem_path: Option<std::path::PathBuf>,
     ) -> Result<Self, SwarmError> {
         let runtime = TokioRuntimeBuilder::new_multi_thread()
             .worker_threads(1)
@@ -182,7 +274,9 @@ impl NativeControlPlaneShell {
                     )
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_quic()
-                    .with_other_transport(|key| build_native_webrtc_transport(key))
+                    .with_other_transport(|key| {
+                        build_native_webrtc_transport(key, webrtc_certificate_pem_path.as_deref())
+                    })
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_dns()
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
@@ -1636,10 +1730,11 @@ impl NativeControlPlaneShell {
         control_protocol: ProtocolId,
         transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
-        Self::with_keypair(
+        Self::with_keypair_and_webrtc_certificate_path(
             control_protocol,
             Keypair::generate_ed25519(),
             transport_policy,
+            None,
         )
     }
 
@@ -1648,9 +1743,24 @@ impl NativeControlPlaneShell {
         keypair: Keypair,
         transport_policy: RuntimeTransportPolicy,
     ) -> Result<Self, SwarmError> {
+        Self::with_keypair_and_webrtc_certificate_path(
+            control_protocol,
+            keypair,
+            transport_policy,
+            None,
+        )
+    }
+
+    pub fn with_keypair_and_webrtc_certificate_path(
+        control_protocol: ProtocolId,
+        keypair: Keypair,
+        transport_policy: RuntimeTransportPolicy,
+        webrtc_certificate_pem_path: Option<std::path::PathBuf>,
+    ) -> Result<Self, SwarmError> {
         Ok(Self {
             inner: {
                 let _ = transport_policy;
+                let _ = webrtc_certificate_pem_path;
                 MemoryControlPlaneShell::with_keypair(control_protocol, keypair)?
             },
         })

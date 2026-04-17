@@ -150,6 +150,10 @@ impl StorageConfig {
         self.state_dir().join("control-plane-state.json")
     }
 
+    pub(crate) fn webrtc_certificate_pem_path(&self) -> PathBuf {
+        self.state_dir().join("webrtc-certificate.pem")
+    }
+
     pub(crate) fn scoped_transfer_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.transfers_dir()
             .join(format!("transfer-{}.json", artifact_id.as_str()))

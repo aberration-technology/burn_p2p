@@ -14,6 +14,7 @@ impl ControlPlaneShell {
         keypair: Keypair,
         addresses: impl IntoIterator<Item = SwarmAddress>,
         transport_policy: RuntimeTransportPolicy,
+        webrtc_certificate_pem_path: Option<std::path::PathBuf>,
     ) -> Result<Self, SwarmError> {
         let addresses = addresses.into_iter().collect::<Vec<_>>();
         if addresses.iter().all(SwarmAddress::is_memory) {
@@ -22,7 +23,12 @@ impl ControlPlaneShell {
             )))
         } else {
             Ok(Self::Native(Box::new(
-                NativeControlPlaneShell::with_keypair(control_protocol, keypair, transport_policy)?,
+                NativeControlPlaneShell::with_keypair_and_webrtc_certificate_path(
+                    control_protocol,
+                    keypair,
+                    transport_policy,
+                    webrtc_certificate_pem_path,
+                )?,
             )))
         }
     }

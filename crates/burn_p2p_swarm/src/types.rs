@@ -1,6 +1,7 @@
 use burn_p2p_core::{ClientPlatform, GenesisSpec, NetworkId, PeerRole, PeerRoleSet};
 use libp2p::{Multiaddr, StreamProtocol};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::stats::SwarmError;
 
@@ -447,6 +448,8 @@ pub struct RuntimeBoundary {
     pub listen_addresses: Vec<SwarmAddress>,
     /// Explicit externally reachable addresses that should be advertised by the runtime.
     pub external_addresses: Vec<SwarmAddress>,
+    /// Optional persisted native WebRTC certificate PEM path used to keep certhashes stable.
+    pub webrtc_certificate_pem_path: Option<PathBuf>,
     /// The protocols.
     pub protocols: ProtocolSet,
     /// The control overlay.
@@ -462,6 +465,7 @@ impl RuntimeBoundary {
         bootstrap_addresses: Vec<SwarmAddress>,
         listen_addresses: Vec<SwarmAddress>,
         external_addresses: Vec<SwarmAddress>,
+        webrtc_certificate_pem_path: Option<PathBuf>,
     ) -> Result<Self, SwarmError> {
         Ok(Self {
             environment: platform.clone().into(),
@@ -469,6 +473,7 @@ impl RuntimeBoundary {
             bootstrap_addresses,
             listen_addresses,
             external_addresses,
+            webrtc_certificate_pem_path,
             protocols: ProtocolSet::for_network(&genesis.network_id)?,
             control_overlay: OverlayTopic::control(genesis.network_id.clone()),
         })

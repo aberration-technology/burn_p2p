@@ -455,6 +455,7 @@ impl ControlHandle {
             Keypair::generate_ed25519(),
             addresses.clone(),
             self.runtime_boundary.transport_policy.clone(),
+            None,
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?;
 

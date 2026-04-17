@@ -59,6 +59,10 @@ impl<P> RunningNode<P> {
             bootstrap_addresses,
             listen_addresses.clone(),
             node.config.external_addresses.clone(),
+            node.config
+                .storage
+                .as_ref()
+                .map(StorageConfig::webrtc_certificate_pem_path),
         )?;
         snapshot.runtime_boundary = Some(boundary.clone());
         snapshot.listen_addresses = Vec::new();

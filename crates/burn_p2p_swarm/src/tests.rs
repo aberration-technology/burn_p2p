@@ -1170,6 +1170,7 @@ fn runtime_boundary_derives_protocols_from_genesis() {
         vec![SwarmAddress::new("/dns4/bootstrap.example.com/tcp/4001/ws").expect("addr")],
         vec![SwarmAddress::new("/ip4/0.0.0.0/udp/4001/quic-v1").expect("addr")],
         Vec::new(),
+        None,
     )
     .expect("runtime");
 

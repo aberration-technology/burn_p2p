@@ -25,6 +25,7 @@ pub(crate) fn run_control_plane(
             .chain(boundary.bootstrap_addresses.iter())
             .cloned(),
         boundary.transport_policy.clone(),
+        boundary.webrtc_certificate_pem_path.clone(),
     ) {
         Ok(shell) => shell,
         Err(error) => {
@@ -1327,6 +1328,7 @@ mod tests {
             bootstrap_addresses,
             listen_addresses: Vec::new(),
             external_addresses: Vec::new(),
+            webrtc_certificate_pem_path: None,
             protocols: ProtocolSet::for_network(&network_id).expect("protocols"),
             control_overlay: OverlayTopic::control(network_id),
         }
