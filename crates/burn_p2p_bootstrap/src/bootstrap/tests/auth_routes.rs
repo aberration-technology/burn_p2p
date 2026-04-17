@@ -471,6 +471,39 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
         },
     ));
     assert_eq!(github_session["claims"]["provider"], "GitHub");
+    let github_unknown_principal_login = response_json(&issue_request(
+        github_context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/login/github",
+            body: Some(serde_json::json!({
+                "network_id": "secure-demo",
+                "principal_hint": "unknown-principal",
+                "requested_scopes": ["Connect"],
+            })),
+            headers: &[],
+        },
+    ));
+    let github_unknown_principal = issue_request(
+        github_context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/callback/github",
+            body: Some(serde_json::json!({
+                "login_id": github_unknown_principal_login["login_id"],
+                "state": github_unknown_principal_login["state"],
+                "principal_id": "unknown-principal",
+            })),
+            headers: &[],
+        },
+    );
+    assert!(
+        github_unknown_principal.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "expected typed auth failure response, got: {github_unknown_principal}"
+    );
+    assert!(
+        response_body(&github_unknown_principal).contains("unknown principal: unknown-principal")
+    );
     let github_snapshot = response_json(&issue_request(
         github_context,
         IssueRequestSpec {

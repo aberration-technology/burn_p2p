@@ -1,5 +1,40 @@
 use super::*;
 
+fn auth_error_status(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    if let Some(auth_error) = error.downcast_ref::<burn_p2p::AuthError>() {
+        return match auth_error {
+            burn_p2p::AuthError::UnknownLogin(_)
+            | burn_p2p::AuthError::StateMismatch
+            | burn_p2p::AuthError::LoginExpired(_)
+            | burn_p2p::AuthError::SessionExpired(_)
+            | burn_p2p::AuthError::MissingProviderPrincipal
+            | burn_p2p::AuthError::MissingProviderCode => "401 Unauthorized",
+            burn_p2p::AuthError::UnknownPrincipal(_)
+            | burn_p2p::AuthError::NetworkNotGranted(_)
+            | burn_p2p::AuthError::ScopeNotGranted(_) => "403 Forbidden",
+            burn_p2p::AuthError::ProviderExchange(_)
+            | burn_p2p::AuthError::ProviderUserInfo(_)
+            | burn_p2p::AuthError::ProviderRefresh(_)
+            | burn_p2p::AuthError::ProviderRevoke(_) => "502 Bad Gateway",
+            _ => "400 Bad Request",
+        };
+    }
+    "500 Internal Server Error"
+}
+
+fn write_auth_error_response(
+    stream: &mut TcpStream,
+    error: &(dyn std::error::Error + 'static),
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response(
+        stream,
+        auth_error_status(error),
+        "text/plain; charset=utf-8",
+        error.to_string().into_bytes(),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn handle_browser_post_route(
     stream: &mut TcpStream,
     context: &HttpServerContext,
@@ -63,26 +98,34 @@ pub(crate) fn handle_auth_post_route(
     match (request.method.as_str(), request.path.as_str()) {
         ("POST", path) if auth.connector.matches_login_path(path) => {
             let login_request: LoginRequest = serde_json::from_slice(&request.body)?;
-            let login = auth.begin_login(login_request)?;
-            write_json(stream, &login)?;
+            match auth.begin_login(login_request) {
+                Ok(login) => write_json(stream, &login)?,
+                Err(error) => write_auth_error_response(stream, error.as_ref())?,
+            }
         }
         ("POST", path) if auth.connector.matches_callback_path(path) => {
             let mut callback: burn_p2p::CallbackPayload = serde_json::from_slice(&request.body)?;
             if callback.principal_id.is_none() {
                 callback.principal_id = auth.connector.trusted_callback_principal(request);
             }
-            let session = auth.complete_login(callback)?;
-            write_json(stream, &session)?;
+            match auth.complete_login(callback) {
+                Ok(session) => write_json(stream, &session)?,
+                Err(error) => write_auth_error_response(stream, error.as_ref())?,
+            }
         }
         ("POST", "/refresh") => {
             let refresh: SessionRequest = serde_json::from_slice(&request.body)?;
-            let refreshed = auth.refresh_session(&refresh.session_id)?;
-            write_json(stream, &refreshed)?;
+            match auth.refresh_session(&refresh.session_id) {
+                Ok(refreshed) => write_json(stream, &refreshed)?,
+                Err(error) => write_auth_error_response(stream, error.as_ref())?,
+            }
         }
         ("POST", "/logout") => {
             let logout: SessionRequest = serde_json::from_slice(&request.body)?;
-            let logged_out = auth.revoke_session(&logout.session_id)?;
-            write_json(stream, &LogoutResponse { logged_out })?;
+            match auth.revoke_session(&logout.session_id) {
+                Ok(logged_out) => write_json(stream, &LogoutResponse { logged_out })?,
+                Err(error) => write_auth_error_response(stream, error.as_ref())?,
+            }
         }
         ("POST", "/enroll") => {
             let effective_revocation_epoch = current_revocation_epoch(auth, &context.state);
