@@ -12,8 +12,8 @@ use burn_p2p_core::ChunkDescriptor;
 use burn_p2p_core::{
     ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
     BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
-    MetricsLiveEvent, PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId,
-    SchemaEnvelope, SignedPayload, TrustBundleExport,
+    BrowserTransportFamily, MetricsLiveEvent, PublicationTargetId, PublishedArtifactRecord,
+    PublishedArtifactStatus, RunId, SchemaEnvelope, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
     CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
@@ -510,20 +510,26 @@ impl BrowserEdgeClient {
     }
 
     fn should_defer_edge_artifact_fallback(runtime: &BrowserWorkerRuntime) -> bool {
-        let direct_target = runtime
-            .transport
-            .selected
-            .as_ref()
-            .or(runtime.transport.active.as_ref());
+        let swarm_status = runtime.swarm_status();
         let direct_selected = matches!(
-            direct_target,
+            swarm_status.desired_transport,
+            Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
+        ) || matches!(
+            runtime
+                .transport
+                .selected
+                .as_ref()
+                .or(runtime.transport.active.as_ref()),
             Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
         );
         let direct_connected = matches!(
+            swarm_status.connected_transport,
+            Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
+        ) || matches!(
             runtime.transport.connected,
             Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
         );
-        direct_selected && !direct_connected && runtime.transport.last_error.is_none()
+        direct_selected && !direct_connected
     }
 
     fn build_active_head_artifact_sync_plan_from_view(
@@ -1917,11 +1923,6 @@ impl BrowserEdgeClient {
             None,
             None,
         );
-        let edge_snapshot = self
-            .edge_control_plane_client()
-            .fetch_snapshot(session_id)
-            .await
-            .map_err(|error| BrowserAuthClientError::Swarm(error.to_string()))?;
         let signed_directory = self.fetch_signed_directory(session_id).await?;
         let signed_leaderboard = if include_leaderboard {
             Some(self.fetch_signed_leaderboard().await?)
@@ -1946,29 +1947,16 @@ impl BrowserEdgeClient {
                 .await?
                 .unwrap_or_default()
         };
-        let live_metrics_event = edge_snapshot
-            .metrics_announcements
-            .iter()
-            .max_by_key(|announcement| announcement.event.generated_at)
-            .map(|announcement| announcement.event.clone())
-            .or(self
-                .get_optional_json(&self.bindings.paths.metrics_live_latest_path, None)
-                .await?);
-        let edge_directory = edge_snapshot
-            .directory_announcements
-            .last()
-            .map(|announcement| announcement.entries.as_slice())
-            .unwrap_or(&[]);
+        let live_metrics_event = self
+            .get_optional_json(&self.bindings.paths.metrics_live_latest_path, None)
+            .await?;
+        let edge_directory = app_snapshot.directory.entries.as_slice();
         if edge_directory != signed_directory.payload.payload.entries.as_slice() {
             return Err(BrowserAuthClientError::EdgeSnapshotMismatch(
                 "directory entries did not match the signed directory snapshot",
             ));
         }
-        let heads = edge_snapshot
-            .head_announcements
-            .iter()
-            .map(|announcement| announcement.head.clone())
-            .collect::<Vec<_>>();
+        let heads = app_snapshot.heads.clone();
         let transport = BrowserTransportStatus {
             active: None,
             selected: runtime.transport.selected.clone(),

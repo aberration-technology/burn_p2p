@@ -4905,6 +4905,12 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
     );
     assert!(should_fallback_to_edge_control_sync(&runtime));
 
+    runtime.transport.selected = Some(BrowserTransportKind::WebRtcDirect);
+    runtime.transport.connected = Some(BrowserTransportKind::WssFallback);
+    runtime.transport.connected_peer_ids = vec![PeerId::new("peer-browser-bootstrap")];
+    runtime.transport.last_error = Some("direct dial timeout".into());
+    assert!(!should_fallback_to_edge_control_sync(&runtime));
+
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
     runtime
         .storage
@@ -5296,6 +5302,7 @@ fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() 
             selected: Some(BrowserTransportKind::WebRtcDirect),
             connected: Some(BrowserTransportKind::WssFallback),
             connected_peer_ids: vec![PeerId::new("peer-browser-bootstrap")],
+            last_error: Some("direct timeout while handoff is still pending".into()),
             ..BrowserTransportStatus::default()
         },
     );
