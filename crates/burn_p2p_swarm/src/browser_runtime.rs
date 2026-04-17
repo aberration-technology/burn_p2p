@@ -1,18 +1,30 @@
 use async_trait::async_trait;
 use burn_p2p_core::{
     ArtifactId, BrowserResolvedSeedBootstrap, BrowserSwarmPhase, BrowserSwarmStatus,
-    BrowserTransportFamily, ChunkId, ExperimentId, NetworkId, PeerId, RevisionId,
+    BrowserTransportFamily, ChunkId, ExperimentId, NetworkId, PeerId, RevisionId, StudyId,
 };
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_arch = "wasm32")]
+use burn_p2p_core::BrowserTransportObservationSource;
+
+#[cfg(target_arch = "wasm32")]
 use crate::runtime_helpers::stream_protocol;
 #[cfg(target_arch = "wasm32")]
-use crate::{ControlPlaneRequest, ControlPlaneResponse, ProtocolSet};
+use crate::{
+    ControlPlaneRequest, ControlPlaneResponse, ProtocolSet, PubsubEnvelope, apply_pubsub_payload,
+    pubsub_semantic_message_id,
+};
+use crate::{OverlayChannel, OverlayTopic};
 use crate::{ControlPlaneSnapshot, SwarmError};
 
 #[cfg(target_arch = "wasm32")]
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+};
+use std::collections::BTreeSet;
 
 #[cfg(target_arch = "wasm32")]
 use futures::{
@@ -25,7 +37,7 @@ use gloo_timers::future::TimeoutFuture;
 use libp2p::Transport;
 #[cfg(target_arch = "wasm32")]
 use libp2p::{
-    Multiaddr, SwarmBuilder,
+    Multiaddr, SwarmBuilder, gossipsub,
     core::upgrade::Version,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
@@ -300,6 +312,7 @@ pub(crate) fn filter_supported_browser_seed_dial_candidates(
 #[behaviour(prelude = "libp2p_swarm::derive_prelude")]
 struct WasmBrowserSwarmBehaviour {
     ping: libp2p::ping::Behaviour,
+    gossipsub: gossipsub::Behaviour,
     request_response:
         libp2p_request_response::cbor::Behaviour<ControlPlaneRequest, ControlPlaneResponse>,
 }
@@ -349,7 +362,6 @@ enum WasmBrowserSwarmCommand {
     SubscribeMetrics {
         response_tx: oneshot::Sender<Result<(), SwarmError>>,
     },
-    PollSubscriptions,
     FetchSnapshot {
         response_tx: oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>,
     },
@@ -391,7 +403,6 @@ impl WasmBrowserSwarmRuntime {
             command_rx,
             network_id,
         ));
-        spawn_local(run_wasm_browser_swarm_poll_task(command_tx.clone()));
         Self { shared, command_tx }
     }
 }
@@ -629,7 +640,6 @@ async fn run_wasm_browser_swarm_task(
                     | WasmBrowserSwarmCommand::SubscribeMetrics { response_tx } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
-                    WasmBrowserSwarmCommand::PollSubscriptions => {}
                     WasmBrowserSwarmCommand::FetchSnapshot { response_tx } => {
                         let _ = response_tx.send(Err(SwarmError::Runtime(error.to_string())));
                     }
@@ -647,10 +657,12 @@ async fn run_wasm_browser_swarm_task(
 
     let mut pending_connect: Option<WasmPendingConnect> = None;
     let mut active_candidate: Option<BrowserSeedDialCandidate> = None;
+    let mut current_bootstrap: Option<BrowserSwarmBootstrap> = None;
+    let mut current_snapshot: Option<ControlPlaneSnapshot> = None;
     let mut directory_subscribed = false;
     let mut heads_subscribed = false;
     let mut metrics_subscribed = false;
-    let mut last_subscription_snapshot: Option<ControlPlaneSnapshot> = None;
+    let mut subscribed_topic_paths = BTreeSet::<String>::new();
     let mut pending_subscription_snapshot_request_id: Option<String> = None;
     let mut pending_snapshot_requests =
         BTreeMap::<String, oneshot::Sender<Result<ControlPlaneSnapshot, SwarmError>>>::new();
@@ -699,6 +711,9 @@ async fn run_wasm_browser_swarm_task(
                             &mut pending_chunk_requests,
                             "browser direct swarm reconnect discarded pending artifact chunk request",
                         );
+                        current_bootstrap = Some(bootstrap.clone());
+                        current_snapshot = None;
+                        subscribed_topic_paths.clear();
                         let dial_plan = plan_browser_seed_dials(&bootstrap);
                         let supported = wasm_supported_browser_transport_families();
                         let candidates =
@@ -763,8 +778,13 @@ async fn run_wasm_browser_swarm_task(
                     WasmBrowserSwarmCommand::Disconnect { response_tx } => {
                         active_candidate = None;
                         pending_connect = None;
+                        current_bootstrap = None;
+                        current_snapshot = None;
                         pending_subscription_snapshot_request_id = None;
-                        last_subscription_snapshot = None;
+                        directory_subscribed = false;
+                        heads_subscribed = false;
+                        metrics_subscribed = false;
+                        subscribed_topic_paths.clear();
                         fail_pending_wasm_snapshot_requests(
                             &mut pending_snapshot_requests,
                             "browser direct swarm disconnected before snapshot request completed",
@@ -789,10 +809,20 @@ async fn run_wasm_browser_swarm_task(
                     }
                     WasmBrowserSwarmCommand::SubscribeDirectory { response_tx } => {
                         directory_subscribed = true;
-                        let _ = response_tx.send(Ok(()));
+                        let result = ensure_wasm_browser_topic_subscriptions(
+                            &mut swarm,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut subscribed_topic_paths,
+                        );
+                        let _ = response_tx.send(result);
                         try_issue_wasm_subscription_snapshot_request(
                             &mut swarm,
                             &shared,
+                            current_snapshot.as_ref(),
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -801,10 +831,20 @@ async fn run_wasm_browser_swarm_task(
                     }
                     WasmBrowserSwarmCommand::SubscribeHeads { response_tx } => {
                         heads_subscribed = true;
-                        let _ = response_tx.send(Ok(()));
+                        let result = ensure_wasm_browser_topic_subscriptions(
+                            &mut swarm,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            directory_subscribed,
+                            heads_subscribed,
+                            metrics_subscribed,
+                            &mut subscribed_topic_paths,
+                        );
+                        let _ = response_tx.send(result);
                         try_issue_wasm_subscription_snapshot_request(
                             &mut swarm,
                             &shared,
+                            current_snapshot.as_ref(),
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -813,20 +853,20 @@ async fn run_wasm_browser_swarm_task(
                     }
                     WasmBrowserSwarmCommand::SubscribeMetrics { response_tx } => {
                         metrics_subscribed = true;
-                        let _ = response_tx.send(Ok(()));
-                        try_issue_wasm_subscription_snapshot_request(
+                        let result = ensure_wasm_browser_topic_subscriptions(
                             &mut swarm,
-                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
-                            &mut pending_subscription_snapshot_request_id,
+                            &mut subscribed_topic_paths,
                         );
-                    }
-                    WasmBrowserSwarmCommand::PollSubscriptions => {
+                        let _ = response_tx.send(result);
                         try_issue_wasm_subscription_snapshot_request(
                             &mut swarm,
                             &shared,
+                            current_snapshot.as_ref(),
                             directory_subscribed,
                             heads_subscribed,
                             metrics_subscribed,
@@ -918,14 +958,18 @@ async fn run_wasm_browser_swarm_task(
                                 .as_ref()
                                 .and_then(|plan| plan.desired_transport.clone())
                         });
+                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     {
                         let mut state = shared.borrow_mut();
                         state.status.phase = BrowserSwarmPhase::TransportConnected;
                         state.status.transport_source =
-                            burn_p2p_core::BrowserTransportObservationSource::Connected;
+                            BrowserTransportObservationSource::Connected;
                         state.status.connected_transport = connected_transport;
-                        state.status.connected_peer_ids = vec![PeerId::new(peer_id.to_string())];
-                        state.status.connected_peer_count = 1;
+                        let observed_peer_id = PeerId::new(peer_id.to_string());
+                        if !state.status.connected_peer_ids.contains(&observed_peer_id) {
+                            state.status.connected_peer_ids.push(observed_peer_id);
+                        }
+                        state.status.connected_peer_count = state.status.connected_peer_ids.len();
                         state.status.last_error = None;
                     }
                     if let Some(mut pending) = pending_connect.take()
@@ -933,9 +977,19 @@ async fn run_wasm_browser_swarm_task(
                     {
                         let _ = response_tx.send(Ok(pending.dial_plan));
                     }
+                    let _ = ensure_wasm_browser_topic_subscriptions(
+                        &mut swarm,
+                        current_bootstrap.as_ref(),
+                        current_snapshot.as_ref(),
+                        directory_subscribed,
+                        heads_subscribed,
+                        metrics_subscribed,
+                        &mut subscribed_topic_paths,
+                    );
                     try_issue_wasm_subscription_snapshot_request(
                         &mut swarm,
                         &shared,
+                        current_snapshot.as_ref(),
                         directory_subscribed,
                         heads_subscribed,
                         metrics_subscribed,
@@ -962,7 +1016,8 @@ async fn run_wasm_browser_swarm_task(
                         }
                     }
                 }
-                SwarmEvent::ConnectionClosed { .. } => {
+                SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                     let desired_transport = shared
                         .borrow()
                         .dial_plan
@@ -977,12 +1032,18 @@ async fn run_wasm_browser_swarm_task(
                         BrowserSwarmPhase::Bootstrap
                     };
                     state.status.transport_source =
-                        burn_p2p_core::BrowserTransportObservationSource::Selected;
-                    state.status.connected_transport = None;
-                    state.status.connected_peer_ids.clear();
-                    state.status.connected_peer_count = 0;
+                        BrowserTransportObservationSource::Selected;
+                    let closed_peer_id = PeerId::new(peer_id.to_string());
+                    state
+                        .status
+                        .connected_peer_ids
+                        .retain(|existing| existing != &closed_peer_id);
+                    state.status.connected_peer_count = state.status.connected_peer_ids.len();
+                    if state.status.connected_peer_ids.is_empty() {
+                        state.status.connected_transport = None;
+                    }
                     pending_subscription_snapshot_request_id = None;
-                    last_subscription_snapshot = None;
+                    current_snapshot = None;
                     fail_pending_wasm_snapshot_requests(
                         &mut pending_snapshot_requests,
                         "browser direct swarm connection closed before snapshot request completed",
@@ -995,6 +1056,58 @@ async fn run_wasm_browser_swarm_task(
                         &mut pending_chunk_requests,
                         "browser direct swarm connection closed before artifact chunk request completed",
                     );
+                    update_wasm_browser_status_from_snapshot(
+                        &mut state.status,
+                        None,
+                        current_bootstrap.as_ref(),
+                    );
+                }
+                SwarmEvent::Behaviour(WasmBrowserSwarmBehaviourEvent::Gossipsub(event)) => {
+                    match *event {
+                        gossipsub::Event::Message { message, .. } => {
+                            match serde_json::from_slice::<PubsubEnvelope>(&message.data) {
+                                Ok(envelope) => {
+                                    let mut next_snapshot =
+                                        current_snapshot.clone().unwrap_or_default();
+                                    let previous_snapshot = next_snapshot.clone();
+                                    apply_pubsub_payload(&mut next_snapshot, envelope.payload);
+                                    if next_snapshot != previous_snapshot {
+                                        update_wasm_browser_status_and_snapshot(
+                                            &shared,
+                                            &next_snapshot,
+                                            current_bootstrap.as_ref(),
+                                        );
+                                        let _ = ensure_wasm_browser_topic_subscriptions(
+                                            &mut swarm,
+                                            current_bootstrap.as_ref(),
+                                            Some(&next_snapshot),
+                                            directory_subscribed,
+                                            heads_subscribed,
+                                            metrics_subscribed,
+                                            &mut subscribed_topic_paths,
+                                        );
+                                        shared.borrow_mut().updates.push(
+                                            BrowserSwarmUpdate::Snapshot(Box::new(
+                                                next_snapshot.clone(),
+                                            )),
+                                        );
+                                        current_snapshot = Some(next_snapshot);
+                                    }
+                                }
+                                Err(error) => {
+                                    shared.borrow_mut().status.last_error =
+                                        Some(format!("browser direct swarm pubsub decode failed: {error}"));
+                                }
+                            }
+                        }
+                        gossipsub::Event::Subscribed { peer_id, .. } => {
+                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                        }
+                        gossipsub::Event::Unsubscribed { peer_id, .. } => {
+                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                        }
+                        _ => {}
+                    }
                 }
                 SwarmEvent::Behaviour(WasmBrowserSwarmBehaviourEvent::RequestResponse(event)) => {
                     match event {
@@ -1013,21 +1126,50 @@ async fn run_wasm_browser_swarm_task(
                                                 .is_some_and(|pending_id| pending_id == &request_id)
                                             {
                                                 pending_subscription_snapshot_request_id = None;
-                                                if last_subscription_snapshot
+                                                if current_snapshot
                                                     .as_ref()
                                                     .is_none_or(|previous| previous != &snapshot)
                                                 {
-                                                    last_subscription_snapshot =
-                                                        Some(snapshot.clone());
+                                                    update_wasm_browser_status_and_snapshot(
+                                                        &shared,
+                                                        &snapshot,
+                                                        current_bootstrap.as_ref(),
+                                                    );
+                                                    let _ =
+                                                        ensure_wasm_browser_topic_subscriptions(
+                                                            &mut swarm,
+                                                            current_bootstrap.as_ref(),
+                                                            Some(&snapshot),
+                                                            directory_subscribed,
+                                                            heads_subscribed,
+                                                            metrics_subscribed,
+                                                            &mut subscribed_topic_paths,
+                                                        );
                                                     shared.borrow_mut().updates.push(
                                                         BrowserSwarmUpdate::Snapshot(Box::new(
-                                                            snapshot,
+                                                            snapshot.clone(),
                                                         )),
                                                     );
+                                                    current_snapshot = Some(snapshot);
                                                 }
                                             } else if let Some(response_tx) =
                                                 pending_snapshot_requests.remove(&request_id)
                                             {
+                                                update_wasm_browser_status_and_snapshot(
+                                                    &shared,
+                                                    &snapshot,
+                                                    current_bootstrap.as_ref(),
+                                                );
+                                                let _ = ensure_wasm_browser_topic_subscriptions(
+                                                    &mut swarm,
+                                                    current_bootstrap.as_ref(),
+                                                    Some(&snapshot),
+                                                    directory_subscribed,
+                                                    heads_subscribed,
+                                                    metrics_subscribed,
+                                                    &mut subscribed_topic_paths,
+                                                );
+                                                current_snapshot = Some(snapshot.clone());
                                                 let _ = response_tx.send(Ok(snapshot));
                                             }
                                         }
@@ -1049,6 +1191,13 @@ async fn run_wasm_browser_swarm_task(
                                             if let Some(response_tx) =
                                                 pending_chunk_requests.remove(&request_id)
                                             {
+                                                if payload.is_some() {
+                                                    let mut state = shared.borrow_mut();
+                                                    state.status.artifact_source =
+                                                        burn_p2p_core::BrowserArtifactSource::PeerSwarm;
+                                                    state.status.phase =
+                                                        BrowserSwarmPhase::ArtifactReady;
+                                                }
                                                 let _ = response_tx.send(payload
                                                     .map(|payload| payload.bytes)
                                                     .ok_or_else(|| {
@@ -1105,21 +1254,6 @@ async fn run_wasm_browser_swarm_task(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn run_wasm_browser_swarm_poll_task(
-    command_tx: mpsc::UnboundedSender<WasmBrowserSwarmCommand>,
-) {
-    loop {
-        TimeoutFuture::new(3_000).await;
-        if command_tx
-            .unbounded_send(WasmBrowserSwarmCommand::PollSubscriptions)
-            .is_err()
-        {
-            break;
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 fn dial_next_wasm_browser_seed_candidate(
     swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
@@ -1171,6 +1305,14 @@ fn build_wasm_browser_swarm(
     network_id: &NetworkId,
 ) -> Result<libp2p::Swarm<WasmBrowserSwarmBehaviour>, SwarmError> {
     let control_protocol = stream_protocol(&ProtocolSet::for_network(network_id)?.control)?;
+    let behaviour_keypair = keypair.clone();
+    let gossip_config = gossipsub::ConfigBuilder::default()
+        .validation_mode(gossipsub::ValidationMode::Strict)
+        .message_id_fn(|message| {
+            gossipsub::MessageId::from(pubsub_semantic_message_id(&message.data))
+        })
+        .build()
+        .map_err(|error| SwarmError::Runtime(error.to_string()))?;
     SwarmBuilder::with_existing_identity(keypair)
         .with_wasm_bindgen()
         .with_other_transport(|key| build_wasm_webrtc_transport(key))
@@ -1181,6 +1323,11 @@ fn build_wasm_browser_swarm(
         .map_err(|error| SwarmError::Runtime(error.to_string()))?
         .with_behaviour(|_| WasmBrowserSwarmBehaviour {
             ping: libp2p::ping::Behaviour::default(),
+            gossipsub: gossipsub::Behaviour::new(
+                gossipsub::MessageAuthenticity::Signed(behaviour_keypair.clone()),
+                gossip_config.clone(),
+            )
+            .expect("wasm gossipsub behaviour"),
             request_response: libp2p_request_response::cbor::Behaviour::new(
                 [(
                     control_protocol,
@@ -1219,6 +1366,7 @@ fn resolve_wasm_browser_request_peer_id(
 fn try_issue_wasm_subscription_snapshot_request(
     swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
     directory_subscribed: bool,
     heads_subscribed: bool,
     metrics_subscribed: bool,
@@ -1228,6 +1376,9 @@ fn try_issue_wasm_subscription_snapshot_request(
         return;
     }
     if !(directory_subscribed || heads_subscribed || metrics_subscribed) {
+        return;
+    }
+    if current_snapshot.is_some() {
         return;
     }
     let Ok(peer_id) =
@@ -1241,6 +1392,171 @@ fn try_issue_wasm_subscription_snapshot_request(
         .send_request(&peer_id, ControlPlaneRequest::Snapshot)
         .to_string();
     *pending_subscription_snapshot_request_id = Some(request_id);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_wasm_browser_topic_subscriptions(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    directory_subscribed: bool,
+    heads_subscribed: bool,
+    metrics_subscribed: bool,
+    subscribed_topic_paths: &mut BTreeSet<String>,
+) -> Result<(), SwarmError> {
+    for topic in desired_wasm_browser_subscription_topics(
+        bootstrap,
+        current_snapshot,
+        directory_subscribed,
+        heads_subscribed,
+        metrics_subscribed,
+    ) {
+        if subscribed_topic_paths.insert(topic.path.clone()) {
+            swarm
+                .behaviour_mut()
+                .gossipsub
+                .subscribe(&gossipsub::IdentTopic::new(topic.path))
+                .map_err(|error| SwarmError::Pubsub(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn selected_browser_study_and_experiment(
+    bootstrap: &BrowserSwarmBootstrap,
+    snapshot: &ControlPlaneSnapshot,
+) -> Option<(StudyId, ExperimentId)> {
+    let announcement = snapshot
+        .directory_announcements
+        .iter()
+        .rev()
+        .find(|announcement| announcement.network_id == bootstrap.network_id)?;
+    if let Some(experiment_id) = bootstrap.selected_experiment.as_ref() {
+        let entry = announcement.entries.iter().find(|entry| {
+            &entry.experiment_id == experiment_id
+                && bootstrap
+                    .selected_revision
+                    .as_ref()
+                    .is_none_or(|revision_id| &entry.current_revision_id == revision_id)
+        })?;
+        return Some((entry.study_id.clone(), entry.experiment_id.clone()));
+    }
+    announcement
+        .entries
+        .first()
+        .map(|entry| (entry.study_id.clone(), entry.experiment_id.clone()))
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn desired_wasm_browser_subscription_topics(
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    directory_subscribed: bool,
+    heads_subscribed: bool,
+    metrics_subscribed: bool,
+) -> Vec<OverlayTopic> {
+    if !(directory_subscribed || heads_subscribed || metrics_subscribed) {
+        return Vec::new();
+    }
+    let Some(bootstrap) = bootstrap else {
+        return Vec::new();
+    };
+    let mut topics = vec![OverlayTopic::control(bootstrap.network_id.clone())];
+    if (heads_subscribed || metrics_subscribed)
+        && let Some(snapshot) = current_snapshot
+        && let Some((study_id, experiment_id)) =
+            selected_browser_study_and_experiment(bootstrap, snapshot)
+    {
+        if heads_subscribed
+            && let Ok(topic) = OverlayTopic::experiment(
+                bootstrap.network_id.clone(),
+                study_id.clone(),
+                experiment_id.clone(),
+                OverlayChannel::Heads,
+            )
+        {
+            topics.push(topic);
+        }
+        if metrics_subscribed
+            && let Ok(topic) = OverlayTopic::experiment(
+                bootstrap.network_id.clone(),
+                study_id,
+                experiment_id,
+                OverlayChannel::Metrics,
+            )
+        {
+            topics.push(topic);
+        }
+    }
+    let mut seen = BTreeSet::new();
+    topics
+        .into_iter()
+        .filter(|topic| seen.insert(topic.path.clone()))
+        .collect()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn update_wasm_browser_status_from_snapshot(
+    status: &mut BrowserSwarmStatus,
+    snapshot: Option<&ControlPlaneSnapshot>,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+) {
+    let Some(snapshot) = snapshot else {
+        status.directory_synced = false;
+        status.assignment_bound = false;
+        status.head_synced = false;
+        status.artifact_source = burn_p2p_core::BrowserArtifactSource::Unavailable;
+        if status.connected_transport.is_some() {
+            status.phase = BrowserSwarmPhase::TransportConnected;
+        }
+        return;
+    };
+    let Some(bootstrap) = bootstrap else {
+        status.directory_synced = false;
+        status.assignment_bound = false;
+        status.head_synced = false;
+        if status.connected_transport.is_some() {
+            status.phase = BrowserSwarmPhase::TransportConnected;
+        }
+        return;
+    };
+    let directory_synced = snapshot
+        .directory_announcements
+        .iter()
+        .rev()
+        .any(|announcement| announcement.network_id == bootstrap.network_id);
+    let assignment = selected_browser_study_and_experiment(bootstrap, snapshot);
+    let head_synced = assignment.as_ref().is_some_and(|(study_id, experiment_id)| {
+        snapshot.head_announcements.iter().any(|announcement| {
+            announcement.head.study_id == *study_id && announcement.head.experiment_id == *experiment_id
+        })
+    });
+    status.directory_synced = directory_synced;
+    status.assignment_bound = assignment.is_some();
+    status.head_synced = head_synced;
+    if matches!(
+        status.artifact_source,
+        burn_p2p_core::BrowserArtifactSource::PeerSwarm
+    ) {
+        status.phase = BrowserSwarmPhase::ArtifactReady;
+    } else if head_synced {
+        status.phase = BrowserSwarmPhase::HeadSynced;
+    } else if directory_synced {
+        status.phase = BrowserSwarmPhase::DirectorySynced;
+    } else if status.connected_transport.is_some() {
+        status.phase = BrowserSwarmPhase::TransportConnected;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn update_wasm_browser_status_and_snapshot(
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    snapshot: &ControlPlaneSnapshot,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+) {
+    let mut state = shared.borrow_mut();
+    update_wasm_browser_status_from_snapshot(&mut state.status, Some(snapshot), bootstrap);
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use burn_p2p_core::{
     AggregateEnvelope, AggregateStats, AggregateTier, ArtifactDescriptor, ArtifactId, ArtifactKind,
     BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
-    BrowserTransportFamily, BrowserTransportObservationSource, CapabilityCard, CapabilityCardId,
-    CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform, ContentId, DatasetViewId,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
+    CapabilityCard, CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform,
+    ContentId, DatasetViewId, ExperimentId,
     ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
     ExperimentVisibility, HeadDescriptor, HeadId, MetricValue, MetricsLiveEvent,
     MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet, PersistenceClass, Precision,
@@ -34,7 +35,8 @@ use super::{
     PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
     RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
     browser_transport_family_for_seed_url, filter_supported_browser_seed_dial_candidates,
-    plan_browser_seed_dials,
+    plan_browser_seed_dials, selected_browser_study_and_experiment,
+    update_wasm_browser_status_from_snapshot,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
@@ -381,6 +383,174 @@ fn planned_browser_swarm_runtime_connect_reports_transport_selected_from_bootstr
     );
     assert_eq!(status.connected_transport, None);
     assert_eq!(status.connected_peer_count, 0);
+}
+
+#[test]
+fn browser_subscription_topics_follow_selected_experiment_after_directory_seed() {
+    let network_id = NetworkId::new("browser-topics");
+    let study_id = StudyId::new("study-browser");
+    let experiment_id = ExperimentId::new("exp-browser");
+    let revision_id = RevisionId::new("rev-browser");
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: network_id.clone(),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::EdgeSigned,
+            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            advertised_seed_count: 1,
+            last_error: None,
+        },
+        transport_preference: vec![BrowserTransportFamily::WebRtcDirect],
+        selected_experiment: Some(experiment_id.clone()),
+        selected_revision: Some(revision_id.clone()),
+    };
+    let directory_entry = ExperimentDirectoryEntry {
+        network_id: network_id.clone(),
+        study_id: study_id.clone(),
+        experiment_id: experiment_id.clone(),
+        workload_id: WorkloadId::new("workload-browser"),
+        display_name: "browser".into(),
+        model_schema_hash: ContentId::new("model"),
+        dataset_view_id: DatasetViewId::new("dataset"),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::new(),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 0,
+            estimated_window_seconds: 30,
+        },
+        visibility: ExperimentVisibility::OptIn,
+        opt_in_policy: ExperimentOptInPolicy::Scoped,
+        current_revision_id: revision_id.clone(),
+        current_head_id: None,
+        allowed_roles: PeerRoleSet::default(),
+        allowed_scopes: BTreeSet::new(),
+        metadata: BTreeMap::new(),
+    };
+    let snapshot = ControlPlaneSnapshot {
+        directory_announcements: vec![super::ExperimentDirectoryAnnouncement {
+            network_id: network_id.clone(),
+            entries: vec![directory_entry],
+            announced_at: Utc::now(),
+        }],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let selected = selected_browser_study_and_experiment(&bootstrap, &snapshot);
+    assert_eq!(selected, Some((study_id.clone(), experiment_id.clone())));
+
+    let topics = super::desired_wasm_browser_subscription_topics(
+        Some(&bootstrap),
+        Some(&snapshot),
+        true,
+        true,
+        true,
+    );
+    let paths = topics.into_iter().map(|topic| topic.path).collect::<Vec<_>>();
+    assert!(paths.contains(&OverlayTopic::control(network_id.clone()).path));
+    assert!(paths.contains(
+        &OverlayTopic::experiment(
+            network_id.clone(),
+            study_id.clone(),
+            experiment_id.clone(),
+            OverlayChannel::Heads,
+        )
+        .expect("heads topic")
+        .path
+    ));
+    assert!(paths.contains(
+        &OverlayTopic::experiment(network_id, study_id, experiment_id, OverlayChannel::Metrics)
+            .expect("metrics topic")
+            .path
+    ));
+}
+
+#[test]
+fn browser_swarm_status_advances_to_head_synced_from_selected_snapshot() {
+    let network_id = NetworkId::new("browser-status");
+    let study_id = StudyId::new("study-browser");
+    let experiment_id = ExperimentId::new("exp-browser");
+    let revision_id = RevisionId::new("rev-browser");
+    let bootstrap = BrowserSwarmBootstrap {
+        network_id: network_id.clone(),
+        seed_bootstrap: BrowserResolvedSeedBootstrap {
+            source: BrowserSeedBootstrapSource::EdgeSigned,
+            seed_node_urls: vec!["/dns4/bootstrap.example/udp/4001/webrtc-direct".into()],
+            advertised_seed_count: 1,
+            last_error: None,
+        },
+        transport_preference: vec![BrowserTransportFamily::WebRtcDirect],
+        selected_experiment: Some(experiment_id.clone()),
+        selected_revision: Some(revision_id.clone()),
+    };
+    let snapshot = ControlPlaneSnapshot {
+        directory_announcements: vec![super::ExperimentDirectoryAnnouncement {
+            network_id: network_id.clone(),
+            entries: vec![ExperimentDirectoryEntry {
+                network_id,
+                study_id: study_id.clone(),
+                experiment_id: experiment_id.clone(),
+                workload_id: WorkloadId::new("workload-browser"),
+                display_name: "browser".into(),
+                model_schema_hash: ContentId::new("model"),
+                dataset_view_id: DatasetViewId::new("dataset"),
+                resource_requirements: ExperimentResourceRequirements {
+                    minimum_roles: BTreeSet::new(),
+                    minimum_device_memory_bytes: None,
+                    minimum_system_memory_bytes: None,
+                    estimated_download_bytes: 0,
+                    estimated_window_seconds: 30,
+                },
+                visibility: ExperimentVisibility::OptIn,
+                opt_in_policy: ExperimentOptInPolicy::Scoped,
+                current_revision_id: revision_id.clone(),
+                current_head_id: None,
+                allowed_roles: PeerRoleSet::default(),
+                allowed_scopes: BTreeSet::new(),
+                metadata: BTreeMap::new(),
+            }],
+            announced_at: Utc::now(),
+        }],
+        head_announcements: vec![HeadAnnouncement {
+            overlay: OverlayTopic::experiment(
+                NetworkId::new("browser-status"),
+                study_id.clone(),
+                experiment_id.clone(),
+                OverlayChannel::Heads,
+            )
+            .expect("heads topic"),
+            provider_peer_id: Some(PeerId::new("peer-browser")),
+            head: HeadDescriptor {
+                head_id: HeadId::new("head-browser"),
+                study_id,
+                experiment_id,
+                revision_id,
+                artifact_id: ArtifactId::new("artifact-browser"),
+                parent_head_id: None,
+                global_step: 0,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            announced_at: Utc::now(),
+        }],
+        ..ControlPlaneSnapshot::default()
+    };
+    let mut status = BrowserSwarmStatus {
+        phase: BrowserSwarmPhase::TransportConnected,
+        seed_bootstrap: bootstrap.seed_bootstrap.clone(),
+        transport_source: BrowserTransportObservationSource::Connected,
+        desired_transport: Some(BrowserTransportFamily::WebRtcDirect),
+        connected_transport: Some(BrowserTransportFamily::WebRtcDirect),
+        connected_peer_count: 1,
+        connected_peer_ids: vec![PeerId::new("peer-browser")],
+        ..BrowserSwarmStatus::default()
+    };
+
+    update_wasm_browser_status_from_snapshot(&mut status, Some(&snapshot), Some(&bootstrap));
+
+    assert!(status.directory_synced);
+    assert!(status.assignment_bound);
+    assert!(status.head_synced);
+    assert_eq!(status.phase, BrowserSwarmPhase::HeadSynced);
 }
 
 #[test]
