@@ -2104,6 +2104,116 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp
 }
 
 #[test]
+fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_websocket() {
+    let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
+    let mut listener = NativeControlPlaneShell::new(
+        protocols.control.clone(),
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native listener");
+    let mut dialer = NativeControlPlaneShell::new(
+        protocols.control,
+        RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer()),
+    )
+    .expect("native dialer");
+    let listener_peer_id = listener.local_peer_id().to_string();
+
+    let now = Utc::now();
+    listener.publish_head(HeadAnnouncement {
+        overlay: OverlayTopic::experiment(
+            NetworkId::new("network"),
+            StudyId::new("study"),
+            burn_p2p_core::ExperimentId::new("exp"),
+            OverlayChannel::Heads,
+        )
+        .expect("heads overlay"),
+        provider_peer_id: Some(PeerId::new(listener_peer_id.clone())),
+        head: HeadDescriptor {
+            head_id: HeadId::new("head-ws-1"),
+            study_id: StudyId::new("study"),
+            experiment_id: burn_p2p_core::ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: ArtifactId::new("artifact-ws-1"),
+            parent_head_id: Some(HeadId::new("genesis-head")),
+            global_step: 1,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        },
+        announced_at: now,
+    });
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0/ws").expect("ws addr"))
+        .expect("listen");
+
+    let listen_addr = loop {
+        match listener.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("listener did not produce a websocket listen address"),
+        }
+    };
+
+    dialer.dial(listen_addr).expect("dial");
+
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    let mut listener_events = Vec::new();
+    let mut dialer_events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < deadline,
+            "native shells did not connect over websocket; listener events: {:?}; dialer events: {:?}",
+            listener_events,
+            dialer_events
+        );
+
+        if let Some(event) = listener.wait_event(Duration::from_millis(100)) {
+            listener_events.push(format!("{event:?}"));
+            listener_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+
+        if let Some(event) = dialer.wait_event(Duration::from_millis(100)) {
+            dialer_events.push(format!("{event:?}"));
+            dialer_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+    }
+
+    dialer
+        .request_snapshot(&listener_peer_id)
+        .expect("request snapshot");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let snapshot = loop {
+        assert!(
+            Instant::now() < deadline,
+            "dialer did not receive websocket snapshot"
+        );
+
+        if let Some(event) = listener.wait_event(Duration::from_millis(100))
+            && let LiveControlPlaneEvent::SnapshotRequested { .. } = event
+        {
+            // keep polling until the response lands on the dialer
+        }
+
+        match dialer.wait_event(Duration::from_millis(100)) {
+            Some(LiveControlPlaneEvent::SnapshotReceived { snapshot, .. }) => break snapshot,
+            Some(_) => {}
+            None => {}
+        }
+    };
+
+    assert_eq!(snapshot.head_announcements.len(), 1);
+    assert_eq!(
+        snapshot.head_announcements[0].head.head_id,
+        HeadId::new("head-ws-1")
+    );
+}
+
+#[test]
 fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_quic() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
     let mut listener = NativeControlPlaneShell::new(
