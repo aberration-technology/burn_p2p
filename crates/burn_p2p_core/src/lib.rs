@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod id;
 /// Serializable protocol schemas and manifest types.
 pub mod schema;
+/// Cross-target time helpers for native and wasm runtimes.
+pub mod time;
 
 pub use codec::{CanonicalSchema, SchemaError, deterministic_cbor, from_cbor_slice};
 pub use diagnostics::{is_benign_operator_runtime_error, operator_visible_last_error};

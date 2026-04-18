@@ -22,9 +22,9 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
 };
 
+use burn_p2p_core::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use libp2p_identity::Keypair;
 use semver::Version;

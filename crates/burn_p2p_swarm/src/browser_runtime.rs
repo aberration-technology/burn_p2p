@@ -18,15 +18,13 @@ use crate::{
 use crate::{ControlPlaneSnapshot, SwarmError};
 use crate::{OverlayChannel, OverlayTopic};
 
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_arch = "wasm32")]
 use std::num::NonZeroU8;
 #[cfg(target_arch = "wasm32")]
 use std::{cell::RefCell, rc::Rc};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::{Duration, Instant},
-};
 
+use burn_p2p_core::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use futures::{
     FutureExt, StreamExt,

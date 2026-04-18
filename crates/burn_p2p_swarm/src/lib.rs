@@ -13,14 +13,16 @@ mod stats;
 mod types;
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::{collections::VecDeque, pin::Pin, time::Instant};
+use std::{collections::VecDeque, pin::Pin};
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     task::{Context, Poll},
-    time::Duration,
 };
 
+use burn_p2p_core::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_core::time::Instant;
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
     ContentId, ControlCertificate, DatasetViewId, DiffusionPromotionCertificate,
