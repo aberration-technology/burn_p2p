@@ -1,8 +1,8 @@
 use burn_p2p::{PeerId, RuntimeTransportPolicy, TransportKind};
 use burn_p2p_core::{
     BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement, BrowserSeedBootstrapSource,
-    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource, NetworkId,
-    SCHEMA_VERSION, SchemaEnvelope, SignedPayload,
+    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
+    BrowserTransportSurface, NetworkId, SCHEMA_VERSION, SchemaEnvelope, SignedPayload,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,21 @@ impl Default for BrowserTransportStatus {
 }
 
 impl BrowserTransportStatus {
+    /// Builds one initial transport snapshot from the browser transport surface
+    /// advertised by the edge.
+    pub fn from_transport_surface(surface: &BrowserTransportSurface) -> Self {
+        Self {
+            active: None,
+            selected: None,
+            connected: None,
+            connected_peer_ids: Vec::new(),
+            webrtc_direct_enabled: surface.webrtc_direct,
+            webtransport_enabled: surface.webtransport_gateway,
+            wss_fallback_enabled: surface.wss_fallback,
+            last_error: None,
+        }
+    }
+
     /// Returns the truthful source of the current transport state.
     pub fn truth_source(&self) -> BrowserTransportObservationSource {
         if self.connected.is_some() {

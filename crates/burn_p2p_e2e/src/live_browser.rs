@@ -11,10 +11,9 @@ use burn_p2p::{
 };
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
-    BrowserPeerEnrollmentRequest, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserSessionState,
-    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTransportPolicy, BrowserTransportStatus,
-    BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerIdentity,
-    BrowserWorkerRuntime,
+    BrowserPeerEnrollmentRequest, BrowserRuntimeRole, BrowserSessionRuntimeConfig,
+    BrowserSessionRuntimeHandle, BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings,
+    BrowserWorkerIdentity,
 };
 use burn_p2p_core::{
     BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
@@ -199,9 +198,7 @@ pub struct BrowserLiveParticipantResult {
 
 /// Live browser worker state captured between enrollment and receipt submission.
 pub struct BrowserLiveParticipantHandle {
-    client: BrowserEdgeClient,
-    session: BrowserSessionState,
-    runtime: BrowserWorkerRuntime,
+    runtime: BrowserSessionRuntimeHandle,
     config: BrowserLiveParticipantConfig,
     capability: BrowserCapabilityReport,
 }
@@ -249,28 +246,8 @@ pub async fn start_live_browser_participant(
         )
         .await
         .context("enroll live browser participant")?;
-    let mut session = BrowserSessionState::default();
+    let mut session = burn_p2p_browser::BrowserSessionState::default();
     session.apply_enrollment(&enrollment_result);
-
-    let mut runtime_config = BrowserRuntimeConfig::new(
-        config.edge_base_url.clone(),
-        burn_p2p::NetworkId::new(config.network_id.clone()),
-        ContentId::new(config.release_train_hash.clone()),
-        if config.target_artifact_id.is_empty() {
-            DEFAULT_TARGET_ARTIFACT_ID
-        } else {
-            &config.target_artifact_id
-        },
-        ContentId::new(config.target_artifact_hash.clone()),
-    );
-    runtime_config.role = BrowserRuntimeRole::BrowserTrainerWgpu;
-    runtime_config.receipt_submit_path = snapshot.paths.receipt_submit_path.clone();
-    runtime_config.transport =
-        BrowserTransportPolicy::from(burn_p2p::RuntimeTransportPolicy::browser_for_roles(
-            &PeerRoleSet::new([PeerRole::BrowserTrainerWgpu]),
-        ));
-    runtime_config.selected_experiment = Some(config.training_plan.experiment_id.clone());
-    runtime_config.selected_revision = Some(config.training_plan.revision_id.clone());
 
     let capability = BrowserCapabilityReport {
         navigator_gpu_exposed: true,
@@ -279,26 +256,34 @@ pub async fn start_live_browser_participant(
         recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
         ..BrowserCapabilityReport::default()
     };
-    let mut runtime = BrowserWorkerRuntime::start(
-        runtime_config,
-        capability.clone(),
-        BrowserTransportStatus {
-            active: None,
-            webrtc_direct_enabled: snapshot.transports.webrtc_direct,
-            webtransport_enabled: snapshot.transports.webtransport_gateway,
-            wss_fallback_enabled: snapshot.transports.wss_fallback,
-            last_error: None,
+    let runtime = BrowserSessionRuntimeHandle::start(
+        &snapshot,
+        BrowserSessionRuntimeConfig {
+            edge_base_url: config.edge_base_url.clone(),
+            release_train_hash: ContentId::new(config.release_train_hash.clone()),
+            target_artifact_id: if config.target_artifact_id.is_empty() {
+                DEFAULT_TARGET_ARTIFACT_ID.into()
+            } else {
+                config.target_artifact_id.clone()
+            },
+            target_artifact_hash: ContentId::new(config.target_artifact_hash.clone()),
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            transport: burn_p2p_browser::BrowserTransportPolicy::from(
+                burn_p2p::RuntimeTransportPolicy::browser_for_roles(&PeerRoleSet::new([
+                    PeerRole::BrowserTrainerWgpu,
+                ])),
+            ),
+            selected_experiment: Some(config.training_plan.experiment_id.clone()),
+            selected_revision: Some(config.training_plan.revision_id.clone()),
+            capability: capability.clone(),
+            include_leaderboard: true,
         },
-    );
-    runtime.remember_session(session.clone());
-    let _ = client
-        .sync_worker_runtime(&mut runtime, Some(&session), true)
-        .await
-        .context("sync live browser runtime from edge")?;
+        session,
+    )
+    .await
+    .context("sync live browser runtime from edge")?;
 
     Ok(BrowserLiveParticipantHandle {
-        client,
-        session,
         runtime,
         config,
         capability,
@@ -333,98 +318,44 @@ pub async fn finish_live_browser_participant(
     handle: &mut BrowserLiveParticipantHandle,
 ) -> anyhow::Result<BrowserLiveParticipantResult> {
     let training_budget = handle.config.training_plan.budget.clone();
-    let train_events = handle.runtime.apply_command(
-        BrowserWorkerCommand::Train(handle.config.training_plan.clone()),
-        None,
-        None,
-    );
-    let emitted_receipt_id = train_events.iter().find_map(|event| match event {
-        BrowserWorkerEvent::TrainingCompleted(result) => result
-            .receipt_id
-            .as_ref()
-            .map(|receipt_id| receipt_id.as_str().to_owned()),
-        _ => None,
-    });
-
-    let flush_events = handle
-        .client
-        .flush_worker_receipts(&mut handle.runtime)
+    let outcome = handle
+        .runtime
+        .run_training_plan(handle.config.training_plan.clone())
         .await
         .context("flush live browser worker receipts")?;
-    let accepted_receipt_ids = flush_events
-        .iter()
-        .find_map(|event| match event {
-            BrowserWorkerEvent::ReceiptsAcknowledged { receipt_ids, .. } => Some(
-                receipt_ids
-                    .iter()
-                    .map(|receipt_id| receipt_id.as_str().to_owned())
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default();
 
     Ok(BrowserLiveParticipantResult {
-        session_enrolled: handle.session.session.is_some() && handle.session.certificate.is_some(),
+        session_enrolled: handle.runtime.session.session.is_some()
+            && handle.runtime.session.certificate.is_some(),
         session_id: handle
+            .runtime
             .session
             .session_id()
             .map(|session_id| session_id.as_str().to_owned()),
         certificate_peer_id: handle
+            .runtime
             .session
             .peer_id()
             .map(|peer_id| peer_id.as_str().to_owned()),
-        runtime_state: handle
-            .runtime
-            .state
-            .as_ref()
-            .map(browser_runtime_state_label),
-        transport: handle
-            .runtime
+        runtime_state: outcome.runtime_state.as_ref().map(|state| state.label()),
+        transport: outcome
             .transport
-            .active
             .as_ref()
-            .map(browser_transport_label),
-        head_artifact_transport: handle.runtime.storage.last_head_artifact_transport.clone(),
-        active_assignment: handle.runtime.storage.active_assignment.is_some(),
-        active_training_lease: handle.runtime.storage.active_training_lease.clone(),
-        emitted_receipt_id,
-        receipt_submission_accepted: !accepted_receipt_ids.is_empty(),
-        accepted_receipt_ids,
+            .map(|kind| kind.label().to_owned()),
+        head_artifact_transport: handle
+            .runtime
+            .runtime
+            .storage
+            .last_head_artifact_transport
+            .clone(),
+        active_assignment: handle.runtime.runtime.storage.active_assignment.is_some(),
+        active_training_lease: handle.runtime.runtime.storage.active_training_lease.clone(),
+        emitted_receipt_id: outcome.emitted_receipt_id,
+        receipt_submission_accepted: outcome.receipt_submission_accepted,
+        accepted_receipt_ids: outcome.accepted_receipt_ids,
         capability: handle.capability.clone(),
         training_budget,
     })
-}
-
-fn browser_runtime_state_label(state: &burn_p2p_browser::BrowserRuntimeState) -> String {
-    match state {
-        burn_p2p_browser::BrowserRuntimeState::ViewerOnly => "viewer-only".into(),
-        burn_p2p_browser::BrowserRuntimeState::Joining { stage, .. } => match stage {
-            burn_p2p_browser::BrowserJoinStage::Authenticating => "joining-authenticating".into(),
-            burn_p2p_browser::BrowserJoinStage::Enrolling => "joining-enrolling".into(),
-            burn_p2p_browser::BrowserJoinStage::DirectorySync => "joining-directory-sync".into(),
-            burn_p2p_browser::BrowserJoinStage::HeadSync => "joining-head-sync".into(),
-            burn_p2p_browser::BrowserJoinStage::TransportConnect => {
-                "joining-transport-connect".into()
-            }
-        },
-        burn_p2p_browser::BrowserRuntimeState::Observer => "observer".into(),
-        burn_p2p_browser::BrowserRuntimeState::Verifier => "verifier".into(),
-        burn_p2p_browser::BrowserRuntimeState::Trainer => "trainer".into(),
-        burn_p2p_browser::BrowserRuntimeState::BackgroundSuspended { .. } => {
-            "background-suspended".into()
-        }
-        burn_p2p_browser::BrowserRuntimeState::Catchup { .. } => "catchup".into(),
-        burn_p2p_browser::BrowserRuntimeState::Blocked { .. } => "blocked".into(),
-    }
-}
-
-fn browser_transport_label(kind: &burn_p2p_browser::BrowserTransportKind) -> String {
-    match kind {
-        burn_p2p_browser::BrowserTransportKind::WebRtcDirect => "webrtc-direct".into(),
-        burn_p2p_browser::BrowserTransportKind::WebTransport => "webtransport".into(),
-        burn_p2p_browser::BrowserTransportKind::WssFallback => "wss-fallback".into(),
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

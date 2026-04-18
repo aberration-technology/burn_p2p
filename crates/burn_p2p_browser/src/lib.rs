@@ -13,6 +13,8 @@ pub mod capability;
 pub mod conformance;
 /// Durable browser storage helpers.
 pub mod durability;
+/// Shared browser session-runtime helpers.
+pub mod participant;
 /// Runtime state and execution helpers.
 pub mod runtime;
 /// Static browser-shell site configuration helpers.
@@ -56,6 +58,10 @@ pub use conformance::{
     BrowserConformanceHarness, browser_conformance_capability_for_role,
     browser_conformance_directory, browser_conformance_session,
     browser_conformance_training_plan_with_lease, browser_conformance_transport,
+};
+pub use participant::{
+    BrowserSessionRuntimeConfig, BrowserSessionRuntimeError, BrowserSessionRuntimeHandle,
+    BrowserSessionTrainingOutcome,
 };
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,

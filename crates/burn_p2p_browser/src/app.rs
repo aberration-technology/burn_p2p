@@ -37,10 +37,9 @@ use crate::{
 use crate::{
     BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
 };
-use burn_p2p_core::{
-    BrowserSeedAdvertisement, BrowserSwarmStatus, BrowserTransportFamily, SchemaEnvelope,
-    SignedPayload,
-};
+use burn_p2p_core::{BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload};
+#[cfg(any(test, target_arch = "wasm32"))]
+use burn_p2p_core::{BrowserSwarmStatus, BrowserTransportFamily};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the browser app target preset.

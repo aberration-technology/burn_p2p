@@ -50,6 +50,19 @@ pub enum BrowserJoinStage {
     TransportConnect,
 }
 
+impl BrowserJoinStage {
+    /// Returns a stable short label for the join stage.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Authenticating => "joining-authenticating",
+            Self::Enrolling => "joining-enrolling",
+            Self::DirectorySync => "joining-directory-sync",
+            Self::HeadSync => "joining-head-sync",
+            Self::TransportConnect => "joining-transport-connect",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates the supported browser runtime states.
 pub enum BrowserRuntimeState {
@@ -141,6 +154,20 @@ impl BrowserRuntimeState {
                     .cloned()
                     .unwrap_or_else(|| "browser peer is not eligible for this revision".into()),
             ),
+        }
+    }
+
+    /// Returns a stable short label for the runtime state.
+    pub fn label(&self) -> String {
+        match self {
+            Self::ViewerOnly => "viewer-only".into(),
+            Self::Joining { stage, .. } => stage.label().into(),
+            Self::Observer => "observer".into(),
+            Self::Verifier => "verifier".into(),
+            Self::Trainer => "trainer".into(),
+            Self::BackgroundSuspended { .. } => "background-suspended".into(),
+            Self::Catchup { .. } => "catchup".into(),
+            Self::Blocked { reason } => format!("blocked:{reason}"),
         }
     }
 }

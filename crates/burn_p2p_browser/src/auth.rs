@@ -2,10 +2,12 @@ use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::ArtifactDescriptor;
+#[cfg(any(test, target_arch = "wasm32"))]
+use burn_p2p::ControlPlaneSnapshot;
 use burn_p2p::{
-    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ControlPlaneSnapshot,
-    ExperimentId, ExperimentScope, HeadDescriptor, HeadId, LoginRequest, LoginStart, NetworkId,
-    NodeCertificate, PeerId, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
+    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ExperimentId,
+    ExperimentScope, HeadDescriptor, HeadId, LoginRequest, LoginStart, NetworkId, NodeCertificate,
+    PeerId, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
 };
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_core::ChunkDescriptor;
@@ -452,6 +454,7 @@ impl BrowserEdgeClient {
             .or_else(|| view.available_profiles.iter().next().cloned())
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     fn direct_peer_artifact_request_seed(
         head: &HeadDescriptor,
         checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
@@ -486,6 +489,7 @@ impl BrowserEdgeClient {
         ))
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     fn provider_peer_ids_from_control_snapshot(
         snapshot: &ControlPlaneSnapshot,
         head_id: &HeadId,
@@ -595,6 +599,7 @@ impl BrowserEdgeClient {
         })
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     fn build_active_head_artifact_sync_plan_from_control_snapshot(
         runtime: &BrowserWorkerRuntime,
         snapshot: &ControlPlaneSnapshot,
@@ -1868,6 +1873,7 @@ impl BrowserEdgeClient {
         .await
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub(crate) async fn sync_active_head_artifact_from_control_snapshot_into_worker(
         &self,
         runtime: &mut BrowserWorkerRuntime,
