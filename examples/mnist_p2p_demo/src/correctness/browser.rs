@@ -396,9 +396,23 @@ fn exercise_browser_role(
     runtime.remember_session(session.clone());
     runtime.apply_directory_snapshot(directory, Some(&session));
     runtime.apply_head_snapshot(heads);
+    let live_transport = BrowserTransportStatus {
+        active: Some(BrowserTransportKind::WebRtcDirect),
+        selected: Some(BrowserTransportKind::WebRtcDirect),
+        connected: Some(BrowserTransportKind::WebRtcDirect),
+        connected_peer_ids: vec![PeerId::new("browser-runtime-peer")],
+        webrtc_direct_enabled: true,
+        webtransport_enabled: false,
+        wss_fallback_enabled: true,
+        last_error: None,
+    };
+    runtime.update_transport_status(live_transport.clone());
 
     let degraded = BrowserTransportStatus {
         active: None,
+        selected: None,
+        connected: None,
+        connected_peer_ids: Vec::new(),
         webrtc_direct_enabled: false,
         webtransport_enabled: false,
         wss_fallback_enabled: false,
@@ -406,7 +420,7 @@ fn exercise_browser_role(
     };
     runtime.update_transport_status(degraded);
     let stalled = runtime.state.clone();
-    runtime.update_transport_status(BrowserTransportStatus::default());
+    runtime.update_transport_status(live_transport);
     let recovered_state = runtime.state.clone();
     let transport_recovered = matches!(
         recovered_state,

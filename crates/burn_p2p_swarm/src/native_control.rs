@@ -3,10 +3,10 @@ use super::*;
 use libp2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
 #[cfg(not(target_arch = "wasm32"))]
 use rand::thread_rng;
-#[cfg(not(target_arch = "wasm32"))]
-use std::{fs, path::Path};
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs, path::Path};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct NativeControlPlaneShell {
@@ -54,16 +54,16 @@ fn build_native_webrtc_transport(
 fn load_or_create_native_webrtc_certificate(
     certificate_pem_path: Option<&Path>,
 ) -> Result<WebRtcCertificate, Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(path) = certificate_pem_path {
-        if let Ok(pem) = fs::read_to_string(path) {
-            match WebRtcCertificate::from_pem(&pem) {
-                Ok(certificate) => return Ok(certificate),
-                Err(error) => {
-                    eprintln!(
-                        "failed to load persisted WebRTC certificate from {}: {error}; regenerating",
-                        path.display()
-                    );
-                }
+    if let Some(path) = certificate_pem_path
+        && let Ok(pem) = fs::read_to_string(path)
+    {
+        match WebRtcCertificate::from_pem(&pem) {
+            Ok(certificate) => return Ok(certificate),
+            Err(error) => {
+                eprintln!(
+                    "failed to load persisted WebRTC certificate from {}: {error}; regenerating",
+                    path.display()
+                );
             }
         }
     }

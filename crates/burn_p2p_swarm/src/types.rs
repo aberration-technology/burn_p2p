@@ -467,6 +467,11 @@ impl RuntimeBoundary {
         external_addresses: Vec<SwarmAddress>,
         webrtc_certificate_pem_path: Option<PathBuf>,
     ) -> Result<Self, SwarmError> {
+        let listen_addresses = if listen_addresses.is_empty() {
+            default_listen_addresses_for_platform_and_roles(&platform)?
+        } else {
+            listen_addresses
+        };
         Ok(Self {
             environment: platform.clone().into(),
             transport_policy: RuntimeTransportPolicy::for_platform_and_roles(platform, roles),
@@ -477,5 +482,20 @@ impl RuntimeBoundary {
             protocols: ProtocolSet::for_network(&genesis.network_id)?,
             control_overlay: OverlayTopic::control(genesis.network_id.clone()),
         })
+    }
+}
+
+fn default_listen_addresses_for_platform_and_roles(
+    platform: &ClientPlatform,
+) -> Result<Vec<SwarmAddress>, SwarmError> {
+    match platform {
+        ClientPlatform::Native => {
+            let mut listen_addresses = vec![SwarmAddress::new("/ip4/127.0.0.1/tcp/0")?];
+            if crate::native_browser_webrtc_direct_runtime_supported() {
+                listen_addresses.push(SwarmAddress::new("/ip4/127.0.0.1/udp/0/webrtc-direct")?);
+            }
+            Ok(listen_addresses)
+        }
+        ClientPlatform::Browser => Ok(Vec::new()),
     }
 }

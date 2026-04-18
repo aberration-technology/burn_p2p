@@ -246,6 +246,9 @@ fn benchmark_runtime(network_id: &NetworkId, role: BrowserRuntimeRole) -> Browse
         benchmark_capability(role),
         BrowserTransportStatus {
             active: None,
+            selected: None,
+            connected: None,
+            connected_peer_ids: Vec::new(),
             webrtc_direct_enabled: false,
             webtransport_enabled: true,
             wss_fallback_enabled: true,

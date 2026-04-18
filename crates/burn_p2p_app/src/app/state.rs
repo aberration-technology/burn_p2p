@@ -148,6 +148,7 @@ impl NodeAppUiState {
                 certified_merges: 0,
                 in_flight_transfers: 0,
                 network_note: "waiting for the first sync.".into(),
+                swarm_status: Default::default(),
                 metrics_live_ready: false,
                 last_directory_sync_at: None,
                 last_error: None,
@@ -238,6 +239,7 @@ mod tests {
                 in_flight_transfers: 1,
                 network_note: "4 direct peers and an estimated 128 peers across the wider network."
                     .into(),
+                swarm_status: Default::default(),
                 metrics_live_ready: true,
                 last_directory_sync_at: Some("2026-04-04T18:00:00Z".into()),
                 diffusion: None,

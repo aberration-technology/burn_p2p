@@ -237,6 +237,23 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
         created_at: Utc::now(),
         metrics: BTreeMap::new(),
     }]);
+    assert_eq!(
+        trainer_runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            stage: burn_p2p_browser::BrowserJoinStage::TransportConnect,
+        })
+    );
+    trainer_runtime.update_transport_status(BrowserTransportStatus {
+        active: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        selected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        connected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        connected_peer_ids: vec![browser_fixture.peer_id.clone()],
+        webrtc_direct_enabled: true,
+        webtransport_enabled: false,
+        wss_fallback_enabled: false,
+        last_error: None,
+    });
     assert_eq!(trainer_runtime.state, Some(BrowserRuntimeState::Trainer));
     assert!(trainer_runtime.storage.active_assignment.is_some());
 
@@ -341,6 +358,23 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
         created_at: Utc::now(),
         metrics: BTreeMap::new(),
     }]);
+    assert_eq!(
+        verifier_runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserVerifier,
+            stage: burn_p2p_browser::BrowserJoinStage::TransportConnect,
+        })
+    );
+    verifier_runtime.update_transport_status(BrowserTransportStatus {
+        active: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        selected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        connected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
+        connected_peer_ids: vec![browser_fixture.peer_id.clone()],
+        webrtc_direct_enabled: true,
+        webtransport_enabled: false,
+        wss_fallback_enabled: false,
+        last_error: None,
+    });
     assert_eq!(verifier_runtime.state, Some(BrowserRuntimeState::Verifier));
 
     let validation_events = verifier_runtime.apply_command(

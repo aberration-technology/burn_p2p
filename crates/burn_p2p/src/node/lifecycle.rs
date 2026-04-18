@@ -31,11 +31,6 @@ impl<P> RunningNode<P> {
         let keypair = resolve_identity(&node.config.identity, node.config.storage.as_ref())?;
 
         let mut snapshot = NodeTelemetrySnapshot::starting(&node.mainnet, &node.config);
-        let listen_addresses = if node.config.listen_addresses.is_empty() {
-            vec![SwarmAddress::new("/ip4/127.0.0.1/tcp/0")?]
-        } else {
-            node.config.listen_addresses.clone()
-        };
         let mut bootstrap_addresses = node.config.bootstrap_peers.clone();
         if let Some(storage) = node.config.storage.as_ref() {
             for address in load_known_peers(storage)? {
@@ -57,7 +52,7 @@ impl<P> RunningNode<P> {
             burn_p2p_core::ClientPlatform::Native,
             &node.mainnet.roles,
             bootstrap_addresses,
-            listen_addresses.clone(),
+            node.config.listen_addresses.clone(),
             node.config.external_addresses.clone(),
             node.config
                 .storage

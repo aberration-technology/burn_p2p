@@ -68,6 +68,31 @@ function profileForPath(config, pathname) {
   return config.profiles.find((profile) => profile.slug === slug) ?? null;
 }
 
+function comparableProfileTimeMs(profile, baselineProfile) {
+  const fetchTimings = profile?.fetch_timings_ms ?? {};
+  const fetchTotalMs =
+    Number(fetchTimings.manifest ?? 0) +
+    Number(fetchTimings.shards ?? 0) +
+    Number(fetchTimings.eval ?? 0);
+  const baselineFetchTimings = baselineProfile?.fetch_timings_ms ?? {};
+  const baselineFetchTotalMs =
+    Number(baselineFetchTimings.manifest ?? 0) +
+    Number(baselineFetchTimings.shards ?? 0) +
+    Number(baselineFetchTimings.eval ?? 0);
+  const baselineHasLiveParticipant = !!baselineProfile?.live_participant;
+  const profileHasLiveParticipant = !!profile?.live_participant;
+  if (baselineHasLiveParticipant !== profileHasLiveParticipant) {
+    return {
+      profile: fetchTotalMs,
+      baseline: baselineFetchTotalMs,
+    };
+  }
+  return {
+    profile: Number(profile?.total_page_time_ms ?? fetchTotalMs),
+    baseline: Number(baselineProfile?.total_page_time_ms ?? baselineFetchTotalMs),
+  };
+}
+
 function datasetPathForRequest(pathname) {
   const parts = pathname.split("/").filter(Boolean);
   if (parts[0] !== "profile" || parts[2] !== "dataset") {
@@ -492,6 +517,9 @@ async function main() {
 
     const liveParticipantSummary =
       profiles.find((profile) => profile.live_participant)?.live_participant ?? null;
+    const baselineProfile = profiles[0] ?? null;
+    const slowestProfile = profiles[profiles.length - 1] ?? null;
+    const comparableTimes = comparableProfileTimeMs(slowestProfile, baselineProfile);
     const summary = {
       measured_at: new Date().toISOString(),
       origin: server.origin,
@@ -541,7 +569,7 @@ async function main() {
         slower_profile_increased_total_time:
           profiles.length < 2
             ? true
-            : profiles[profiles.length - 1].total_page_time_ms > profiles[0].total_page_time_ms,
+            : comparableTimes.profile > comparableTimes.baseline,
         session_enrolled: !!liveParticipantSummary?.session_enrolled,
         receipt_submission_accepted:
           !!liveParticipantSummary?.receipt_submission_accepted,

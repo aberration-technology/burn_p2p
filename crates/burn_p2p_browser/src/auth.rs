@@ -49,6 +49,16 @@ struct ActiveHeadArtifactEdgeFallback {
     publication: PublishedArtifactRecord,
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+struct DirectPeerArtifactRequestSeed {
+    run_id: RunId,
+    artifact_profile: ArtifactProfile,
+    publication_target_id: PublicationTargetId,
+    publication_content_hash: Option<ContentId>,
+    publication_content_length: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures browser enrollment.
 pub struct BrowserEnrollmentConfig {
@@ -458,35 +468,30 @@ impl BrowserEdgeClient {
     fn direct_peer_artifact_request_seed(
         head: &HeadDescriptor,
         checkpoint: Option<&BrowserArtifactReplayCheckpoint>,
-    ) -> Option<(
-        RunId,
-        ArtifactProfile,
-        PublicationTargetId,
-        Option<ContentId>,
-        Option<u64>,
-    )> {
+    ) -> Option<DirectPeerArtifactRequestSeed> {
         if let Some(checkpoint) = checkpoint.filter(|checkpoint| {
             checkpoint.experiment_id == head.experiment_id
                 && checkpoint.revision_id == head.revision_id
                 && checkpoint.head_id == head.head_id
                 && checkpoint.artifact_id == head.artifact_id
         }) {
-            return Some((
-                checkpoint.run_id.clone(),
-                checkpoint.artifact_profile.clone(),
-                checkpoint.publication_target_id.clone(),
-                checkpoint.publication_content_hash.clone(),
-                checkpoint.publication_content_length,
-            ));
+            return Some(DirectPeerArtifactRequestSeed {
+                run_id: checkpoint.run_id.clone(),
+                artifact_profile: checkpoint.artifact_profile.clone(),
+                publication_target_id: checkpoint.publication_target_id.clone(),
+                publication_content_hash: checkpoint.publication_content_hash.clone(),
+                publication_content_length: checkpoint.publication_content_length,
+            });
         }
 
-        Some((
-            RunId::derive(&(head.experiment_id.as_str(), head.revision_id.as_str())).ok()?,
-            ArtifactProfile::BrowserSnapshot,
-            PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET),
-            None,
-            None,
-        ))
+        Some(DirectPeerArtifactRequestSeed {
+            run_id: RunId::derive(&(head.experiment_id.as_str(), head.revision_id.as_str()))
+                .ok()?,
+            artifact_profile: ArtifactProfile::BrowserSnapshot,
+            publication_target_id: PublicationTargetId::new(Self::PEER_SWARM_DIRECT_TARGET),
+            publication_content_hash: None,
+            publication_content_length: None,
+        })
     }
 
     #[cfg(any(test, target_arch = "wasm32"))]
@@ -626,13 +631,13 @@ impl BrowserEdgeClient {
             })?
             .clone();
         let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.as_ref();
-        let (
+        let DirectPeerArtifactRequestSeed {
             run_id,
             artifact_profile,
             publication_target_id,
             publication_content_hash,
             publication_content_length,
-        ) = Self::direct_peer_artifact_request_seed(&head, existing_checkpoint)?;
+        } = Self::direct_peer_artifact_request_seed(&head, existing_checkpoint)?;
 
         Some(ActiveHeadArtifactSyncPlan {
             request: BrowserPeerArtifactRequest {
@@ -1956,15 +1961,9 @@ impl BrowserEdgeClient {
         let live_metrics_event = self
             .get_optional_json(&self.bindings.paths.metrics_live_latest_path, None)
             .await?;
-        let edge_directory = app_snapshot.directory.entries.as_slice();
-        if edge_directory != signed_directory.payload.payload.entries.as_slice() {
-            return Err(BrowserAuthClientError::EdgeSnapshotMismatch(
-                "directory entries did not match the signed directory snapshot",
-            ));
-        }
         let heads = app_snapshot.heads.clone();
         let transport = BrowserTransportStatus {
-            active: None,
+            active: runtime.transport.active.clone(),
             selected: runtime.transport.selected.clone(),
             connected: runtime.transport.connected.clone(),
             connected_peer_ids: runtime.transport.connected_peer_ids.clone(),

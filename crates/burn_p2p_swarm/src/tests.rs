@@ -1602,6 +1602,38 @@ fn runtime_boundary_derives_protocols_from_genesis() {
 }
 
 #[test]
+fn native_runtime_boundary_defaults_to_browser_dialable_direct_listener() {
+    let runtime = RuntimeBoundary::for_platform_and_roles(
+        &burn_p2p_core::GenesisSpec {
+            network_id: NetworkId::new("network"),
+            protocol_version: Version::new(0, 1, 0),
+            display_name: "network".into(),
+            created_at: Utc::now(),
+            metadata: BTreeMap::new(),
+        },
+        ClientPlatform::Native,
+        &PeerRoleSet::default_trainer(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+    )
+    .expect("runtime");
+
+    assert_eq!(
+        runtime.listen_addresses[0],
+        SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("tcp addr")
+    );
+    assert!(
+        runtime
+            .listen_addresses
+            .iter()
+            .any(|address| address.as_str().contains("/webrtc-direct")),
+        "native default boundary should expose a browser-dialable direct listener"
+    );
+}
+
+#[test]
 fn overlay_topic_rejects_control_inside_experiment_scope() {
     let error = OverlayTopic::experiment(
         NetworkId::new("network"),

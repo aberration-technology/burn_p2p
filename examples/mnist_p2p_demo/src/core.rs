@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use burn::{
     backend::{Autodiff, NdArray},
     optim::AdamConfig,
@@ -31,7 +31,9 @@ use burn_p2p::{
         from_loaders, inspect_module,
     },
 };
-use burn_p2p_core::{BackendClass, BrowserLeaderboardEntry, BrowserLeaderboardIdentity};
+use burn_p2p_core::{
+    BackendClass, BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserSeedRecord,
+};
 use burn_p2p_metrics::{MetricsIndexerConfig, MetricsStore};
 use chrono::Utc;
 use semver::Version;
@@ -4061,6 +4063,41 @@ fn collect_final_snapshots<P>(
         .collect()
 }
 
+fn browser_seed_records_from_nodes<P>(
+    nodes: &[(&str, &burn_p2p::RunningNode<P>)],
+) -> Vec<BrowserSeedRecord> {
+    nodes.iter()
+        .filter_map(|(_, node)| {
+            let snapshot = node.telemetry().snapshot();
+            let multiaddrs = snapshot
+                .listen_addresses
+                .iter()
+                .map(|address| address.as_str().to_owned())
+                .filter(|address| browser_dialable_seed_multiaddr(address))
+                .collect::<Vec<_>>();
+            if multiaddrs.is_empty() {
+                None
+            } else {
+                Some(BrowserSeedRecord {
+                    peer_id: snapshot.local_peer_id,
+                    multiaddrs,
+                })
+            }
+        })
+        .collect()
+}
+
+fn browser_dialable_seed_multiaddr(multiaddr: &str) -> bool {
+    let segments = multiaddr
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (segments.contains(&"webrtc-direct") && segments.contains(&"certhash"))
+        || (segments.contains(&"webtransport")
+            && segments.contains(&"quic-v1")
+            && segments.contains(&"certhash"))
+}
+
 fn bootstrap_plan_for_labels(
     bootstrap_seed_label: &str,
     labels: &[&str],
@@ -4137,6 +4174,11 @@ where
         input.head_eval_reports,
     )?;
     write_demo_phase(input.output, "browser-handoff-metrics-ready")?;
+    let browser_seed_records = browser_seed_records_from_nodes(input.browser_nodes);
+    ensure!(
+        !browser_seed_records.is_empty(),
+        "live browser probe requires at least one browser-dialable direct seed record"
+    );
     let directory_entries = experiment_directory_entries(
         input.network_manifest,
         input.supported_workload,
@@ -4169,6 +4211,7 @@ where
         selected_revision_id: input.baseline_head.revision_id.clone(),
         active_lease_id: input.browser_lease.lease_id.clone(),
         leased_microshards: input.browser_lease.microshards.clone(),
+        browser_seed_records,
         browser_dataset,
         browser_head_artifact,
     };

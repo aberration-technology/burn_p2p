@@ -253,6 +253,9 @@ fn trainer_runtime(network_id: &NetworkId) -> BrowserWorkerRuntime {
         browser_capability(),
         BrowserTransportStatus {
             active: None,
+            selected: None,
+            connected: None,
+            connected_peer_ids: Vec::new(),
             webrtc_direct_enabled: true,
             webtransport_enabled: true,
             wss_fallback_enabled: true,
@@ -417,12 +420,22 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
         .iter()
         .map(|announcement| announcement.head.clone())
         .collect::<Vec<_>>();
+    let live_transport = BrowserTransportStatus {
+        active: Some(BrowserTransportKind::WebRtcDirect),
+        selected: Some(BrowserTransportKind::WebRtcDirect),
+        connected: Some(BrowserTransportKind::WebRtcDirect),
+        connected_peer_ids: vec![PeerId::new(listener_peer_id.clone())],
+        webrtc_direct_enabled: true,
+        webtransport_enabled: false,
+        wss_fallback_enabled: false,
+        last_error: None,
+    };
     let sync_events = runtime.apply_edge_sync(
         signed_directory(directory.clone()),
         &heads,
         Some(signed_leaderboard(&network_id)),
         BrowserMetricsSyncState::default(),
-        runtime.transport.clone(),
+        live_transport,
         Some(&session),
     );
     assert!(sync_events.iter().any(|event| matches!(
@@ -541,6 +554,9 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
         browser_capability(),
         BrowserTransportStatus {
             active: None,
+            selected: None,
+            connected: None,
+            connected_peer_ids: Vec::new(),
             webrtc_direct_enabled: true,
             webtransport_enabled: true,
             wss_fallback_enabled: true,
@@ -568,7 +584,16 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
         &heads,
         Some(signed_leaderboard(&network_id)),
         BrowserMetricsSyncState::default(),
-        runtime.transport.clone(),
+        BrowserTransportStatus {
+            active: Some(BrowserTransportKind::WebRtcDirect),
+            selected: Some(BrowserTransportKind::WebRtcDirect),
+            connected: Some(BrowserTransportKind::WebRtcDirect),
+            connected_peer_ids: vec![PeerId::new(listener_peer_id.clone())],
+            webrtc_direct_enabled: true,
+            webtransport_enabled: true,
+            wss_fallback_enabled: true,
+            last_error: None,
+        },
         Some(&session),
     );
     assert_eq!(runtime.state, Some(BrowserRuntimeState::Verifier));

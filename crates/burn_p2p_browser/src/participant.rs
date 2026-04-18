@@ -7,6 +7,24 @@ use crate::{
     BrowserTrainingPlan, BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus,
     BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent, BrowserWorkerRuntime,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::{
+    BrowserTransportFamily,
+    app::{
+        ensure_direct_swarm_runtime_connected, establish_direct_swarm_runtime,
+        should_fallback_to_edge_control_sync, sync_worker_runtime_from_direct_swarm,
+        wait_for_direct_swarm_bootstrap,
+    },
+};
+#[cfg(target_arch = "wasm32")]
+use burn_p2p_swarm::WasmBrowserSwarmRuntime;
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::TimeoutFuture;
+
+#[cfg(target_arch = "wasm32")]
+const DIRECT_TRANSPORT_HANDOFF_POLL_MS: u32 = 250;
+#[cfg(target_arch = "wasm32")]
+const DIRECT_TRANSPORT_HANDOFF_WAIT_MS: u32 = 8_000;
 
 #[derive(Clone, Debug)]
 /// Generic configuration for bootstrapping one browser worker runtime from an
@@ -93,6 +111,8 @@ pub struct BrowserSessionRuntimeHandle {
     /// The wrapped browser worker runtime.
     pub runtime: BrowserWorkerRuntime,
     include_leaderboard: bool,
+    #[cfg(target_arch = "wasm32")]
+    direct_swarm_runtime: Option<WasmBrowserSwarmRuntime>,
 }
 
 impl BrowserSessionRuntimeHandle {
@@ -120,25 +140,67 @@ impl BrowserSessionRuntimeHandle {
         client
             .sync_worker_runtime(&mut runtime, Some(&session), config.include_leaderboard)
             .await?;
+        #[cfg(target_arch = "wasm32")]
+        let (direct_swarm_runtime, _) = establish_direct_swarm_runtime(&mut runtime).await;
 
         Ok(Self {
             client,
             session,
             runtime,
             include_leaderboard: config.include_leaderboard,
+            #[cfg(target_arch = "wasm32")]
+            direct_swarm_runtime,
         })
     }
 
     /// Refreshes the runtime from the edge client using the stored session.
     pub async fn refresh(&mut self) -> Result<Vec<BrowserWorkerEvent>, BrowserSessionRuntimeError> {
-        self.client
-            .sync_worker_runtime(
-                &mut self.runtime,
-                Some(&self.session),
-                self.include_leaderboard,
-            )
-            .await
-            .map_err(Into::into)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut events = Vec::new();
+            if let Some(direct_runtime) = self.direct_swarm_runtime.as_mut() {
+                events.extend(
+                    ensure_direct_swarm_runtime_connected(&mut self.runtime, direct_runtime).await,
+                );
+                events.extend(
+                    wait_for_direct_swarm_bootstrap(&mut self.runtime, direct_runtime).await,
+                );
+                events.extend(
+                    sync_worker_runtime_from_direct_swarm(
+                        &self.client,
+                        &mut self.runtime,
+                        Some(&self.session),
+                        direct_runtime,
+                    )
+                    .await?,
+                );
+                if !should_fallback_to_edge_control_sync(&self.runtime) {
+                    return Ok(events);
+                }
+            }
+            events.extend(
+                self.client
+                    .sync_worker_runtime(
+                        &mut self.runtime,
+                        Some(&self.session),
+                        self.include_leaderboard,
+                    )
+                    .await?,
+            );
+            return Ok(events);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.client
+                .sync_worker_runtime(
+                    &mut self.runtime,
+                    Some(&self.session),
+                    self.include_leaderboard,
+                )
+                .await
+                .map_err(Into::into)
+        }
     }
 
     /// Executes one training plan and flushes any emitted receipts.
@@ -146,6 +208,9 @@ impl BrowserSessionRuntimeHandle {
         &mut self,
         plan: BrowserTrainingPlan,
     ) -> Result<BrowserSessionTrainingOutcome, BrowserSessionRuntimeError> {
+        self.refresh().await?;
+        #[cfg(target_arch = "wasm32")]
+        self.wait_for_direct_transport_handoff().await?;
         let training_events =
             self.runtime
                 .apply_command(BrowserWorkerCommand::Train(plan), None, None);
@@ -173,6 +238,7 @@ impl BrowserSessionRuntimeHandle {
                 _ => None,
             })
             .unwrap_or_default();
+        self.refresh().await?;
 
         Ok(BrowserSessionTrainingOutcome {
             receipt_submission_accepted: !accepted_receipt_ids.is_empty(),
@@ -181,6 +247,32 @@ impl BrowserSessionRuntimeHandle {
             runtime_state: self.runtime.state.clone(),
             transport: self.runtime.transport.active.clone(),
         })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn wait_for_direct_transport_handoff(
+        &mut self,
+    ) -> Result<(), BrowserSessionRuntimeError> {
+        let polls = DIRECT_TRANSPORT_HANDOFF_WAIT_MS / DIRECT_TRANSPORT_HANDOFF_POLL_MS;
+        for _ in 0..polls {
+            if matches!(
+                self.runtime.transport.active,
+                Some(BrowserTransportKind::WebRtcDirect | BrowserTransportKind::WebTransport)
+            ) {
+                return Ok(());
+            }
+            let swarm_status = self.runtime.swarm_status();
+            let direct_desired = matches!(
+                swarm_status.desired_transport,
+                Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
+            );
+            if !direct_desired {
+                return Ok(());
+            }
+            TimeoutFuture::new(DIRECT_TRANSPORT_HANDOFF_POLL_MS).await;
+            self.refresh().await?;
+        }
+        Ok(())
     }
 }
 

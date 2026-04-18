@@ -1128,8 +1128,7 @@ fn configured_external_addresses_for(
 ) -> Vec<SwarmAddress> {
     let mut addresses = Vec::new();
     for external_address in &boundary.external_addresses {
-        if let Some(address) =
-            rewrite_configured_external_address(external_address, listen_address)
+        if let Some(address) = rewrite_configured_external_address(external_address, listen_address)
             && !addresses.contains(&address)
         {
             addresses.push(address);
@@ -1336,17 +1335,16 @@ mod tests {
 
     #[test]
     fn configured_external_address_rewrites_webrtc_certhash_suffix() {
-        let external = SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct")
-            .expect("external");
+        let external =
+            SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct").expect("external");
         let listen = SwarmAddress::new(
-            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
         )
         .expect("listen");
-        let rewritten =
-            rewrite_configured_external_address(&external, &listen).expect("rewritten");
+        let rewritten = rewrite_configured_external_address(&external, &listen).expect("rewritten");
         assert_eq!(
             rewritten.as_str(),
-            "/dns4/bootstrap.example/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "/dns4/bootstrap.example/udp/4003/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
         );
     }
 
@@ -1354,7 +1352,7 @@ mod tests {
     fn configured_external_address_rejects_mismatched_transport_suffix() {
         let external = SwarmAddress::new("/dns4/bootstrap.example/tcp/443/wss").expect("external");
         let listen = SwarmAddress::new(
-            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "/ip4/10.42.1.10/udp/4003/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
         )
         .expect("listen");
         assert!(rewrite_configured_external_address(&external, &listen).is_none());

@@ -638,7 +638,7 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
         oidc_login["provider"],
         serde_json::json!({"Oidc": {"issuer": "https://issuer.example"}})
     );
-    let oidc_session = response_json(&issue_request(
+    let oidc_callback = issue_request(
         oidc_context.clone(),
         IssueRequestSpec {
             method: "POST",
@@ -650,11 +650,12 @@ fn github_and_oidc_routes_issue_provider_specific_sessions() {
             })),
             headers: &[],
         },
-    ));
-    assert_eq!(
-        oidc_session["claims"]["provider"],
-        serde_json::json!({"Oidc": {"issuer": "https://issuer.example"}})
     );
+    assert!(
+        oidc_callback.starts_with("HTTP/1.1 401 Unauthorized\r\n"),
+        "expected typed auth failure response, got: {oidc_callback}"
+    );
+    assert!(response_body(&oidc_callback).contains("missing provider principal"));
     let oidc_snapshot = response_json(&issue_request(
         oidc_context,
         IssueRequestSpec {

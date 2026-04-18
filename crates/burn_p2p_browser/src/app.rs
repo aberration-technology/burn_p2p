@@ -757,7 +757,7 @@ impl BrowserAppController {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn establish_direct_swarm_runtime(
+pub(crate) async fn establish_direct_swarm_runtime(
     runtime: &mut BrowserWorkerRuntime,
 ) -> (Option<WasmBrowserSwarmRuntime>, Vec<BrowserWorkerEvent>) {
     let requires_peer_transport = runtime
@@ -799,7 +799,7 @@ async fn establish_direct_swarm_runtime(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn ensure_direct_swarm_runtime_connected(
+pub(crate) async fn ensure_direct_swarm_runtime_connected(
     runtime: &mut BrowserWorkerRuntime,
     direct_runtime: &mut WasmBrowserSwarmRuntime,
 ) -> Vec<BrowserWorkerEvent> {
@@ -879,7 +879,7 @@ pub(crate) fn should_wait_for_direct_swarm_bootstrap(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn wait_for_direct_swarm_bootstrap(
+pub(crate) async fn wait_for_direct_swarm_bootstrap(
     runtime: &mut BrowserWorkerRuntime,
     direct_runtime: &WasmBrowserSwarmRuntime,
 ) -> Vec<BrowserWorkerEvent> {
@@ -992,7 +992,7 @@ impl BrowserPeerArtifactFetcher for DirectSwarmPeerArtifactFetcher {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn sync_worker_runtime_from_direct_swarm(
+pub(crate) async fn sync_worker_runtime_from_direct_swarm(
     edge_client: &BrowserEdgeClient,
     runtime: &mut BrowserWorkerRuntime,
     session: Option<&BrowserSessionState>,

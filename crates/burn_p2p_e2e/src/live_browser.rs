@@ -17,11 +17,12 @@ use burn_p2p_browser::{
 };
 use burn_p2p_core::{
     BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
-    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserTransportSurface,
-    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, PublicationTargetId,
-    PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus, RunId, SchemaEnvelope,
-    SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode, TrustBundleExport,
-    TrustedIssuerStatus,
+    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
+    BrowserSeedRecord, BrowserSeedTransportKind, BrowserSeedTransportPolicy,
+    BrowserTransportSurface, DownloadDeliveryMode, DownloadTicket, DownloadTicketId,
+    PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus,
+    RunId, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode,
+    TrustBundleExport, TrustedIssuerStatus,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifactView};
@@ -62,6 +63,7 @@ const SIGNED_DIRECTORY_PATH: &str = "/directory/signed";
 const HEADS_PATH: &str = "/heads";
 const LEADERBOARD_PATH: &str = "/leaderboard";
 const SIGNED_LEADERBOARD_PATH: &str = "/leaderboard/signed";
+const SIGNED_BROWSER_SEEDS_PATH: &str = "/browser/seeds/signed";
 const TRUST_PATH: &str = "/trust";
 const METRICS_CATCHUP_PATH: &str = "/metrics/catchup";
 const METRICS_LIVE_LATEST_PATH: &str = "/metrics/live/latest";
@@ -161,6 +163,7 @@ pub struct LiveBrowserEdgeConfig {
     pub selected_revision_id: RevisionId,
     pub active_lease_id: LeaseId,
     pub leased_microshards: Vec<MicroShardId>,
+    pub browser_seed_records: Vec<BrowserSeedRecord>,
     pub browser_dataset: LiveBrowserDatasetTransport,
     pub browser_head_artifact: LiveBrowserHeadArtifactTransport,
 }
@@ -366,6 +369,7 @@ struct LiveBrowserEdgeState {
     snapshot: BrowserEdgeSnapshot,
     signed_directory: SignedPayload<SchemaEnvelope<BrowserDirectorySnapshot>>,
     signed_leaderboard: SignedPayload<SchemaEnvelope<BrowserLeaderboardSnapshot>>,
+    signed_seed_advertisement: SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>,
     metrics_catchup: Vec<MetricsCatchupBundle>,
     accepted_receipts: Vec<ContributionReceipt>,
     browser_dataset: LiveBrowserDatasetTransport,
@@ -533,6 +537,8 @@ impl LiveBrowserEdgeServer {
             signed_directory(snapshot.directory.clone(), authority.issuer_peer_id());
         let signed_leaderboard =
             signed_leaderboard(snapshot.leaderboard.clone(), authority.issuer_peer_id());
+        let signed_seed_advertisement =
+            signed_seed_advertisement(&config, authority.issuer_peer_id(), addr.port());
         let connector = build_connector(&config);
         let selected_head = config
             .heads
@@ -591,6 +597,7 @@ impl LiveBrowserEdgeServer {
             snapshot,
             signed_directory,
             signed_leaderboard,
+            signed_seed_advertisement,
             metrics_catchup: config.metrics_catchup,
             accepted_receipts: Vec::new(),
             browser_dataset: config.browser_dataset,
@@ -754,17 +761,14 @@ fn build_snapshot(
     config: &LiveBrowserEdgeConfig,
     authority: &NodeCertificateAuthority,
 ) -> BrowserEdgeSnapshot {
+    let transports = live_browser_transport_surface(config);
     BrowserEdgeSnapshot {
         network_id: config.network_manifest.network_id.clone(),
         edge_mode: BrowserEdgeMode::Full,
         browser_mode: BrowserMode::Trainer,
         social_mode: SocialMode::Public,
         profile_mode: burn_p2p::ProfileMode::Public,
-        transports: BrowserTransportSurface {
-            webrtc_direct: true,
-            webtransport_gateway: true,
-            wss_fallback: true,
-        },
+        transports,
         paths: BrowserEdgePaths {
             login_path: LOGIN_PATH.into(),
             callback_path: CALLBACK_PATH.into(),
@@ -860,6 +864,109 @@ fn signed_leaderboard(
         },
     )
     .expect("live browser signed leaderboard should be serializable")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn signed_seed_advertisement(
+    config: &LiveBrowserEdgeConfig,
+    signer: PeerId,
+    port: u16,
+) -> SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>> {
+    let mut seeds = config.browser_seed_records.clone();
+    seeds.push(BrowserSeedRecord {
+        peer_id: Some(PeerId::new("browser-edge-fixture-seed")),
+        multiaddrs: vec![format!("/ip4/127.0.0.1/tcp/{port}/wss")],
+    });
+    let surface = live_browser_transport_surface(config);
+    SignedPayload::new(
+        SchemaEnvelope::new(
+            "burn_p2p.browser_seed_advertisement",
+            Version::new(0, 1, 0),
+            BrowserSeedAdvertisement {
+                schema_version: u32::from(burn_p2p_core::SCHEMA_VERSION),
+                network_id: config.network_manifest.network_id.clone(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + ChronoDuration::minutes(10),
+                transport_policy: live_browser_seed_transport_policy(&surface),
+                seeds,
+            },
+        ),
+        SignatureMetadata {
+            signer,
+            key_id: EDGE_FIXTURE_LABEL.into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: Utc::now(),
+            signature_hex: EDGE_FIXTURE_LABEL.into(),
+        },
+    )
+    .expect("live browser signed seed advertisement should be serializable")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn live_browser_transport_surface(config: &LiveBrowserEdgeConfig) -> BrowserTransportSurface {
+    let mut surface = BrowserTransportSurface {
+        webrtc_direct: false,
+        webtransport_gateway: false,
+        wss_fallback: true,
+    };
+    for seed in &config.browser_seed_records {
+        for multiaddr in &seed.multiaddrs {
+            match live_browser_seed_transport_kind(multiaddr) {
+                Some(BrowserSeedTransportKind::WebRtcDirect) => {
+                    surface.webrtc_direct = true;
+                }
+                Some(BrowserSeedTransportKind::WebTransport) => {
+                    surface.webtransport_gateway = true;
+                }
+                Some(BrowserSeedTransportKind::WssFallback) => {
+                    surface.wss_fallback = true;
+                }
+                None => {}
+            }
+        }
+    }
+    surface
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn live_browser_seed_transport_policy(
+    surface: &BrowserTransportSurface,
+) -> BrowserSeedTransportPolicy {
+    let mut preferred = Vec::new();
+    if surface.webrtc_direct {
+        preferred.push(BrowserSeedTransportKind::WebRtcDirect);
+    }
+    if surface.webtransport_gateway {
+        preferred.push(BrowserSeedTransportKind::WebTransport);
+    }
+    if surface.wss_fallback {
+        preferred.push(BrowserSeedTransportKind::WssFallback);
+    }
+    BrowserSeedTransportPolicy {
+        preferred,
+        allow_fallback_wss: surface.wss_fallback,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn live_browser_seed_transport_kind(multiaddr: &str) -> Option<BrowserSeedTransportKind> {
+    let segments = multiaddr
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.contains(&"webrtc-direct") && segments.contains(&"certhash") {
+        return Some(BrowserSeedTransportKind::WebRtcDirect);
+    }
+    if segments.contains(&"webtransport")
+        && segments.contains(&"quic-v1")
+        && segments.contains(&"certhash")
+    {
+        return Some(BrowserSeedTransportKind::WebTransport);
+    }
+    if segments.contains(&"wss") || segments.contains(&"ws") {
+        return Some(BrowserSeedTransportKind::WssFallback);
+    }
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1003,6 +1110,14 @@ fn handle_connection(
                 .lock()
                 .expect("live browser state")
                 .signed_directory
+                .clone();
+            write_json_response(&mut stream, 200, &signed)
+        }
+        ("GET", SIGNED_BROWSER_SEEDS_PATH) => {
+            let signed = state
+                .lock()
+                .expect("live browser state")
+                .signed_seed_advertisement
                 .clone();
             write_json_response(&mut stream, 200, &signed)
         }
@@ -1526,7 +1641,20 @@ mod tests {
                     experiment_id: experiment_id.clone(),
                 },
             ]),
-            metadata: BTreeMap::new(),
+            metadata: BTreeMap::from([
+                (
+                    "burn_p2p.revision.browser.enabled".into(),
+                    String::from("true"),
+                ),
+                (
+                    "burn_p2p.revision.browser.visibility_policy".into(),
+                    String::from("swarm-eligible"),
+                ),
+                (
+                    "burn_p2p.revision.browser.role.trainer_wgpu".into(),
+                    String::from("true"),
+                ),
+            ]),
         };
         let head = HeadDescriptor {
             head_id: head_id.clone(),
@@ -1570,6 +1698,7 @@ mod tests {
             selected_revision_id: revision_id,
             active_lease_id: LeaseId::new("lease"),
             leased_microshards: vec![MicroShardId::new("micro-a")],
+            browser_seed_records: Vec::new(),
             browser_dataset: LiveBrowserDatasetTransport {
                 upstream_mode: "fixture-dataset".into(),
                 provider_peer_id: PeerId::new("peer-a"),

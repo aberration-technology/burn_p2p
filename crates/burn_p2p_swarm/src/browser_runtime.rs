@@ -1962,9 +1962,8 @@ pub(crate) fn browser_wss_fallback_peers_to_disconnect(
     }
     connected_peer_transports
         .iter()
-        .filter_map(|(peer_id, family)| {
-            (*family == BrowserTransportFamily::WssFallback).then(|| peer_id.clone())
-        })
+        .filter(|(_, family)| **family == BrowserTransportFamily::WssFallback)
+        .map(|(peer_id, _)| peer_id.clone())
         .collect()
 }
 

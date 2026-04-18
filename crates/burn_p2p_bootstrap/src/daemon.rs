@@ -723,8 +723,9 @@ mod tests {
     #[test]
     fn apply_runtime_node_config_preserves_external_addresses() {
         let plan = test_plan();
-        let external = burn_p2p::SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct")
-            .expect("external");
+        let external =
+            burn_p2p::SwarmAddress::new("/dns4/bootstrap.example/udp/4003/webrtc-direct")
+                .expect("external");
         let config = NodeConfig {
             external_addresses: vec![external.clone()],
             ..NodeConfig::default()
