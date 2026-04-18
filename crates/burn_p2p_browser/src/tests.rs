@@ -41,6 +41,79 @@ const TEST_EDGE_WEBRTC_DIRECT_SEED: &str = "/dns4/edge.example/udp/4001/webrtc-d
 const TEST_BOOTSTRAP_WEBRTC_DIRECT_SEED: &str = "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_EDGE_WEBTRANSPORT_SEED: &str = "/dns4/edge.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
+fn browser_test_edge_snapshot() -> BrowserEdgeSnapshot {
+    BrowserEdgeSnapshot {
+        network_id: NetworkId::new("net-browser"),
+        edge_mode: BrowserEdgeMode::Peer,
+        browser_mode: burn_p2p::BrowserMode::Trainer,
+        social_mode: burn_p2p::SocialMode::Public,
+        profile_mode: burn_p2p::ProfileMode::Public,
+        transports: BrowserTransportSurface {
+            webrtc_direct: true,
+            webtransport_gateway: true,
+            wss_fallback: true,
+        },
+        paths: BrowserEdgePaths::default(),
+        auth_enabled: false,
+        login_providers: Vec::new(),
+        required_release_train_hash: Some(ContentId::new("train-browser")),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-browser")]),
+        directory: BrowserDirectorySnapshot {
+            network_id: NetworkId::new("net-browser"),
+            generated_at: Utc::now(),
+            entries: Vec::new(),
+        },
+        heads: Vec::new(),
+        leaderboard: BrowserLeaderboardSnapshot {
+            network_id: NetworkId::new("net-browser"),
+            score_version: "leaderboard_score_v1".into(),
+            entries: Vec::new(),
+            captured_at: Utc::now(),
+        },
+        trust_bundle: None,
+        captured_at: Utc::now(),
+    }
+}
+
+fn signed_browser_seed_advertisement(
+    network_id: &NetworkId,
+) -> SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>> {
+    SignedPayload::new(
+        SchemaEnvelope::new(
+            "burn_p2p.browser_seed_advertisement",
+            Version::new(0, 1, 0),
+            BrowserSeedAdvertisement {
+                schema_version: u32::from(burn_p2p_core::SCHEMA_VERSION),
+                network_id: network_id.clone(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(10),
+                transport_policy: BrowserSeedTransportPolicy {
+                    preferred: vec![
+                        BrowserSeedTransportKind::WebRtcDirect,
+                        BrowserSeedTransportKind::WssFallback,
+                    ],
+                    allow_fallback_wss: true,
+                },
+                seeds: vec![BrowserSeedRecord {
+                    peer_id: Some(PeerId::new("seed-browser")),
+                    multiaddrs: vec![
+                        TEST_EDGE_WEBRTC_DIRECT_SEED.into(),
+                        "/dns4/edge.example/tcp/443/wss".into(),
+                    ],
+                }],
+            },
+        ),
+        SignatureMetadata {
+            signer: PeerId::new("bootstrap"),
+            key_id: "browser-seeds".into(),
+            algorithm: SignatureAlgorithm::Ed25519,
+            signed_at: Utc::now(),
+            signature_hex: "deadbeef".into(),
+        },
+    )
+    .expect("signed browser seed advertisement")
+}
+
 fn conformance_revision_manifest() -> burn_p2p::RevisionManifest {
     burn_p2p::RevisionManifest {
         experiment_id: ExperimentId::new("exp-browser"),
@@ -269,17 +342,33 @@ fn browser_app_target_maps_to_expected_runtime_roles() {
 
 #[test]
 fn browser_app_connect_config_tracks_target_and_selection() {
+    let snapshot = browser_test_edge_snapshot();
+    let signed_seed_advertisement = signed_browser_seed_advertisement(&snapshot.network_id);
     let config = BrowserAppConnectConfig::new(
         "https://edge.example",
         BrowserCapabilityReport::default(),
         BrowserAppTarget::Train,
     )
-    .with_selection("exp-browser", Some("rev-browser"));
+    .with_selection("exp-browser", Some("rev-browser"))
+    .with_seed_node_urls(vec!["/dns4/site.example/tcp/443/wss".into()])
+    .with_bootstrap_material(
+        Some(snapshot.clone()),
+        Some(signed_seed_advertisement.clone()),
+    );
 
     assert_eq!(config.target, BrowserAppTarget::Train);
     assert_eq!(
         config.selected_experiment(),
         Some(("exp-browser".to_owned(), Some("rev-browser".to_owned())))
+    );
+    assert_eq!(
+        config.seed_node_urls,
+        vec!["/dns4/site.example/tcp/443/wss".to_owned()]
+    );
+    assert_eq!(config.bootstrap_snapshot, Some(snapshot));
+    assert_eq!(
+        config.bootstrap_signed_seed_advertisement,
+        Some(signed_seed_advertisement)
     );
 }
 
@@ -311,6 +400,39 @@ fn browser_app_connect_config_target_builders_choose_expected_presets() {
         )
         .target,
         BrowserAppTarget::Custom(BrowserRuntimeRole::BrowserFallback)
+    );
+}
+
+#[test]
+fn browser_app_controller_connect_with_preloaded_bootstrap_survives_edge_refresh_failure() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let snapshot = browser_test_edge_snapshot();
+    let signed_seed_advertisement = signed_browser_seed_advertisement(&snapshot.network_id);
+
+    let controller = runtime
+        .block_on(async {
+            BrowserAppController::connect_with(
+                BrowserAppConnectConfig::observe(
+                    "http://127.0.0.1:9",
+                    BrowserCapabilityReport::default(),
+                )
+                .with_seed_node_urls(vec!["/dns4/site.example/tcp/443/wss".into()])
+                .with_bootstrap_material(Some(snapshot), Some(signed_seed_advertisement)),
+            )
+            .await
+        })
+        .expect("connect with baked bootstrap");
+
+    let view = controller.view();
+    assert_eq!(view.network.edge_base_url, "http://127.0.0.1:9");
+    assert!(
+        view.network
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("127.0.0.1:9"))
     );
 }
 

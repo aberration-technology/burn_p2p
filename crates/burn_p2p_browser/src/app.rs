@@ -69,7 +69,7 @@ impl BrowserAppTarget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Configures browser-app connection with one target-based entry.
 pub struct BrowserAppConnectConfig {
     /// The edge base URL.
@@ -84,6 +84,13 @@ pub struct BrowserAppConnectConfig {
     pub selected_revision_id: Option<String>,
     /// Optional site-config fallback seed urls embedded into the browser artifact.
     pub seed_node_urls: Vec<String>,
+    /// Optional baked browser edge snapshot for bootstrap without a live edge fetch.
+    #[serde(default)]
+    pub bootstrap_snapshot: Option<BrowserEdgeSnapshot>,
+    /// Optional baked signed browser seed advertisement for bootstrap without a live edge fetch.
+    #[serde(default)]
+    pub bootstrap_signed_seed_advertisement:
+        Option<SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>,
 }
 
 impl BrowserAppConnectConfig {
@@ -100,6 +107,8 @@ impl BrowserAppConnectConfig {
             selected_experiment_id: None,
             selected_revision_id: None,
             seed_node_urls: Vec::new(),
+            bootstrap_snapshot: None,
+            bootstrap_signed_seed_advertisement: None,
         }
     }
 
@@ -146,6 +155,32 @@ impl BrowserAppConnectConfig {
     /// Adds site-config fallback seeds to the browser connect config.
     pub fn with_seed_node_urls(mut self, seed_node_urls: Vec<String>) -> Self {
         self.seed_node_urls = seed_node_urls;
+        self
+    }
+
+    /// Adds baked browser edge bootstrap state to the browser connect config.
+    pub fn with_bootstrap_material(
+        mut self,
+        snapshot: Option<BrowserEdgeSnapshot>,
+        signed_seed_advertisement: Option<SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>,
+    ) -> Self {
+        self.bootstrap_snapshot = snapshot;
+        self.bootstrap_signed_seed_advertisement = signed_seed_advertisement;
+        self
+    }
+
+    /// Adds a baked browser edge snapshot to the browser connect config.
+    pub fn with_bootstrap_snapshot(mut self, snapshot: BrowserEdgeSnapshot) -> Self {
+        self.bootstrap_snapshot = Some(snapshot);
+        self
+    }
+
+    /// Adds a baked signed browser seed advertisement to the browser connect config.
+    pub fn with_signed_seed_advertisement(
+        mut self,
+        signed_seed_advertisement: SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>,
+    ) -> Self {
+        self.bootstrap_signed_seed_advertisement = Some(signed_seed_advertisement);
         self
     }
 
@@ -479,6 +514,8 @@ impl BrowserAppController {
             selected_experiment_id,
             selected_revision_id,
             seed_node_urls,
+            bootstrap_snapshot,
+            bootstrap_signed_seed_advertisement,
         } = config;
         Self::connect(
             edge_base_url,
@@ -486,6 +523,8 @@ impl BrowserAppController {
             target.preferred_role(),
             selected_experiment_id.map(|experiment_id| (experiment_id, selected_revision_id)),
             seed_node_urls,
+            bootstrap_snapshot,
+            bootstrap_signed_seed_advertisement,
         )
         .await
     }
@@ -529,11 +568,26 @@ impl BrowserAppController {
         requested_role: BrowserRuntimeRole,
         selected_experiment: Option<(String, Option<String>)>,
         site_seed_node_urls: Vec<String>,
+        bootstrap_snapshot: Option<BrowserEdgeSnapshot>,
+        bootstrap_signed_seed_advertisement: Option<
+            SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>,
+        >,
     ) -> Result<Self, BrowserAuthClientError> {
         let edge_base_url = edge_base_url.into().trim_end_matches('/').to_owned();
-        let snapshot = fetch_edge_snapshot(&edge_base_url).await?;
-        let signed_seed_advertisement =
-            fetch_signed_seed_advertisement(&edge_base_url, &snapshot).await?;
+        let preloaded_bootstrap = bootstrap_snapshot.is_some();
+        let snapshot = match bootstrap_snapshot {
+            Some(snapshot) => snapshot,
+            None => fetch_edge_snapshot(&edge_base_url).await?,
+        };
+        let signed_seed_advertisement = match bootstrap_signed_seed_advertisement {
+            Some(signed_seed_advertisement) => Some(signed_seed_advertisement),
+            None if preloaded_bootstrap => {
+                fetch_signed_seed_advertisement(&edge_base_url, &snapshot)
+                    .await
+                    .unwrap_or(None)
+            }
+            None => fetch_signed_seed_advertisement(&edge_base_url, &snapshot).await?,
+        };
         let bindings = BrowserUiBindings::from_edge_snapshot(&edge_base_url, &snapshot);
         let edge_client = BrowserEdgeClient::new(
             bindings.clone(),
@@ -593,7 +647,11 @@ impl BrowserAppController {
         for event in bootstrap_events {
             controller.model.apply_event(event);
         }
-        let _ = controller.refresh().await?;
+        if let Err(error) = controller.refresh().await {
+            if !preloaded_bootstrap {
+                return Err(error);
+            }
+        }
         Ok(controller)
     }
 
