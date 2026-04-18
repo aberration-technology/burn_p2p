@@ -666,10 +666,15 @@ fn run_fast_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()
 }
 
 fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> {
+    ensure!(
+        command_available("cargo-deny"),
+        "cargo-deny is required for publish-readiness checks; install it with `cargo install cargo-deny --locked`"
+    );
     let artifacts = ArtifactLayout::create(&workspace.root, "check-publish", args.profile)?;
     let envs = BTreeMap::new();
     let mut steps = Vec::new();
     for (label, cargo_args) in [
+        ("deny-supply-chain", vec!["deny", "check"]),
         ("fmt", vec!["fmt", "--all", "--check"]),
         (
             "clippy-workspace",
