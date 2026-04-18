@@ -2806,6 +2806,9 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         .map(parse_duration_string)
         .transpose()?;
     let trainer_count = peer_count.saturating_sub(1).max(1);
+    let startup_timeout_secs = synthetic_multiprocess_startup_timeout_secs(trainer_count);
+    let sync_timeout_secs = synthetic_multiprocess_sync_timeout_secs(trainer_count);
+    let merge_wait_timeout_secs = synthetic_multiprocess_merge_wait_timeout_secs(trainer_count);
     let duration_secs = duration
         .unwrap_or_else(|| Duration::from_secs(60))
         .as_secs();
@@ -2824,10 +2827,10 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         trainer_window_count: window_count,
         persistent_trainers: false,
         continuous_training: false,
-        startup_timeout_secs: 20,
+        startup_timeout_secs,
         poll_interval_ms: 50,
-        sync_timeout_secs: 20,
-        merge_wait_timeout_secs: 20,
+        sync_timeout_secs,
+        merge_wait_timeout_secs,
         canonical_advance_required: false,
     };
     artifacts.write_json("configs/multiprocess-config.json", &config)?;
@@ -2861,6 +2864,22 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         }),
         args.common.keep_artifacts,
     )
+}
+
+fn synthetic_multiprocess_timeout_scale(trainer_count: u32) -> u64 {
+    trainer_count.max(1).div_ceil(4).into()
+}
+
+fn synthetic_multiprocess_startup_timeout_secs(trainer_count: u32) -> u64 {
+    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 5
+}
+
+fn synthetic_multiprocess_sync_timeout_secs(trainer_count: u32) -> u64 {
+    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 10
+}
+
+fn synthetic_multiprocess_merge_wait_timeout_secs(trainer_count: u32) -> u64 {
+    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 10
 }
 
 fn summarize_discovery_dynamics(
@@ -4560,6 +4579,8 @@ fn generate_chaos_events(seed: u64, count: u32, peer_count: u32) -> Vec<ChaosEve
 mod tests {
     use super::{
         generate_chaos_events, mnist_demo_round_plan, parse_duration_string, publish_crates_from,
+        synthetic_multiprocess_merge_wait_timeout_secs,
+        synthetic_multiprocess_startup_timeout_secs, synthetic_multiprocess_sync_timeout_secs,
     };
     use crate::profile::Profile;
 
@@ -4619,5 +4640,16 @@ mod tests {
         );
         assert!(!bounded);
         assert!(resilience);
+    }
+
+    #[test]
+    fn synthetic_multiprocess_timeouts_scale_with_trainer_fanout() {
+        assert_eq!(synthetic_multiprocess_startup_timeout_secs(1), 25);
+        assert_eq!(synthetic_multiprocess_sync_timeout_secs(1), 30);
+        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(1), 30);
+
+        assert_eq!(synthetic_multiprocess_startup_timeout_secs(15), 40);
+        assert_eq!(synthetic_multiprocess_sync_timeout_secs(15), 60);
+        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(15), 60);
     }
 }
