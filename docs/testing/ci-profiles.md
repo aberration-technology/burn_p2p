@@ -28,6 +28,7 @@ already available from crates.io.
   - `cargo xtask ci nightly`
 - `publish-readiness.yml`
   - `cargo xtask ci publish`
+  - includes the `cargo-deny` supply-chain gate used for pre-publish review
 
 ## PR vs Nightly
 

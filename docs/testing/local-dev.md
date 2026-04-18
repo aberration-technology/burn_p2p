@@ -155,6 +155,7 @@ cargo xtask bench robust
 Release readiness:
 
 ```bash
+cargo install cargo-deny --locked
 cargo xtask check publish
 ```
 
