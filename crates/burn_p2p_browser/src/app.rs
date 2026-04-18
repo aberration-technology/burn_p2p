@@ -654,10 +654,10 @@ impl BrowserAppController {
         for event in bootstrap_events {
             controller.model.apply_event(event);
         }
-        if let Err(error) = controller.refresh().await {
-            if !preloaded_bootstrap {
-                return Err(error);
-            }
+        if let Err(error) = controller.refresh().await
+            && !preloaded_bootstrap
+        {
+            return Err(error);
         }
         Ok(controller)
     }
