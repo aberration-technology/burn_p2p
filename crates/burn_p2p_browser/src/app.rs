@@ -668,64 +668,37 @@ impl BrowserAppController {
         let session = runtime.storage.session.clone();
         let previous_error = self.model.last_error.clone();
         #[cfg(target_arch = "wasm32")]
-        let direct_swarm_events =
-            apply_direct_swarm_status_snapshot(&mut runtime, self.direct_swarm_runtime.as_ref());
-        #[cfg(target_arch = "wasm32")]
-        if let Some(direct_swarm_runtime) = self.direct_swarm_runtime.as_mut() {
-            let reconnect_events =
-                ensure_direct_swarm_runtime_connected(&mut runtime, direct_swarm_runtime).await;
-            let bootstrap_wait_events =
-                wait_for_direct_swarm_bootstrap(&mut runtime, direct_swarm_runtime).await;
-            match sync_worker_runtime_from_direct_swarm(
+        {
+            let (events, hard_error) = refresh_worker_runtime_preferring_direct_swarm(
                 &self.edge_client,
                 &mut runtime,
                 Some(&session),
-                direct_swarm_runtime,
+                self.direct_swarm_runtime.as_mut(),
+                true,
             )
-            .await
-            {
-                Ok(mut events) => {
-                    let mut model = BrowserAppModel::from_runtime(runtime);
-                    model.last_error = previous_error;
-                    for event in direct_swarm_events {
-                        model.apply_event(event);
-                    }
-                    for event in reconnect_events {
-                        model.apply_event(event);
-                    }
-                    for event in bootstrap_wait_events {
-                        model.apply_event(event);
-                    }
-                    for event in events.drain(..) {
-                        model.apply_event(event);
-                    }
-                    self.model = model;
-                    self.persist_receipt_outbox().await?;
-                    self.persist_browser_storage().await?;
-                    return Ok(self.view());
-                }
-                Err(error) => {
-                    runtime.transport.last_error = Some(error.to_string());
-                    if !should_fallback_to_edge_control_sync(&runtime) {
-                        let mut model = BrowserAppModel::from_runtime(runtime);
-                        model.last_error = Some(error.to_string());
-                        for event in direct_swarm_events {
-                            model.apply_event(event);
-                        }
-                        for event in reconnect_events {
-                            model.apply_event(event);
-                        }
-                        for event in bootstrap_wait_events {
-                            model.apply_event(event);
-                        }
-                        self.model = model;
-                        self.persist_receipt_outbox().await?;
-                        self.persist_browser_storage().await?;
-                        return Ok(self.view());
-                    }
-                }
+            .await;
+            let mut model = BrowserAppModel::from_runtime(runtime);
+            model.last_error = hard_error
+                .as_ref()
+                .map(ToString::to_string)
+                .or(previous_error);
+            for event in events {
+                model.apply_event(event);
             }
+            self.model = model;
+            let persist_result = async {
+                self.persist_receipt_outbox().await?;
+                self.persist_browser_storage().await
+            }
+            .await;
+            if let Some(error) = hard_error {
+                let _ = persist_result;
+                return Err(error);
+            }
+            persist_result?;
+            return Ok(self.view());
         }
+        #[cfg(not(target_arch = "wasm32"))]
         match self
             .edge_client
             .sync_worker_runtime(&mut runtime, Some(&session), true)
@@ -812,6 +785,58 @@ impl BrowserAppController {
     /// Returns the currently persisted active training lease, when available.
     pub fn active_training_lease(&self) -> Option<&crate::WorkloadTrainingLease> {
         self.model.active_training_lease()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn refresh_worker_runtime_preferring_direct_swarm(
+    edge_client: &BrowserEdgeClient,
+    runtime: &mut BrowserWorkerRuntime,
+    session: Option<&BrowserSessionState>,
+    direct_swarm_runtime: Option<&mut WasmBrowserSwarmRuntime>,
+    include_leaderboard: bool,
+) -> (Vec<BrowserWorkerEvent>, Option<BrowserAuthClientError>) {
+    let mut direct_swarm_runtime = direct_swarm_runtime;
+    let mut events = apply_direct_swarm_status_snapshot(runtime, direct_swarm_runtime.as_deref());
+
+    if let Some(direct_swarm_runtime) = direct_swarm_runtime.as_deref_mut() {
+        events.extend(ensure_direct_swarm_runtime_connected(runtime, direct_swarm_runtime).await);
+        events.extend(wait_for_direct_swarm_bootstrap(runtime, direct_swarm_runtime).await);
+        match sync_worker_runtime_from_direct_swarm(
+            edge_client,
+            runtime,
+            session,
+            direct_swarm_runtime,
+        )
+        .await
+        {
+            Ok(sync_events) => {
+                events.extend(sync_events);
+                if !should_fallback_to_edge_control_sync(runtime) {
+                    return (events, None);
+                }
+            }
+            Err(error) => {
+                runtime.transport.last_error = Some(error.to_string());
+                if !should_fallback_to_edge_control_sync(runtime) {
+                    events.push(BrowserWorkerEvent::Error {
+                        message: error.to_string(),
+                    });
+                    return (events, None);
+                }
+            }
+        }
+    }
+
+    match edge_client
+        .sync_worker_runtime(runtime, session, include_leaderboard)
+        .await
+    {
+        Ok(edge_events) => {
+            events.extend(edge_events);
+            (events, None)
+        }
+        Err(error) => (events, Some(error)),
     }
 }
 

@@ -10,11 +10,7 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use crate::{
     BrowserTransportFamily,
-    app::{
-        ensure_direct_swarm_runtime_connected, establish_direct_swarm_runtime,
-        should_fallback_to_edge_control_sync, sync_worker_runtime_from_direct_swarm,
-        wait_for_direct_swarm_bootstrap,
-    },
+    app::{establish_direct_swarm_runtime, refresh_worker_runtime_preferring_direct_swarm},
 };
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_swarm::WasmBrowserSwarmRuntime;
@@ -157,36 +153,17 @@ impl BrowserSessionRuntimeHandle {
     pub async fn refresh(&mut self) -> Result<Vec<BrowserWorkerEvent>, BrowserSessionRuntimeError> {
         #[cfg(target_arch = "wasm32")]
         {
-            let mut events = Vec::new();
-            if let Some(direct_runtime) = self.direct_swarm_runtime.as_mut() {
-                events.extend(
-                    ensure_direct_swarm_runtime_connected(&mut self.runtime, direct_runtime).await,
-                );
-                events.extend(
-                    wait_for_direct_swarm_bootstrap(&mut self.runtime, direct_runtime).await,
-                );
-                events.extend(
-                    sync_worker_runtime_from_direct_swarm(
-                        &self.client,
-                        &mut self.runtime,
-                        Some(&self.session),
-                        direct_runtime,
-                    )
-                    .await?,
-                );
-                if !should_fallback_to_edge_control_sync(&self.runtime) {
-                    return Ok(events);
-                }
+            let (events, hard_error) = refresh_worker_runtime_preferring_direct_swarm(
+                &self.client,
+                &mut self.runtime,
+                Some(&self.session),
+                self.direct_swarm_runtime.as_mut(),
+                self.include_leaderboard,
+            )
+            .await;
+            if let Some(error) = hard_error {
+                return Err(error.into());
             }
-            events.extend(
-                self.client
-                    .sync_worker_runtime(
-                        &mut self.runtime,
-                        Some(&self.session),
-                        self.include_leaderboard,
-                    )
-                    .await?,
-            );
             return Ok(events);
         }
 
