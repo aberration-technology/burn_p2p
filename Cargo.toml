@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "xtask",
+  "patches/libp2p-webrtc-websys",
   "crates/burn_p2p",
   "crates/burn_p2p_admin",
   "crates/burn_p2p_workload",
@@ -92,3 +93,6 @@ debug-assertions = false
 
 [profile.test.package."libp2p-request-response"]
 debug-assertions = false
+
+[patch.crates-io]
+libp2p-webrtc-websys = { path = "patches/libp2p-webrtc-websys" }
