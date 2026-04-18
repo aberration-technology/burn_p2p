@@ -32,6 +32,7 @@ pub(super) fn browser_transport_surface(
     BrowserTransportSurface {
         webrtc_direct: native_browser_webrtc_direct_supported()
             && browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct")
+                .filter(|address| browser_direct_seed_uses_publishable_ip(address.as_str()))
                 .next()
                 .is_some()
             && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
@@ -158,11 +159,19 @@ fn browser_seed_multiaddrs_for_host(
     runtime_snapshot: Option<&burn_p2p::NodeTelemetrySnapshot>,
 ) -> Vec<String> {
     let host_prefix = browser_seed_host_prefix(host);
+    let request_host_is_ip_literal = browser_seed_host_prefix_is_ip_literal(&host_prefix);
     let mut multiaddrs = Vec::new();
     if surface.webrtc_direct {
         multiaddrs.extend(
-            browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct")
-                .filter_map(|address| rewrite_browser_seed_host(address.as_str(), &host_prefix)),
+            browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct").filter_map(
+                |address| {
+                    direct_browser_seed_multiaddr_for_host(
+                        address.as_str(),
+                        &host_prefix,
+                        request_host_is_ip_literal,
+                    )
+                },
+            ),
         );
     }
     if surface.webtransport_gateway {
@@ -195,6 +204,10 @@ fn browser_seed_host_prefix(host: &str) -> String {
     }
 }
 
+fn browser_seed_host_prefix_is_ip_literal(host_prefix: &str) -> bool {
+    host_prefix.starts_with("/ip4/") || host_prefix.starts_with("/ip6/")
+}
+
 fn browser_runtime_seed_addresses<'a>(
     runtime_snapshot: Option<&'a burn_p2p::NodeTelemetrySnapshot>,
     transport_segment: &str,
@@ -222,6 +235,48 @@ fn browser_runtime_seed_address_matches(address: &str, transport_segment: &str) 
         return segments.contains(&"certhash");
     }
     true
+}
+
+fn direct_browser_seed_multiaddr_for_host(
+    address: &str,
+    host_prefix: &str,
+    request_host_is_ip_literal: bool,
+) -> Option<String> {
+    if request_host_is_ip_literal {
+        return rewrite_browser_seed_host(address, host_prefix);
+    }
+    if browser_direct_seed_uses_publishable_ip(address) {
+        return Some(address.to_owned());
+    }
+    None
+}
+
+fn browser_direct_seed_uses_publishable_ip(address: &str) -> bool {
+    let segments = address
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 2 {
+        return false;
+    }
+    match segments[0] {
+        "ip4" => segments[1]
+            .parse::<std::net::Ipv4Addr>()
+            .ok()
+            .is_some_and(|ip| {
+                !ip.is_unspecified() && !ip.is_loopback() && !ip.is_private() && !ip.is_link_local()
+            }),
+        "ip6" => segments[1]
+            .parse::<std::net::Ipv6Addr>()
+            .ok()
+            .is_some_and(|ip| {
+                !ip.is_unspecified()
+                    && !ip.is_loopback()
+                    && !ip.is_unique_local()
+                    && !ip.is_unicast_link_local()
+            }),
+        _ => false,
+    }
 }
 
 fn rewrite_browser_seed_host(address: &str, host_prefix: &str) -> Option<String> {

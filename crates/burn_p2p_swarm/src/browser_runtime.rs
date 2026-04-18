@@ -1513,6 +1513,7 @@ fn dial_next_wasm_browser_seed_candidate(
     pending: &mut WasmPendingConnect,
     active_candidate: &mut Option<BrowserSeedDialCandidate>,
 ) -> Result<(), SwarmError> {
+    let mut attempt_errors = Vec::new();
     while let Some(candidate) = pending.next_candidate() {
         let address = candidate
             .seed_url
@@ -1533,14 +1534,21 @@ fn dial_next_wasm_browser_seed_candidate(
                 return Ok(());
             }
             Err(error) => {
-                shared.borrow_mut().status.last_error = Some(error.to_string());
+                let error_message = format!("{}: {}", candidate.seed_url.as_str(), error);
+                shared.borrow_mut().status.last_error = Some(error_message.clone());
+                attempt_errors.push(error_message);
             }
         }
     }
 
-    Err(SwarmError::Runtime(
-        "browser direct swarm could not dial any supported seed candidate".into(),
-    ))
+    Err(SwarmError::Runtime(if attempt_errors.is_empty() {
+        "browser direct swarm could not dial any supported seed candidate".into()
+    } else {
+        format!(
+            "browser direct swarm could not dial any supported seed candidate: {}",
+            attempt_errors.join(" | ")
+        )
+    }))
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]

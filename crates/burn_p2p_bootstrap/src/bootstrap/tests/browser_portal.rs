@@ -242,7 +242,7 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
                 known_peer_addresses: BTreeSet::new(),
                 runtime_boundary: None,
                 listen_addresses: vec![
-                    burn_p2p::SwarmAddress::new("/ip4/10.42.1.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w").expect("webrtc certhash addr"),
+                    burn_p2p::SwarmAddress::new("/ip4/198.51.100.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w").expect("webrtc certhash addr"),
                 ],
                 control_plane: burn_p2p::ControlPlaneSnapshot::default(),
                 recent_events: Vec::new(),
@@ -352,6 +352,33 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
         assert!(
             seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
             "expected public wss fallback seed in signed advertisement, got {seed_multiaddrs:?}"
+        );
+
+        let forwarded_signed_seeds: burn_p2p_core::SignedPayload<
+            burn_p2p_core::SchemaEnvelope<burn_p2p_core::BrowserSeedAdvertisement>,
+        > =
+            reqwest::Client::new()
+                .get(format!("{}/browser/seeds/signed", server.base_url()))
+                .header("x-forwarded-host", "edge.example")
+                .send()
+                .await
+                .expect("fetch forwarded browser seed advertisement")
+                .error_for_status()
+                .expect("forwarded browser seed advertisement status")
+                .json()
+                .await
+                .expect("decode forwarded browser seed advertisement");
+        let forwarded_multiaddrs = &forwarded_signed_seeds.payload.payload.seeds[0].multiaddrs;
+        assert!(
+            forwarded_multiaddrs.contains(
+                &"/ip4/198.51.100.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+                    .to_owned()
+            ),
+            "browser seed advertisement should preserve publishable ip-based webrtc-direct seeds for dns hosts, got {forwarded_multiaddrs:?}"
+        );
+        assert!(
+            forwarded_multiaddrs.contains(&"/dns4/edge.example/tcp/443/wss".to_owned()),
+            "browser seed advertisement should still rewrite wss fallback to the public dns host, got {forwarded_multiaddrs:?}"
         );
     });
 }
