@@ -2871,15 +2871,15 @@ fn synthetic_multiprocess_timeout_scale(trainer_count: u32) -> u64 {
 }
 
 fn synthetic_multiprocess_startup_timeout_secs(trainer_count: u32) -> u64 {
-    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 5
+    30 + synthetic_multiprocess_timeout_scale(trainer_count) * 15
 }
 
 fn synthetic_multiprocess_sync_timeout_secs(trainer_count: u32) -> u64 {
-    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 10
+    60 + synthetic_multiprocess_timeout_scale(trainer_count) * 30
 }
 
 fn synthetic_multiprocess_merge_wait_timeout_secs(trainer_count: u32) -> u64 {
-    20 + synthetic_multiprocess_timeout_scale(trainer_count) * 10
+    60 + synthetic_multiprocess_timeout_scale(trainer_count) * 30
 }
 
 fn summarize_discovery_dynamics(
@@ -4644,12 +4644,12 @@ mod tests {
 
     #[test]
     fn synthetic_multiprocess_timeouts_scale_with_trainer_fanout() {
-        assert_eq!(synthetic_multiprocess_startup_timeout_secs(1), 25);
-        assert_eq!(synthetic_multiprocess_sync_timeout_secs(1), 30);
-        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(1), 30);
+        assert_eq!(synthetic_multiprocess_startup_timeout_secs(1), 45);
+        assert_eq!(synthetic_multiprocess_sync_timeout_secs(1), 90);
+        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(1), 90);
 
-        assert_eq!(synthetic_multiprocess_startup_timeout_secs(15), 40);
-        assert_eq!(synthetic_multiprocess_sync_timeout_secs(15), 60);
-        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(15), 60);
+        assert_eq!(synthetic_multiprocess_startup_timeout_secs(15), 90);
+        assert_eq!(synthetic_multiprocess_sync_timeout_secs(15), 180);
+        assert_eq!(synthetic_multiprocess_merge_wait_timeout_secs(15), 180);
     }
 }
