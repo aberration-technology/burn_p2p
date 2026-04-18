@@ -110,6 +110,8 @@ pub(crate) async fn connect_controller(
         requested_role,
         selected_experiment,
         Vec::new(),
+        None,
+        None,
     )
     .await
     .map_err(|error| format!("failed to start local runtime: {error}"))
