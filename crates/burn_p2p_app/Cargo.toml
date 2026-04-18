@@ -9,6 +9,7 @@ rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme = "../../README.md"
+publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib"]

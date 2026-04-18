@@ -78,9 +78,7 @@ const PUBLISH_CRATES: &[&str] = &[
     "burn_p2p",
     "burn_p2p_admin",
     "burn_p2p_browser",
-    "burn_p2p_app",
     "burn_p2p_bootstrap",
-    "burn_p2p_testkit",
     "burn_p2p_e2e",
 ];
 
@@ -4608,6 +4606,8 @@ mod tests {
         let crates = publish_crates_from(Some("burn_p2p_browser")).expect("publish plan");
         assert_eq!(crates.first().copied(), Some("burn_p2p_browser"));
         assert_eq!(crates.last().copied(), Some("burn_p2p_e2e"));
+        assert!(!crates.contains(&"burn_p2p_app"));
+        assert!(!crates.contains(&"burn_p2p_testkit"));
     }
 
     #[test]
