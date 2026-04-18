@@ -278,9 +278,8 @@ impl BrowserAppModel {
             .or_else(|| {
                 self.runtime
                     .storage
-                    .last_signed_directory_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.payload.payload.network_id.as_str().to_owned())
+                    .directory_snapshot()
+                    .map(|snapshot| snapshot.network_id.as_str().to_owned())
             })
             .unwrap_or_else(|| "unknown".into());
         let runtime_state = self
@@ -290,10 +289,7 @@ impl BrowserAppModel {
             .unwrap_or(BrowserRuntimeState::ViewerOnly);
         let storage = &self.runtime.storage;
         let session = &storage.session;
-        let directory = storage
-            .last_signed_directory_snapshot
-            .as_ref()
-            .map(|snapshot| &snapshot.payload.payload);
+        let directory = storage.directory_snapshot();
         let leaderboard = storage
             .last_signed_leaderboard_snapshot
             .as_ref()
@@ -625,6 +621,17 @@ impl BrowserAppController {
             None,
             None,
         );
+        let stored_session = runtime.storage.session.clone();
+        bootstrap_events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmDirectory(Box::new(snapshot.directory.clone())),
+            None,
+            Some(&stored_session),
+        ));
+        bootstrap_events.extend(runtime.apply_command(
+            BrowserWorkerCommand::ApplySwarmHeads(snapshot.heads.clone()),
+            None,
+            Some(&stored_session),
+        ));
         #[cfg(target_arch = "wasm32")]
         let (direct_swarm_runtime, direct_swarm_events) =
             establish_direct_swarm_runtime(&mut runtime).await;
@@ -764,9 +771,8 @@ impl BrowserAppController {
                 self.model
                     .runtime
                     .storage
-                    .last_signed_directory_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.payload.payload.network_id.clone())
+                    .directory_snapshot()
+                    .map(|snapshot| snapshot.network_id.clone())
             })
             .ok_or_else(|| {
                 BrowserAuthClientError::ArtifactTransport(
@@ -925,7 +931,7 @@ pub(crate) fn should_wait_for_direct_swarm_bootstrap(
         .state
         .as_ref()
         .is_some_and(BrowserRuntimeState::requires_peer_transport)
-        && runtime.storage.last_signed_directory_snapshot.is_none()
+        && runtime.storage.directory_snapshot().is_none()
         && runtime.storage.last_head_id.is_none()
         && direct_handoff_pending
         && swarm_status.last_error.is_none()
@@ -1058,7 +1064,7 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
     );
     let mut updates = direct_runtime.drain_updates();
     if updates.is_empty()
-        && (runtime.storage.last_signed_directory_snapshot.is_none()
+        && (runtime.storage.directory_snapshot().is_none()
             || runtime.storage.last_head_id.is_none())
     {
         let snapshot = direct_runtime
@@ -1115,8 +1121,7 @@ pub(crate) fn should_fallback_to_edge_control_sync(runtime: &BrowserWorkerRuntim
         return false;
     }
 
-    runtime.storage.last_signed_directory_snapshot.is_none()
-        || runtime.storage.last_head_id.is_none()
+    runtime.storage.directory_snapshot().is_none() || runtime.storage.last_head_id.is_none()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1909,10 +1914,13 @@ fn network_note(runtime: &BrowserWorkerRuntime) -> String {
         burn_p2p_core::BrowserArtifactSource::EdgeHttp => "artifact via edge fallback",
         burn_p2p_core::BrowserArtifactSource::Unavailable => "artifact pending",
     };
-    if swarm_status.connected_transport.is_some()
-        && runtime.storage.last_signed_directory_snapshot.is_some()
-    {
-        return format!("swarm control live · {artifact_note}.");
+    if swarm_status.connected_transport.is_some() {
+        if runtime.storage.last_signed_directory_snapshot.is_some() {
+            return format!("swarm control live · {artifact_note}.");
+        }
+        if runtime.storage.directory_snapshot().is_some() {
+            return format!("swarm control cached · {artifact_note}.");
+        }
     }
     let Some(config) = runtime.config.as_ref() else {
         return format!("tracks one edge and its signed snapshots · {artifact_note}.");

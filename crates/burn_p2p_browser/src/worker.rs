@@ -74,7 +74,7 @@ impl BrowserWorkerRuntime {
         } else {
             planned_status.seed_bootstrap.clone()
         };
-        let directory_synced = self.storage.last_signed_directory_snapshot.is_some();
+        let directory_synced = self.storage.directory_snapshot().is_some();
         let assignment_bound = self.storage.active_assignment.is_some();
         let head_synced = self.storage.last_head_id.is_some();
         let artifact_source = browser_artifact_source(&self.storage);
@@ -809,6 +809,8 @@ impl BrowserWorkerRuntime {
         session: Option<&BrowserSessionState>,
     ) -> Vec<BrowserWorkerEvent> {
         let checkpoint = self.delta_checkpoint();
+        self.storage
+            .remember_swarm_directory_snapshot(directory.clone());
         self.apply_directory_snapshot(&directory, session);
         self.collect_runtime_delta_events(checkpoint, Some(&directory), None, None)
     }

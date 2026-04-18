@@ -3861,6 +3861,41 @@ fn browser_swarm_status_reports_peer_artifact_ready_from_truthful_runtime_state(
 }
 
 #[test]
+fn browser_swarm_status_treats_swarm_directory_cache_as_live_state() {
+    let mut config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    config.seed_bootstrap.source = BrowserSeedBootstrapSource::Merged;
+    config.seed_bootstrap.seed_node_urls = vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()];
+    let mut runtime = BrowserWorkerRuntime::start(
+        config,
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::enabled(true, true, true).connected_via(
+            BrowserTransportKind::WebRtcDirect,
+            vec![PeerId::new("peer-browser-1")],
+        ),
+    );
+    runtime.state = Some(BrowserRuntimeState::Observer);
+    runtime
+        .storage
+        .remember_swarm_directory_snapshot(browser_directory_snapshot(vec![
+            browser_directory_entry_for_assignment("exp-browser", "rev-browser", "dataset-browser"),
+        ]));
+
+    let status = runtime.swarm_status();
+    assert!(status.directory_synced);
+    assert_eq!(status.phase, BrowserSwarmPhase::DirectorySynced);
+    assert_eq!(
+        status.connected_transport,
+        Some(BrowserTransportFamily::WebRtcDirect)
+    );
+}
+
+#[test]
 fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
     let config = BrowserRuntimeConfig::new(
         "https://edge.example",
@@ -4198,11 +4233,7 @@ fn signed_browser_directory_snapshot(
         SchemaEnvelope::new(
             "burn_p2p.browser_directory_snapshot",
             Version::new(0, 1, 0),
-            BrowserDirectorySnapshot {
-                network_id: NetworkId::new("net-browser"),
-                generated_at: Utc::now(),
-                entries,
-            },
+            browser_directory_snapshot(entries),
         ),
         SignatureMetadata {
             signer: PeerId::new("bootstrap-authority"),
@@ -4213,6 +4244,14 @@ fn signed_browser_directory_snapshot(
         },
     )
     .expect("signed browser directory snapshot")
+}
+
+fn browser_directory_snapshot(entries: Vec<ExperimentDirectoryEntry>) -> BrowserDirectorySnapshot {
+    BrowserDirectorySnapshot {
+        network_id: NetworkId::new("net-browser"),
+        generated_at: Utc::now(),
+        entries,
+    }
 }
 
 fn signed_browser_leaderboard_snapshot(
@@ -4995,9 +5034,29 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
     runtime
         .storage
-        .remember_directory_snapshot(signed_browser_directory_snapshot(Vec::new()));
+        .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
     runtime.storage.remember_head(HeadId::new("head-browser"));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
+}
+
+#[test]
+fn browser_assignment_dataset_view_uses_swarm_directory_when_signed_directory_is_missing() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_assignment(BrowserStoredAssignment {
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+    });
+    storage.remember_swarm_directory_snapshot(browser_directory_snapshot(vec![
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "dataset-browser"),
+    ]));
+
+    assert_eq!(
+        storage
+            .active_assignment_dataset_view_id()
+            .map(|dataset_view_id| dataset_view_id.as_str()),
+        Some("dataset-browser")
+    );
 }
 
 #[test]
@@ -5054,7 +5113,7 @@ fn browser_direct_sync_waits_for_swarm_bootstrap_before_edge_fallback() {
 
     runtime
         .storage
-        .remember_directory_snapshot(signed_browser_directory_snapshot(Vec::new()));
+        .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
     assert!(!should_wait_for_direct_swarm_bootstrap(
         &runtime,
         &waiting_status

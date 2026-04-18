@@ -311,6 +311,11 @@ pub struct BrowserStorageSnapshot {
     /// The last signed directory snapshot.
     pub last_signed_directory_snapshot:
         Option<SignedPayload<SchemaEnvelope<BrowserDirectorySnapshot>>>,
+    /// The last usable unsigned directory snapshot learned from browser bootstrap or the peer
+    /// swarm. This remains distinct from the signed edge snapshot so the runtime can degrade
+    /// truthfully when direct peer state stays healthy but edge control sync is stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_swarm_directory_snapshot: Option<BrowserDirectorySnapshot>,
     /// The last signed leaderboard snapshot.
     pub last_signed_leaderboard_snapshot:
         Option<SignedPayload<SchemaEnvelope<BrowserLeaderboardSnapshot>>>,
@@ -353,6 +358,7 @@ impl Default for BrowserStorageSnapshot {
             submitted_receipt_order: Vec::new(),
             last_directory_sync_at: None,
             last_signed_directory_snapshot: None,
+            last_swarm_directory_snapshot: None,
             last_signed_leaderboard_snapshot: None,
             metrics_catchup_bundles: Vec::new(),
             last_metrics_live_event: None,
@@ -395,18 +401,32 @@ impl BrowserStorageSnapshot {
         self.updated_at = Utc::now();
     }
 
+    /// Performs the remember swarm directory snapshot operation.
+    pub fn remember_swarm_directory_snapshot(&mut self, snapshot: BrowserDirectorySnapshot) {
+        self.last_directory_sync_at = Some(Utc::now());
+        self.last_swarm_directory_snapshot = Some(snapshot);
+        self.invalidate_stale_assignment_replay_state();
+        self.updated_at = Utc::now();
+    }
+
+    /// Returns the best available directory snapshot for local browser operation.
+    pub fn directory_snapshot(&self) -> Option<&BrowserDirectorySnapshot> {
+        self.last_signed_directory_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.payload.payload)
+            .or(self.last_swarm_directory_snapshot.as_ref())
+    }
+
     fn directory_entry_for_assignment(
         &self,
         assignment: &BrowserStoredAssignment,
     ) -> Option<&ExperimentDirectoryEntry> {
-        self.last_signed_directory_snapshot
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot.payload.payload.entries.iter().find(|entry| {
-                    entry.study_id == assignment.study_id
-                        && entry.experiment_id == assignment.experiment_id
-                })
+        self.directory_snapshot().and_then(|snapshot| {
+            snapshot.entries.iter().find(|entry| {
+                entry.study_id == assignment.study_id
+                    && entry.experiment_id == assignment.experiment_id
             })
+        })
     }
 
     /// Returns the current directory revision when the active assignment is still visible.
@@ -518,7 +538,7 @@ impl BrowserStorageSnapshot {
     }
 
     /// Returns the dataset view ID for the active assignment when it is present in the latest
-    /// signed directory snapshot.
+    /// usable directory snapshot.
     pub fn active_assignment_dataset_view_id(&self) -> Option<&burn_p2p::DatasetViewId> {
         let assignment = self.active_assignment.as_ref()?;
         self.directory_entry_for_assignment(assignment)
