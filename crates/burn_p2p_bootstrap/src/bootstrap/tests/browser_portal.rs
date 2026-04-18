@@ -621,16 +621,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
                 )
             },
             BrowserCapabilityReport::default(),
-            BrowserTransportStatus {
-                active: None,
-                selected: None,
-                connected: None,
-                connected_peer_ids: Vec::new(),
-                webrtc_direct_enabled: false,
-                webtransport_enabled: true,
-                wss_fallback_enabled: true,
-                last_error: None,
-            },
+            BrowserTransportStatus::enabled(false, true, true),
         );
         worker.remember_session(session_state.clone());
 

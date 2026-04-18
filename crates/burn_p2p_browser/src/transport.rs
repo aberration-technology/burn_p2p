@@ -121,19 +121,62 @@ impl Default for BrowserTransportStatus {
 }
 
 impl BrowserTransportStatus {
-    /// Builds one initial transport snapshot from the browser transport surface
-    /// advertised by the edge.
-    pub fn from_transport_surface(surface: &BrowserTransportSurface) -> Self {
+    /// Creates one transport status from the enabled transport capability flags.
+    pub fn enabled(
+        webrtc_direct_enabled: bool,
+        webtransport_enabled: bool,
+        wss_fallback_enabled: bool,
+    ) -> Self {
         Self {
             active: None,
             selected: None,
             connected: None,
             connected_peer_ids: Vec::new(),
-            webrtc_direct_enabled: surface.webrtc_direct,
-            webtransport_enabled: surface.webtransport_gateway,
-            wss_fallback_enabled: surface.wss_fallback,
+            webrtc_direct_enabled,
+            webtransport_enabled,
+            wss_fallback_enabled,
             last_error: None,
         }
+    }
+
+    /// Creates one transport status with all browser transports disabled.
+    pub fn disabled() -> Self {
+        Self::enabled(false, false, false)
+    }
+
+    /// Records one last transport error on a copied transport snapshot.
+    pub fn with_last_error(mut self, error: impl Into<String>) -> Self {
+        self.last_error = Some(error.into());
+        self
+    }
+
+    /// Marks one transport as selected while preserving any connected transport.
+    pub fn selecting(mut self, selected: BrowserTransportKind) -> Self {
+        self.set_selected_transport(Some(selected));
+        self
+    }
+
+    /// Marks one transport as both selected and connected.
+    pub fn connected_via(
+        mut self,
+        connected: BrowserTransportKind,
+        connected_peer_ids: Vec<PeerId>,
+    ) -> Self {
+        self.selected = Some(connected.clone());
+        self.active = Some(connected.clone());
+        self.connected = Some(connected);
+        self.connected_peer_ids = connected_peer_ids;
+        self
+    }
+
+    /// Builds one initial transport snapshot from the browser transport surface
+    /// advertised by the edge.
+    pub fn from_transport_surface(surface: &BrowserTransportSurface) -> Self {
+        Self::enabled(
+            surface.webrtc_direct,
+            surface.webtransport_gateway,
+            surface.wss_fallback,
+        )
     }
 
     /// Returns the truthful source of the current transport state.
@@ -216,6 +259,17 @@ impl BrowserTransportStatus {
         self.active = self.connected.clone().or_else(|| self.selected.clone());
         self.last_error = status.last_error.clone();
     }
+
+    /// Returns the stable label shown to users for the current transport state.
+    pub fn display_label(&self) -> String {
+        if let Some(connected) = self.connected.as_ref() {
+            return connected.label().into();
+        }
+        match self.selected.as_ref().or(self.active.as_ref()) {
+            Some(selected) => format!("dialing {}", selected.label()),
+            None => "offline".into(),
+        }
+    }
 }
 
 impl BrowserTransportKind {
@@ -244,6 +298,22 @@ pub fn browser_transport_kind(family: &BrowserTransportFamily) -> BrowserTranspo
         BrowserTransportFamily::WebRtcDirect => BrowserTransportKind::WebRtcDirect,
         BrowserTransportFamily::WebTransport => BrowserTransportKind::WebTransport,
         BrowserTransportFamily::WssFallback => BrowserTransportKind::WssFallback,
+    }
+}
+
+/// Returns the stable short label for one shared browser transport family.
+pub fn browser_transport_label_from_family(family: &BrowserTransportFamily) -> &'static str {
+    browser_transport_kind(family).label()
+}
+
+/// Builds the stable browser transport label directly from one swarm status snapshot.
+pub fn browser_transport_label_from_swarm_status(status: &BrowserSwarmStatus) -> String {
+    if let Some(connected) = status.connected_transport.as_ref() {
+        return browser_transport_label_from_family(connected).into();
+    }
+    match status.desired_transport.as_ref() {
+        Some(desired) => format!("dialing {}", browser_transport_label_from_family(desired)),
+        None => "offline".into(),
     }
 }
 

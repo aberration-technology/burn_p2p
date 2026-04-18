@@ -1415,16 +1415,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
         "browser-wasm",
         ContentId::new("artifact-browser"),
     );
-    let transport = BrowserTransportStatus {
-        active: None,
-        selected: None,
-        connected: None,
-        connected_peer_ids: Vec::new(),
-        webrtc_direct_enabled: true,
-        webtransport_enabled: true,
-        wss_fallback_enabled: true,
-        last_error: None,
-    };
+    let transport = BrowserTransportStatus::enabled(true, true, true);
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {
             role: BrowserRuntimeRole::BrowserTrainerWgpu,
@@ -2154,16 +2145,7 @@ fn worker_runtime_waits_for_transport_after_head_sync_until_edge_transport_is_av
             ..config
         },
         BrowserCapabilityReport::default(),
-        BrowserTransportStatus {
-            active: None,
-            selected: None,
-            connected: None,
-            connected_peer_ids: Vec::new(),
-            webrtc_direct_enabled: false,
-            webtransport_enabled: false,
-            wss_fallback_enabled: false,
-            last_error: Some("edge transports unavailable".into()),
-        },
+        BrowserTransportStatus::disabled().with_last_error("edge transports unavailable"),
     );
     runtime
         .storage
@@ -2197,16 +2179,7 @@ fn worker_runtime_waits_for_transport_after_head_sync_until_edge_transport_is_av
         })
     );
 
-    runtime.update_transport_status(BrowserTransportStatus {
-        active: None,
-        selected: None,
-        connected: None,
-        connected_peer_ids: Vec::new(),
-        webrtc_direct_enabled: false,
-        webtransport_enabled: false,
-        wss_fallback_enabled: true,
-        last_error: None,
-    });
+    runtime.update_transport_status(BrowserTransportStatus::enabled(false, false, true));
 
     assert_eq!(
         runtime.transport.active,
@@ -3702,16 +3675,8 @@ fn browser_swarm_status_reports_selected_transport_without_fake_connection() {
     let runtime = BrowserWorkerRuntime::start(
         config,
         BrowserCapabilityReport::default(),
-        BrowserTransportStatus {
-            active: Some(BrowserTransportKind::WebRtcDirect),
-            selected: Some(BrowserTransportKind::WebRtcDirect),
-            connected: None,
-            connected_peer_ids: Vec::new(),
-            webrtc_direct_enabled: true,
-            webtransport_enabled: true,
-            wss_fallback_enabled: true,
-            last_error: None,
-        },
+        BrowserTransportStatus::enabled(true, true, true)
+            .selecting(BrowserTransportKind::WebRtcDirect),
     );
 
     let status = runtime.swarm_status();
@@ -3745,16 +3710,10 @@ fn browser_swarm_status_reports_peer_artifact_ready_from_truthful_runtime_state(
     let mut runtime = BrowserWorkerRuntime::start(
         config,
         BrowserCapabilityReport::default(),
-        BrowserTransportStatus {
-            active: Some(BrowserTransportKind::WebRtcDirect),
-            selected: Some(BrowserTransportKind::WebRtcDirect),
-            connected: Some(BrowserTransportKind::WebRtcDirect),
-            connected_peer_ids: vec![PeerId::new("peer-browser-1")],
-            webrtc_direct_enabled: true,
-            webtransport_enabled: true,
-            wss_fallback_enabled: true,
-            last_error: None,
-        },
+        BrowserTransportStatus::enabled(true, true, true).connected_via(
+            BrowserTransportKind::WebRtcDirect,
+            vec![PeerId::new("peer-browser-1")],
+        ),
     );
     runtime.state = Some(BrowserRuntimeState::Trainer);
     runtime.storage.remember_head(HeadId::new("head-browser"));

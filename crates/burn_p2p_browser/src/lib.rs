@@ -78,7 +78,8 @@ pub use training::{
 };
 pub use transport::{
     BrowserTransportKind, BrowserTransportPolicy, BrowserTransportStatus, browser_transport_family,
-    browser_transport_kind, resolve_browser_seed_bootstrap,
+    browser_transport_kind, browser_transport_label_from_family,
+    browser_transport_label_from_swarm_status, resolve_browser_seed_bootstrap,
 };
 pub use ui_bindings::{
     BrowserAppUiState, BrowserEdgeEndpoints, BrowserExperimentCandidate, BrowserUiBindings,

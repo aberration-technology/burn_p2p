@@ -244,16 +244,12 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
             stage: burn_p2p_browser::BrowserJoinStage::TransportConnect,
         })
     );
-    trainer_runtime.update_transport_status(BrowserTransportStatus {
-        active: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        selected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        connected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        connected_peer_ids: vec![browser_fixture.peer_id.clone()],
-        webrtc_direct_enabled: true,
-        webtransport_enabled: false,
-        wss_fallback_enabled: false,
-        last_error: None,
-    });
+    trainer_runtime.update_transport_status(
+        BrowserTransportStatus::enabled(true, false, false).connected_via(
+            burn_p2p_browser::BrowserTransportKind::WebRtcDirect,
+            vec![browser_fixture.peer_id.clone()],
+        ),
+    );
     assert_eq!(trainer_runtime.state, Some(BrowserRuntimeState::Trainer));
     assert!(trainer_runtime.storage.active_assignment.is_some());
 
@@ -365,16 +361,12 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
             stage: burn_p2p_browser::BrowserJoinStage::TransportConnect,
         })
     );
-    verifier_runtime.update_transport_status(BrowserTransportStatus {
-        active: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        selected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        connected: Some(burn_p2p_browser::BrowserTransportKind::WebRtcDirect),
-        connected_peer_ids: vec![browser_fixture.peer_id.clone()],
-        webrtc_direct_enabled: true,
-        webtransport_enabled: false,
-        wss_fallback_enabled: false,
-        last_error: None,
-    });
+    verifier_runtime.update_transport_status(
+        BrowserTransportStatus::enabled(true, false, false).connected_via(
+            burn_p2p_browser::BrowserTransportKind::WebRtcDirect,
+            vec![browser_fixture.peer_id.clone()],
+        ),
+    );
     assert_eq!(verifier_runtime.state, Some(BrowserRuntimeState::Verifier));
 
     let validation_events = verifier_runtime.apply_command(

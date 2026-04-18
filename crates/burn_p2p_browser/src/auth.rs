@@ -1962,16 +1962,16 @@ impl BrowserEdgeClient {
             .get_optional_json(&self.bindings.paths.metrics_live_latest_path, None)
             .await?;
         let heads = app_snapshot.heads.clone();
-        let transport = BrowserTransportStatus {
-            active: runtime.transport.active.clone(),
-            selected: runtime.transport.selected.clone(),
-            connected: runtime.transport.connected.clone(),
-            connected_peer_ids: runtime.transport.connected_peer_ids.clone(),
-            webrtc_direct_enabled: app_snapshot.transports.webrtc_direct,
-            webtransport_enabled: app_snapshot.transports.webtransport_gateway,
-            wss_fallback_enabled: app_snapshot.transports.wss_fallback,
-            last_error: runtime.transport.last_error.clone(),
-        };
+        let mut transport = BrowserTransportStatus::enabled(
+            app_snapshot.transports.webrtc_direct,
+            app_snapshot.transports.webtransport_gateway,
+            app_snapshot.transports.wss_fallback,
+        );
+        transport.active = runtime.transport.active.clone();
+        transport.selected = runtime.transport.selected.clone();
+        transport.connected = runtime.transport.connected.clone();
+        transport.connected_peer_ids = runtime.transport.connected_peer_ids.clone();
+        transport.last_error = runtime.transport.last_error.clone();
         events.extend(runtime.apply_edge_sync(
             signed_directory,
             &heads,

@@ -416,7 +416,7 @@ impl BrowserAppModel {
             },
             network: BrowserAppNetworkView {
                 edge_base_url: bindings.edge_base_url.clone(),
-                transport: transport_label(&self.runtime.transport),
+                transport: self.runtime.transport.display_label(),
                 node_state: runtime_label(&runtime_state),
                 direct_peers,
                 observed_peers: leaderboard_entries,
@@ -550,16 +550,11 @@ impl BrowserAppController {
                 signed_seed_advertisement.as_ref(),
             ),
             capability,
-            BrowserTransportStatus {
-                active: None,
-                selected: None,
-                connected: None,
-                connected_peer_ids: Vec::new(),
-                webrtc_direct_enabled: snapshot.transports.webrtc_direct,
-                webtransport_enabled: snapshot.transports.webtransport_gateway,
-                wss_fallback_enabled: snapshot.transports.wss_fallback,
-                last_error: None,
-            },
+            BrowserTransportStatus::enabled(
+                snapshot.transports.webrtc_direct,
+                snapshot.transports.webtransport_gateway,
+                snapshot.transports.wss_fallback,
+            ),
         );
         let mut runtime = runtime;
         runtime.storage = load_durable_browser_storage(&snapshot.network_id)
@@ -1846,16 +1841,6 @@ fn session_label(session: &BrowserSessionState) -> String {
         }
         (None, true) => "reenroll".into(),
         (None, false) => "guest".into(),
-    }
-}
-
-fn transport_label(transport: &BrowserTransportStatus) -> String {
-    if let Some(connected) = transport.connected.as_ref() {
-        return connected.label().into();
-    }
-    match transport.selected.as_ref().or(transport.active.as_ref()) {
-        Some(selected) => format!("dialing {}", selected.label()),
-        None => "offline".into(),
     }
 }
 
