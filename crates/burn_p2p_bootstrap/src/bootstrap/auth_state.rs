@@ -1,6 +1,8 @@
 use super::*;
 use fs2::FileExt;
 use redis::Commands;
+use std::io::Error as IoError;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration as StdDuration, Instant};
 
 const REDIS_SESSION_LOCK_TTL_MS: u64 = 120_000;
@@ -159,6 +161,27 @@ fn load_persisted_auth_state(
     }
 }
 
+fn lock_portal_state<'a, T>(
+    mutex: &'a Mutex<T>,
+    label: &'static str,
+) -> Result<MutexGuard<'a, T>, Box<dyn std::error::Error>> {
+    mutex
+        .lock()
+        .map_err(|_| IoError::other(format!("{label} lock poisoned")).into())
+}
+
+fn lock_sessions(
+    auth: &AuthPortalState,
+) -> Result<MutexGuard<'_, BTreeMap<ContentId, PrincipalSession>>, Box<dyn std::error::Error>> {
+    lock_portal_state(&auth.sessions, "auth session state")
+}
+
+fn lock_directory(
+    auth: &AuthPortalState,
+) -> Result<MutexGuard<'_, ExperimentDirectory>, Box<dyn std::error::Error>> {
+    lock_portal_state(&auth.directory, "auth directory")
+}
+
 impl AuthPortalState {
     fn apply_persisted_snapshot(
         &self,
@@ -178,21 +201,14 @@ impl AuthPortalState {
         };
         self.connector
             .import_persistent_state(connector_state.as_deref())?;
-        let mut current_sessions = self
-            .sessions
-            .lock()
-            .expect("auth session state should not be poisoned");
+        let mut current_sessions = lock_sessions(self)?;
         *current_sessions = sessions;
         Ok(())
     }
 
     fn snapshot_state(&self) -> Result<PersistedAuthPortalState, Box<dyn std::error::Error>> {
         Ok(PersistedAuthPortalState {
-            sessions: self
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .clone(),
+            sessions: lock_sessions(self)?.clone(),
             connector_state: self.connector.export_persistent_state()?,
         })
     }
@@ -281,12 +297,7 @@ impl AuthPortalState {
         session_id: &ContentId,
     ) -> Result<Option<PrincipalSession>, Box<dyn std::error::Error>> {
         self.with_shared_state(false, |auth| {
-            Ok(auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(session_id)
-                .cloned())
+            Ok(lock_sessions(auth)?.get(session_id).cloned())
         })
     }
 
@@ -295,12 +306,7 @@ impl AuthPortalState {
         session_id: &ContentId,
     ) -> Result<Option<PrincipalSession>, Box<dyn std::error::Error>> {
         self.with_shared_state(true, |auth| {
-            let existing = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(session_id)
-                .cloned();
+            let existing = lock_sessions(auth)?.get(session_id).cloned();
             let Some(mut session) = existing else {
                 return Ok(None);
             };
@@ -308,17 +314,11 @@ impl AuthPortalState {
             match auth.connector.fetch_claims(&session) {
                 Ok(claims) => {
                     session.claims = claims;
-                    auth.sessions
-                        .lock()
-                        .expect("auth session state should not be poisoned")
-                        .insert(session_id.clone(), session.clone());
+                    lock_sessions(auth)?.insert(session_id.clone(), session.clone());
                     Ok(Some(session))
                 }
                 Err(error) => {
-                    auth.sessions
-                        .lock()
-                        .expect("auth session state should not be poisoned")
-                        .remove(session_id);
+                    lock_sessions(auth)?.remove(session_id);
                     Err(Box::new(error) as Box<dyn std::error::Error>)
                 }
             }
@@ -338,10 +338,7 @@ impl AuthPortalState {
     ) -> Result<PrincipalSession, Box<dyn std::error::Error>> {
         self.with_shared_state(true, |auth| {
             let session = auth.connector.complete_login(callback)?;
-            auth.sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .insert(session.session_id.clone(), session.clone());
+            lock_sessions(auth)?.insert(session.session_id.clone(), session.clone());
             Ok(session)
         })
     }
@@ -351,18 +348,12 @@ impl AuthPortalState {
         session_id: &ContentId,
     ) -> Result<PrincipalSession, Box<dyn std::error::Error>> {
         self.with_shared_state(true, |auth| {
-            let session = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
+            let session = lock_sessions(auth)?
                 .get(session_id)
                 .cloned()
                 .ok_or_else(|| "unknown session id".to_owned())?;
             let refreshed = auth.connector.refresh(&session)?;
-            let mut sessions = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned");
+            let mut sessions = lock_sessions(auth)?;
             sessions.remove(session_id);
             sessions.insert(refreshed.session_id.clone(), refreshed.clone());
             Ok(refreshed)
@@ -374,21 +365,11 @@ impl AuthPortalState {
         session_id: &ContentId,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         self.with_shared_state(true, |auth| {
-            let session = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .get(session_id)
-                .cloned();
+            let session = lock_sessions(auth)?.get(session_id).cloned();
             if let Some(session) = session.as_ref() {
                 auth.connector.revoke(session)?;
             }
-            let removed = auth
-                .sessions
-                .lock()
-                .expect("auth session state should not be poisoned")
-                .remove(session_id)
-                .is_some();
+            let removed = lock_sessions(auth)?.remove(session_id).is_some();
             Ok(removed)
         })
     }
@@ -783,10 +764,7 @@ pub(super) fn auth_directory_entries(
         .map(|session| session.claims.granted_scopes)
         .unwrap_or_default();
 
-    let directory = auth
-        .directory
-        .lock()
-        .expect("auth directory should not be poisoned");
+    let directory = lock_directory(auth)?;
     Ok(directory.visible_to(&scopes).into_iter().cloned().collect())
 }
 
