@@ -5026,16 +5026,20 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
     assert!(should_fallback_to_edge_control_sync(&runtime));
 
     runtime.transport.selected = Some(BrowserTransportKind::WebRtcDirect);
+    assert!(should_fallback_to_edge_control_sync(&runtime));
+
+    runtime
+        .storage
+        .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    assert!(!should_fallback_to_edge_control_sync(&runtime));
+
     runtime.transport.connected = Some(BrowserTransportKind::WssFallback);
     runtime.transport.connected_peer_ids = vec![PeerId::new("peer-browser-bootstrap")];
     runtime.transport.last_error = Some("direct dial timeout".into());
     assert!(!should_fallback_to_edge_control_sync(&runtime));
 
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
-    runtime
-        .storage
-        .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
-    runtime.storage.remember_head(HeadId::new("head-browser"));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
 }
 

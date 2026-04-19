@@ -1129,10 +1129,6 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
 
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn should_fallback_to_edge_control_sync(runtime: &BrowserWorkerRuntime) -> bool {
-    if runtime.transport.connected.is_none() {
-        return true;
-    }
-
     let swarm_status = runtime.swarm_status();
     let direct_selected = matches!(
         swarm_status.desired_transport,
@@ -1142,11 +1138,17 @@ pub(crate) fn should_fallback_to_edge_control_sync(runtime: &BrowserWorkerRuntim
         swarm_status.connected_transport,
         Some(BrowserTransportFamily::WebRtcDirect | BrowserTransportFamily::WebTransport)
     );
+    let missing_control_state =
+        runtime.storage.directory_snapshot().is_none() || runtime.storage.last_head_id.is_none();
     if direct_selected && !direct_connected {
-        return false;
+        return missing_control_state;
     }
 
-    runtime.storage.directory_snapshot().is_none() || runtime.storage.last_head_id.is_none()
+    if runtime.transport.connected.is_none() {
+        return true;
+    }
+
+    missing_control_state
 }
 
 #[cfg(target_arch = "wasm32")]
