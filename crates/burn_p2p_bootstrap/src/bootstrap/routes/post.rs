@@ -105,10 +105,7 @@ pub(crate) fn handle_browser_post_route(
     {
         return Err("session is not authorized to submit one or more browser receipts".into());
     }
-    let accepted_receipt_ids = context
-        .state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
+    let accepted_receipt_ids = lock_shared(&context.state, "bootstrap admin state")?
         .ingest_contribution_receipts(receipts);
     write_json(
         stream,
@@ -185,11 +182,8 @@ pub(crate) fn handle_auth_post_route(
                 .get_enrollment_session(&enroll.session_id)?
                 .ok_or("unknown session id")?;
             let granted_roles = session.claims.granted_roles.clone();
-            let certificate = auth
-                .authority
-                .lock()
-                .expect("auth authority should not be poisoned")
-                .issue_certificate(NodeEnrollmentRequest {
+            let certificate = lock_shared(&auth.authority, "auth authority")?.issue_certificate(
+                NodeEnrollmentRequest {
                     session,
                     project_family_id: auth.project_family_id.clone(),
                     release_train_hash: enroll.release_train_hash.clone(),
@@ -203,7 +197,8 @@ pub(crate) fn handle_auth_post_route(
                     not_before: Utc::now(),
                     not_after: Utc::now() + chrono::Duration::seconds(enroll.ttl_seconds.max(1)),
                     revocation_epoch: effective_revocation_epoch,
-                })?;
+                },
+            )?;
             write_json(stream, &certificate)?;
         }
         _ => return Ok(false),
@@ -284,10 +279,7 @@ pub(crate) fn execute_admin_action(
                 require_reenrollment,
                 reenrollment_reason.clone(),
             )?;
-            let mut config_guard = context
-                .config
-                .lock()
-                .expect("daemon config should not be poisoned");
+            let mut config_guard = lock_shared(&context.config, "daemon config")?;
             if let Some(auth_config) = config_guard.auth.as_mut() {
                 auth_config.issuer_key_id = match &result {
                     burn_p2p_bootstrap::AdminResult::AuthorityMaterialRotated {
@@ -304,11 +296,8 @@ pub(crate) fn execute_admin_action(
                         issuer_public_key_hex: issuer.issuer_public_key_hex.clone(),
                     })
                     .collect();
-                auth_config.reenrollment = auth
-                    .reenrollment
-                    .lock()
-                    .expect("auth reenrollment state should not be poisoned")
-                    .clone();
+                auth_config.reenrollment =
+                    lock_shared(&auth.reenrollment, "auth reenrollment state")?.clone();
             }
             persist_daemon_config(&context.config_path, &config_guard)?;
             Ok(result)
@@ -330,10 +319,7 @@ pub(crate) fn execute_admin_action(
                 rollout.clone(),
                 context.control_handle.as_ref(),
             )?;
-            let mut config_guard = context
-                .config
-                .lock()
-                .expect("daemon config should not be poisoned");
+            let mut config_guard = lock_shared(&context.config, "daemon config")?;
             if let Some(auth_config) = config_guard.auth.as_mut() {
                 if let Some(minimum_revocation_epoch) = rollout.minimum_revocation_epoch {
                     auth_config.minimum_revocation_epoch = auth_config
@@ -368,10 +354,7 @@ pub(crate) fn execute_admin_action(
                 .as_ref()
                 .ok_or("browser-edge auth is not configured")?;
             let result = retire_trusted_issuers(auth, &context.state, &issuer_peer_ids)?;
-            let mut config_guard = context
-                .config
-                .lock()
-                .expect("daemon config should not be poisoned");
+            let mut config_guard = lock_shared(&context.config, "daemon config")?;
             if let Some(auth_config) = config_guard.auth.as_mut() {
                 auth_config.trusted_issuers = current_trust_bundle(auth, &context.state)
                     .issuers
@@ -381,11 +364,8 @@ pub(crate) fn execute_admin_action(
                         issuer_public_key_hex: issuer.issuer_public_key_hex.clone(),
                     })
                     .collect();
-                auth_config.reenrollment = auth
-                    .reenrollment
-                    .lock()
-                    .expect("auth reenrollment state should not be poisoned")
-                    .clone();
+                auth_config.reenrollment =
+                    lock_shared(&auth.reenrollment, "auth reenrollment state")?.clone();
             }
             persist_daemon_config(&context.config_path, &config_guard)?;
             Ok(result)
@@ -407,12 +387,10 @@ pub(crate) fn execute_admin_action(
                 signed_at: Utc::now(),
                 signature_hex: "bootstrap-local-admin".into(),
             });
+            let mut state = lock_shared(&context.state, "bootstrap admin state")?;
             let result = context.plan.execute_admin_action(
                 action,
-                &mut context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned"),
+                &mut state,
                 signer,
                 Utc::now(),
                 context.remaining_work_units,

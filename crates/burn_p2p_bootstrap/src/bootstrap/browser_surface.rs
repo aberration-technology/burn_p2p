@@ -338,9 +338,6 @@ pub(super) fn current_browser_directory_snapshot(
 pub(super) fn current_browser_leaderboard(
     plan: &BootstrapPlan,
     state: &Arc<Mutex<BootstrapAdminState>>,
-) -> burn_p2p_bootstrap::BrowserLeaderboardSnapshot {
-    state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .leaderboard_snapshot(plan, Utc::now())
+) -> Result<burn_p2p_bootstrap::BrowserLeaderboardSnapshot, Box<dyn std::error::Error>> {
+    Ok(lock_shared(state, "bootstrap admin state")?.leaderboard_snapshot(plan, Utc::now()))
 }

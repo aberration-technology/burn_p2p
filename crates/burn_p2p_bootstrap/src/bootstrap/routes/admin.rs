@@ -24,10 +24,7 @@ pub(crate) fn rotate_authority_material(
         std::fs::create_dir_all(parent)?;
     }
 
-    let previous_authority = auth
-        .authority
-        .lock()
-        .expect("auth authority should not be poisoned");
+    let previous_authority = lock_shared(&auth.authority, "auth authority")?;
     let previous_issuer = TrustedIssuer {
         issuer_peer_id: previous_authority.issuer_peer_id(),
         issuer_public_key_hex: previous_authority.issuer_public_key_hex().to_owned(),
@@ -47,10 +44,7 @@ pub(crate) fn rotate_authority_material(
     let issuer_peer_id = authority.issuer_peer_id();
     let issuer_public_key_hex = authority.issuer_public_key_hex().to_owned();
     {
-        let mut trusted_issuers = auth
-            .trusted_issuers
-            .lock()
-            .expect("trusted issuer state should not be poisoned");
+        let mut trusted_issuers = lock_shared(&auth.trusted_issuers, "trusted issuer state")?;
         if retain_previous_issuer {
             trusted_issuers.insert(
                 previous_issuer.issuer_peer_id.clone(),
@@ -67,15 +61,9 @@ pub(crate) fn rotate_authority_material(
             },
         );
     }
-    *auth
-        .issuer_key_id
-        .lock()
-        .expect("auth issuer key id should not be poisoned") = issuer_key_id.clone();
+    *lock_shared(&auth.issuer_key_id, "auth issuer key id")? = issuer_key_id.clone();
     if require_reenrollment {
-        *auth
-            .reenrollment
-            .lock()
-            .expect("auth reenrollment state should not be poisoned") =
+        *lock_shared(&auth.reenrollment, "auth reenrollment state")? =
             Some(BootstrapReenrollmentConfig {
                 reason: reenrollment_reason.unwrap_or_else(|| {
                     "authority material rotated; clients should re-enroll".into()
@@ -84,15 +72,9 @@ pub(crate) fn rotate_authority_material(
                 retired_issuer_peer_ids: BTreeSet::from([previous_issuer.issuer_peer_id.clone()]),
             });
     } else if !retain_previous_issuer {
-        *auth
-            .reenrollment
-            .lock()
-            .expect("auth reenrollment state should not be poisoned") = None;
+        *lock_shared(&auth.reenrollment, "auth reenrollment state")? = None;
     }
-    *auth
-        .authority
-        .lock()
-        .expect("auth authority should not be poisoned") = authority;
+    *lock_shared(&auth.authority, "auth authority")? = authority;
     let trust_bundle = sync_trust_bundle(auth, state);
 
     Ok(burn_p2p_bootstrap::AdminResult::AuthorityMaterialRotated {
@@ -114,10 +96,7 @@ pub(crate) fn rollout_auth_policy(
 ) -> Result<burn_p2p_bootstrap::AdminResult, Box<dyn std::error::Error>> {
     let mut effective_minimum_revocation_epoch = None;
     if let Some(minimum_revocation_epoch) = rollout.minimum_revocation_epoch {
-        let mut auth_epoch = auth
-            .minimum_revocation_epoch
-            .lock()
-            .expect("auth revocation epoch should not be poisoned");
+        let mut auth_epoch = lock_shared(&auth.minimum_revocation_epoch, "auth revocation epoch")?;
         *auth_epoch = (*auth_epoch).max(minimum_revocation_epoch);
         effective_minimum_revocation_epoch = Some(*auth_epoch);
     }
@@ -125,51 +104,35 @@ pub(crate) fn rollout_auth_policy(
     let directory_entries = if let Some(entries) = rollout.directory_entries {
         let announced_at = Utc::now();
         {
-            let mut directory = auth
-                .directory
-                .lock()
-                .expect("auth directory should not be poisoned");
+            let mut directory = lock_shared(&auth.directory, "auth directory")?;
             directory.generated_at = announced_at;
             directory.entries = entries;
         }
         if let Some(control_handle) = control_handle {
             control_handle.publish_directory(ExperimentDirectoryAnnouncement {
                 network_id: plan.network_id().clone(),
-                entries: auth
-                    .directory
-                    .lock()
-                    .expect("auth directory should not be poisoned")
+                entries: lock_shared(&auth.directory, "auth directory")?
                     .entries
                     .clone(),
                 announced_at,
             })?;
         }
-        auth.directory
-            .lock()
-            .expect("auth directory should not be poisoned")
+        lock_shared(&auth.directory, "auth directory")?
             .entries
             .len()
     } else {
-        auth.directory
-            .lock()
-            .expect("auth directory should not be poisoned")
+        lock_shared(&auth.directory, "auth directory")?
             .entries
             .len()
     };
 
     let trusted_issuers = if let Some(issuers) = rollout.trusted_issuers {
-        let mut trusted = auth
-            .trusted_issuers
-            .lock()
-            .expect("trusted issuer state should not be poisoned");
+        let mut trusted = lock_shared(&auth.trusted_issuers, "trusted issuer state")?;
         *trusted = issuers
             .into_iter()
             .map(|issuer| (issuer.issuer_peer_id.clone(), issuer))
             .collect();
-        let authority = auth
-            .authority
-            .lock()
-            .expect("auth authority should not be poisoned");
+        let authority = lock_shared(&auth.authority, "auth authority")?;
         trusted.insert(
             authority.issuer_peer_id(),
             TrustedIssuer {
@@ -179,17 +142,11 @@ pub(crate) fn rollout_auth_policy(
         );
         trusted.len()
     } else {
-        auth.trusted_issuers
-            .lock()
-            .expect("trusted issuer state should not be poisoned")
-            .len()
+        lock_shared(&auth.trusted_issuers, "trusted issuer state")?.len()
     };
 
     if let Some(reenrollment) = rollout.reenrollment {
-        *auth
-            .reenrollment
-            .lock()
-            .expect("auth reenrollment state should not be poisoned") =
+        *lock_shared(&auth.reenrollment, "auth reenrollment state")? =
             Some(BootstrapReenrollmentConfig {
                 reason: reenrollment.reason,
                 rotated_at: reenrollment.rotated_at,
@@ -198,10 +155,7 @@ pub(crate) fn rollout_auth_policy(
     }
 
     if let Some(epoch) = effective_minimum_revocation_epoch {
-        state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .minimum_revocation_epoch = Some(epoch);
+        lock_shared(state, "bootstrap admin state")?.minimum_revocation_epoch = Some(epoch);
     }
     let trust_bundle = sync_trust_bundle(auth, state);
 
@@ -218,27 +172,17 @@ pub(crate) fn retire_trusted_issuers(
     state: &Arc<Mutex<BootstrapAdminState>>,
     issuer_peer_ids: &BTreeSet<PeerId>,
 ) -> Result<burn_p2p_bootstrap::AdminResult, Box<dyn std::error::Error>> {
-    let active_issuer_peer_id = auth
-        .authority
-        .lock()
-        .expect("auth authority should not be poisoned")
-        .issuer_peer_id();
+    let active_issuer_peer_id = lock_shared(&auth.authority, "auth authority")?.issuer_peer_id();
     if issuer_peer_ids.contains(&active_issuer_peer_id) {
         return Err("cannot retire the active issuer".into());
     }
 
-    let mut trusted_issuers = auth
-        .trusted_issuers
-        .lock()
-        .expect("trusted issuer state should not be poisoned");
+    let mut trusted_issuers = lock_shared(&auth.trusted_issuers, "trusted issuer state")?;
     let previous_len = trusted_issuers.len();
     trusted_issuers.retain(|issuer_peer_id, _| !issuer_peer_ids.contains(issuer_peer_id));
     drop(trusted_issuers);
 
-    let mut reenrollment_state = auth
-        .reenrollment
-        .lock()
-        .expect("auth reenrollment state should not be poisoned");
+    let mut reenrollment_state = lock_shared(&auth.reenrollment, "auth reenrollment state")?;
     if let Some(reenrollment) = reenrollment_state.as_mut() {
         reenrollment
             .retired_issuer_peer_ids

@@ -30,10 +30,7 @@ pub(crate) fn handle_get_route(
             revision_id: None,
             peer_id: None,
         };
-        let receipts = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_receipts_page(&query, page)?;
+        let receipts = with_admin_state(state, |state| state.export_receipts_page(&query, page))?;
         write_json(stream, &receipts)?;
         return Ok(true);
     }
@@ -41,10 +38,8 @@ pub(crate) fn handle_get_route(
     if request.method == "GET"
         && let Some(page) = page_request_from_path(&request.path, "/heads/page")?
     {
-        let heads = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_heads_page(
+        let heads = with_admin_state(state, |state| {
+            state.export_heads_page(
                 &burn_p2p_bootstrap::HeadQuery {
                     study_id: None,
                     experiment_id: None,
@@ -52,7 +47,8 @@ pub(crate) fn handle_get_route(
                     head_id: None,
                 },
                 page,
-            )?;
+            )
+        })?;
         write_json(stream, &heads)?;
         return Ok(true);
     }
@@ -60,10 +56,7 @@ pub(crate) fn handle_get_route(
     if request.method == "GET"
         && let Some(page) = page_request_from_path(&request.path, "/merges/page")?
     {
-        let merges = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_merges_page(page)?;
+        let merges = with_admin_state(state, |state| state.export_merges_page(page))?;
         write_json(stream, &merges)?;
         return Ok(true);
     }
@@ -72,12 +65,13 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_audit_request_from_path(&request.path, "/operator/audit")?
     {
-        let state = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned");
-        let audit_summary = state.export_operator_audit_summary(&query)?;
-        let audit_facets = state.export_operator_audit_facets(&query, 8)?;
-        let audit_page = state.export_operator_audit_page(&query, page)?;
+        let (audit_summary, audit_facets, audit_page) = with_admin_state(state, |state| {
+            Ok::<_, Box<dyn std::error::Error>>((
+                state.export_operator_audit_summary(&query)?,
+                state.export_operator_audit_facets(&query, 8)?,
+                state.export_operator_audit_page(&query, page)?,
+            ))
+        })?;
         write_response(
             stream,
             "200 OK",
@@ -92,10 +86,9 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_audit_request_from_path(&request.path, "/operator/audit/page")?
     {
-        let audit_page = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_audit_page(&query, page)?;
+        let audit_page = with_admin_state(state, |state| {
+            state.export_operator_audit_page(&query, page)
+        })?;
         write_json(stream, &audit_page)?;
         return Ok(true);
     }
@@ -104,10 +97,8 @@ pub(crate) fn handle_get_route(
         && let Some(query) =
             operator_audit_summary_request_from_path(&request.path, "/operator/audit/summary")?
     {
-        let audit_summary = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_audit_summary(&query)?;
+        let audit_summary =
+            with_admin_state(state, |state| state.export_operator_audit_summary(&query))?;
         write_json(stream, &audit_summary)?;
         return Ok(true);
     }
@@ -116,10 +107,9 @@ pub(crate) fn handle_get_route(
         && let Some((limit, query)) =
             operator_audit_facets_request_from_path(&request.path, "/operator/audit/facets")?
     {
-        let audit_facets = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_audit_facets(&query, limit)?;
+        let audit_facets = with_admin_state(state, |state| {
+            state.export_operator_audit_facets(&query, limit)
+        })?;
         write_json(stream, &audit_facets)?;
         return Ok(true);
     }
@@ -128,10 +118,9 @@ pub(crate) fn handle_get_route(
         && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot/view")?
     {
-        let replay_snapshot = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_replay_snapshot(captured_at)?;
+        let replay_snapshot = with_admin_state(state, |state| {
+            state.export_operator_replay_snapshot(captured_at)
+        })?;
         if let Some(snapshot) = replay_snapshot {
             write_response(
                 stream,
@@ -154,10 +143,9 @@ pub(crate) fn handle_get_route(
         && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot")?
     {
-        let replay_snapshot = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_replay_snapshot(captured_at)?;
+        let replay_snapshot = with_admin_state(state, |state| {
+            state.export_operator_replay_snapshot(captured_at)
+        })?;
         write_json(stream, &replay_snapshot)?;
         return Ok(true);
     }
@@ -166,10 +154,9 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_replay_page_request_from_path(&request.path, "/operator/replay")?
     {
-        let replay_page = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_replay_page(&query, page)?;
+        let replay_page = with_admin_state(state, |state| {
+            state.export_operator_replay_page(&query, page)
+        })?;
         write_response(
             stream,
             "200 OK",
@@ -183,10 +170,9 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_replay_page_request_from_path(&request.path, "/operator/replay/page")?
     {
-        let replay_page = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_replay_page(&query, page)?;
+        let replay_page = with_admin_state(state, |state| {
+            state.export_operator_replay_page(&query, page)
+        })?;
         write_json(stream, &replay_page)?;
         return Ok(true);
     }
@@ -195,11 +181,12 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_control_replay_page_request_from_path(&request.path, "/operator/control")?
     {
-        let state = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned");
-        let control_summary = state.export_operator_control_replay_summary(&query)?;
-        let control_page = state.export_operator_control_replay_page(&query, page)?;
+        let (control_summary, control_page) = with_admin_state(state, |state| {
+            Ok::<_, Box<dyn std::error::Error>>((
+                state.export_operator_control_replay_summary(&query)?,
+                state.export_operator_control_replay_page(&query, page)?,
+            ))
+        })?;
         write_response(
             stream,
             "200 OK",
@@ -214,10 +201,9 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_control_replay_page_request_from_path(&request.path, "/operator/control/page")?
     {
-        let control_page = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_control_replay_page(&query, page)?;
+        let control_page = with_admin_state(state, |state| {
+            state.export_operator_control_replay_page(&query, page)
+        })?;
         write_json(stream, &control_page)?;
         return Ok(true);
     }
@@ -228,28 +214,21 @@ pub(crate) fn handle_get_route(
             "/operator/control/summary",
         )?
     {
-        let control_summary = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_control_replay_summary(&query)?;
+        let control_summary = with_admin_state(state, |state| {
+            state.export_operator_control_replay_summary(&query)
+        })?;
         write_json(stream, &control_summary)?;
         return Ok(true);
     }
 
     if request.method == "GET" && request.path == "/operator/retention" {
-        let retention = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_retention_summary()?;
+        let retention = with_admin_state(state, |state| state.export_operator_retention_summary())?;
         write_json(stream, &retention)?;
         return Ok(true);
     }
 
     if request.method == "GET" && request.path == "/operator/retention/view" {
-        let retention = state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_operator_retention_summary()?;
+        let retention = with_admin_state(state, |state| state.export_operator_retention_summary())?;
         write_response(
             stream,
             "200 OK",
@@ -337,17 +316,15 @@ pub(crate) fn handle_get_route(
                 )?;
                 return Ok(true);
             }
-            let Some(advertisement) = ({
-                let state = state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned");
-                current_browser_seed_advertisement(
+            let Some(advertisement) = with_admin_state(state, |state| {
+                Ok::<_, std::convert::Infallible>(current_browser_seed_advertisement(
                     plan,
                     current_config,
                     request,
                     state.runtime_snapshot.as_ref(),
-                )
-            }) else {
+                ))
+            })?
+            else {
                 write_response(
                     stream,
                     "404 Not Found",
@@ -374,7 +351,7 @@ pub(crate) fn handle_get_route(
                 )?;
                 return Ok(true);
             }
-            let leaderboard = current_browser_leaderboard(plan, state);
+            let leaderboard = current_browser_leaderboard(plan, state)?;
             write_json(stream, &leaderboard)?;
         }
         ("GET", "/directory/signed") => {
@@ -411,7 +388,7 @@ pub(crate) fn handle_get_route(
                 plan,
                 admin_signer_peer_id,
                 "burn_p2p.browser_leaderboard_snapshot",
-                current_browser_leaderboard(plan, state),
+                current_browser_leaderboard(plan, state)?,
             )?;
             write_json(stream, &signed)?;
         }
@@ -432,52 +409,51 @@ pub(crate) fn handle_get_route(
                 revision_id: None,
                 peer_id: None,
             };
-            let receipts = state
-                .lock()
-                .expect("bootstrap admin state should not be poisoned")
-                .export_receipts(&query);
+            let receipts = with_admin_state(state, |state| {
+                Ok::<_, std::convert::Infallible>(state.export_receipts(&query))
+            })?;
             write_json(stream, &receipts)?;
         }
         ("GET", "/heads") => {
-            let heads = state
-                .lock()
-                .expect("bootstrap admin state should not be poisoned")
-                .export_heads(&burn_p2p_bootstrap::HeadQuery {
-                    study_id: None,
-                    experiment_id: None,
-                    revision_id: None,
-                    head_id: None,
-                });
+            let heads = with_admin_state(state, |state| {
+                Ok::<_, std::convert::Infallible>(state.export_heads(
+                    &burn_p2p_bootstrap::HeadQuery {
+                        study_id: None,
+                        experiment_id: None,
+                        revision_id: None,
+                        head_id: None,
+                    },
+                ))
+            })?;
             write_json(stream, &heads)?;
         }
         ("GET", "/reducers/load") => {
-            let reducer_load = state
-                .lock()
-                .expect("bootstrap admin state should not be poisoned")
-                .export_reducer_load(&burn_p2p_bootstrap::ReducerLoadQuery {
-                    study_id: None,
-                    experiment_id: None,
-                    peer_id: None,
-                });
+            let reducer_load = with_admin_state(state, |state| {
+                Ok::<_, std::convert::Infallible>(state.export_reducer_load(
+                    &burn_p2p_bootstrap::ReducerLoadQuery {
+                        study_id: None,
+                        experiment_id: None,
+                        peer_id: None,
+                    },
+                ))
+            })?;
             write_json(stream, &reducer_load)?;
         }
         ("GET", "/revocations") => {
             let auth = auth_state
                 .as_ref()
                 .ok_or("browser-edge auth is not configured")?;
+            let (quarantined_peers, banned_peers) = with_admin_state(state, |state| {
+                Ok::<_, std::convert::Infallible>((
+                    state.quarantined_peers.clone(),
+                    state.banned_peers.clone(),
+                ))
+            })?;
             let response = RevocationResponse {
                 network_id: plan.network_id().clone(),
                 minimum_revocation_epoch: current_revocation_epoch(auth, state),
-                quarantined_peers: state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .quarantined_peers
-                    .clone(),
-                banned_peers: state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .banned_peers
-                    .clone(),
+                quarantined_peers,
+                banned_peers,
             };
             write_json(stream, &response)?;
         }
@@ -960,10 +936,10 @@ pub(crate) fn current_diagnostics(
     state: &Arc<Mutex<BootstrapAdminState>>,
     remaining_work_units: Option<u64>,
 ) -> burn_p2p_bootstrap::BootstrapDiagnostics {
-    state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .diagnostics(plan, Utc::now(), remaining_work_units)
+    with_admin_state(state, |state| {
+        Ok::<_, std::convert::Infallible>(state.diagnostics(plan, Utc::now(), remaining_work_units))
+    })
+    .expect("diagnostics should tolerate bootstrap admin state access")
 }
 
 pub(crate) fn current_diagnostics_bundle(
@@ -971,8 +947,12 @@ pub(crate) fn current_diagnostics_bundle(
     state: &Arc<Mutex<BootstrapAdminState>>,
     remaining_work_units: Option<u64>,
 ) -> burn_p2p_bootstrap::BootstrapDiagnosticsBundle {
-    state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .diagnostics_bundle(plan, Utc::now(), remaining_work_units)
+    with_admin_state(state, |state| {
+        Ok::<_, std::convert::Infallible>(state.diagnostics_bundle(
+            plan,
+            Utc::now(),
+            remaining_work_units,
+        ))
+    })
+    .expect("diagnostics bundle should tolerate bootstrap admin state access")
 }

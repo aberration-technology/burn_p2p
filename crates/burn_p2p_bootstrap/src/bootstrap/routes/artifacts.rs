@@ -47,11 +47,9 @@ pub(crate) fn handle_portal_artifact_route(
         );
         match segments.next() {
             None => {
-                let runs = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_artifact_run_summaries(&experiment_id)?;
+                let runs = with_admin_state(&context.state, |state| {
+                    state.export_artifact_run_summaries(&experiment_id)
+                })?;
                 write_response_for_method(
                     stream,
                     &request.method,
@@ -61,11 +59,12 @@ pub(crate) fn handle_portal_artifact_route(
                 )?;
             }
             Some(run_id) => {
-                let run_view = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_artifact_run_view(&experiment_id, &burn_p2p_core::RunId::new(run_id))?;
+                let run_view = with_admin_state(&context.state, |state| {
+                    state.export_artifact_run_view(
+                        &experiment_id,
+                        &burn_p2p_core::RunId::new(run_id),
+                    )
+                })?;
                 match run_view {
                     Some(run_view) => write_response_for_method(
                         stream,
@@ -89,11 +88,9 @@ pub(crate) fn handle_portal_artifact_route(
     }
 
     if let Some(head_id) = request.path.strip_prefix("/portal/artifacts/heads/") {
-        let head_view = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_head_artifact_view(&burn_p2p::HeadId::new(head_id))?;
+        let head_view = with_admin_state(&context.state, |state| {
+            state.export_head_artifact_view(&burn_p2p::HeadId::new(head_id))
+        })?;
         match head_view {
             Some(head_view) => write_response_for_method(
                 stream,
@@ -151,20 +148,13 @@ pub(crate) fn handle_artifact_publish_get_route(
         }
         match request.path.as_str() {
             "/admin/artifacts/publications" => {
-                let publications = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_published_artifacts()?;
+                let publications =
+                    with_admin_state(&context.state, |state| state.export_published_artifacts())?;
                 write_json_for_method(stream, &request.method, &publications)?;
                 return Ok(true);
             }
             "/admin/artifacts/jobs" => {
-                let jobs = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_artifact_jobs()?;
+                let jobs = with_admin_state(&context.state, |state| state.export_artifact_jobs())?;
                 write_json_for_method(stream, &request.method, &jobs)?;
                 return Ok(true);
             }
@@ -218,23 +208,19 @@ pub(crate) fn handle_artifact_publish_get_route(
     }
 
     if request.path == "/artifacts/aliases" {
-        let aliases = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_artifact_alias_statuses()?;
+        let aliases = with_admin_state(&context.state, |state| {
+            state.export_artifact_alias_statuses()
+        })?;
         write_json_for_method(stream, &request.method, &aliases)?;
         return Ok(true);
     }
 
     if let Some(experiment_id) = request.path.strip_prefix("/artifacts/aliases/") {
-        let aliases = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_artifact_alias_statuses_for_experiment(&burn_p2p::ExperimentId::new(
+        let aliases = with_admin_state(&context.state, |state| {
+            state.export_artifact_alias_statuses_for_experiment(&burn_p2p::ExperimentId::new(
                 experiment_id,
-            ))?;
+            ))
+        })?;
         write_json_for_method(stream, &request.method, &aliases)?;
         return Ok(true);
     }
@@ -247,19 +233,18 @@ pub(crate) fn handle_artifact_publish_get_route(
         );
         match segments.next() {
             None => {
-                let runs = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_artifact_run_summaries(&experiment_id)?;
+                let runs = with_admin_state(&context.state, |state| {
+                    state.export_artifact_run_summaries(&experiment_id)
+                })?;
                 write_json_for_method(stream, &request.method, &runs)?;
             }
             Some(run_id) => {
-                let run_view = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .export_artifact_run_view(&experiment_id, &burn_p2p_core::RunId::new(run_id))?;
+                let run_view = with_admin_state(&context.state, |state| {
+                    state.export_artifact_run_view(
+                        &experiment_id,
+                        &burn_p2p_core::RunId::new(run_id),
+                    )
+                })?;
                 match run_view {
                     Some(run_view) => write_json_for_method(stream, &request.method, &run_view)?,
                     None => {
@@ -276,11 +261,9 @@ pub(crate) fn handle_artifact_publish_get_route(
         return Ok(true);
     }
     if let Some(head_id) = request.path.strip_prefix("/artifacts/heads/") {
-        let head = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_head_artifact_view(&burn_p2p::HeadId::new(head_id))?;
+        let head = with_admin_state(&context.state, |state| {
+            state.export_head_artifact_view(&burn_p2p::HeadId::new(head_id))
+        })?;
         match head {
             Some(head) => write_json_for_method(stream, &request.method, &head)?,
             None => {
@@ -295,11 +278,9 @@ pub(crate) fn handle_artifact_publish_get_route(
         return Ok(true);
     }
     if let Some(export_job_id) = request.path.strip_prefix("/artifacts/export/") {
-        let job = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .export_artifact_job(&burn_p2p_core::ExportJobId::new(export_job_id))?;
+        let job = with_admin_state(&context.state, |state| {
+            state.export_artifact_job(&burn_p2p_core::ExportJobId::new(export_job_id))
+        })?;
         match job {
             Some(job) => write_json_for_method(stream, &request.method, &job)?,
             None => {
@@ -314,11 +295,9 @@ pub(crate) fn handle_artifact_publish_get_route(
         return Ok(true);
     }
     if let Some(ticket_id) = request.path.strip_prefix("/artifacts/download/") {
-        let artifact = context
-            .state
-            .lock()
-            .expect("bootstrap admin state should not be poisoned")
-            .resolve_artifact_download(&burn_p2p_core::DownloadTicketId::new(ticket_id))?;
+        let artifact = with_admin_state(&context.state, |state| {
+            state.resolve_artifact_download(&burn_p2p_core::DownloadTicketId::new(ticket_id))
+        })?;
         match artifact {
             Some(artifact) => {
                 let requested_range =
@@ -583,21 +562,16 @@ pub(crate) fn handle_artifact_publish_post_route(
                 } else {
                     serde_json::from_slice(&request.body)?
                 };
-                let result = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .backfill_artifact_aliases(request)?;
+                let result = with_admin_state(&context.state, |state| {
+                    state.backfill_artifact_aliases(request)
+                })?;
                 write_json(stream, &result)?;
                 return Ok(true);
             }
             ("POST", "/admin/artifacts/republish") => {
                 let export: ArtifactExportHttpRequest = serde_json::from_slice(&request.body)?;
-                let job = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .request_artifact_export(ExportRequest {
+                let job = with_admin_state(&context.state, |state| {
+                    state.request_artifact_export(ExportRequest {
                         requested_by_principal_id: None,
                         experiment_id: export.experiment_id,
                         run_id: export.run_id,
@@ -605,7 +579,8 @@ pub(crate) fn handle_artifact_publish_post_route(
                         artifact_profile: export.artifact_profile,
                         publication_target_id: export.publication_target_id,
                         artifact_alias_id: export.artifact_alias_id,
-                    })?;
+                    })
+                })?;
                 write_json(stream, &job)?;
                 return Ok(true);
             }
@@ -615,11 +590,9 @@ pub(crate) fn handle_artifact_publish_post_route(
                 } else {
                     serde_json::from_slice(&request.body)?
                 };
-                let result = context
-                    .state
-                    .lock()
-                    .expect("bootstrap admin state should not be poisoned")
-                    .prune_artifact_publications(request)?;
+                let result = with_admin_state(&context.state, |state| {
+                    state.prune_artifact_publications(request)
+                })?;
                 write_json(stream, &result)?;
                 return Ok(true);
             }
@@ -648,11 +621,8 @@ pub(crate) fn handle_artifact_publish_post_route(
                 context.auth_state.as_ref(),
                 &export.experiment_id,
             )?;
-            let job = context
-                .state
-                .lock()
-                .expect("bootstrap admin state should not be poisoned")
-                .request_artifact_export(ExportRequest {
+            let job = with_admin_state(&context.state, |state| {
+                state.request_artifact_export(ExportRequest {
                     requested_by_principal_id: Some(principal_id),
                     experiment_id: export.experiment_id,
                     run_id: export.run_id,
@@ -660,7 +630,8 @@ pub(crate) fn handle_artifact_publish_post_route(
                     artifact_profile: export.artifact_profile,
                     publication_target_id: export.publication_target_id,
                     artifact_alias_id: export.artifact_alias_id,
-                })?;
+                })
+            })?;
             write_json(stream, &job)?;
             return Ok(true);
         }
@@ -672,11 +643,8 @@ pub(crate) fn handle_artifact_publish_post_route(
                 context.auth_state.as_ref(),
                 &download.experiment_id,
             )?;
-            let ticket = context
-                .state
-                .lock()
-                .expect("bootstrap admin state should not be poisoned")
-                .request_artifact_download_ticket(DownloadTicketRequest {
+            let ticket = with_admin_state(&context.state, |state| {
+                state.request_artifact_download_ticket(DownloadTicketRequest {
                     principal_id,
                     experiment_id: download.experiment_id,
                     run_id: download.run_id,
@@ -684,7 +652,8 @@ pub(crate) fn handle_artifact_publish_post_route(
                     artifact_profile: download.artifact_profile,
                     publication_target_id: download.publication_target_id,
                     artifact_alias_id: download.artifact_alias_id,
-                })?;
+                })
+            })?;
             write_json(stream, &ticket)?;
             return Ok(true);
         }
@@ -705,10 +674,12 @@ pub(crate) fn handle_artifact_publish_post_route(
 
 #[cfg(feature = "artifact-publish")]
 pub(crate) fn artifact_publication_enabled(state: &Arc<Mutex<BootstrapAdminState>>) -> bool {
-    let state = state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned");
-    state.publication_store_root.is_some() && state.artifact_store_root.is_some()
+    with_admin_state(state, |state| {
+        Ok::<_, std::convert::Infallible>(
+            state.publication_store_root.is_some() && state.artifact_store_root.is_some(),
+        )
+    })
+    .expect("artifact publication check should tolerate bootstrap admin state access")
 }
 
 #[cfg(feature = "artifact-publish")]
@@ -798,8 +769,5 @@ pub(crate) fn session_allows_artifact_access(
 pub(crate) fn current_artifact_live_event(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Option<burn_p2p_core::ArtifactLiveEvent>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_latest_artifact_live_event()?)
+    with_admin_state(state, |state| state.export_latest_artifact_live_event())
 }

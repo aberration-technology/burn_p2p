@@ -1,4 +1,6 @@
 use super::*;
+use std::io::Error as IoError;
+use std::sync::{Mutex, MutexGuard};
 
 mod admin;
 mod app_state;
@@ -18,6 +20,27 @@ pub(crate) use metrics::*;
 pub(crate) use post::*;
 pub(crate) use trust_state::*;
 
+pub(crate) fn lock_shared<'a, T>(
+    mutex: &'a Mutex<T>,
+    label: &'static str,
+) -> Result<MutexGuard<'a, T>, Box<dyn std::error::Error>> {
+    mutex
+        .lock()
+        .map_err(|_| IoError::other(format!("{label} lock poisoned")).into())
+}
+
+pub(crate) fn with_admin_state<T, E, F>(
+    state: &Arc<Mutex<BootstrapAdminState>>,
+    f: F,
+) -> Result<T, Box<dyn std::error::Error>>
+where
+    F: FnOnce(&BootstrapAdminState) -> Result<T, E>,
+    E: std::fmt::Display,
+{
+    let state = lock_shared(state, "bootstrap admin state")?;
+    f(&state).map_err(|err| IoError::other(err.to_string()).into())
+}
+
 pub(crate) fn handle_connection(
     mut stream: TcpStream,
     context: HttpServerContext,
@@ -25,11 +48,7 @@ pub(crate) fn handle_connection(
     let Some(request) = read_request(&stream)? else {
         return Ok(());
     };
-    let current_config = context
-        .config
-        .lock()
-        .expect("daemon config should not be poisoned")
-        .clone();
+    let current_config = lock_shared(&context.config, "daemon config")?.clone();
 
     if handle_get_route(&mut stream, &context, &current_config, &request)? {
         return Ok(());

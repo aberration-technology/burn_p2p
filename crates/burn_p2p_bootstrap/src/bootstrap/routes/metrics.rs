@@ -161,7 +161,7 @@ pub(crate) fn handle_metrics_indexer_route(
         }
         write_json(
             stream,
-            &current_head_eval_reports(&context.state, &burn_p2p::HeadId::new(head_id)),
+            &current_head_eval_reports(&context.state, &burn_p2p::HeadId::new(head_id))?,
         )?;
         return Ok(true);
     }
@@ -327,10 +327,7 @@ pub(crate) fn handle_metrics_indexer_route(
 pub(crate) fn current_metrics_snapshots(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p_metrics::MetricsSnapshot>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_snapshots()?)
+    with_admin_state(state, |state| state.export_metrics_snapshots())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -345,10 +342,9 @@ pub(crate) fn current_metrics_snapshots_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p_metrics::MetricsSnapshot>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_snapshots_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_snapshots_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -363,10 +359,7 @@ pub(crate) fn current_metrics_snapshots_for_experiment(
 pub(crate) fn current_metrics_ledger(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p::MetricsLedgerSegment>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_ledger_segments()?)
+    with_admin_state(state, |state| state.export_metrics_ledger_segments())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -380,10 +373,7 @@ pub(crate) fn current_metrics_ledger(
 pub(crate) fn current_metrics_catchup(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p_metrics::MetricsCatchupBundle>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_catchup_bundles()?)
+    with_admin_state(state, |state| state.export_metrics_catchup_bundles())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -398,10 +388,9 @@ pub(crate) fn current_metrics_catchup_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p_metrics::MetricsCatchupBundle>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_catchup_bundles_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_catchup_bundles_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -416,10 +405,7 @@ pub(crate) fn current_metrics_catchup_for_experiment(
 pub(crate) fn current_metrics_candidates(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p::ReducerCohortMetrics>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_candidates()?)
+    with_admin_state(state, |state| state.export_metrics_candidates())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -434,10 +420,9 @@ pub(crate) fn current_metrics_candidates_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p::ReducerCohortMetrics>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_candidates_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_candidates_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -452,10 +437,7 @@ pub(crate) fn current_metrics_candidates_for_experiment(
 pub(crate) fn current_metrics_disagreements(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p::ReducerCohortMetrics>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_disagreements()?)
+    with_admin_state(state, |state| state.export_metrics_disagreements())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -470,10 +452,9 @@ pub(crate) fn current_metrics_disagreements_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p::ReducerCohortMetrics>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_disagreements_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_disagreements_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -488,10 +469,9 @@ pub(crate) fn current_metrics_disagreements_for_experiment(
 pub(crate) fn current_metrics_peer_windows(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p_metrics::PeerWindowDistributionSummary>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_peer_window_distributions()?)
+    with_admin_state(state, |state| {
+        state.export_metrics_peer_window_distributions()
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -506,10 +486,9 @@ pub(crate) fn current_metrics_peer_windows_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p_metrics::PeerWindowDistributionSummary>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_peer_window_distributions_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_peer_window_distributions_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -527,10 +506,13 @@ pub(crate) fn current_metrics_peer_window_detail(
     revision_id: &burn_p2p::RevisionId,
     base_head_id: &burn_p2p::HeadId,
 ) -> Result<Option<burn_p2p_metrics::PeerWindowDistributionDetail>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_peer_window_distribution_detail(experiment_id, revision_id, base_head_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_peer_window_distribution_detail(
+            experiment_id,
+            revision_id,
+            base_head_id,
+        )
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -547,10 +529,7 @@ pub(crate) fn current_metrics_peer_window_detail(
 pub(crate) fn current_metrics_head_adoption_curves(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p_metrics::CanonicalHeadAdoptionCurve>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_head_adoption_curves()?)
+    with_admin_state(state, |state| state.export_metrics_head_adoption_curves())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -565,10 +544,9 @@ pub(crate) fn current_metrics_head_adoption_curves_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p_metrics::CanonicalHeadAdoptionCurve>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_head_adoption_curves_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_head_adoption_curves_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -583,10 +561,7 @@ pub(crate) fn current_metrics_head_adoption_curves_for_experiment(
 pub(crate) fn current_metrics_head_populations(
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<Vec<burn_p2p_metrics::VisibleHeadPopulationHistogram>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_head_populations()?)
+    with_admin_state(state, |state| state.export_metrics_head_populations())
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -601,10 +576,9 @@ pub(crate) fn current_metrics_head_populations_for_experiment(
     state: &Arc<Mutex<BootstrapAdminState>>,
     experiment_id: &burn_p2p::ExperimentId,
 ) -> Result<Vec<burn_p2p_metrics::VisibleHeadPopulationHistogram>, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_head_populations_for_experiment(experiment_id)?)
+    with_admin_state(state, |state| {
+        state.export_metrics_head_populations_for_experiment(experiment_id)
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -620,10 +594,9 @@ pub(crate) fn current_metrics_live_event(
     plan: &BootstrapPlan,
     state: &Arc<Mutex<BootstrapAdminState>>,
 ) -> Result<burn_p2p_core::MetricsLiveEvent, Box<dyn std::error::Error>> {
-    Ok(state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_metrics_live_event(plan.network_id())?)
+    with_admin_state(state, |state| {
+        state.export_metrics_live_event(plan.network_id())
+    })
 }
 
 #[cfg(not(feature = "metrics-indexer"))]
@@ -637,9 +610,6 @@ pub(crate) fn current_metrics_live_event(
 pub(crate) fn current_head_eval_reports(
     state: &Arc<Mutex<BootstrapAdminState>>,
     head_id: &burn_p2p::HeadId,
-) -> Vec<burn_p2p::HeadEvalReport> {
-    state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned")
-        .export_head_eval_reports(head_id)
+) -> Result<Vec<burn_p2p::HeadEvalReport>, Box<dyn std::error::Error>> {
+    Ok(lock_shared(state, "bootstrap admin state")?.export_head_eval_reports(head_id))
 }

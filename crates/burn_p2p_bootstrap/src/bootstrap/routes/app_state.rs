@@ -17,9 +17,7 @@ pub(crate) fn current_browser_portal_snapshot(
             )
         })
         .unwrap_or_else(|| (None, BTreeSet::new()));
-    let state = state
-        .lock()
-        .expect("bootstrap admin state should not be poisoned");
+    let state = lock_shared(state, "bootstrap admin state")?;
     Ok(state.browser_portal_snapshot(
         plan,
         BrowserEdgeSnapshotConfig {
