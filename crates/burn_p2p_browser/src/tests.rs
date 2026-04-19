@@ -4072,6 +4072,61 @@ fn worker_runtime_apply_swarm_directory_head_and_metrics_commands_drive_runtime_
 }
 
 #[test]
+fn worker_runtime_promotes_head_sync_once_direct_transport_arrives() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            site_seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime.state = Some(BrowserRuntimeState::Joining {
+        role: BrowserRuntimeRole::BrowserTrainerWgpu,
+        stage: BrowserJoinStage::HeadSync,
+    });
+    runtime.storage.remember_head(HeadId::new("head-browser-1"));
+
+    let events = runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(BrowserSwarmStatus {
+            phase: BrowserSwarmPhase::TransportConnected,
+            seed_bootstrap: BrowserResolvedSeedBootstrap {
+                source: BrowserSeedBootstrapSource::EdgeSigned,
+                seed_node_urls: vec![TEST_EDGE_WEBRTC_DIRECT_SEED.into()],
+                advertised_seed_count: 1,
+                last_error: None,
+            },
+            transport_source: BrowserTransportObservationSource::Connected,
+            desired_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_transport: Some(BrowserTransportFamily::WebRtcDirect),
+            connected_peer_count: 1,
+            connected_peer_ids: vec![PeerId::new("peer-browser-1")],
+            directory_synced: true,
+            assignment_bound: true,
+            head_synced: true,
+            artifact_source: BrowserArtifactSource::Unavailable,
+            last_error: None,
+        })),
+        None,
+        None,
+    );
+
+    assert_eq!(runtime.state, Some(BrowserRuntimeState::Trainer));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::RuntimeStateChanged(BrowserRuntimeState::Trainer)
+    )));
+}
+
+#[test]
 fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
     let mut config = BrowserRuntimeConfig::new(
         "https://edge.example",

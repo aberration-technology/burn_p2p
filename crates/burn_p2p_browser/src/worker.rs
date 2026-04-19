@@ -288,6 +288,15 @@ impl BrowserWorkerRuntime {
         match state {
             BrowserRuntimeState::Joining {
                 role,
+                stage: crate::BrowserJoinStage::HeadSync,
+            } if self.storage.last_head_id.is_some()
+                && (!Self::role_requires_peer_transport(&role)
+                    || self.transport.active.is_some()) =>
+            {
+                self.state = Some(Self::active_state_for_role(role));
+            }
+            BrowserRuntimeState::Joining {
+                role,
                 stage: crate::BrowserJoinStage::TransportConnect,
             } if self.transport.active.is_some() => {
                 self.state = Some(Self::active_state_for_role(role));

@@ -2022,7 +2022,17 @@ fn training_slice_status(
         return "waiting for checkpoint sync".into();
     }
     if storage.cached_microshards.is_empty() {
-        return "downloading assigned slice".into();
+        return match state {
+            BrowserRuntimeState::Trainer => "slice loads when training starts".into(),
+            BrowserRuntimeState::Catchup {
+                role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            } => "waiting to load the assigned slice".into(),
+            BrowserRuntimeState::Joining {
+                role: BrowserRuntimeRole::BrowserTrainerWgpu,
+                ..
+            } => "waiting to load the assigned slice".into(),
+            _ => "downloading assigned slice".into(),
+        };
     }
 
     let microshards_ready = storage.cached_microshards.len();
