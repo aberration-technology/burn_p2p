@@ -1,38 +1,50 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, ensure};
+use anyhow::Context;
 use burn_p2p::{
-    ArtifactDescriptor, ArtifactId, AuthProvider, BrowserEdgeSnapshot, BrowserLoginProvider,
-    BrowserMode, ClientReleaseManifest, ContentId, ContributionReceipt, ExperimentDirectoryEntry,
-    ExperimentId, ExperimentScope, HeadDescriptor, HeadId, IdentityConnector, LeaseId,
-    MicroShardId, NetworkManifest, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId,
-    ProjectFamilyId, RevisionId, RevocationEpoch, StaticIdentityConnector, StaticPrincipalRecord,
+    ArtifactDescriptor, ArtifactId, BrowserEdgeSnapshot, ClientReleaseManifest, ContentId,
+    ExperimentDirectoryEntry, ExperimentId, ExperimentScope, HeadDescriptor, HeadId, LeaseId,
+    MicroShardId, NetworkManifest, PeerId, PeerRole, PeerRoleSet, PrincipalId, RevisionId,
     WorkloadId, WorkloadTrainingLease,
 };
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
-    BrowserPeerEnrollmentRequest, BrowserRuntimeRole, BrowserSessionRuntimeConfig,
-    BrowserSessionRuntimeHandle, BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings,
-    BrowserWorkerIdentity,
+    BrowserRuntimeRole, BrowserSessionRuntimeConfig, BrowserSessionRuntimeHandle,
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings, BrowserWorkerIdentity,
 };
 use burn_p2p_core::{
-    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardEntry,
-    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
-    BrowserSeedRecord, BrowserSeedTransportKind, BrowserSeedTransportPolicy,
-    BrowserTransportSurface, DownloadDeliveryMode, DownloadTicket, DownloadTicketId,
-    PublicationTargetId, PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus,
-    RunId, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode,
-    TrustBundleExport, TrustedIssuerStatus,
+    BrowserLeaderboardEntry, BrowserSeedRecord, PublicationTargetId, PublishedArtifactId, RunId,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
-use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifactView};
-use chrono::{Duration as ChronoDuration, Utc};
 #[cfg(target_arch = "wasm32")]
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[cfg(not(target_arch = "wasm32"))]
+use anyhow::ensure;
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p::{
+    AuthProvider, BrowserLoginProvider, BrowserMode, ContributionReceipt, IdentityConnector,
+    PrincipalClaims, ProjectFamilyId, RevocationEpoch, StaticIdentityConnector,
+    StaticPrincipalRecord,
+};
+#[cfg(not(target_arch = "wasm32"))]
 use burn_p2p::{NodeCertificateAuthority, NodeEnrollmentRequest, PrincipalSession, RunningNode};
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_browser::BrowserPeerEnrollmentRequest;
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_core::{
+    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardSnapshot,
+    BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement, BrowserSeedTransportKind,
+    BrowserSeedTransportPolicy, BrowserTransportSurface, DownloadDeliveryMode, DownloadTicket,
+    DownloadTicketId, PublishedArtifactRecord, PublishedArtifactStatus, SchemaEnvelope,
+    SignatureAlgorithm, SignatureMetadata, SignedPayload, SocialMode, TrustBundleExport,
+    TrustedIssuerStatus,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifactView};
+#[cfg(not(target_arch = "wasm32"))]
+use chrono::{Duration as ChronoDuration, Utc};
 #[cfg(not(target_arch = "wasm32"))]
 use libp2p_identity::Keypair;
 #[cfg(not(target_arch = "wasm32"))]
@@ -51,22 +63,39 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 const LOGIN_PATH: &str = "/login/static";
+#[cfg(not(target_arch = "wasm32"))]
 const CALLBACK_PATH: &str = "/callback/static";
+#[cfg(not(target_arch = "wasm32"))]
 const ENROLL_PATH: &str = "/enroll";
+#[cfg(not(target_arch = "wasm32"))]
 const RECEIPTS_PATH: &str = "/receipts/browser";
+#[cfg(not(target_arch = "wasm32"))]
 const PORTAL_SNAPSHOT_PATH: &str = "/portal/snapshot";
+#[cfg(not(target_arch = "wasm32"))]
 const DATASET_PREFIX: &str = "/dataset";
+#[cfg(not(target_arch = "wasm32"))]
 const DATASET_MANIFEST_PATH: &str = "/dataset/fetch-manifest.json";
+#[cfg(not(target_arch = "wasm32"))]
 const DIRECTORY_PATH: &str = "/directory";
+#[cfg(not(target_arch = "wasm32"))]
 const SIGNED_DIRECTORY_PATH: &str = "/directory/signed";
+#[cfg(not(target_arch = "wasm32"))]
 const HEADS_PATH: &str = "/heads";
+#[cfg(not(target_arch = "wasm32"))]
 const LEADERBOARD_PATH: &str = "/leaderboard";
+#[cfg(not(target_arch = "wasm32"))]
 const SIGNED_LEADERBOARD_PATH: &str = "/leaderboard/signed";
+#[cfg(not(target_arch = "wasm32"))]
 const SIGNED_BROWSER_SEEDS_PATH: &str = "/browser/seeds/signed";
+#[cfg(not(target_arch = "wasm32"))]
 const TRUST_PATH: &str = "/trust";
+#[cfg(not(target_arch = "wasm32"))]
 const METRICS_CATCHUP_PATH: &str = "/metrics/catchup";
+#[cfg(not(target_arch = "wasm32"))]
 const METRICS_LIVE_LATEST_PATH: &str = "/metrics/live/latest";
+#[cfg(not(target_arch = "wasm32"))]
 const EDGE_FIXTURE_LABEL: &str = "browser-edge-fixture";
 const DEFAULT_TARGET_ARTIFACT_ID: &str = "browser-wasm";
 
