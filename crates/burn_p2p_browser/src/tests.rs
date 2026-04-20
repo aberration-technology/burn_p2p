@@ -5237,6 +5237,39 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
 }
 
 #[test]
+fn browser_swarm_status_hides_non_public_retry_noise_once_direct_transport_is_connected() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    runtime.transport.selected = Some(BrowserTransportKind::WebRtcDirect);
+    runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
+    runtime.transport.connected_peer_ids = vec![PeerId::new("peer-browser-bootstrap")];
+    runtime.transport.last_error = Some(
+        "Failed to negotiate transport protocol(s): [(/ip4/127.0.0.1/udp/57592/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: Timeout has been reached)]"
+            .into(),
+    );
+
+    assert_eq!(runtime.swarm_status().last_error, None);
+
+    runtime.transport.connected = None;
+
+    assert_eq!(
+        runtime.swarm_status().last_error.as_deref(),
+        Some(
+            "Failed to negotiate transport protocol(s): [(/ip4/127.0.0.1/udp/57592/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: Timeout has been reached)]"
+        )
+    );
+}
+
+#[test]
 fn browser_assignment_dataset_view_uses_swarm_directory_when_signed_directory_is_missing() {
     let mut storage = BrowserStorageSnapshot::default();
     storage.remember_assignment(BrowserStoredAssignment {

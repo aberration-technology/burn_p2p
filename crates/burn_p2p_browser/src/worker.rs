@@ -7,6 +7,7 @@ use burn_p2p::{
 use burn_p2p_core::{
     BrowserArtifactSource, BrowserSeedBootstrapSource, BrowserSwarmPhase, BrowserSwarmStatus,
     MetricsLiveEvent, SchemaEnvelope, SignedPayload,
+    operator_visible_last_error_with_active_transport,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
 use burn_p2p_swarm::PlannedBrowserSwarmRuntime;
@@ -100,16 +101,18 @@ impl BrowserWorkerRuntime {
             assignment_bound,
             head_synced,
             artifact_source,
-            last_error: self
-                .transport
-                .last_error
-                .clone()
-                .or_else(|| planned_status.last_error.clone())
-                .or_else(|| {
-                    self.swarm_runtime
-                        .dial_plan_ref()
-                        .and_then(|plan| plan.warnings.first().cloned())
-                }),
+            last_error: operator_visible_last_error_with_active_transport(
+                self.transport
+                    .last_error
+                    .as_deref()
+                    .or(planned_status.last_error.as_deref())
+                    .or_else(|| {
+                        self.swarm_runtime
+                            .dial_plan_ref()
+                            .and_then(|plan| plan.warnings.first().map(String::as_str))
+                    }),
+                self.transport.connected_family().is_some(),
+            ),
         }
     }
 
