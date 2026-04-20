@@ -2140,7 +2140,8 @@ impl BrowserEdgeClient {
                 .post_json_with_header(&self.enrollment.callback_path, &payload, header, token)
                 .await;
         }
-        self.post_json(&self.enrollment.callback_path, &payload).await
+        self.post_json(&self.enrollment.callback_path, &payload)
+            .await
     }
 
     /// Performs the enroll operation.

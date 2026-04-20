@@ -3131,7 +3131,8 @@ fn spawn_callback_capture_server() -> (String, std::thread::JoinHandle<String>) 
                 break;
             }
             request.extend_from_slice(&chunk[..read]);
-            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
                 continue;
             };
             let header_end = header_end + 4;
@@ -3154,9 +3155,8 @@ fn spawn_callback_capture_server() -> (String, std::thread::JoinHandle<String>) 
             .lines()
             .find_map(|line| {
                 let (name, value) = line.split_once(':')?;
-                (name.eq_ignore_ascii_case("x-burn-p2p-canary-token")).then_some(
-                    value.trim().to_owned(),
-                )
+                (name.eq_ignore_ascii_case("x-burn-p2p-canary-token"))
+                    .then_some(value.trim().to_owned())
             })
             .unwrap_or_default();
 
@@ -3674,7 +3674,10 @@ fn browser_edge_client_trusted_callback_header_completes_provider_login() {
 
     let trusted_header = handle.join().expect("join callback server");
     assert_eq!(trusted_header, "trusted-token");
-    assert_eq!(session.claims.principal_id, PrincipalId::new("principal-browser"));
+    assert_eq!(
+        session.claims.principal_id,
+        PrincipalId::new("principal-browser")
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
