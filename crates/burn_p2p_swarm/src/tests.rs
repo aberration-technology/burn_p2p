@@ -26,13 +26,14 @@ use semver::Version;
 
 use super::{
     AggregateProposalAnnouncement, ArtifactChunkPayload, BrowserSwarmBootstrap,
-    BrowserSwarmRuntime, ControlAnnouncement, ControlPlaneSnapshot, ExperimentControlEnvelope,
-    ExperimentLifecycleAnnouncement, ExperimentOverlaySet, FleetScheduleAnnouncement,
-    HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent, MemoryControlPlaneShell,
-    MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell, OverlayChannel, OverlayTopic,
-    PeerDirectoryAnnouncement, PeerObservation, PeerStore, PlannedBrowserSwarmRuntime, ProtocolSet,
-    PubsubEnvelope, PubsubPayload, ReductionCertificateAnnouncement, RuntimeBoundary,
-    RuntimeTransportPolicy, SwarmAddress, SwarmError, TransportKind, ValidationQuorumAnnouncement,
+    BrowserSwarmDialPlan, BrowserSwarmRuntime, ControlAnnouncement, ControlPlaneSnapshot,
+    ExperimentControlEnvelope, ExperimentLifecycleAnnouncement, ExperimentOverlaySet,
+    FleetScheduleAnnouncement, HeadAnnouncement, LiveControlPlaneEvent, LiveSwarmEvent,
+    MemoryControlPlaneShell, MemorySwarmShell, MigrationCoordinator, NativeControlPlaneShell,
+    OverlayChannel, OverlayTopic, PeerDirectoryAnnouncement, PeerObservation, PeerStore,
+    PlannedBrowserSwarmRuntime, ProtocolSet, PubsubEnvelope, PubsubPayload,
+    ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress,
+    SwarmError, TransportKind, ValidationQuorumAnnouncement, WasmPendingConnect,
     browser_additional_direct_connection_budget, browser_direct_seed_retry_candidates,
     browser_peer_directory_dial_candidates, browser_should_retry_direct_handoff,
     browser_transport_family_for_seed_url, browser_wss_fallback_peers_to_disconnect,
@@ -614,6 +615,34 @@ fn browser_direct_seed_retry_candidates_prefer_direct_transports_after_wss_conne
     assert_eq!(
         candidates[0].transport,
         BrowserTransportFamily::WebRtcDirect
+    );
+}
+
+#[test]
+fn wasm_pending_connect_final_attempt_error_preserves_async_candidate_failures() {
+    let mut pending = WasmPendingConnect {
+        dial_plan: BrowserSwarmDialPlan::default(),
+        candidates: Vec::new(),
+        next_candidate_index: 0,
+        attempt_errors: Vec::new(),
+        response_tx: None,
+    };
+    pending.record_attempt_error(
+        "/ip4/203.0.113.10/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: timed out".to_owned(),
+    );
+    pending.record_attempt_error(
+        "/dns4/edge.dragon.aberration.technology/tcp/443/wss: websocket handshake failed"
+            .to_owned(),
+    );
+    pending.record_attempt_error(
+        "/ip4/203.0.113.10/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: timed out".to_owned(),
+    );
+
+    assert_eq!(
+        pending.final_attempt_error(),
+        SwarmError::Runtime(
+            "browser direct swarm could not dial any supported seed candidate: /ip4/203.0.113.10/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA: timed out | /dns4/edge.dragon.aberration.technology/tcp/443/wss: websocket handshake failed".into()
+        )
     );
 }
 

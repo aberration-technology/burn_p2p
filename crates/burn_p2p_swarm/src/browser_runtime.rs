@@ -25,6 +25,8 @@ use std::num::NonZeroU8;
 use std::{cell::RefCell, rc::Rc};
 
 use burn_p2p_core::time::{Duration, Instant};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
 use futures::{
     FutureExt, StreamExt,
@@ -330,15 +332,18 @@ struct WasmBrowserSwarmSharedState {
     updates: Vec<BrowserSwarmUpdate>,
 }
 
-#[cfg(target_arch = "wasm32")]
-struct WasmPendingConnect {
-    dial_plan: BrowserSwarmDialPlan,
-    candidates: Vec<BrowserSeedDialCandidate>,
-    next_candidate_index: usize,
-    response_tx: Option<oneshot::Sender<Result<BrowserSwarmDialPlan, SwarmError>>>,
+#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct WasmPendingConnect {
+    pub(crate) dial_plan: BrowserSwarmDialPlan,
+    pub(crate) candidates: Vec<BrowserSeedDialCandidate>,
+    pub(crate) next_candidate_index: usize,
+    pub(crate) attempt_errors: Vec<String>,
+    pub(crate) response_tx: Option<oneshot::Sender<Result<BrowserSwarmDialPlan, SwarmError>>>,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl WasmPendingConnect {
     fn next_candidate(&mut self) -> Option<BrowserSeedDialCandidate> {
         let candidate = self.candidates.get(self.next_candidate_index).cloned();
@@ -346,6 +351,26 @@ impl WasmPendingConnect {
             self.next_candidate_index += 1;
         }
         candidate
+    }
+
+    pub(crate) fn record_attempt_error(&mut self, error_message: impl Into<String>) {
+        let error_message = error_message.into();
+        if !error_message.is_empty() && !self.attempt_errors.contains(&error_message) {
+            self.attempt_errors.push(error_message);
+        }
+    }
+
+    pub(crate) fn final_attempt_error(&self) -> SwarmError {
+        if self.attempt_errors.is_empty() {
+            SwarmError::Runtime(
+                "browser direct swarm could not dial any supported seed candidate".into(),
+            )
+        } else {
+            SwarmError::Runtime(format!(
+                "browser direct swarm could not dial any supported seed candidate: {}",
+                self.attempt_errors.join(" | ")
+            ))
+        }
     }
 }
 
@@ -772,6 +797,7 @@ async fn run_wasm_browser_swarm_task(
                             dial_plan: dial_plan.clone(),
                             candidates,
                             next_candidate_index: 0,
+                            attempt_errors: Vec::new(),
                             response_tx: Some(response_tx),
                         });
                         if let Err(error) = dial_next_wasm_browser_seed_candidate(
@@ -1035,6 +1061,7 @@ async fn run_wasm_browser_swarm_task(
                     {
                         let _ = response_tx.send(Ok(pending.dial_plan));
                     }
+                    active_candidate = None;
                     let _ = ensure_wasm_browser_topic_subscriptions(
                         &mut swarm,
                         current_bootstrap.as_ref(),
@@ -1089,6 +1116,15 @@ async fn run_wasm_browser_swarm_task(
                     let error_message = error.to_string();
                     shared.borrow_mut().status.last_error = Some(error_message.clone());
                     if let Some(pending) = pending_connect.as_mut() {
+                        if let Some(candidate) = active_candidate.take() {
+                            pending.record_attempt_error(format!(
+                                "{}: {}",
+                                candidate.seed_url.as_str(),
+                                error_message
+                            ));
+                        } else {
+                            pending.record_attempt_error(error_message);
+                        }
                         if let Err(next_error) = dial_next_wasm_browser_seed_candidate(
                             &mut swarm,
                             &shared,
@@ -1511,7 +1547,6 @@ fn dial_next_wasm_browser_seed_candidate(
     pending: &mut WasmPendingConnect,
     active_candidate: &mut Option<BrowserSeedDialCandidate>,
 ) -> Result<(), SwarmError> {
-    let mut attempt_errors = Vec::new();
     while let Some(candidate) = pending.next_candidate() {
         let address = candidate
             .seed_url
@@ -1534,19 +1569,12 @@ fn dial_next_wasm_browser_seed_candidate(
             Err(error) => {
                 let error_message = format!("{}: {}", candidate.seed_url.as_str(), error);
                 shared.borrow_mut().status.last_error = Some(error_message.clone());
-                attempt_errors.push(error_message);
+                pending.record_attempt_error(error_message);
             }
         }
     }
 
-    Err(SwarmError::Runtime(if attempt_errors.is_empty() {
-        "browser direct swarm could not dial any supported seed candidate".into()
-    } else {
-        format!(
-            "browser direct swarm could not dial any supported seed candidate: {}",
-            attempt_errors.join(" | ")
-        )
-    }))
+    Err(pending.final_attempt_error())
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -2207,6 +2235,7 @@ fn reconnect_wasm_browser_seed_candidates(
         dial_plan,
         candidates,
         next_candidate_index: 0,
+        attempt_errors: Vec::new(),
         response_tx: None,
     });
     if let Some(pending) = pending_connect.as_mut()
