@@ -89,6 +89,7 @@ pub(crate) fn other_native_control_name(
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub(crate) fn other_native_control_name<T>(_event: &SwarmEvent<T>) -> &'static str {
     "other"
 }
@@ -273,6 +274,7 @@ pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, 
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, std::io::Error> {
     Ok(address.clone())
 }

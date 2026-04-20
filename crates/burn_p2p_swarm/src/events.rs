@@ -2035,6 +2035,7 @@ pub(crate) fn apply_pubsub_payload(snapshot: &mut ControlPlaneSnapshot, payload:
     apply_pubsub_payload_with_index(snapshot, &mut index, payload);
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn pubsub_payload_kind(payload: &PubsubPayload) -> &'static str {
     match payload {
         PubsubPayload::Control(_) => "control",
