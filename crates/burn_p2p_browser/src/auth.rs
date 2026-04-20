@@ -410,6 +410,8 @@ pub struct BrowserEdgeClient {
     bindings: BrowserUiBindings,
     enrollment: BrowserEnrollmentConfig,
     peer_artifact_fetcher: Option<Arc<dyn BrowserPeerArtifactFetcher>>,
+    trusted_callback_header: Option<String>,
+    trusted_callback_token: Option<String>,
 }
 
 impl std::fmt::Debug for BrowserEdgeClient {
@@ -767,7 +769,20 @@ impl BrowserEdgeClient {
             bindings,
             enrollment,
             peer_artifact_fetcher: None,
+            trusted_callback_header: None,
+            trusted_callback_token: None,
         }
+    }
+
+    /// Returns a cloned client that attaches one trusted callback header during callback completion.
+    pub fn with_trusted_callback(
+        mut self,
+        header: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        self.trusted_callback_header = Some(header.into());
+        self.trusted_callback_token = Some(token.into());
+        self
     }
 
     /// Returns a copy configured with an explicit browser-native peer artifact fetcher.
@@ -2111,16 +2126,21 @@ impl BrowserEdgeClient {
             return Err(BrowserAuthClientError::MissingCallbackPath);
         }
 
-        self.post_json(
-            &self.enrollment.callback_path,
-            &CallbackPayload {
-                login_id: login.login_id.clone(),
-                state: login.state.clone(),
-                principal_id,
-                provider_code,
-            },
-        )
-        .await
+        let payload = CallbackPayload {
+            login_id: login.login_id.clone(),
+            state: login.state.clone(),
+            principal_id,
+            provider_code,
+        };
+        if let (Some(header), Some(token)) = (
+            self.trusted_callback_header.as_deref(),
+            self.trusted_callback_token.as_deref(),
+        ) {
+            return self
+                .post_json_with_header(&self.enrollment.callback_path, &payload, header, token)
+                .await;
+        }
+        self.post_json(&self.enrollment.callback_path, &payload).await
     }
 
     /// Performs the enroll operation.
@@ -2234,6 +2254,29 @@ impl BrowserEdgeClient {
             .http
             .post(self.bindings.endpoint_url(path))
             .header("x-session-id", session_id.as_str())
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    async fn post_json_with_header<Req, Res>(
+        &self,
+        path: &str,
+        body: &Req,
+        header: &str,
+        value: &str,
+    ) -> Result<Res, BrowserAuthClientError>
+    where
+        Req: Serialize + ?Sized,
+        Res: DeserializeOwned,
+    {
+        Ok(self
+            .http
+            .post(self.bindings.endpoint_url(path))
+            .header(header, value)
             .json(body)
             .send()
             .await?

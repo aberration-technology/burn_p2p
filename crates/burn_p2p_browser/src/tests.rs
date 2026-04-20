@@ -15,7 +15,7 @@ use burn_p2p::{
     ContributionReceipt, ContributionReceiptId, ExperimentDirectoryEntry,
     ExperimentDirectoryPolicyExt, ExperimentDirectoryProjectionBuilder, ExperimentId,
     ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
-    HeadId, NetworkId, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId,
+    HeadId, LoginStart, NetworkId, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId,
     PrincipalSession, RevisionId, StudyId, WindowActivation, WindowId, WorkloadId,
 };
 use burn_p2p_core::{
@@ -3108,6 +3108,94 @@ fn spawn_metrics_sse_server(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn spawn_callback_capture_server() -> (String, std::thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind callback listener");
+    let base_url = format!(
+        "http://{}",
+        listener.local_addr().expect("listener local addr")
+    );
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept callback request");
+        stream
+            .set_read_timeout(Some(StdDuration::from_secs(1)))
+            .expect("set read timeout");
+        stream
+            .set_write_timeout(Some(StdDuration::from_secs(1)))
+            .expect("set write timeout");
+
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let read = stream.read(&mut chunk).expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let header_end = header_end + 4;
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    (name.eq_ignore_ascii_case("content-length")).then_some(value.trim())
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if request.len() >= header_end + content_length {
+                break;
+            }
+        }
+
+        let request_text = String::from_utf8_lossy(&request);
+        let trusted_header = request_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                (name.eq_ignore_ascii_case("x-burn-p2p-canary-token")).then_some(
+                    value.trim().to_owned(),
+                )
+            })
+            .unwrap_or_default();
+
+        let body = serde_json::to_vec(&PrincipalSession {
+            session_id: ContentId::new("session-browser"),
+            network_id: NetworkId::new("net-browser"),
+            claims: PrincipalClaims {
+                principal_id: PrincipalId::new("principal-browser"),
+                provider: AuthProvider::GitHub,
+                display_name: "browser canary".into(),
+                org_memberships: BTreeSet::new(),
+                group_memberships: BTreeSet::new(),
+                granted_roles: PeerRoleSet::default(),
+                granted_scopes: BTreeSet::new(),
+                custom_claims: BTreeMap::new(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(15),
+            },
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(15),
+        })
+        .expect("serialize principal session");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write callback headers");
+        stream.write_all(&body).expect("write callback body");
+        stream.flush().expect("flush callback response");
+
+        trusted_header
+    });
+
+    (base_url, handle)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_metrics_sse_poll_server(
     batches: Vec<Vec<MetricsLiveEvent>>,
 ) -> (String, std::thread::JoinHandle<()>) {
@@ -3540,6 +3628,53 @@ fn browser_portal_client_collects_multiple_metrics_live_events_from_sse_stream()
 
     handle.join().expect("join sse thread");
     assert_eq!(streamed, events);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_edge_client_trusted_callback_header_completes_provider_login() {
+    let (base_url, handle) = spawn_callback_capture_server();
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(base_url),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_trusted_callback("x-burn-p2p-canary-token", "trusted-token");
+
+    let session = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .complete_provider_login(
+                    &LoginStart {
+                        login_id: ContentId::new("login-browser"),
+                        provider: AuthProvider::GitHub,
+                        state: "state-browser".into(),
+                        authorize_url: None,
+                        expires_at: Utc::now() + chrono::Duration::minutes(5),
+                    },
+                    "provider-code",
+                )
+                .await
+                .expect("trusted callback provider login")
+        });
+
+    let trusted_header = handle.join().expect("join callback server");
+    assert_eq!(trusted_header, "trusted-token");
+    assert_eq!(session.claims.principal_id, PrincipalId::new("principal-browser"));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
