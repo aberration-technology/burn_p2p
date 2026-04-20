@@ -51,6 +51,27 @@ fn build_native_webrtc_transport(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn build_native_browser_websocket_transport(
+    keypair: &Keypair,
+) -> Result<
+    libp2p::core::transport::Boxed<(
+        libp2p::identity::PeerId,
+        libp2p::core::muxing::StreamMuxerBox,
+    )>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    Ok(
+        libp2p::websocket::Config::new(libp2p::tcp::tokio::Transport::new(
+            libp2p::tcp::Config::default(),
+        ))
+        .upgrade(libp2p::core::upgrade::Version::V1)
+        .authenticate(libp2p::noise::Config::new(keypair)?)
+        .multiplex(libp2p::yamux::Config::default())
+        .boxed(),
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn load_or_create_native_webrtc_certificate(
     certificate_pem_path: Option<&Path>,
 ) -> Result<WebRtcCertificate, Box<dyn std::error::Error + Send + Sync>> {
@@ -278,10 +299,9 @@ impl NativeControlPlaneShell {
                         build_native_webrtc_transport(key, webrtc_certificate_pem_path.as_deref())
                     })
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                    .with_dns()
+                    .with_other_transport(build_native_browser_websocket_transport)
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                    .with_websocket(tls_config, yamux::Config::default)
-                    .await
+                    .with_dns()
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_relay_client(tls_config, yamux::Config::default)
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
