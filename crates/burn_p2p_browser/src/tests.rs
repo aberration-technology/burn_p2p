@@ -1654,7 +1654,13 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
         created_at: Utc::now(),
         metrics: BTreeMap::new(),
     }]);
-    assert_eq!(runtime.state, Some(BrowserRuntimeState::Verifier));
+    assert_eq!(
+        runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserVerifier,
+            stage: BrowserJoinStage::TransportConnect,
+        })
+    );
     assert_eq!(
         runtime.storage.last_head_id,
         Some(burn_p2p::HeadId::new("head-browser"))
@@ -2236,7 +2242,13 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
         Some(&session_state),
     );
 
-    assert_eq!(runtime.state, Some(BrowserRuntimeState::Observer));
+    assert_eq!(
+        runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserObserver,
+            stage: BrowserJoinStage::TransportConnect,
+        })
+    );
     assert_eq!(
         runtime.storage.last_head_id,
         Some(burn_p2p::HeadId::new("head-browser"))
@@ -2307,6 +2319,38 @@ fn worker_runtime_waits_for_transport_after_head_sync_until_edge_transport_is_av
         runtime.transport.active,
         Some(BrowserTransportKind::WssFallback)
     );
+    assert_eq!(
+        runtime.state,
+        Some(BrowserRuntimeState::Joining {
+            role: BrowserRuntimeRole::BrowserObserver,
+            stage: BrowserJoinStage::TransportConnect,
+        })
+    );
+
+    runtime.apply_command(
+        BrowserWorkerCommand::ApplySwarmStatus(Box::new(BrowserSwarmStatus {
+            phase: BrowserSwarmPhase::TransportConnected,
+            seed_bootstrap: BrowserResolvedSeedBootstrap {
+                source: BrowserSeedBootstrapSource::EdgeSigned,
+                seed_node_urls: vec!["/dns4/edge.example/tcp/443/wss".into()],
+                advertised_seed_count: 1,
+                last_error: None,
+            },
+            transport_source: BrowserTransportObservationSource::Connected,
+            desired_transport: Some(BrowserTransportFamily::WssFallback),
+            connected_transport: Some(BrowserTransportFamily::WssFallback),
+            connected_peer_count: 1,
+            connected_peer_ids: vec![PeerId::new("peer-browser-bootstrap")],
+            directory_synced: true,
+            assignment_bound: true,
+            head_synced: true,
+            artifact_source: BrowserArtifactSource::Unavailable,
+            last_error: None,
+        })),
+        None,
+        None,
+    );
+
     assert_eq!(runtime.state, Some(BrowserRuntimeState::Observer));
 }
 
@@ -2611,8 +2655,9 @@ fn worker_runtime_suspend_and_resume_moves_into_catchup() {
     runtime.resume();
     assert_eq!(
         runtime.state,
-        Some(BrowserRuntimeState::Catchup {
+        Some(BrowserRuntimeState::Joining {
             role: BrowserRuntimeRole::BrowserObserver,
+            stage: BrowserJoinStage::TransportConnect,
         })
     );
     assert_eq!(

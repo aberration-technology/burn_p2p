@@ -10,7 +10,8 @@ use burn_p2p::{
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
     BrowserRuntimeRole, BrowserSessionRuntimeConfig, BrowserSessionRuntimeHandle,
-    BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings, BrowserWorkerIdentity,
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTransportKind, BrowserTransportStatus,
+    BrowserUiBindings, BrowserWorkerIdentity,
 };
 use burn_p2p_core::{
     BrowserLeaderboardEntry, BrowserSeedRecord, PublicationTargetId, PublishedArtifactId, RunId,
@@ -314,6 +315,18 @@ pub async fn start_live_browser_participant(
     )
     .await
     .context("sync live browser runtime from edge")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let runtime = {
+        let mut runtime = runtime;
+        if let Some(transport) = live_browser_fixture_connected_transport(&snapshot) {
+            // This native fixture exercises browser worker state, receipt flush, and
+            // dataset/head sync without spinning a real browser swarm runtime. Inject one
+            // connected transport so the harness models the post-connect browser state that
+            // real training requires.
+            runtime.runtime.update_transport_status(transport);
+        }
+        runtime
+    };
 
     Ok(BrowserLiveParticipantHandle {
         runtime,
@@ -332,6 +345,25 @@ async fn fetch_json<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
         .json::<T>()
         .await
         .with_context(|| format!("decode json response for {url}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn live_browser_fixture_connected_transport(
+    snapshot: &BrowserEdgeSnapshot,
+) -> Option<BrowserTransportStatus> {
+    let transport_kind = if snapshot.transports.wss_fallback {
+        Some(BrowserTransportKind::WssFallback)
+    } else if snapshot.transports.webrtc_direct {
+        Some(BrowserTransportKind::WebRtcDirect)
+    } else if snapshot.transports.webtransport_gateway {
+        Some(BrowserTransportKind::WebTransport)
+    } else {
+        None
+    }?;
+    Some(
+        BrowserTransportStatus::from_transport_surface(&snapshot.transports)
+            .connected_via(transport_kind, vec![PeerId::new(EDGE_FIXTURE_LABEL)]),
+    )
 }
 
 #[cfg(target_arch = "wasm32")]

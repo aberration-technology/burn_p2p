@@ -656,6 +656,12 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
             .sync_worker_runtime(&mut worker, Some(&session_state), true)
             .await
             .expect("sync worker runtime");
+        worker.update_transport_status(
+            BrowserTransportStatus::enabled(false, true, true).connected_via(
+                burn_p2p_browser::BrowserTransportKind::WssFallback,
+                vec![PeerId::new("bootstrap-http-router")],
+            ),
+        );
         assert_eq!(worker.state, Some(BrowserRuntimeState::Observer));
         assert_eq!(
             worker.storage.last_head_id,

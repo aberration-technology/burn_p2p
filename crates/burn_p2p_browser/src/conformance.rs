@@ -17,7 +17,10 @@ use crate::{
 
 /// Builds a conservative default transport snapshot for conformance exercises.
 pub fn browser_conformance_transport() -> BrowserTransportStatus {
-    BrowserTransportStatus::enabled(false, false, true).selecting(BrowserTransportKind::WssFallback)
+    BrowserTransportStatus::enabled(false, false, true).connected_via(
+        BrowserTransportKind::WssFallback,
+        vec![burn_p2p::PeerId::new("browser-conformance-peer")],
+    )
 }
 
 /// Builds a capability report suitable for conformance exercises of one role.

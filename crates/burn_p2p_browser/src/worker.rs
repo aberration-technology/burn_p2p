@@ -240,6 +240,10 @@ impl BrowserWorkerRuntime {
         Self::active_state_for_role(role.clone()).requires_peer_transport()
     }
 
+    fn has_connected_peer_transport(&self) -> bool {
+        self.transport.connected_family().is_some()
+    }
+
     fn collect_runtime_delta_events(
         &self,
         checkpoint: BrowserWorkerDeltaCheckpoint,
@@ -294,21 +298,21 @@ impl BrowserWorkerRuntime {
                 stage: crate::BrowserJoinStage::HeadSync,
             } if self.storage.last_head_id.is_some()
                 && (!Self::role_requires_peer_transport(&role)
-                    || self.transport.active.is_some()) =>
+                    || self.has_connected_peer_transport()) =>
             {
                 self.state = Some(Self::active_state_for_role(role));
             }
             BrowserRuntimeState::Joining {
                 role,
                 stage: crate::BrowserJoinStage::TransportConnect,
-            } if self.transport.active.is_some() => {
+            } if self.has_connected_peer_transport() => {
                 self.state = Some(Self::active_state_for_role(role));
             }
             BrowserRuntimeState::Observer
             | BrowserRuntimeState::Verifier
             | BrowserRuntimeState::Trainer
             | BrowserRuntimeState::Catchup { .. }
-                if self.transport.active.is_none() =>
+                if !self.has_connected_peer_transport() =>
             {
                 if let Some(role) = state
                     .active_role()
@@ -749,7 +753,8 @@ impl BrowserWorkerRuntime {
         if matched_head_id.is_some() {
             self.state = match self.state.clone() {
                 Some(BrowserRuntimeState::Joining { role, .. }) => Some(
-                    if Self::role_requires_peer_transport(&role) && self.transport.active.is_none()
+                    if Self::role_requires_peer_transport(&role)
+                        && !self.has_connected_peer_transport()
                     {
                         BrowserRuntimeState::joining(
                             role,
@@ -760,7 +765,8 @@ impl BrowserWorkerRuntime {
                     },
                 ),
                 Some(BrowserRuntimeState::Catchup { role }) => Some(
-                    if Self::role_requires_peer_transport(&role) && self.transport.active.is_none()
+                    if Self::role_requires_peer_transport(&role)
+                        && !self.has_connected_peer_transport()
                     {
                         BrowserRuntimeState::joining(
                             role,
