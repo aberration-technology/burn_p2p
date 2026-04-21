@@ -317,16 +317,16 @@ pub async fn start_live_browser_participant(
     )
     .await
     .context("sync live browser runtime from edge")?;
-    if should_inject_live_browser_fixture_transport(&config.edge_base_url) {
-        if let Some(transport) = live_browser_fixture_connected_transport(&snapshot) {
-            // The live-browser fixture exercises browser worker state, receipt flush, and
-            // dataset/head sync without exposing a real swarm transport listener. Inject one
-            // connected transport so the harness models the post-connect browser state that
-            // real training requires on both native and wasm probe paths.
-            runtime.runtime.update_transport_status(transport);
-            let swarm_status = runtime.runtime.swarm_status();
-            runtime.runtime.observe_swarm_status(swarm_status);
-        }
+    if should_inject_live_browser_fixture_transport(&config.edge_base_url)
+        && let Some(transport) = live_browser_fixture_connected_transport(&snapshot)
+    {
+        // The live-browser fixture exercises browser worker state, receipt flush, and
+        // dataset/head sync without exposing a real swarm transport listener. Inject one
+        // connected transport so the harness models the post-connect browser state that
+        // real training requires on both native and wasm probe paths.
+        runtime.runtime.update_transport_status(transport);
+        let swarm_status = runtime.runtime.swarm_status();
+        runtime.runtime.observe_swarm_status(swarm_status);
     }
 
     Ok(BrowserLiveParticipantHandle {
