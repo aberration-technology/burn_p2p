@@ -64,6 +64,7 @@ const PUBLISH_CRATES: &[&str] = &[
     "burn_p2p_dataloader",
     "burn_p2p_workload",
     "burn_p2p_security",
+    "burn_p2p_webrtc",
     "burn_p2p_swarm",
     "burn_p2p_engine",
     "burn_p2p_auth_external",

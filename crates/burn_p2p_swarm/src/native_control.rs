@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
-use libp2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
+use burn_p2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
 #[cfg(not(target_arch = "wasm32"))]
 use rand::thread_rng;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
