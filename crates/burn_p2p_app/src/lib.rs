@@ -29,6 +29,11 @@ pub use assertions::{
     assert_lifecycle_assignment_matches, assert_participant_has_receipts,
     assert_training_result_complete, assert_transport_health_ready,
 };
+pub use burn_p2p_views::{
+    AdminSessionSummaryView, BrowserAppClientView, DirectoryEntryDraftView,
+    DirectoryMutationResultView, ExperimentDirectoryEntryView, ExperimentDirectoryListView,
+    RolloutPreviewView,
+};
 pub use models::{
     AppArtifactAliasHistoryRow, AppArtifactRow, AppArtifactRunSummaryRow, AppArtifactRunView,
     AppDiagnosticsView, AppExperimentRow, AppHeadArtifactView, AppHeadEvalSummaryRow, AppHeadRow,

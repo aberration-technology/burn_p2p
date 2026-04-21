@@ -49,9 +49,16 @@ pub use burn_p2p_core::{
     BrowserArtifactSource, BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths,
     BrowserEdgeSnapshot, BrowserLeaderboardEntry, BrowserLeaderboardIdentity,
     BrowserLeaderboardSnapshot, BrowserLoginProvider, BrowserReceiptSubmissionResponse,
-    BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
-    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
-    BrowserTransportSurface, ReenrollmentStatus, TrustBundleExport,
+    BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement, BrowserSeedBootstrapSource,
+    BrowserSeedRecord, BrowserSwarmPhase, BrowserSwarmStatus, BrowserTransportFamily,
+    BrowserTransportObservationSource, BrowserTransportSurface, ReenrollmentStatus, SchemaEnvelope,
+    SignedPayload, TrustBundleExport,
+};
+pub use burn_p2p_views::{
+    BrowserAppClientView, BrowserAppDiffusionView, BrowserAppExperimentSummary,
+    BrowserAppLeaderboardPreview, BrowserAppMetricPreview, BrowserAppNetworkView,
+    BrowserAppPerformanceView, BrowserAppSurface, BrowserAppTrainingLeaseView,
+    BrowserAppTrainingView, BrowserAppValidationView, BrowserAppViewerView,
 };
 pub use capability::{BrowserCapabilityReport, BrowserGpuSupport, BrowserWorkerSupport};
 pub use conformance::{
