@@ -10,9 +10,10 @@ use burn_p2p::{
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
     BrowserRuntimeRole, BrowserSessionRuntimeConfig, BrowserSessionRuntimeHandle,
-    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTransportKind, BrowserTransportStatus,
-    BrowserUiBindings, BrowserWorkerIdentity,
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings, BrowserWorkerIdentity,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_browser::{BrowserTransportKind, BrowserTransportStatus};
 use burn_p2p_core::{
     BrowserLeaderboardEntry, BrowserSeedRecord, PublicationTargetId, PublishedArtifactId, RunId,
 };
