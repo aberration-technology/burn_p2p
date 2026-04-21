@@ -146,7 +146,7 @@ pub async fn run_browser_mnist_probe(config: JsValue) -> Result<JsValue, JsValue
         Some(
             finish_live_browser_participant(handle)
                 .await
-                .map_err(js_error)?,
+                .map_err(|error| js_error(format!("{error:#}")))?,
         )
     } else {
         None

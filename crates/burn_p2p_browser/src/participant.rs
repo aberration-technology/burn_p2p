@@ -46,6 +46,8 @@ pub struct BrowserSessionRuntimeConfig {
     pub capability: BrowserCapabilityReport,
     /// Whether to sync leaderboard state during bootstrap.
     pub include_leaderboard: bool,
+    /// Whether to establish and refresh a direct swarm runtime for this session.
+    pub enable_direct_swarm: bool,
 }
 
 impl BrowserSessionRuntimeConfig {
@@ -137,7 +139,12 @@ impl BrowserSessionRuntimeHandle {
             .sync_worker_runtime(&mut runtime, Some(&session), config.include_leaderboard)
             .await?;
         #[cfg(target_arch = "wasm32")]
-        let (direct_swarm_runtime, _) = establish_direct_swarm_runtime(&mut runtime).await;
+        let direct_swarm_runtime = if config.enable_direct_swarm {
+            let (direct_swarm_runtime, _) = establish_direct_swarm_runtime(&mut runtime).await;
+            direct_swarm_runtime
+        } else {
+            None
+        };
 
         Ok(Self {
             client,

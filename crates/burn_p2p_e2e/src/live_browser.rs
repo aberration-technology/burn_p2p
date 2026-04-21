@@ -10,10 +10,9 @@ use burn_p2p::{
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
     BrowserRuntimeRole, BrowserSessionRuntimeConfig, BrowserSessionRuntimeHandle,
-    BrowserTrainingBudget, BrowserTrainingPlan, BrowserUiBindings, BrowserWorkerIdentity,
+    BrowserTrainingBudget, BrowserTrainingPlan, BrowserTransportKind, BrowserTransportStatus,
+    BrowserUiBindings, BrowserWorkerIdentity,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use burn_p2p_browser::{BrowserTransportKind, BrowserTransportStatus};
 use burn_p2p_core::{
     BrowserLeaderboardEntry, BrowserSeedRecord, PublicationTargetId, PublishedArtifactId, RunId,
 };
@@ -97,7 +96,6 @@ const TRUST_PATH: &str = "/trust";
 const METRICS_CATCHUP_PATH: &str = "/metrics/catchup";
 #[cfg(not(target_arch = "wasm32"))]
 const METRICS_LIVE_LATEST_PATH: &str = "/metrics/live/latest";
-#[cfg(not(target_arch = "wasm32"))]
 const EDGE_FIXTURE_LABEL: &str = "browser-edge-fixture";
 const DEFAULT_TARGET_ARTIFACT_ID: &str = "browser-wasm";
 
@@ -290,7 +288,7 @@ pub async fn start_live_browser_participant(
         recommended_role: BrowserRuntimeRole::BrowserTrainerWgpu,
         ..BrowserCapabilityReport::default()
     };
-    let runtime = BrowserSessionRuntimeHandle::start(
+    let mut runtime = BrowserSessionRuntimeHandle::start(
         &snapshot,
         BrowserSessionRuntimeConfig {
             edge_base_url: config.edge_base_url.clone(),
@@ -311,23 +309,25 @@ pub async fn start_live_browser_participant(
             selected_revision: Some(config.training_plan.revision_id.clone()),
             capability: capability.clone(),
             include_leaderboard: true,
+            enable_direct_swarm: !should_inject_live_browser_fixture_transport(
+                &config.edge_base_url,
+            ),
         },
         session,
     )
     .await
     .context("sync live browser runtime from edge")?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime = {
-        let mut runtime = runtime;
+    if should_inject_live_browser_fixture_transport(&config.edge_base_url) {
         if let Some(transport) = live_browser_fixture_connected_transport(&snapshot) {
-            // This native fixture exercises browser worker state, receipt flush, and
-            // dataset/head sync without spinning a real browser swarm runtime. Inject one
+            // The live-browser fixture exercises browser worker state, receipt flush, and
+            // dataset/head sync without exposing a real swarm transport listener. Inject one
             // connected transport so the harness models the post-connect browser state that
-            // real training requires.
+            // real training requires on both native and wasm probe paths.
             runtime.runtime.update_transport_status(transport);
+            let swarm_status = runtime.runtime.swarm_status();
+            runtime.runtime.observe_swarm_status(swarm_status);
         }
-        runtime
-    };
+    }
 
     Ok(BrowserLiveParticipantHandle {
         runtime,
@@ -348,16 +348,15 @@ async fn fetch_json<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
         .with_context(|| format!("decode json response for {url}"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn live_browser_fixture_connected_transport(
     snapshot: &BrowserEdgeSnapshot,
 ) -> Option<BrowserTransportStatus> {
-    let transport_kind = if snapshot.transports.wss_fallback {
-        Some(BrowserTransportKind::WssFallback)
-    } else if snapshot.transports.webrtc_direct {
+    let transport_kind = if snapshot.transports.webrtc_direct {
         Some(BrowserTransportKind::WebRtcDirect)
     } else if snapshot.transports.webtransport_gateway {
         Some(BrowserTransportKind::WebTransport)
+    } else if snapshot.transports.wss_fallback {
+        Some(BrowserTransportKind::WssFallback)
     } else {
         None
     }?;
@@ -365,6 +364,10 @@ fn live_browser_fixture_connected_transport(
         BrowserTransportStatus::from_transport_surface(&snapshot.transports)
             .connected_via(transport_kind, vec![PeerId::new(EDGE_FIXTURE_LABEL)]),
     )
+}
+
+fn should_inject_live_browser_fixture_transport(edge_base_url: &str) -> bool {
+    edge_base_url.starts_with("http://127.0.0.1:") || edge_base_url.starts_with("http://localhost:")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1625,6 +1628,10 @@ mod tests {
         })
         .await
         .expect("start participant");
+        assert!(
+            handle.runtime.runtime.transport.active.is_some(),
+            "live browser fixture should inject a connected transport for local edge probes"
+        );
         let result = finish_live_browser_participant(&mut handle)
             .await
             .expect("finish participant");
