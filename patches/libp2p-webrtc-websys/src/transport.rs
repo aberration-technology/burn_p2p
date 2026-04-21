@@ -11,8 +11,13 @@ use libp2p_core::{
     transport::{Boxed, DialOpts, ListenerId, Transport as _, TransportError, TransportEvent},
 };
 use libp2p_identity::{Keypair, PeerId};
+use wasm_bindgen::JsValue;
 
 use super::{upgrade, Connection, Error};
+
+fn console_debug(message: impl AsRef<str>) {
+    web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
+}
 
 /// Config for the [`Transport`].
 #[derive(Clone)]
@@ -89,6 +94,12 @@ impl libp2p_core::Transport for Transport {
         if sock_addr.port() == 0 || sock_addr.ip().is_unspecified() {
             return Err(TransportError::MultiaddrNotSupported(addr));
         }
+        console_debug(format!(
+            "libp2p webrtc-direct: dialing browser seed multiaddr={} socket={} fingerprint={}",
+            addr,
+            sock_addr,
+            server_fingerprint.to_sdp_format(),
+        ));
 
         let config = self.config.clone();
 

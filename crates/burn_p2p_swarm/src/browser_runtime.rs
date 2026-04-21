@@ -49,7 +49,7 @@ use wasm_bindgen_futures::spawn_local;
 const WASM_BROWSER_TARGET_CONNECTED_PEERS: usize = 3;
 const WASM_BROWSER_DIRECT_RETRY_COOLDOWN: Duration = Duration::from_secs(5);
 #[cfg(target_arch = "wasm32")]
-const WASM_BROWSER_CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
+const WASM_BROWSER_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Bootstrap contract for one browser swarm runtime connection attempt.
@@ -866,9 +866,7 @@ async fn run_wasm_browser_swarm_task(
                             &shared,
                             current_snapshot.as_ref(),
                             &connected_peer_transports,
-                            directory_subscribed,
-                            heads_subscribed,
-                            metrics_subscribed,
+                            directory_subscribed || heads_subscribed || metrics_subscribed,
                             &mut pending_subscription_snapshot_request_id,
                         );
                     }
@@ -889,9 +887,7 @@ async fn run_wasm_browser_swarm_task(
                             &shared,
                             current_snapshot.as_ref(),
                             &connected_peer_transports,
-                            directory_subscribed,
-                            heads_subscribed,
-                            metrics_subscribed,
+                            directory_subscribed || heads_subscribed || metrics_subscribed,
                             &mut pending_subscription_snapshot_request_id,
                         );
                     }
@@ -912,9 +908,7 @@ async fn run_wasm_browser_swarm_task(
                             &shared,
                             current_snapshot.as_ref(),
                             &connected_peer_transports,
-                            directory_subscribed,
-                            heads_subscribed,
-                            metrics_subscribed,
+                            directory_subscribed || heads_subscribed || metrics_subscribed,
                             &mut pending_subscription_snapshot_request_id,
                         );
                     }
@@ -1076,9 +1070,7 @@ async fn run_wasm_browser_swarm_task(
                         &shared,
                         current_snapshot.as_ref(),
                         &connected_peer_transports,
-                        directory_subscribed,
-                        heads_subscribed,
-                        metrics_subscribed,
+                        directory_subscribed || heads_subscribed || metrics_subscribed,
                         &mut pending_subscription_snapshot_request_id,
                     );
                     maybe_dial_wasm_browser_direct_seed_peers(
@@ -1602,11 +1594,11 @@ fn build_wasm_browser_swarm(
         .map_err(|error| SwarmError::Runtime(error.to_string()))?;
     SwarmBuilder::with_existing_identity(keypair)
         .with_wasm_bindgen()
-        .with_other_transport(|key| build_wasm_webrtc_transport(key))
+        .with_other_transport(build_wasm_webrtc_transport)
         .map_err(|error| SwarmError::Runtime(error.to_string()))?
-        .with_other_transport(|key| build_wasm_webtransport_transport(key))
+        .with_other_transport(build_wasm_webtransport_transport)
         .map_err(|error| SwarmError::Runtime(error.to_string()))?
-        .with_other_transport(|key| build_wasm_websocket_transport(key))
+        .with_other_transport(build_wasm_websocket_transport)
         .map_err(|error| SwarmError::Runtime(error.to_string()))?
         .with_behaviour(|_| WasmBrowserSwarmBehaviour {
             ping: libp2p::ping::Behaviour::default(),
@@ -1702,15 +1694,13 @@ fn try_issue_wasm_subscription_snapshot_request(
     shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
     current_snapshot: Option<&ControlPlaneSnapshot>,
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
-    directory_subscribed: bool,
-    heads_subscribed: bool,
-    metrics_subscribed: bool,
+    has_subscription_interest: bool,
     pending_subscription_snapshot_request_id: &mut Option<String>,
 ) {
     if pending_subscription_snapshot_request_id.is_some() {
         return;
     }
-    if !(directory_subscribed || heads_subscribed || metrics_subscribed) {
+    if !has_subscription_interest {
         return;
     }
     if current_snapshot.is_some() {

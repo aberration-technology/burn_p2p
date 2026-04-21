@@ -20,6 +20,17 @@ use web_sys::{
 use super::{Error, Stream};
 use crate::stream::DropListener;
 
+fn console_debug(message: impl AsRef<str>) {
+    web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
+}
+
+fn js_string_property(target: &JsValue, name: &str) -> String {
+    Reflect::get(target, &JsValue::from_str(name))
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 /// A WebRTC Connection.
 ///
 /// All connections need to be [`Send`] which is why some fields are wrapped in [`SendWrapper`].
@@ -198,8 +209,21 @@ impl RtcPeerConnection {
         config.set_certificates(&certificate_arr);
 
         let inner = web_sys::RtcPeerConnection::new_with_configuration(&config)?;
+        console_debug("libp2p webrtc-direct: created browser RTCPeerConnection");
 
         Ok(Self { inner })
+    }
+
+    pub(crate) fn log_state(&self, phase: &str) {
+        let target = JsValue::from(self.inner.clone());
+        console_debug(format!(
+            "libp2p webrtc-direct state: phase={} connection={} ice_connection={} ice_gathering={} signaling={}",
+            phase,
+            js_string_property(&target, "connectionState"),
+            js_string_property(&target, "iceConnectionState"),
+            js_string_property(&target, "iceGatheringState"),
+            js_string_property(&target, "signalingState"),
+        ));
     }
 
     /// Creates the stream for the initial noise handshake.
@@ -250,6 +274,7 @@ impl RtcPeerConnection {
     ) -> Result<(), Error> {
         let promise = self.inner.set_local_description(&sdp);
         JsFuture::from(promise).await?;
+        self.log_state("set-local-description");
 
         Ok(())
     }
@@ -273,6 +298,7 @@ impl RtcPeerConnection {
     ) -> Result<(), Error> {
         let promise = self.inner.set_remote_description(&sdp);
         JsFuture::from(promise).await?;
+        self.log_state("set-remote-description");
 
         Ok(())
     }
@@ -280,19 +306,33 @@ impl RtcPeerConnection {
 
 /// Parse Fingerprint from a SDP.
 fn parse_fingerprint(sdp: &str) -> Option<Fingerprint> {
-    // split the sdp by new lines / carriage returns
-    let lines = sdp.split("\r\n");
-
-    // iterate through the lines to find the one starting with a=fingerprint:
-    // get the value after the first space
-    // return the value as a Fingerprint
-    for line in lines {
-        if line.starts_with("a=fingerprint:") {
-            let fingerprint = line.split(' ').nth(1).unwrap();
-            let bytes = hex::decode(fingerprint.replace(':', "")).unwrap();
-            let arr: [u8; 32] = bytes.as_slice().try_into().unwrap();
-            return Some(Fingerprint::raw(arr));
+    for line in sdp.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix("a=fingerprint:") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let Some(algorithm) = parts.next() else {
+            continue;
+        };
+        let Some(fingerprint) = parts.next() else {
+            continue;
+        };
+        if !algorithm.eq_ignore_ascii_case("sha-256") {
+            tracing::debug!(%algorithm, "unsupported browser WebRTC certificate fingerprint algorithm");
+            continue;
         }
+        let Ok(bytes) = hex::decode(fingerprint.replace(':', "")) else {
+            tracing::debug!("browser WebRTC certificate fingerprint was not valid hex");
+            continue;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            tracing::debug!(
+                byte_len = bytes.len(),
+                "browser WebRTC certificate fingerprint was not sha-256 length"
+            );
+            continue;
+        };
+        return Some(Fingerprint::raw(arr));
     }
     None
 }
@@ -309,5 +349,23 @@ mod sdp_tests {
 
         assert_eq!(fingerprint.algorithm(), "sha-256");
         assert_eq!(fingerprint.to_sdp_format(), "A8:17:77:1E:02:7E:D1:2B:53:92:70:A6:8E:F9:02:CC:21:72:3A:92:5D:F4:97:5F:27:C4:5E:75:D4:F4:31:89");
+    }
+
+    #[test]
+    fn parses_lf_only_fingerprint() {
+        let sdp = "v=0\na=fingerprint:sha-256 A8:17:77:1E:02:7E:D1:2B:53:92:70:A6:8E:F9:02:CC:21:72:3A:92:5D:F4:97:5F:27:C4:5E:75:D4:F4:31:89\n";
+
+        let fingerprint = parse_fingerprint(sdp).unwrap();
+
+        assert_eq!(
+            fingerprint.to_sdp_format(),
+            "A8:17:77:1E:02:7E:D1:2B:53:92:70:A6:8E:F9:02:CC:21:72:3A:92:5D:F4:97:5F:27:C4:5E:75:D4:F4:31:89"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_fingerprint_without_panicking() {
+        assert!(parse_fingerprint("a=fingerprint:sha-256 nope").is_none());
+        assert!(parse_fingerprint("a=fingerprint:sha-384 AA:BB").is_none());
     }
 }

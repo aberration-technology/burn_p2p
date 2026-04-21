@@ -22,6 +22,9 @@ truth. docs here should stay short and code-adjacent.
   tradeoffs
 - [protocol-shape.md](protocol-shape.md): reducer vs validator authority,
   canonical promotion, and the intended trust boundary
+- [browser-transport-backend.md](browser-transport-backend.md): browser
+  WebRTC/WebTransport backend choice, runtime state contract, and deployment
+  gates
 - [formal-verification-plan.md](formal-verification-plan.md): how to use veil
   to prove protocol safety without leaking lean tooling into the rust runtime
 - [production-roadmap.md](production-roadmap.md): what is already production

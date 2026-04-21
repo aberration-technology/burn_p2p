@@ -14,7 +14,12 @@ use bytes::BytesMut;
 use futures::{task::AtomicWaker, AsyncRead, AsyncWrite};
 use libp2p_webrtc_utils::MAX_MSG_LEN;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{Event, MessageEvent, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState};
+
+fn console_debug(message: impl AsRef<str>) {
+    web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
+}
 
 /// [`PollDataChannel`] is a wrapper around [`RtcDataChannel`] which implements [`AsyncRead`] and
 /// [`AsyncWrite`].
@@ -52,6 +57,16 @@ pub(crate) struct PollDataChannel {
 }
 
 impl PollDataChannel {
+    fn defer_wake(waker: &Rc<AtomicWaker>) {
+        let waker = waker.clone();
+        // DataChannel event callbacks can synchronously trigger additional RTC events.
+        // Defer waking the task until the browser unwinds the current callback so
+        // wasm-bindgen's mutable closure guard does not trip on re-entrant invocation.
+        spawn_local(async move {
+            waker.wake();
+        });
+    }
+
     pub(crate) fn new(inner: RtcDataChannel) -> Self {
         let open_waker = Rc::new(AtomicWaker::new());
         let on_open_closure = Closure::new({
@@ -59,7 +74,8 @@ impl PollDataChannel {
 
             move |_: RtcDataChannelEvent| {
                 tracing::trace!("DataChannel opened");
-                open_waker.wake();
+                console_debug("libp2p webrtc-direct datachannel: open");
+                Self::defer_wake(&open_waker);
             }
         });
         inner.set_onopen(Some(on_open_closure.as_ref().unchecked_ref()));
@@ -71,7 +87,8 @@ impl PollDataChannel {
 
             move |_: Event| {
                 tracing::trace!("DataChannel available for writing (again)");
-                write_waker.wake();
+                console_debug("libp2p webrtc-direct datachannel: bufferedamountlow");
+                Self::defer_wake(&write_waker);
             }
         });
         inner.set_onbufferedamountlow(Some(on_write_closure.as_ref().unchecked_ref()));
@@ -82,10 +99,17 @@ impl PollDataChannel {
 
             move |_: Event| {
                 tracing::trace!("DataChannel closed");
-                close_waker.wake();
+                console_debug("libp2p webrtc-direct datachannel: close");
+                Self::defer_wake(&close_waker);
             }
         });
         inner.set_onclose(Some(on_close_closure.as_ref().unchecked_ref()));
+
+        let on_error_closure = Closure::new(move |_: Event| {
+            tracing::debug!("DataChannel error");
+            console_debug("libp2p webrtc-direct datachannel: error");
+        });
+        inner.set_onerror(Some(on_error_closure.as_ref().unchecked_ref()));
 
         let new_data_waker = Rc::new(AtomicWaker::new());
         // We purposely don't use `with_capacity`
@@ -120,6 +144,7 @@ impl PollDataChannel {
             _on_open_closure: on_open_closure,
             _on_write_closure: on_write_closure,
             _on_close_closure: on_close_closure,
+            _on_error_closure: on_error_closure,
             _on_message_closure: on_message_closure,
         });
 
@@ -176,6 +201,7 @@ struct EventHandlers {
     _on_open_closure: Closure<dyn FnMut(RtcDataChannelEvent)>,
     _on_write_closure: Closure<dyn FnMut(Event)>,
     _on_close_closure: Closure<dyn FnMut(Event)>,
+    _on_error_closure: Closure<dyn FnMut(Event)>,
     _on_message_closure: Closure<dyn FnMut(MessageEvent)>,
 }
 
@@ -186,6 +212,7 @@ impl Drop for EventHandlers {
         self.inner.set_onopen(None);
         self.inner.set_onbufferedamountlow(None);
         self.inner.set_onclose(None);
+        self.inner.set_onerror(None);
         self.inner.set_onmessage(None);
     }
 }

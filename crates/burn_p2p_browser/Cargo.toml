@@ -14,7 +14,7 @@ readme = "../../README.md"
 burn_p2p.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_metrics.workspace = true
-burn_p2p_publish = { version = "=0.21.0-pre.26", path = "../burn_p2p_publish" }
+burn_p2p_publish = { version = "=0.21.0-pre.27", path = "../burn_p2p_publish" }
 burn_p2p_swarm.workspace = true
 burn_p2p_views.workspace = true
 base64 = "0.22"

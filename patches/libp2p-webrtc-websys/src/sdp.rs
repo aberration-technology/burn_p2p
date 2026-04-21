@@ -27,7 +27,7 @@ pub(crate) fn offer(offer: String, client_ufrag: &str) -> RtcSessionDescriptionI
 
     let mut munged_sdp_offer = String::new();
 
-    for line in offer.split("\r\n") {
+    for line in offer.lines().map(str::trim_end) {
         if line.starts_with("a=ice-ufrag:") {
             munged_sdp_offer.push_str(&format!("a=ice-ufrag:{client_ufrag}\r\n"));
             continue;
