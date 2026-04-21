@@ -21,6 +21,17 @@ fn console_debug(message: impl AsRef<str>) {
     web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
 }
 
+fn data_channel_state_label(state: RtcDataChannelState) -> &'static str {
+    match state {
+        RtcDataChannelState::Connecting => "connecting",
+        RtcDataChannelState::Open => "open",
+        RtcDataChannelState::Closing => "closing",
+        RtcDataChannelState::Closed => "closed",
+        RtcDataChannelState::__Invalid => "invalid",
+        _ => "unknown",
+    }
+}
+
 /// [`PollDataChannel`] is a wrapper around [`RtcDataChannel`] which implements [`AsyncRead`] and
 /// [`AsyncWrite`].
 #[derive(Debug, Clone)]
@@ -96,18 +107,28 @@ impl PollDataChannel {
         let close_waker = Rc::new(AtomicWaker::new());
         let on_close_closure = Closure::new({
             let close_waker = close_waker.clone();
+            let inner = inner.clone();
 
             move |_: Event| {
                 tracing::trace!("DataChannel closed");
-                console_debug("libp2p webrtc-direct datachannel: close");
+                console_debug(format!(
+                    "libp2p webrtc-direct datachannel: close ready_state={}",
+                    data_channel_state_label(inner.ready_state())
+                ));
                 Self::defer_wake(&close_waker);
             }
         });
         inner.set_onclose(Some(on_close_closure.as_ref().unchecked_ref()));
 
-        let on_error_closure = Closure::new(move |_: Event| {
-            tracing::debug!("DataChannel error");
-            console_debug("libp2p webrtc-direct datachannel: error");
+        let on_error_closure = Closure::new({
+            let inner = inner.clone();
+            move |_: Event| {
+                tracing::debug!("DataChannel error");
+                console_debug(format!(
+                    "libp2p webrtc-direct datachannel: error ready_state={}",
+                    data_channel_state_label(inner.ready_state())
+                ));
+            }
         });
         inner.set_onerror(Some(on_error_closure.as_ref().unchecked_ref()));
 
@@ -178,7 +199,13 @@ impl PollDataChannel {
                 return Poll::Pending;
             }
             RtcDataChannelState::Closing | RtcDataChannelState::Closed => {
-                return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!(
+                        "datachannel not ready: ready_state={}",
+                        data_channel_state_label(self.ready_state())
+                    ),
+                )));
             }
             RtcDataChannelState::Open | RtcDataChannelState::__Invalid => {}
             _ => {}

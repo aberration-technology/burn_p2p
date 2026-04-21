@@ -13,8 +13,8 @@ use send_wrapper::SendWrapper;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelInit, RtcDataChannelType,
-    RtcSessionDescriptionInit,
+    Event, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelInit,
+    RtcDataChannelType, RtcSessionDescriptionInit,
 };
 
 use super::{Error, Stream};
@@ -29,6 +29,18 @@ fn js_string_property(target: &JsValue, name: &str) -> String {
         .ok()
         .and_then(|value| value.as_string())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn log_peer_connection_state(inner: &web_sys::RtcPeerConnection, phase: &str) {
+    let target = JsValue::from(inner.clone());
+    console_debug(format!(
+        "libp2p webrtc-direct state: phase={} connection={} ice_connection={} ice_gathering={} signaling={}",
+        phase,
+        js_string_property(&target, "connectionState"),
+        js_string_property(&target, "iceConnectionState"),
+        js_string_property(&target, "iceGatheringState"),
+        js_string_property(&target, "signalingState"),
+    ));
 }
 
 /// A WebRTC Connection.
@@ -187,6 +199,10 @@ impl StreamMuxer for Connection {
 
 pub(crate) struct RtcPeerConnection {
     inner: web_sys::RtcPeerConnection,
+    _on_connection_state_change: Closure<dyn FnMut(Event)>,
+    _on_ice_connection_state_change: Closure<dyn FnMut(Event)>,
+    _on_ice_gathering_state_change: Closure<dyn FnMut(Event)>,
+    _on_signaling_state_change: Closure<dyn FnMut(Event)>,
 }
 
 impl RtcPeerConnection {
@@ -211,26 +227,61 @@ impl RtcPeerConnection {
         let inner = web_sys::RtcPeerConnection::new_with_configuration(&config)?;
         console_debug("libp2p webrtc-direct: created browser RTCPeerConnection");
 
-        Ok(Self { inner })
+        let on_connection_state_change = {
+            let inner = inner.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                log_peer_connection_state(&inner, "connection-state-change");
+            })
+        };
+        inner
+            .set_onconnectionstatechange(Some(on_connection_state_change.as_ref().unchecked_ref()));
+
+        let on_ice_connection_state_change = {
+            let inner = inner.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                log_peer_connection_state(&inner, "ice-connection-state-change");
+            })
+        };
+        inner.set_oniceconnectionstatechange(Some(
+            on_ice_connection_state_change.as_ref().unchecked_ref(),
+        ));
+
+        let on_ice_gathering_state_change = {
+            let inner = inner.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                log_peer_connection_state(&inner, "ice-gathering-state-change");
+            })
+        };
+        inner.set_onicegatheringstatechange(Some(
+            on_ice_gathering_state_change.as_ref().unchecked_ref(),
+        ));
+
+        let on_signaling_state_change = {
+            let inner = inner.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                log_peer_connection_state(&inner, "signaling-state-change");
+            })
+        };
+        inner.set_onsignalingstatechange(Some(on_signaling_state_change.as_ref().unchecked_ref()));
+
+        Ok(Self {
+            inner,
+            _on_connection_state_change: on_connection_state_change,
+            _on_ice_connection_state_change: on_ice_connection_state_change,
+            _on_ice_gathering_state_change: on_ice_gathering_state_change,
+            _on_signaling_state_change: on_signaling_state_change,
+        })
     }
 
     pub(crate) fn log_state(&self, phase: &str) {
-        let target = JsValue::from(self.inner.clone());
-        console_debug(format!(
-            "libp2p webrtc-direct state: phase={} connection={} ice_connection={} ice_gathering={} signaling={}",
-            phase,
-            js_string_property(&target, "connectionState"),
-            js_string_property(&target, "iceConnectionState"),
-            js_string_property(&target, "iceGatheringState"),
-            js_string_property(&target, "signalingState"),
-        ));
+        log_peer_connection_state(&self.inner, phase);
     }
 
-    /// Creates the stream for the initial noise handshake.
+    /// Creates the data channel for the initial noise handshake.
     ///
     /// The underlying data channel MUST have `negotiated` set to `true` and carry the ID 0.
-    pub(crate) fn new_handshake_stream(&self) -> (Stream, DropListener) {
-        Stream::new(self.new_data_channel(true))
+    pub(crate) fn new_handshake_data_channel(&self) -> RtcDataChannel {
+        self.new_data_channel(true)
     }
 
     /// Creates a regular data channel for when the connection is already established.
@@ -301,6 +352,15 @@ impl RtcPeerConnection {
         self.log_state("set-remote-description");
 
         Ok(())
+    }
+}
+
+impl Drop for RtcPeerConnection {
+    fn drop(&mut self) {
+        self.inner.set_onconnectionstatechange(None);
+        self.inner.set_oniceconnectionstatechange(None);
+        self.inner.set_onicegatheringstatechange(None);
+        self.inner.set_onsignalingstatechange(None);
     }
 }
 
