@@ -1,3 +1,7 @@
+## 0.21.0-pre.30
+
+- Bump native `webrtc`/SCTP stack to the 0.17 line so Firefox can open the negotiated WebRTC-direct handshake data channel against native browser seeds.
+
 ## 0.9.0-alpha.1
 
 - Bump `webrtc` dependency to `0.12.0`.
