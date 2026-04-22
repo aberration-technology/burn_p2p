@@ -473,6 +473,21 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .snapshot()
         .local_peer_id
         .context("validator missing local peer id")?;
+    let reducer_peer_id = reducer
+        .telemetry()
+        .snapshot()
+        .local_peer_id
+        .context("reducer missing local peer id")?;
+    let validator_b_peer_id = validator_b
+        .telemetry()
+        .snapshot()
+        .local_peer_id
+        .context("validator-b missing local peer id")?;
+    let genesis_head_providers = vec![
+        validator_peer_id.clone(),
+        reducer_peer_id.clone(),
+        validator_b_peer_id.clone(),
+    ];
     validator.publish_head_provider(&baseline, &baseline_head)?;
     validator.publish_head_provider(&low_lr, &low_lr_head)?;
     wait_for_artifact_from_provider(
@@ -518,6 +533,23 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         &low_lr_head,
         Duration::from_secs(20),
         "validator-b did not sync low-lr genesis head",
+    )?;
+    wait_for_head_artifacts(
+        &[
+            (TRAINER_A1_LABEL, &trainer_a1),
+            (TRAINER_A2_LABEL, &trainer_a2),
+        ],
+        &genesis_head_providers,
+        &baseline_head.artifact_id,
+        demo_provider_artifact_timeout(),
+        "baseline genesis head artifact was not fetchable by baseline trainers",
+    )?;
+    wait_for_head_artifacts(
+        &[(TRAINER_B_LABEL, &trainer_b)],
+        &genesis_head_providers,
+        &low_lr_head.artifact_id,
+        demo_provider_artifact_timeout(),
+        "low-lr genesis head artifact was not fetchable by trainer-b",
     )?;
     wait_for_specific_head(
         &trainer_a1,
