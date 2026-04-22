@@ -2408,17 +2408,16 @@ fn wait_for_artifact_from_fixed_providers<P>(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None::<String>;
-    let provider_peer_ids = provider_peer_ids.to_vec();
+    let mut staged_provider_peer_ids = provider_peer_ids.to_vec();
 
     while Instant::now() < deadline {
         let mut all_ready = true;
         for (label, consumer) in consumers {
-            let mut ignored_provider_peer_ids = Vec::new();
             if record_artifact_provider(
                 label,
                 consumer,
                 artifact_id,
-                &mut ignored_provider_peer_ids,
+                &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
                 continue;
@@ -2430,7 +2429,7 @@ fn wait_for_artifact_from_fixed_providers<P>(
             };
 
             match consumer.wait_for_artifact_from_peers(
-                &provider_peer_ids,
+                &staged_provider_peer_ids,
                 artifact_id,
                 attempt_timeout,
             ) {
@@ -2446,7 +2445,7 @@ fn wait_for_artifact_from_fixed_providers<P>(
                 label,
                 consumer,
                 artifact_id,
-                &mut ignored_provider_peer_ids,
+                &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
                 all_ready = false;
