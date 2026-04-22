@@ -535,6 +535,66 @@ fn browser_peer_directory_candidates_skip_bootstrap_host_direct_ports_not_in_sig
 }
 
 #[test]
+fn browser_peer_directory_candidates_skip_local_direct_mesh_peers() {
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "peer-loopback",
+                &[
+                    "/ip4/127.0.0.1/udp/35292/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-private",
+                &[
+                    "/ip4/10.42.1.10/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-localhost",
+                &[
+                    "/dns4/localhost/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-public-direct",
+                &[
+                    "/dns4/peer-public.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let candidates = browser_peer_directory_dial_candidates(
+        &snapshot,
+        None,
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[],
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("peer-public-direct"))
+    );
+    assert_eq!(
+        candidates[0].seed_url,
+        "/dns4/peer-public.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
+}
+
+#[test]
 fn preferred_connected_browser_transport_promotes_direct_peers_over_wss() {
     let connected = BTreeMap::from([
         (PeerId::new("peer-wss"), BrowserTransportFamily::WssFallback),

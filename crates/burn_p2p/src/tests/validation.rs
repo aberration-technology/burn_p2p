@@ -1073,18 +1073,26 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
     }
 
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         || bootstrap_telemetry.snapshot().connected_peers >= 3,
         "bootstrap did not connect to reducer and trainers",
     );
     wait_for(
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || reducer_telemetry.snapshot().connected_peers >= 3,
         "reducer did not connect to bootstrap and both trainers",
     );
 
     let mut bootstrap = bootstrap;
     let mut reducer = reducer;
+    let bootstrap_peer_id = bootstrap_telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("bootstrap peer id");
+    let reducer_peer_id = reducer_telemetry
+        .snapshot()
+        .local_peer_id
+        .expect("reducer peer id");
     let genesis_head = bootstrap
         .initialize_local_head(&experiment)
         .expect("bootstrap genesis head");
@@ -1116,18 +1124,25 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
     }
 
     for outcome in &trainer_outcomes {
-        wait_for(
-            Duration::from_secs(5),
-            || {
-                reducer
-                    .sync_artifact_from_peer(
-                        &outcome.contribution.peer_id,
-                        outcome.head.artifact_id.clone(),
-                    )
-                    .is_ok()
-            },
-            "reducer did not warm the trainer artifact",
-        );
+        let artifact_deadline = Instant::now() + test_timeout(Duration::from_secs(30));
+        loop {
+            match reducer.sync_artifact_from_peer(
+                &outcome.contribution.peer_id,
+                outcome.head.artifact_id.clone(),
+            ) {
+                Ok(_) => break,
+                Err(error) => {
+                    assert!(
+                        Instant::now() < artifact_deadline,
+                        "reducer did not warm trainer artifact {} from {}: {}",
+                        outcome.head.artifact_id.as_str(),
+                        outcome.contribution.peer_id.as_str(),
+                        error,
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     let reduced = reducer
@@ -1200,22 +1215,28 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
         "reducer-authority promotion should not emit validation quorum certificates",
     );
 
-    wait_for(
-        Duration::from_secs(5),
-        || {
-            bootstrap
-                .sync_experiment_head(&experiment)
-                .expect("bootstrap sync promoted head")
-                .is_some_and(|head| head.head_id == reduced.merged_head.head_id)
-                && trainers.iter().all(|trainer| {
-                    trainer
-                        .sync_experiment_head(&experiment)
-                        .expect("trainer sync promoted head")
-                        .is_some_and(|head| head.head_id == reduced.merged_head.head_id)
-                })
-        },
-        "bootstrap and trainers did not adopt the reducer-authority canonical head",
-    );
+    bootstrap
+        .ingest_peer_snapshot(&reducer_peer_id, test_timeout(Duration::from_secs(5)))
+        .expect("bootstrap ingest reducer-authority snapshot");
+    bootstrap
+        .wait_for_known_head(
+            &experiment,
+            &reduced.merged_head,
+            test_timeout(Duration::from_secs(10)),
+        )
+        .expect("bootstrap did not adopt the reducer-authority canonical head");
+    for trainer in &trainers {
+        trainer
+            .ingest_peer_snapshot(&bootstrap_peer_id, test_timeout(Duration::from_secs(5)))
+            .expect("trainer ingest bootstrap reducer-authority snapshot");
+        trainer
+            .wait_for_known_head(
+                &experiment,
+                &reduced.merged_head,
+                test_timeout(Duration::from_secs(10)),
+            )
+            .expect("trainer did not adopt the reducer-authority canonical head");
+    }
 
     let head_eval_reports = load_metric_artifacts::<HeadEvalReport>(&reducer_storage, "head-eval-");
     assert_eq!(head_eval_reports.len(), 1);

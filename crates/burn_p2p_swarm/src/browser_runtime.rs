@@ -2402,10 +2402,13 @@ fn browser_peer_directory_candidate_allowed(
     ) {
         return true;
     }
-    let Some(bootstrap) = bootstrap else {
+    let Some((candidate_host, candidate_port)) = browser_seed_host_port(seed_url) else {
         return true;
     };
-    let Some((candidate_host, candidate_port)) = browser_seed_host_port(seed_url) else {
+    if !browser_direct_peer_directory_host_allowed(&candidate_host) {
+        return false;
+    }
+    let Some(bootstrap) = bootstrap else {
         return true;
     };
     let published_direct_sockets = bootstrap
@@ -2435,6 +2438,37 @@ fn browser_peer_directory_candidate_allowed(
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn browser_direct_peer_directory_host_allowed(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(addr) => {
+                !addr.is_loopback()
+                    && !addr.is_private()
+                    && !addr.is_link_local()
+                    && !addr.is_unspecified()
+                    && !addr.is_broadcast()
+                    && !addr.is_multicast()
+                    && !ipv4_is_shared(addr)
+            }
+            std::net::IpAddr::V6(addr) => {
+                !addr.is_loopback()
+                    && !addr.is_unique_local()
+                    && !addr.is_unicast_link_local()
+                    && !addr.is_unspecified()
+                    && !addr.is_multicast()
+            }
+        };
+    }
+
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    !matches!(normalized.as_str(), "localhost") && !normalized.ends_with(".localhost")
+}
+
+fn ipv4_is_shared(addr: std::net::Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 100 && (octets[1] & 0b1100_0000) == 64
+}
+
 fn browser_seed_host_port(seed_url: &str) -> Option<(String, String)> {
     let segments = seed_url
         .split('/')
