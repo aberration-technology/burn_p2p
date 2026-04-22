@@ -2245,7 +2245,9 @@ pub fn run_synthetic_process_soak(
                 trainer_config.workload_kind = config.workload_kind;
                 trainer_config.native_backend = config.trainer_backend;
                 trainer_config.start_sentinel = Some(round_start_sentinel.clone());
-                trainer_config.persist_identity = true;
+                // Non-persistent trainers restart each round; fresh peer IDs avoid stale provider
+                // records and dead connections from previous process lifetimes.
+                trainer_config.persist_identity = false;
                 trainer_config.startup_timeout_secs = config.startup_timeout_secs;
                 trainer_config.poll_interval_ms = config.poll_interval_ms;
                 trainer_config.sync_timeout_secs = config.sync_timeout_secs;
