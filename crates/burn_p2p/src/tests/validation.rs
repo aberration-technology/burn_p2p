@@ -1225,10 +1225,21 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
             test_timeout(Duration::from_secs(10)),
         )
         .expect("bootstrap did not adopt the reducer-authority canonical head");
+    bootstrap
+        .publish_head_provider(&experiment, &reduced.merged_head)
+        .expect("bootstrap did not publish the reducer-authority head provider");
+    let reducer_authority_head_providers = [bootstrap_peer_id.clone(), reducer_peer_id.clone()];
     for trainer in &trainers {
         trainer
             .ingest_peer_snapshot(&bootstrap_peer_id, test_timeout(Duration::from_secs(5)))
             .expect("trainer ingest bootstrap reducer-authority snapshot");
+        trainer
+            .wait_for_artifact_from_peers(
+                &reducer_authority_head_providers,
+                &reduced.merged_head.artifact_id,
+                test_timeout(Duration::from_secs(30)),
+            )
+            .expect("trainer did not materialize the reducer-authority head artifact");
         trainer
             .wait_for_known_head(
                 &experiment,
