@@ -54,7 +54,10 @@ fn native_browser_webtransport_supported() -> bool {
 }
 
 fn native_browser_wss_supported() -> bool {
-    true
+    // The bootstrap edge currently serves HTTP routes through Caddy, not a
+    // browser-compatible libp2p websocket listener. Advertising /wss makes
+    // browsers attempt a transport that can only fail multistream negotiation.
+    false
 }
 
 fn browser_seed_transport_policy(
@@ -86,7 +89,7 @@ fn browser_seed_transport_policy(
     }
     burn_p2p_core::BrowserSeedTransportPolicy {
         preferred,
-        allow_fallback_wss: true,
+        allow_fallback_wss: surface.wss_fallback,
     }
 }
 
@@ -101,6 +104,9 @@ pub(super) fn current_browser_seed_advertisement(
     }
     let issued_at = Utc::now();
     let surface = browser_transport_surface(plan, config, runtime_snapshot);
+    if !surface.webrtc_direct && !surface.webtransport_gateway && !surface.wss_fallback {
+        return None;
+    }
     let multiaddrs = request_public_browser_seed_host(request)
         .map(|host| browser_seed_multiaddrs_for_host(&host, plan, &surface, runtime_snapshot))
         .filter(|multiaddrs| !multiaddrs.is_empty())

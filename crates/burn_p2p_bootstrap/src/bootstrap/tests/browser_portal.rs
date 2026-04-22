@@ -76,49 +76,10 @@ fn browser_portal_client_round_trips_against_live_http_router() {
         let signed_seeds = client
             .fetch_browser_seed_advertisement()
             .await
-            .expect("fetch browser seed advertisement")
-            .expect("browser seed advertisement");
-        assert_eq!(
-            signed_seeds.payload.schema,
-            "burn_p2p.browser_seed_advertisement"
-        );
-        assert_eq!(
-            signed_seeds.payload.payload.network_id.as_str(),
-            "secure-demo"
-        );
-        assert_eq!(
-            signed_seeds
-                .payload
-                .payload
-                .transport_policy
-                .preferred
-                .first()
-                .expect("preferred browser transport"),
-            &burn_p2p_core::BrowserSeedTransportKind::WssFallback
-        );
+            .expect("fetch browser seed advertisement");
         assert!(
-            !signed_seeds
-                .payload
-                .payload
-                .transport_policy
-                .preferred
-                .contains(&burn_p2p_core::BrowserSeedTransportKind::WebRtcDirect),
-            "browser seed advertisement should not claim webrtc-direct without an explicit native WebRTC listener"
-        );
-        assert!(
-            !signed_seeds
-                .payload
-                .payload
-                .transport_policy
-                .preferred
-                .contains(&burn_p2p_core::BrowserSeedTransportKind::WebTransport),
-            "browser seed advertisement should not claim webtransport until native runtime support exists"
-        );
-        assert_eq!(signed_seeds.payload.payload.seeds.len(), 1);
-        let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
-        assert!(
-            seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
-            "expected browser-capable public wss seed in signed advertisement, got {seed_multiaddrs:?}"
+            signed_seeds.is_none(),
+            "browser seed advertisement should be absent when no real browser peer transport is available"
         );
 
         let login = client
@@ -306,7 +267,7 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
             .await
             .expect("decode portal snapshot");
         assert!(snapshot.transports.webrtc_direct);
-        assert!(snapshot.transports.wss_fallback);
+        assert!(!snapshot.transports.wss_fallback);
 
         let bindings = BrowserUiBindings::from_edge_snapshot(server.base_url(), &snapshot);
         let enrollment = BrowserEnrollmentConfig {
@@ -334,8 +295,8 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
             "browser seed advertisement should include webrtc-direct when a native listener is configured"
         );
         assert!(
-            preferred.contains(&burn_p2p_core::BrowserSeedTransportKind::WssFallback),
-            "browser seed advertisement should continue to include wss fallback"
+            !preferred.contains(&burn_p2p_core::BrowserSeedTransportKind::WssFallback),
+            "browser seed advertisement should not include wss fallback without a real browser websocket listener"
         );
         let seed_multiaddrs = &signed_seeds.payload.payload.seeds[0].multiaddrs;
         assert_eq!(
@@ -350,8 +311,8 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
             "expected public WebRTC direct seed in signed advertisement, got {seed_multiaddrs:?}"
         );
         assert!(
-            seed_multiaddrs.contains(&"/ip4/127.0.0.1/tcp/443/wss".to_owned()),
-            "expected public wss fallback seed in signed advertisement, got {seed_multiaddrs:?}"
+            !seed_multiaddrs.iter().any(|addr| addr.contains("/wss")),
+            "browser seed advertisement should not include wss fallback without a real browser websocket listener, got {seed_multiaddrs:?}"
         );
 
         let forwarded_signed_seeds: burn_p2p_core::SignedPayload<
@@ -377,8 +338,8 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
             "browser seed advertisement should preserve publishable ip-based webrtc-direct seeds for dns hosts, got {forwarded_multiaddrs:?}"
         );
         assert!(
-            forwarded_multiaddrs.contains(&"/dns4/edge.example/tcp/443/wss".to_owned()),
-            "browser seed advertisement should still rewrite wss fallback to the public dns host, got {forwarded_multiaddrs:?}"
+            !forwarded_multiaddrs.iter().any(|addr| addr.contains("/wss")),
+            "browser seed advertisement should not rewrite a wss fallback without a real browser websocket listener, got {forwarded_multiaddrs:?}"
         );
     });
 }
