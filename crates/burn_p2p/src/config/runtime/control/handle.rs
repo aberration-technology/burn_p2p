@@ -21,7 +21,6 @@ impl ControlHandle {
         timeout: Duration,
         mut request: impl FnMut(Duration) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
-        const RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_millis(250);
         const RUNTIME_FETCH_RETRY_DELAY: Duration = Duration::from_millis(25);
 
         let deadline = Instant::now() + timeout;
@@ -31,9 +30,8 @@ impl ControlHandle {
             if now >= deadline {
                 break;
             }
-            let attempt_timeout = deadline
-                .saturating_duration_since(now)
-                .min(RUNTIME_FETCH_RETRY_SLICE);
+            let attempt_timeout =
+                runtime_fetch_attempt_timeout(deadline.saturating_duration_since(now));
             match request(attempt_timeout) {
                 Ok(result) => return Ok(result),
                 Err(error) => {
@@ -463,7 +461,7 @@ impl ControlHandle {
             let _ = shell.dial(address.clone());
         }
 
-        let deadline = Instant::now() + timeout.min(Duration::from_secs(2));
+        let deadline = Instant::now() + timeout.min(Duration::from_secs(5));
         while Instant::now() < deadline {
             if let Some(LiveControlPlaneEvent::ConnectionEstablished { peer_id: connected }) =
                 shell.wait_event(Duration::from_millis(50))
@@ -481,5 +479,32 @@ impl ControlHandle {
                 .map(|address| address.as_str().to_owned())
                 .collect::<Vec<_>>()
         )
+    }
+}
+
+fn runtime_fetch_attempt_timeout(remaining: Duration) -> Duration {
+    const RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_secs(5);
+
+    remaining.min(RUNTIME_FETCH_RETRY_SLICE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_fetch_attempt_timeout_preserves_short_sidecar_probe() {
+        assert_eq!(
+            runtime_fetch_attempt_timeout(Duration::from_millis(750)),
+            Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn runtime_fetch_attempt_timeout_allows_network_round_trip_under_load() {
+        assert_eq!(
+            runtime_fetch_attempt_timeout(Duration::from_secs(45)),
+            Duration::from_secs(5)
+        );
     }
 }

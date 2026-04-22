@@ -2831,7 +2831,9 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         validator_backend: SyntheticNativeBackend::NdArray,
         trainer_count,
         trainer_window_count: window_count,
-        persistent_trainers: false,
+        // Long-lived peers match the production native/browser topology and avoid
+        // poisoning provider records with per-window process churn.
+        persistent_trainers: true,
         continuous_training: false,
         startup_timeout_secs,
         poll_interval_ms: 50,
