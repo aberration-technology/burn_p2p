@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
 };
 
 use crate::{
@@ -15,7 +16,7 @@ use burn_p2p::{
     ArtifactTransferState, ContributionReceipt, ContributionReceiptId,
     ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadAnnouncement, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
-    RevocationEpoch, SlotRuntimeState,
+    RevocationEpoch, SlotRuntimeState, StorageConfig,
 };
 use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
@@ -764,6 +765,23 @@ pub struct BootstrapAdminState {
     pub runtime_snapshot: Option<NodeTelemetrySnapshot>,
 }
 
+fn durable_receipt_path(storage: &StorageConfig, receipt_id: &ContributionReceiptId) -> PathBuf {
+    storage
+        .receipts_dir()
+        .join(format!("{}.json", receipt_id.as_str()))
+}
+
+fn persist_durable_receipt(path: &Path, receipt: &ContributionReceipt) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("receipt path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)?;
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, serde_json::to_vec_pretty(receipt)?)?;
+    fs::rename(&temp_path, path)?;
+    Ok(())
+}
+
 impl BootstrapAdminState {
     pub(crate) fn register_live_head_announcement(
         &mut self,
@@ -849,21 +867,48 @@ impl BootstrapAdminState {
         &mut self,
         receipts: impl IntoIterator<Item = ContributionReceipt>,
     ) -> Vec<ContributionReceiptId> {
+        self.ingest_contribution_receipts_inner(receipts, false)
+            .expect("non-durable receipt ingest should not fail")
+    }
+
+    /// Ingests browser-submitted receipts and persists them before returning an acknowledgement.
+    pub fn ingest_browser_contribution_receipts(
+        &mut self,
+        receipts: impl IntoIterator<Item = ContributionReceipt>,
+    ) -> anyhow::Result<Vec<ContributionReceiptId>> {
+        self.ingest_contribution_receipts_inner(receipts, true)
+    }
+
+    fn ingest_contribution_receipts_inner(
+        &mut self,
+        receipts: impl IntoIterator<Item = ContributionReceipt>,
+        persist: bool,
+    ) -> anyhow::Result<Vec<ContributionReceiptId>> {
         let mut known_receipt_ids = self
             .contribution_receipts
             .iter()
             .map(|receipt| receipt.receipt_id.clone())
             .collect::<BTreeSet<_>>();
         let mut accepted_receipt_ids = Vec::new();
+        let mut accepted_receipts = Vec::new();
+        let storage = self.history_root.as_ref().map(StorageConfig::new);
 
         for receipt in receipts {
             if !known_receipt_ids.insert(receipt.receipt_id.clone()) {
                 continue;
             }
+            if persist && let Some(storage) = storage.as_ref() {
+                let receipt_path = durable_receipt_path(storage, &receipt.receipt_id);
+                if receipt_path.try_exists()? {
+                    continue;
+                }
+                persist_durable_receipt(&receipt_path, &receipt)?;
+            }
             accepted_receipt_ids.push(receipt.receipt_id.clone());
-            self.contribution_receipts.push(receipt);
+            accepted_receipts.push(receipt);
         }
 
+        self.contribution_receipts.extend(accepted_receipts);
         self.contribution_receipts
             .sort_by_key(|receipt| receipt.accepted_at);
         let max_receipts_in_memory =
@@ -872,7 +917,13 @@ impl BootstrapAdminState {
             let trimmed = self.contribution_receipts.len() - max_receipts_in_memory;
             self.contribution_receipts.drain(0..trimmed);
         }
-        accepted_receipt_ids
+        if persist && storage.is_some() {
+            self.persisted_receipt_count = self
+                .persisted_receipt_count
+                .saturating_add(accepted_receipt_ids.len())
+                .max(self.contribution_receipts.len());
+        }
+        Ok(accepted_receipt_ids)
     }
 
     /// Performs the peer diagnostics operation.

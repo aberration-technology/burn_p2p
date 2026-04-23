@@ -106,7 +106,7 @@ pub(crate) fn handle_browser_post_route(
         return Err("session is not authorized to submit one or more browser receipts".into());
     }
     let accepted_receipt_ids = lock_shared(&context.state, "bootstrap admin state")?
-        .ingest_contribution_receipts(receipts);
+        .ingest_browser_contribution_receipts(receipts)?;
     write_json(
         stream,
         &BrowserReceiptSubmissionResponse {

@@ -453,6 +453,8 @@ impl BrowserWorkerRuntime {
             None => self.storage.clear_active_training_lease(),
         }
 
+        let accepted_at = Utc::now();
+        let peer_id = self.receipt_peer_id();
         let artifact_id = ArtifactId::new(format!(
             "browser-artifact-{}-{}-{}",
             plan.experiment_id.as_str(),
@@ -460,13 +462,15 @@ impl BrowserWorkerRuntime {
             plan.workload_id.as_str()
         ));
         let receipt_id = ContributionReceiptId::new(format!(
-            "browser-training-receipt-{}-{}",
+            "browser-training-receipt-{}-{}-{}-{}",
             plan.experiment_id.as_str(),
-            plan.revision_id.as_str()
+            plan.revision_id.as_str(),
+            peer_id.as_str(),
+            accepted_at.timestamp_micros()
         ));
         self.storage.queue_receipt(ContributionReceipt {
             receipt_id: receipt_id.clone(),
-            peer_id: self.receipt_peer_id(),
+            peer_id,
             study_id: plan.study_id.clone(),
             experiment_id: plan.experiment_id.clone(),
             revision_id: plan.revision_id.clone(),
@@ -476,7 +480,7 @@ impl BrowserWorkerRuntime {
                 .clone()
                 .unwrap_or_else(|| HeadId::new("browser-base-head")),
             artifact_id: artifact_id.clone(),
-            accepted_at: Utc::now(),
+            accepted_at,
             accepted_weight: plan.budget.max_window_secs as f64,
             metrics: BTreeMap::from([(
                 "window_secs".into(),

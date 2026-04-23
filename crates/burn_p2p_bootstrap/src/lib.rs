@@ -2319,6 +2319,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browser_receipt_ingest_persists_to_durable_history() {
+        let tempdir = TempDir::new().expect("browser receipt tempdir");
+        let storage = StorageConfig::new(tempdir.path());
+        let receipt = ContributionReceipt {
+            receipt_id: burn_p2p_core::ContributionReceiptId::new("receipt-browser-durable"),
+            peer_id: PeerId::new("browser-peer"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            base_head_id: HeadId::new("base-head"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            accepted_at: Utc::now(),
+            accepted_weight: 30.0,
+            metrics: BTreeMap::new(),
+            merge_cert_id: None,
+        };
+        let mut state = BootstrapAdminState {
+            history_root: Some(tempdir.path().to_path_buf()),
+            ..BootstrapAdminState::default()
+        };
+
+        let accepted = state
+            .ingest_browser_contribution_receipts(std::iter::once(receipt.clone()))
+            .expect("durable browser receipt ingest");
+
+        assert_eq!(accepted, vec![receipt.receipt_id.clone()]);
+        assert_eq!(state.persisted_receipt_count, 1);
+        assert!(
+            storage
+                .receipts_dir()
+                .join(format!("{}.json", receipt.receipt_id.as_str()))
+                .exists()
+        );
+        let history = super::load_operator_history(
+            Some(&storage),
+            burn_p2p::MetricsRetentionBudget::operator(),
+            super::history::OperatorHistoryMemoryBudget::default(),
+        )
+        .expect("reload durable browser receipt history");
+        assert_eq!(history.totals.receipt_count, 1);
+        assert_eq!(history.receipts, vec![receipt]);
+    }
+
     #[cfg(feature = "social")]
     #[test]
     fn leaderboard_snapshot_reads_from_durable_history_not_preview_vectors() {

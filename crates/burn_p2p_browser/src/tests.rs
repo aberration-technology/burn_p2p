@@ -2064,7 +2064,7 @@ fn worker_runtime_apply_command_completes_validation_and_training_locally() {
                 receipt_id: Some(receipt_id),
                 window_secs: 30,
             }) if artifact_id == &ArtifactId::new("browser-artifact-exp-browser-rev-browser-browser-demo")
-                && receipt_id == &burn_p2p::ContributionReceiptId::new("browser-training-receipt-exp-browser-rev-browser")
+                && receipt_id.as_str().starts_with("browser-training-receipt-exp-browser-rev-browser-browser-unenrolled-peer-")
         )));
 }
 
