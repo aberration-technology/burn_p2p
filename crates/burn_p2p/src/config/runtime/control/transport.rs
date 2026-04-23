@@ -75,7 +75,8 @@ mod tests {
     fn split_fetch_timeout_probes_connected_runtime_before_sidecar_fallback() {
         let peer_id = PeerId::new("12D3KooWConnectedFetchTimeout1111111111111111111111");
         let mut snapshot = test_snapshot();
-        snapshot.observed_peer_ids.insert(peer_id.clone());
+        snapshot.connected_peer_ids.insert(peer_id.clone());
+        snapshot.connected_peers = snapshot.connected_peer_ids.len();
 
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&snapshot, &peer_id, Duration::from_secs(10));
@@ -88,7 +89,8 @@ mod tests {
     fn split_fetch_timeout_keeps_short_connected_fetch_on_runtime_path() {
         let peer_id = PeerId::new("12D3KooWShortConnectedFetchTimeout1111111111111111");
         let mut snapshot = test_snapshot();
-        snapshot.observed_peer_ids.insert(peer_id.clone());
+        snapshot.connected_peer_ids.insert(peer_id.clone());
+        snapshot.connected_peers = snapshot.connected_peer_ids.len();
 
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&snapshot, &peer_id, Duration::from_secs(3));

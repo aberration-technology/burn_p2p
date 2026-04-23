@@ -1196,6 +1196,8 @@ fn prioritized_experiment_snapshot_peer_ids_lead_with_merge_and_quorum_peers() {
     let lease_peer = crate::PeerId::new("peer-lease");
     let connected_only = crate::PeerId::new("peer-connected");
     snapshot.observed_peer_ids = BTreeSet::from([connected_only.clone()]);
+    snapshot.connected_peer_ids = BTreeSet::from([connected_only.clone()]);
+    snapshot.connected_peers = snapshot.connected_peer_ids.len();
 
     snapshot.control_plane.merge_announcements = vec![crate::MergeAnnouncement {
         overlay: experiment.overlay_set().expect("overlay").heads.clone(),

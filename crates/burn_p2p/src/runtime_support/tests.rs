@@ -168,6 +168,8 @@ fn runtime_topology_peers_exclude_quarantined_and_reducer_demoted_peers() {
         PeerId::new("peer-quarantined"),
         PeerId::new("peer-validator-only"),
     ]);
+    snapshot.connected_peer_ids = snapshot.observed_peer_ids.clone();
+    snapshot.connected_peers = snapshot.connected_peer_ids.len();
     snapshot.trust_scores = vec![
         trust_score("peer-quarantined", false, false, true),
         trust_score("peer-validator-only", false, true, false),
@@ -1365,6 +1367,8 @@ fn runtime_validator_peers_and_quorum_respect_validator_eligibility() {
         PeerId::new("peer-reducer-only"),
         PeerId::new("peer-quarantined"),
     ]);
+    snapshot.connected_peer_ids = snapshot.observed_peer_ids.clone();
+    snapshot.connected_peers = snapshot.connected_peer_ids.len();
     snapshot.trust_scores = vec![
         trust_score("peer-reducer-only", true, false, false),
         trust_score("peer-quarantined", false, false, true),
@@ -1421,6 +1425,8 @@ fn runtime_validator_peers_ignore_transport_only_observed_peers() {
         PeerId::new("peer-validator"),
         PeerId::new("peer-transport-only"),
     ]);
+    snapshot.connected_peer_ids = BTreeSet::from([PeerId::new("peer-validator")]);
+    snapshot.connected_peers = snapshot.connected_peer_ids.len();
     advertise_peer(&mut snapshot, "peer-validator", &[PeerRole::Validator]);
 
     let validator_peers = runtime_validator_peers(
