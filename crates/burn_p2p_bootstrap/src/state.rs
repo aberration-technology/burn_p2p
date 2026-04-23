@@ -1247,6 +1247,7 @@ mod tests {
                 local_peer_id: Some(PeerId::new("bootstrap")),
                 configured_roles: burn_p2p::PeerRoleSet::default_trainer(),
                 connected_peers: 1,
+                connected_peer_ids: BTreeSet::new(),
                 observed_peer_ids: BTreeSet::new(),
                 known_peer_addresses: BTreeSet::new(),
                 runtime_boundary: None,
