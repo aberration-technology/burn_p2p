@@ -1487,6 +1487,7 @@ async fn run_wasm_browser_swarm_task(
                                                     }));
                                             }
                                         }
+                                        ControlPlaneResponse::DiLoCo(_) => {}
                                     }
                                 }
                                 libp2p_request_response::Message::Request { .. } => {}

@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::diloco_store::DiLoCoControlStore;
 #[cfg(not(target_arch = "wasm32"))]
 use burn_p2p_webrtc::tokio::{Certificate as WebRtcCertificate, Transport as WebRtcTransport};
@@ -2056,6 +2057,33 @@ impl NativeControlPlaneShell {
         chunks: Vec<ArtifactChunkPayload>,
     ) {
         self.inner.publish_artifact(descriptor, chunks);
+    }
+
+    pub fn publish_diloco_state(
+        &mut self,
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    ) {
+        self.inner
+            .publish_diloco_state(snapshot, outer_optimizer_state, current_parameters);
+    }
+
+    pub fn publish_diloco_gradient(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    ) {
+        self.inner.publish_diloco_gradient(manifest, chunks);
+    }
+
+    pub fn fetch_diloco(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> Result<DiLoCoResponse, SwarmError> {
+        self.inner.fetch_diloco(peer_id, request, timeout)
     }
 
     pub fn request_snapshot(&mut self, peer_id: &str) -> Result<(), SwarmError> {

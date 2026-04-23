@@ -4,6 +4,7 @@
 mod browser_edge;
 mod browser_runtime;
 mod control_shell;
+#[cfg(not(target_arch = "wasm32"))]
 mod diloco_store;
 mod events;
 mod memory_control;
@@ -27,13 +28,16 @@ use burn_p2p_core::time::Instant;
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
     ContentId, ControlCertificate, DatasetViewId, DiLoCoRequest, DiLoCoResponse,
-    DiLoCoRoundFinalize, DiLoCoRoundHeartbeat, DiLoCoRoundOffer, DiLoCoStateSnapshot,
-    DiffusionPromotionCertificate, ExperimentDirectoryEntry, ExperimentId, FlattenedTensorPack,
-    HeadDescriptor, HeadId, MergeCertificate, MergeWindowState, MetricsLiveEvent, MicroShardId,
-    NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet, PeerWindowPlacementHint, PseudoGradientChunk,
-    PseudoGradientManifest, ReducerAssignment, ReducerLoadReport, ReductionCertificate, RevisionId,
-    StateBlob, TelemetrySummary, TrainerPromotionAttestation, UpdateAnnounce,
-    ValidationQuorumCertificate,
+    DiLoCoStateSnapshot, DiffusionPromotionCertificate, ExperimentDirectoryEntry,
+    FlattenedTensorPack, HeadDescriptor, HeadId, MergeCertificate, MergeWindowState,
+    MetricsLiveEvent, MicroShardId, NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet,
+    PeerWindowPlacementHint, PseudoGradientChunk, PseudoGradientManifest, ReducerAssignment,
+    ReducerLoadReport, ReductionCertificate, StateBlob, TelemetrySummary,
+    TrainerPromotionAttestation, UpdateAnnounce, ValidationQuorumCertificate,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use burn_p2p_core::{
+    DiLoCoRoundFinalize, DiLoCoRoundHeartbeat, DiLoCoRoundOffer, ExperimentId, RevisionId,
 };
 use burn_p2p_experiment::{
     ExperimentControlEnvelope, ExperimentLifecycleEnvelope, FleetScheduleEpochEnvelope,

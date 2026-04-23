@@ -25,7 +25,8 @@ use burn_p2p::{
     MetricTrustClass, MetricValue, NetworkManifest, P2pWorkload, PeerId, PeerRole, PeerRoleSet,
     PeerWindowMetrics, PeerWindowStatus, Precision, PrincipalId, ProjectFamilyId,
     ReducerCohortMetrics, RevisionId, RevisionManifest, StorageConfig, StudyId,
-    SupportedWorkload, WindowActivation, WindowId, WorkloadId, DiffusionSteadyStatePolicy,
+    SupportedWorkload, TrainingProtocol, WindowActivation, WindowId, WorkloadId,
+    DiffusionSteadyStatePolicy,
     burn::{
         BurnArtifactConfig, BurnRecordPrecision, BurnTarget, BurnWorkloadConfig, from_learner,
         from_loaders, inspect_module,
@@ -2885,6 +2886,7 @@ fn mnist_directory_entry(
         },
         lag_policy: LagPolicy::default(),
         merge_window_miss_policy: burn_p2p::MergeWindowMissPolicy::LeaseBlocked,
+        training_protocol: TrainingProtocol::default(),
         robustness_policy: None,
         browser_enabled: true,
         browser_role_policy: BrowserRolePolicy {

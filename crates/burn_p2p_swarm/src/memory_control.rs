@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::diloco_store::DiLoCoControlStore;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -965,80 +966,32 @@ impl MemoryControlPlaneShell {
     /// Publishes the local DiLoCo state snapshot, outer optimizer state, and current parameters.
     pub fn publish_diloco_state(
         &mut self,
-        snapshot: DiLoCoStateSnapshot,
-        outer_optimizer_state: Option<StateBlob>,
-        current_parameters: Option<FlattenedTensorPack>,
+        _snapshot: DiLoCoStateSnapshot,
+        _outer_optimizer_state: Option<StateBlob>,
+        _current_parameters: Option<FlattenedTensorPack>,
     ) {
-        self.diloco
-            .publish_state(snapshot, outer_optimizer_state, current_parameters);
     }
 
     /// Publishes one encoded pseudo-gradient manifest and chunk set.
     pub fn publish_diloco_gradient(
         &mut self,
-        manifest: PseudoGradientManifest,
-        chunks: Vec<PseudoGradientChunk>,
+        _manifest: PseudoGradientManifest,
+        _chunks: Vec<PseudoGradientChunk>,
     ) {
-        self.diloco.publish_gradient(manifest, chunks);
-    }
-
-    pub(crate) fn request_diloco_id(
-        &mut self,
-        peer_id: &str,
-        request: DiLoCoRequest,
-    ) -> Result<String, SwarmError> {
-        self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .send_request(&peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)))
-            .to_string())
     }
 
     pub fn fetch_diloco(
         &mut self,
         peer_id: &str,
-        request: DiLoCoRequest,
-        timeout: Duration,
+        _request: DiLoCoRequest,
+        _timeout: Duration,
     ) -> Result<DiLoCoResponse, SwarmError> {
-        self.settle_request_response();
-        let request_id = self.request_diloco_id(peer_id, request)?;
-        let mut deferred_events = std::mem::take(&mut self.pending_events);
-
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if let Some((response_peer_id, response)) =
-                self.completed_diloco_responses.remove(&request_id)
-            {
-                self.pending_events.extend(deferred_events);
-                if response_peer_id != peer_id {
-                    return Err(SwarmError::Request(format!(
-                        "DiLoCo response peer mismatch: expected {}, got {}",
-                        peer_id, response_peer_id
-                    )));
-                }
-                return Ok(response);
-            }
-            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
-                match event {
-                    LiveControlPlaneEvent::RequestFailure {
-                        request_id: Some(failure_id),
-                        message,
-                        ..
-                    } if failure_id == request_id => {
-                        self.pending_events.extend(deferred_events);
-                        return Err(SwarmError::Request(message));
-                    }
-                    other => deferred_events.push_back(other),
-                }
-            }
-        }
-
-        self.pending_events.extend(deferred_events);
-        Err(SwarmError::TimedOut("diloco"))
+        peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
     }
 
     /// Performs the request snapshot operation.
