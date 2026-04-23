@@ -1272,8 +1272,11 @@ fn wait_for_path_from_step(
     step: &mut SpawnedStep,
     artifacts: &ArtifactLayout,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
+    let started_at = Instant::now();
+    let max_deadline = started_at + timeout.checked_mul(3).unwrap_or(timeout).max(timeout);
+    let mut idle_deadline = started_at + timeout;
+    let mut last_phase_context = phase_context_for_path(path).unwrap_or_default();
+    while Instant::now() < idle_deadline && Instant::now() < max_deadline {
         if path.exists() {
             return Ok(());
         }
@@ -1284,10 +1287,28 @@ fn wait_for_path_from_step(
                 path.display(),
             );
         }
+        let current_phase_context = phase_context_for_path(path).unwrap_or_default();
+        if current_phase_context != last_phase_context {
+            last_phase_context = current_phase_context;
+            idle_deadline = Instant::now() + timeout;
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let phase_context = path
-        .parent()
+    let timeout_kind = if Instant::now() >= max_deadline {
+        "max"
+    } else {
+        "idle"
+    };
+    let phase_context = phase_context_for_path(path).unwrap_or_else(|| last_phase_context.clone());
+    anyhow::bail!(
+        "{timeout_kind} timeout waiting for {}{}",
+        path.display(),
+        phase_context
+    );
+}
+
+fn phase_context_for_path(path: &std::path::Path) -> Option<String> {
+    path.parent()
         .map(|parent| parent.join("phase.json"))
         .filter(|phase_path| phase_path.exists())
         .and_then(|phase_path| fs::read(&phase_path).ok())
@@ -1303,8 +1324,6 @@ fn wait_for_path_from_step(
                 .unwrap_or(0);
             format!("; last_demo_phase={current}; elapsed_ms_since_start={elapsed_ms_since_start}")
         })
-        .unwrap_or_default();
-    anyhow::bail!("timed out waiting for {}{}", path.display(), phase_context);
 }
 
 fn mnist_demo_round_plan(profile: Profile, github_actions: bool) -> (u32, u32, bool, bool) {
