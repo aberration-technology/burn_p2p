@@ -1277,20 +1277,103 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
         promoted_head.parent_head_id,
         Some(genesis_head.head_id.clone())
     );
-    let expected_model = {
-        let seed_model = metric_float(&seed_window.report.stats, "model");
-        let trainer_b_model = metric_float(&trainer_b_window.report.stats, "model");
-        let trainer_c_model = metric_float(&trainer_c_window.report.stats, "model");
-        let seed_quality = 1.0 / (1.0 + metric_float(&seed_window.report.stats, "loss").abs());
-        let trainer_b_quality =
-            1.0 / (1.0 + metric_float(&trainer_b_window.report.stats, "loss").abs());
-        let trainer_c_quality =
-            1.0 / (1.0 + metric_float(&trainer_c_window.report.stats, "loss").abs());
-        ((seed_model * seed_quality)
-            + (trainer_b_model * trainer_b_quality)
-            + (trainer_c_model * trainer_c_quality))
-            / (seed_quality + trainer_b_quality + trainer_c_quality)
-    };
+    let window_models = BTreeMap::from([
+        (
+            seed_window.contribution.peer_id.clone(),
+            metric_float(&seed_window.report.stats, "model"),
+        ),
+        (
+            trainer_b_window.contribution.peer_id.clone(),
+            metric_float(&trainer_b_window.report.stats, "model"),
+        ),
+        (
+            trainer_c_window.contribution.peer_id.clone(),
+            metric_float(&trainer_c_window.report.stats, "model"),
+        ),
+    ]);
+    let converged_snapshots = [
+        seed_telemetry.snapshot(),
+        trainer_b_telemetry.snapshot(),
+        trainer_c_telemetry.snapshot(),
+    ];
+    let support_attestation = converged_snapshots
+        .iter()
+        .flat_map(|snapshot| {
+            snapshot
+                .control_plane
+                .trainer_promotion_attestation_announcements
+                .iter()
+        })
+        .filter(|announcement| {
+            announcement.attestation.study_id == experiment.study_id
+                && announcement.attestation.experiment_id == experiment.experiment_id
+                && announcement.attestation.revision_id == experiment.revision_id
+                && announcement.attestation.window_id == WindowId(1)
+                && announcement.attestation.base_head_id == genesis_head.head_id
+                && announcement.attestation.merged_head_id == promoted_head.head_id
+                && announcement.attestation.merged_artifact_id == promoted_head.artifact_id
+        })
+        .max_by(|left, right| {
+            left.attestation
+                .accepted_update_count
+                .cmp(&right.attestation.accepted_update_count)
+                .then(left.attestation.issued_at.cmp(&right.attestation.issued_at))
+                .then(left.announced_at.cmp(&right.announced_at))
+        })
+        .expect("promoted diffusion head should have visible trainer support")
+        .attestation
+        .clone();
+    assert!(
+        support_attestation.accepted_update_count >= 2,
+        "diffusion promotion should not be solo-supported"
+    );
+    let accepted_receipts = support_attestation
+        .contribution_receipt_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut accepted_updates = BTreeMap::new();
+    for update in converged_snapshots.iter().flat_map(|snapshot| {
+        snapshot
+            .control_plane
+            .update_announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.update.study_id == experiment.study_id
+                    && announcement.update.experiment_id == experiment.experiment_id
+                    && announcement.update.revision_id == experiment.revision_id
+                    && announcement.update.window_id == WindowId(1)
+                    && announcement.update.base_head_id == genesis_head.head_id
+                    && announcement
+                        .update
+                        .receipt_ids
+                        .iter()
+                        .any(|receipt_id| accepted_receipts.contains(receipt_id))
+            })
+            .map(|announcement| &announcement.update)
+    }) {
+        accepted_updates.insert(update.peer_id.clone(), update.clone());
+    }
+    assert_eq!(
+        accepted_updates.len(),
+        support_attestation.accepted_update_count as usize,
+        "promoted diffusion support should map back to the accepted trainer updates"
+    );
+    let (weighted_model_sum, total_weight) =
+        accepted_updates
+            .values()
+            .fold((0.0_f64, 0.0_f64), |(sum, total), update| {
+                let model = *window_models
+                    .get(&update.peer_id)
+                    .expect("accepted update should come from a local training window");
+                let weight = update.sample_weight * update.quality_weight;
+                (sum + (model * weight), total + weight)
+            });
+    assert!(
+        total_weight > f64::EPSILON,
+        "promoted diffusion support should have positive candidate weight"
+    );
+    let expected_model = weighted_model_sum / total_weight;
     let merged_model = metric_float(&promoted_head.metrics, "model");
     assert!(
         (merged_model - expected_model).abs() < 1e-9,
