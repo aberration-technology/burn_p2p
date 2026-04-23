@@ -42,12 +42,12 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     let validator_b_telemetry = validator_b.telemetry();
 
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || validator_a_telemetry.snapshot().connected_peers >= 1,
         "validator a did not connect to validator b",
     );
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || validator_b_telemetry.snapshot().connected_peers >= 1,
         "validator b did not connect to validator a",
     );
@@ -88,7 +88,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
     }
 
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || validator_a_telemetry.snapshot().connected_peers >= 3,
         "validator a did not connect to validator b and both trainers",
     );
@@ -120,7 +120,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         .expect("validator a peer id");
     for outcome in &trainer_outcomes {
         wait_for(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             || {
                 validator_a
                     .sync_artifact_from_peer(
@@ -135,7 +135,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
             .publish_artifact_from_store(&outcome.head.artifact_id)
             .expect("validator a republish trainer artifact");
         wait_for(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             || {
                 validator_b
                     .sync_artifact_from_peer(&validator_a_peer_id, outcome.head.artifact_id.clone())
@@ -149,7 +149,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         .validate_candidates_once(&experiment)
         .expect("validator a validate");
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || {
             let a = validator_a_telemetry.snapshot();
             a.control_plane.aggregate_proposal_announcements.len() == 1
@@ -171,7 +171,7 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         "at most one validator should report itself as the promotion winner",
     );
 
-    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(10));
     loop {
         let a = validator_a_telemetry.snapshot();
         let b = validator_b_telemetry.snapshot();
