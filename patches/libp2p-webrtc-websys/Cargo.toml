@@ -64,6 +64,9 @@ version = "0.43.0"
 [dependencies.libp2p-identity]
 version = "0.2.10"
 
+[dependencies.libp2p-noise]
+version = "0.46.1"
+
 [dependencies.libp2p-webrtc-utils]
 version = "0.4.0"
 

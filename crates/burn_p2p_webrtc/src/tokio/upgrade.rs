@@ -27,11 +27,17 @@ use std::{
     time::Duration,
 };
 
-use futures::{channel::oneshot, future::Either};
+use std::io;
+
+use futures::{AsyncRead, AsyncWrite, AsyncWriteExt, channel::oneshot, future::Either};
 use futures_timer::Delay;
+use libp2p_core::{
+    UpgradeInfo,
+    upgrade::{InboundConnectionUpgrade, OutboundConnectionUpgrade},
+};
 use libp2p_identity as identity;
 use libp2p_identity::PeerId;
-use libp2p_webrtc_utils::{Fingerprint, noise};
+use libp2p_webrtc_utils::Fingerprint;
 use webrtc::{
     api::{APIBuilder, setting_engine::SettingEngine},
     data::data_channel::DataChannel,
@@ -66,7 +72,7 @@ pub(crate) async fn outbound(
     peer_connection.set_remote_description(answer).await?; // This will start the gathering of ICE candidates.
 
     let data_channel = wait_for_negotiated_handshake_data_channel(handshake_channel).await?;
-    let peer_id = noise::outbound(
+    let peer_id = noise_outbound(
         id_keys,
         data_channel,
         server_fingerprint,
@@ -101,7 +107,7 @@ pub(crate) async fn inbound(
 
     let data_channel = wait_for_negotiated_handshake_data_channel(handshake_channel).await?;
     let client_fingerprint = get_remote_fingerprint(&peer_connection).await;
-    let peer_id = noise::inbound(
+    let peer_id = noise_inbound(
         id_keys,
         data_channel,
         client_fingerprint,
@@ -110,6 +116,96 @@ pub(crate) async fn inbound(
     .await?;
 
     Ok((peer_id, Connection::new(peer_connection).await))
+}
+
+async fn noise_inbound<T>(
+    id_keys: identity::Keypair,
+    stream: T,
+    client_fingerprint: Fingerprint,
+    server_fingerprint: Fingerprint,
+) -> Result<PeerId, libp2p_noise::Error>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let noise = libp2p_noise::Config::new(&id_keys)
+        .expect("identity keypair should create a valid Noise config")
+        .with_prologue(noise_prologue(client_fingerprint, server_fingerprint));
+    let info = noise
+        .protocol_info()
+        .next()
+        .expect("Noise config should expose protocol info");
+
+    // WebRTC direct reverses the Noise roles: the direct listener sends first.
+    let (peer_id, mut channel) = noise.upgrade_outbound(stream, info).await?;
+    close_noise_handshake_channel(&mut channel).await?;
+
+    Ok(peer_id)
+}
+
+async fn noise_outbound<T>(
+    id_keys: identity::Keypair,
+    stream: T,
+    server_fingerprint: Fingerprint,
+    client_fingerprint: Fingerprint,
+) -> Result<PeerId, libp2p_noise::Error>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let noise = libp2p_noise::Config::new(&id_keys)
+        .expect("identity keypair should create a valid Noise config")
+        .with_prologue(noise_prologue(client_fingerprint, server_fingerprint));
+    let info = noise
+        .protocol_info()
+        .next()
+        .expect("Noise config should expose protocol info");
+
+    // WebRTC direct reverses the Noise roles: the browser/outbound side receives first.
+    let (peer_id, mut channel) = noise.upgrade_inbound(stream, info).await?;
+    close_noise_handshake_channel(&mut channel).await?;
+
+    Ok(peer_id)
+}
+
+async fn close_noise_handshake_channel<T>(
+    channel: &mut libp2p_noise::Output<T>,
+) -> Result<(), libp2p_noise::Error>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    match channel.close().await {
+        Ok(()) => Ok(()),
+        Err(error) if is_benign_noise_close_error(&error) => {
+            tracing::debug!(
+                %error,
+                "ignoring benign WebRTC Noise handshake channel close race"
+            );
+            Ok(())
+        }
+        Err(error) => Err(libp2p_noise::Error::Io(error)),
+    }
+}
+
+fn is_benign_noise_close_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+    )
+}
+
+fn noise_prologue(client_fingerprint: Fingerprint, server_fingerprint: Fingerprint) -> Vec<u8> {
+    let client = client_fingerprint.to_multihash().to_bytes();
+    let server = server_fingerprint.to_multihash().to_bytes();
+    const PREFIX: &[u8] = b"libp2p-webrtc-noise:";
+
+    let mut out = Vec::with_capacity(PREFIX.len() + client.len() + server.len());
+    out.extend_from_slice(PREFIX);
+    out.extend_from_slice(&client);
+    out.extend_from_slice(&server);
+    out
 }
 
 async fn new_outbound_connection(
@@ -245,4 +341,36 @@ async fn wait_for_negotiated_handshake_data_channel(
     drop(drop_listener); // Don't care about cancelled substreams during initial handshake.
 
     Ok(substream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_benign_noise_close_error;
+    use std::io;
+
+    #[test]
+    fn benign_noise_close_errors_cover_datachannel_shutdown_races() {
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(
+                is_benign_noise_close_error(&io::Error::from(kind)),
+                "{kind:?} should be tolerated after Noise peer authentication"
+            );
+        }
+    }
+
+    #[test]
+    fn non_shutdown_noise_close_errors_still_fail() {
+        assert!(!is_benign_noise_close_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_benign_noise_close_error(&io::Error::from(
+            io::ErrorKind::InvalidData
+        )));
+    }
 }
