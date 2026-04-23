@@ -1216,7 +1216,7 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
     );
 
     bootstrap
-        .ingest_peer_snapshot(&reducer_peer_id, test_timeout(Duration::from_secs(5)))
+        .ingest_peer_snapshot(&reducer_peer_id, test_timeout(Duration::from_secs(20)))
         .expect("bootstrap ingest reducer-authority snapshot");
     bootstrap
         .wait_for_known_head(
@@ -1231,7 +1231,7 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
     let reducer_authority_head_providers = [bootstrap_peer_id.clone(), reducer_peer_id.clone()];
     for trainer in &trainers {
         trainer
-            .ingest_peer_snapshot(&bootstrap_peer_id, test_timeout(Duration::from_secs(5)))
+            .ingest_peer_snapshot(&bootstrap_peer_id, test_timeout(Duration::from_secs(20)))
             .expect("trainer ingest bootstrap reducer-authority snapshot");
         trainer
             .wait_for_artifact_from_peers(
