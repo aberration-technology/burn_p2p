@@ -132,8 +132,7 @@ pub fn build_node_app_view(
             observed_peers: snapshot.observed_peer_ids.len(),
             estimated_network_size: snapshot
                 .connected_peers
-                .max(snapshot.observed_peer_ids.len())
-                .max(snapshot.admitted_peers.len()),
+                .max(snapshot.observed_peer_ids.len()),
             accepted_receipts: snapshot.control_plane.update_announcements.len(),
             certified_merges: snapshot.control_plane.merge_announcements.len(),
             in_flight_transfers: snapshot.in_flight_transfers.len(),
@@ -489,7 +488,7 @@ fn training_slice_status(snapshot: &NodeTelemetrySnapshot) -> String {
 
 fn network_note(snapshot: &NodeTelemetrySnapshot) -> String {
     format!(
-        "{} connected · {} observed · {} admitted",
+        "{} connected · {} recently seen · {} admitted",
         snapshot.connected_peers,
         snapshot.observed_peer_ids.len(),
         snapshot.admitted_peers.len()
@@ -530,6 +529,7 @@ mod tests {
             configured_roles: PeerRoleSet::new([PeerRole::TrainerGpu, PeerRole::Validator]),
             node_state: NodeRuntimeState::TrainingWindow,
             connected_peers: 3,
+            connected_peer_ids: BTreeSet::new(),
             observed_peer_ids: BTreeSet::new(),
             known_peer_addresses: BTreeSet::new(),
             runtime_boundary: None,
@@ -619,6 +619,7 @@ mod tests {
             configured_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
             node_state: NodeRuntimeState::IdleReady,
             connected_peers: 2,
+            connected_peer_ids: BTreeSet::new(),
             observed_peer_ids: BTreeSet::new(),
             known_peer_addresses: BTreeSet::new(),
             runtime_boundary: None,

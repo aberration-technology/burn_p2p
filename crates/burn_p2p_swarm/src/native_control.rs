@@ -608,6 +608,14 @@ impl NativeControlPlaneShell {
         self.swarm.network_info().num_peers()
     }
 
+    /// Returns the currently connected peer IDs.
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        self.swarm
+            .connected_peers()
+            .map(|peer_id| PeerId::new(peer_id.to_string()))
+            .collect()
+    }
+
     /// Performs the publish control operation.
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
         self.snapshot.insert_control_announcement(announcement);
@@ -1808,6 +1816,10 @@ impl NativeControlPlaneShell {
 
     pub fn connected_peer_count(&self) -> usize {
         self.inner.connected_peer_count()
+    }
+
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        self.inner.connected_peer_ids()
     }
 
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {

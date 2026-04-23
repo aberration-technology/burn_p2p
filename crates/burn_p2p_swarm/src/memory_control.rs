@@ -102,6 +102,14 @@ impl MemoryControlPlaneShell {
         self.swarm.network_info().num_peers()
     }
 
+    /// Returns the currently connected peer IDs.
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        self.swarm
+            .connected_peers()
+            .map(|peer_id| PeerId::new(peer_id.to_string()))
+            .collect()
+    }
+
     /// Performs the publish control operation.
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
         self.snapshot.insert_control_announcement(announcement);
@@ -679,6 +687,11 @@ impl MemoryControlPlaneShell {
     /// Performs the connected peer count operation.
     pub fn connected_peer_count(&self) -> usize {
         0
+    }
+
+    /// Returns the currently connected peer IDs.
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        Vec::new()
     }
 
     /// Performs the publish control operation.

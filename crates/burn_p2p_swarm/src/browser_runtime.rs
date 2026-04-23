@@ -2297,7 +2297,10 @@ fn build_wasm_webrtc_transport(
     )>,
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    Ok(libp2p::webrtc_websys::Transport::new(libp2p::webrtc_websys::Config::new(keypair)).boxed())
+    Ok(
+        burn_p2p_webrtc_websys::Transport::new(burn_p2p_webrtc_websys::Config::new(keypair))
+            .boxed(),
+    )
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -1,6 +1,6 @@
-# Rust `libp2p-webrtc-websys`
+# `burn_p2p_webrtc_websys`
 
-Browser Transport made available through `web-sys` bindings.
+Patched browser WebRTC-direct transport for burn_p2p, exposed through `web-sys` bindings.
 
 ## Usage
 

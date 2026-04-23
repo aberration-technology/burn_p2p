@@ -96,7 +96,7 @@ pub(crate) fn run_control_plane(
         ) {
             snapshot.node_state = default_node_runtime_state(&snapshot.configured_roles);
         }
-        snapshot.connected_peers = shell.connected_peer_count();
+        sync_connected_peer_snapshot(&mut snapshot, &shell);
         sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
         reconcile_live_revocation_policy(&mut auth, &mut snapshot, storage.as_ref());
         let trust_bundle_changed =
@@ -568,13 +568,15 @@ pub(crate) fn run_control_plane(
             while shell.connected_peer_count() > 0 && Instant::now() < drain_deadline {
                 if let Some(event) = shell.wait_event(Duration::from_millis(50)) {
                     let mut snapshot = lock_telemetry_state(&state);
-                    snapshot.connected_peers = shell.connected_peer_count();
+                    sync_connected_peer_snapshot(&mut snapshot, &shell);
                     snapshot.push_event(event);
                     snapshot.updated_at = Utc::now();
                 }
             }
             let mut snapshot = lock_telemetry_state(&state);
             snapshot.set_node_state(NodeRuntimeState::ShuttingDown);
+            snapshot.connected_peers = 0;
+            snapshot.connected_peer_ids.clear();
             snapshot.status = RuntimeStatus::Stopped;
             snapshot.updated_at = Utc::now();
             return;
@@ -702,6 +704,11 @@ pub(crate) fn run_control_plane(
     }
 }
 
+fn sync_connected_peer_snapshot(snapshot: &mut NodeTelemetrySnapshot, shell: &ControlPlaneShell) {
+    snapshot.connected_peer_ids = shell.connected_peer_ids().into_iter().collect();
+    snapshot.connected_peers = snapshot.connected_peer_ids.len();
+}
+
 fn publish_diffusion_settlement(
     shell: &mut ControlPlaneShell,
     snapshot: &mut NodeTelemetrySnapshot,
@@ -760,7 +767,7 @@ fn handle_control_plane_event(
     }
 
     let mut snapshot = lock_telemetry_state(state);
-    snapshot.connected_peers = shell.connected_peer_count();
+    sync_connected_peer_snapshot(&mut snapshot, shell);
     snapshot.control_plane = shell.snapshot().clone();
     let should_persist_control_plane = matches!(
         &event,
@@ -1301,6 +1308,12 @@ pub(crate) fn remember_known_peer_addresses(
 mod tests {
     use super::*;
 
+    fn connect_peer(snapshot: &mut NodeTelemetrySnapshot, peer_id: PeerId) {
+        snapshot.connected_peer_ids.insert(peer_id.clone());
+        snapshot.observed_peer_ids.insert(peer_id);
+        snapshot.connected_peers = snapshot.connected_peer_ids.len();
+    }
+
     fn test_snapshot(roles: impl IntoIterator<Item = PeerRole>) -> NodeTelemetrySnapshot {
         NodeTelemetrySnapshot::starting(
             &MainnetHandle {
@@ -1366,7 +1379,7 @@ mod tests {
         let trainer_peer = PeerId::new("12D3KooWTrainerRepair111111111111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot.known_peer_addresses.insert(bootstrap.clone());
         snapshot.known_peer_addresses.insert(trainer.clone());
         snapshot
@@ -1448,7 +1461,7 @@ mod tests {
         let trainer_peer = PeerId::new("12D3KooWTrainerRepairMesh11111111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(trainer_peer);
+        connect_peer(&mut snapshot, trainer_peer);
 
         let targets = connectivity_repair_targets(
             &test_boundary(vec![bootstrap.clone()]),
@@ -1467,7 +1480,7 @@ mod tests {
         let trainer_peer = PeerId::new("12D3KooWTrainerRepairFresh11111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1507,7 +1520,7 @@ mod tests {
         let relay = SwarmAddress::new("/ip4/127.0.0.1/tcp/35001/p2p-circuit").expect("relay");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1546,7 +1559,7 @@ mod tests {
         let relay = SwarmAddress::new("/ip4/127.0.0.1/tcp/36001/p2p-circuit").expect("relay");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1583,7 +1596,7 @@ mod tests {
         let seed_peer = PeerId::new("12D3KooWSeedOffload11111111111111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1604,7 +1617,7 @@ mod tests {
             ));
             let address =
                 SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/37{:03}", index + 2)).expect("mesh");
-            snapshot.observed_peer_ids.insert(peer_id.clone());
+            connect_peer(&mut snapshot, peer_id.clone());
             snapshot
                 .control_plane
                 .peer_directory_announcements
@@ -1627,7 +1640,7 @@ mod tests {
         let seed_peer = PeerId::new("12D3KooWSeedRetain111111111111111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(seed_peer.clone());
+        connect_peer(&mut snapshot, seed_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1648,7 +1661,7 @@ mod tests {
             ));
             let address =
                 SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/38{:03}", index + 2)).expect("mesh");
-            snapshot.observed_peer_ids.insert(peer_id.clone());
+            connect_peer(&mut snapshot, peer_id.clone());
             snapshot
                 .control_plane
                 .peer_directory_announcements
@@ -1671,7 +1684,7 @@ mod tests {
         let validator_peer = PeerId::new("12D3KooWValidatorSeed11111111111111111111111111111");
 
         let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
-        snapshot.observed_peer_ids.insert(validator_peer.clone());
+        connect_peer(&mut snapshot, validator_peer.clone());
         snapshot
             .control_plane
             .peer_directory_announcements
@@ -1692,7 +1705,7 @@ mod tests {
             ));
             let address =
                 SwarmAddress::new(format!("/ip4/127.0.0.1/tcp/39{:03}", index + 2)).expect("mesh");
-            snapshot.observed_peer_ids.insert(peer_id.clone());
+            connect_peer(&mut snapshot, peer_id.clone());
             snapshot
                 .control_plane
                 .peer_directory_announcements

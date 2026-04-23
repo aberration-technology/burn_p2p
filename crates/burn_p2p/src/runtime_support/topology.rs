@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn connected_peer_ids(snapshot: &NodeTelemetrySnapshot) -> BTreeSet<PeerId> {
-    snapshot.observed_peer_ids.clone()
+    snapshot.connected_peer_ids.clone()
 }
 
 pub(crate) fn experiment_snapshot_peer_ids(

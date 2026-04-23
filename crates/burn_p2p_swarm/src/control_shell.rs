@@ -81,6 +81,14 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Returns the currently connected peer IDs.
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        match self {
+            Self::Memory(shell) => shell.connected_peer_ids(),
+            Self::Native(shell) => shell.connected_peer_ids(),
+        }
+    }
+
     /// Performs the publish control operation.
     pub fn publish_control(&mut self, announcement: ControlAnnouncement) {
         match self {

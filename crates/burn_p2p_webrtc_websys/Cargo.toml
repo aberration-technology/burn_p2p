@@ -1,0 +1,56 @@
+[package]
+name = "burn_p2p_webrtc_websys"
+description = "Patched browser WebRTC-direct transport for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "burn_p2p_webrtc_websys"
+path = "src/lib.rs"
+
+[dependencies]
+bytes = "1"
+futures = "0.3.30"
+getrandom = { version = "0.2", features = ["js"] }
+hex.workspace = true
+js-sys = "0.3"
+libp2p-core = "0.43.0"
+libp2p-identity = "0.2.10"
+libp2p-noise = "0.46.1"
+libp2p-webrtc-utils = "0.4.0"
+send_wrapper = { version = "0.6.0", features = ["futures"] }
+thiserror.workspace = true
+tracing = "0.1.41"
+wasm-bindgen = "0.2.90"
+wasm-bindgen-futures = "0.4.42"
+web-sys = { version = "0.3.70", features = [
+    "Document",
+    "console",
+    "Location",
+    "MessageEvent",
+    "Navigator",
+    "RtcCertificate",
+    "RtcConfiguration",
+    "RtcDataChannel",
+    "RtcDataChannelEvent",
+    "RtcDataChannelInit",
+    "RtcDataChannelState",
+    "RtcDataChannelType",
+    "RtcPeerConnection",
+    "RtcSdpType",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "Window",
+] }
+
+[lints]
+workspace = true

@@ -10,7 +10,7 @@ browser transport connected after libp2p reports a real peer connection.
 
 The current backend is:
 
-- `libp2p-webrtc-websys` for WebRTC-direct seed dials
+- `burn_p2p_webrtc_websys` for WebRTC-direct seed dials
 - `libp2p-webtransport-websys` for WebTransport when a deployment enables it
 - `libp2p-websocket-websys` as an explicit WSS fallback, not as proof of direct
   browser transport health

@@ -4,14 +4,14 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
 };
 
 use bytes::BytesMut;
-use futures::{task::AtomicWaker, AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, task::AtomicWaker};
 use libp2p_webrtc_utils::MAX_MSG_LEN;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;

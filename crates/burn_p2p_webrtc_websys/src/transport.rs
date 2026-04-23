@@ -13,7 +13,7 @@ use libp2p_core::{
 use libp2p_identity::{Keypair, PeerId};
 use wasm_bindgen::JsValue;
 
-use super::{upgrade, Connection, Error};
+use super::{Connection, Error, upgrade};
 
 fn console_debug(message: impl AsRef<str>) {
     web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));

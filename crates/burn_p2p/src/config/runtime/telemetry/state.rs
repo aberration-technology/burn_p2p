@@ -261,6 +261,9 @@ pub struct NodeTelemetrySnapshot {
     pub configured_roles: PeerRoleSet,
     /// The connected peers.
     pub connected_peers: usize,
+    #[serde(default)]
+    /// The live connected peer IDs.
+    pub connected_peer_ids: BTreeSet<PeerId>,
     /// The observed peer IDs.
     pub observed_peer_ids: BTreeSet<PeerId>,
     /// The known peer addresses.
@@ -337,6 +340,7 @@ impl NodeTelemetrySnapshot {
             local_peer_id: None,
             configured_roles: mainnet.roles.clone(),
             connected_peers: 0,
+            connected_peer_ids: BTreeSet::new(),
             observed_peer_ids: BTreeSet::new(),
             known_peer_addresses: BTreeSet::new(),
             runtime_boundary: None,
@@ -368,10 +372,25 @@ impl NodeTelemetrySnapshot {
     }
 
     pub(crate) fn push_event(&mut self, event: LiveControlPlaneEvent) {
-        if let LiveControlPlaneEvent::ConnectionClosed { peer_id } = &event {
-            self.observed_peer_ids.remove(&PeerId::new(peer_id.clone()));
-        } else if let Some(peer_id) = peer_id_from_event(&event) {
-            self.observed_peer_ids.insert(peer_id);
+        match &event {
+            LiveControlPlaneEvent::ConnectionClosed { peer_id } => {
+                self.observed_peer_ids.remove(&PeerId::new(peer_id.clone()));
+            }
+            LiveControlPlaneEvent::PeersExpired { peers } => {
+                for (peer_id, _) in peers {
+                    self.observed_peer_ids.remove(&PeerId::new(peer_id.clone()));
+                }
+            }
+            LiveControlPlaneEvent::PeersDiscovered { peers } => {
+                for (peer_id, _) in peers {
+                    self.observed_peer_ids.insert(PeerId::new(peer_id.clone()));
+                }
+            }
+            _ => {
+                if let Some(peer_id) = observed_peer_id_from_event(&event) {
+                    self.observed_peer_ids.insert(peer_id);
+                }
+            }
         }
         self.recent_events.push(event);
         if self.recent_events.len() > Self::MAX_RECENT_EVENTS {
@@ -476,42 +495,95 @@ impl NodeTelemetrySnapshot {
     }
 }
 
-fn peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> {
+fn observed_peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> {
     match event {
         LiveControlPlaneEvent::ConnectionEstablished { peer_id }
-        | LiveControlPlaneEvent::SnapshotRequested { peer_id }
         | LiveControlPlaneEvent::SnapshotReceived { peer_id, .. }
         | LiveControlPlaneEvent::SnapshotResponseSent { peer_id }
-        | LiveControlPlaneEvent::ArtifactManifestRequested { peer_id, .. }
         | LiveControlPlaneEvent::ArtifactManifestReceived { peer_id, .. }
-        | LiveControlPlaneEvent::ArtifactChunkRequested { peer_id, .. }
         | LiveControlPlaneEvent::ArtifactChunkReceived { peer_id, .. }
-        | LiveControlPlaneEvent::RequestFailure { peer_id, .. }
-        | LiveControlPlaneEvent::InboundFailure { peer_id, .. }
-        | LiveControlPlaneEvent::ResponseSendFailure { peer_id, .. }
         | LiveControlPlaneEvent::PubsubMessage { peer_id, .. }
         | LiveControlPlaneEvent::PeerIdentified { peer_id, .. }
-        | LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { peer_id }
-        | LiveControlPlaneEvent::DirectConnectionUpgradeFailed { peer_id, .. } => {
+        | LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { peer_id } => {
             Some(PeerId::new(peer_id.clone()))
         }
         LiveControlPlaneEvent::RelayReservationAccepted { relay_peer_id } => {
             Some(PeerId::new(relay_peer_id.clone()))
         }
-        LiveControlPlaneEvent::ConnectionClosed { .. } => None,
-        LiveControlPlaneEvent::PeersDiscovered { peers }
-        | LiveControlPlaneEvent::PeersExpired { peers } => peers
-            .first()
-            .map(|(peer_id, _)| PeerId::new(peer_id.clone())),
-        LiveControlPlaneEvent::PeerDirectoryRecordReceived { announcement } => {
-            Some(announcement.peer_id.clone())
-        }
-        LiveControlPlaneEvent::NewListenAddr { .. }
+        LiveControlPlaneEvent::ConnectionClosed { .. }
+        | LiveControlPlaneEvent::SnapshotRequested { .. }
+        | LiveControlPlaneEvent::ArtifactManifestRequested { .. }
+        | LiveControlPlaneEvent::ArtifactChunkRequested { .. }
+        | LiveControlPlaneEvent::PeersDiscovered { .. }
+        | LiveControlPlaneEvent::PeersExpired { .. }
+        | LiveControlPlaneEvent::DirectConnectionUpgradeFailed { .. }
+        | LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
+        | LiveControlPlaneEvent::RequestFailure { .. }
+        | LiveControlPlaneEvent::InboundFailure { .. }
+        | LiveControlPlaneEvent::ResponseSendFailure { .. }
+        | LiveControlPlaneEvent::NewListenAddr { .. }
         | LiveControlPlaneEvent::ReachableAddressConfirmed { .. }
         | LiveControlPlaneEvent::ReachableAddressExpired { .. }
         | LiveControlPlaneEvent::TopicSubscribed { .. }
         | LiveControlPlaneEvent::OutgoingConnectionError { .. }
         | LiveControlPlaneEvent::IncomingConnectionError { .. }
         | LiveControlPlaneEvent::Other { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_snapshot() -> NodeTelemetrySnapshot {
+        NodeTelemetrySnapshot::starting(
+            &MainnetHandle {
+                genesis: GenesisSpec {
+                    network_id: NetworkId::new("telemetry-state-test"),
+                    protocol_version: semver::Version::new(1, 0, 0),
+                    display_name: String::from("telemetry-state-test"),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                },
+                roles: PeerRoleSet::default_trainer(),
+            },
+            &NodeConfig::default(),
+        )
+    }
+
+    #[test]
+    fn push_event_removes_all_expired_peers_from_observed_set() {
+        let mut snapshot = test_snapshot();
+        let peer_a = PeerId::new("peer-a");
+        let peer_b = PeerId::new("peer-b");
+        snapshot.observed_peer_ids = BTreeSet::from([peer_a.clone(), peer_b.clone()]);
+
+        snapshot.push_event(LiveControlPlaneEvent::PeersExpired {
+            peers: vec![
+                (
+                    "peer-a".into(),
+                    SwarmAddress::new("/ip4/127.0.0.1/tcp/1").expect("addr-a"),
+                ),
+                (
+                    "peer-b".into(),
+                    SwarmAddress::new("/ip4/127.0.0.1/tcp/2").expect("addr-b"),
+                ),
+            ],
+        });
+
+        assert!(snapshot.observed_peer_ids.is_empty());
+    }
+
+    #[test]
+    fn push_event_does_not_promote_failed_requests_to_observed_peers() {
+        let mut snapshot = test_snapshot();
+
+        snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
+            peer_id: "peer-failed".into(),
+            request_id: None,
+            message: "timeout".into(),
+        });
+
+        assert!(snapshot.observed_peer_ids.is_empty());
     }
 }

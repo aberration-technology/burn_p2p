@@ -1,16 +1,16 @@
 use std::{cell::RefCell, io, net::SocketAddr, rc::Rc};
 
-use futures::{channel::oneshot, AsyncRead, AsyncWrite, AsyncWriteExt};
-use libp2p_core::{upgrade::InboundConnectionUpgrade, UpgradeInfo};
+use futures::{AsyncRead, AsyncWrite, AsyncWriteExt, channel::oneshot};
+use libp2p_core::{UpgradeInfo, upgrade::InboundConnectionUpgrade};
 
 use libp2p_identity::{Keypair, PeerId};
 use libp2p_webrtc_utils::Fingerprint;
 use send_wrapper::SendWrapper;
-use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{Event, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState};
 
 use super::Error;
-use crate::{connection::RtcPeerConnection, error::AuthenticationError, sdp, Connection, Stream};
+use crate::{Connection, Stream, connection::RtcPeerConnection, error::AuthenticationError, sdp};
 
 fn console_debug(message: impl AsRef<str>) {
     web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
