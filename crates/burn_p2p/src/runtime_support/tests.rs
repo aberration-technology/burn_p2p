@@ -7,8 +7,8 @@ use burn_p2p_core::{
     AuthProvider, BackendClass, BaseCheckpointId, ContentId, DiLoCoPolicy, DiLoCoStateSnapshot,
     FleetPlacementPeer, FleetPlacementSnapshot, GradientCodec, MetricsLiveEvent,
     MetricsLiveEventKind, NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PrincipalId,
-    ProjectFamilyId, PseudoGradientManifest, RevocationEpoch, RoundCursor, RoundPhase,
-    SignatureAlgorithm, SignatureMetadata, TrainingProtocol,
+    ProjectFamilyId, PseudoGradientManifest, PseudoGradientManifestInput, RevocationEpoch,
+    RoundCursor, RoundPhase, SignatureAlgorithm, SignatureMetadata, TrainingProtocol,
 };
 use burn_p2p_experiment::{
     ActivationTarget, FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
@@ -172,17 +172,17 @@ fn diloco_state_and_manifest_signatures_verify_against_peer_auth() {
         ContentId::new("layout"),
         vec![1.0, -2.0, 0.5],
     );
-    let mut manifest = PseudoGradientManifest::try_new(
-        ExperimentId::new("exp-diloco"),
-        RevisionId::new("rev-diloco"),
-        peer_id.clone(),
-        RoundCursor::new(BaseCheckpointId::new("base"), 4),
-        GradientCodec::Fp32,
-        &pack,
-        1,
-        12,
-        Utc::now(),
-    )
+    let mut manifest = PseudoGradientManifest::try_new(PseudoGradientManifestInput {
+        experiment_id: ExperimentId::new("exp-diloco"),
+        revision_id: RevisionId::new("rev-diloco"),
+        peer_id: peer_id.clone(),
+        round_cursor: RoundCursor::new(BaseCheckpointId::new("base"), 4),
+        codec: GradientCodec::Fp32,
+        pack: &pack,
+        chunk_count: 1,
+        total_encoded_bytes: 12,
+        created_at: Utc::now(),
+    })
     .expect("manifest");
     manifest
         .signature_bundle

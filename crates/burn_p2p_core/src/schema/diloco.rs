@@ -167,12 +167,13 @@ impl RoundCursor {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the encoded representation used for pseudo-gradient transport.
 pub enum GradientCodec {
     /// Sends pseudo-gradients as native `f32` payloads.
     Fp32,
     /// Sends pseudo-gradients as IEEE-754 half precision payloads.
+    #[default]
     Fp16,
     /// Sends blockwise int8 payloads with one scale factor per block.
     BlockwiseInt8 {
@@ -196,12 +197,6 @@ pub enum GradientCodec {
         /// Whether error-feedback residuals are preserved across rounds.
         error_feedback: bool,
     },
-}
-
-impl Default for GradientCodec {
-    fn default() -> Self {
-        Self::Fp16
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,49 +547,62 @@ pub struct PseudoGradientManifest {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug)]
+/// Input fields used to create one encoded pseudo-gradient manifest.
+pub struct PseudoGradientManifestInput<'a> {
+    /// Experiment scope for the transfer.
+    pub experiment_id: ExperimentId,
+    /// Revision scope for the transfer.
+    pub revision_id: RevisionId,
+    /// Originating peer.
+    pub peer_id: PeerId,
+    /// Round cursor associated with the transfer.
+    pub round_cursor: RoundCursor,
+    /// Codec used to encode the payload bytes.
+    pub codec: GradientCodec,
+    /// Decoded transport pack used for manifest checksum derivation.
+    pub pack: &'a FlattenedTensorPack,
+    /// Total number of encoded chunks.
+    pub chunk_count: u32,
+    /// Total encoded byte length across all chunks.
+    pub total_encoded_bytes: u64,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
 impl PseudoGradientManifest {
     /// Creates a manifest for one encoded pseudo-gradient payload.
-    pub fn try_new(
-        experiment_id: ExperimentId,
-        revision_id: RevisionId,
-        peer_id: PeerId,
-        round_cursor: RoundCursor,
-        codec: GradientCodec,
-        pack: &FlattenedTensorPack,
-        chunk_count: u32,
-        total_encoded_bytes: u64,
-        created_at: DateTime<Utc>,
-    ) -> Result<Self, SchemaError> {
-        let checksum = pack.checksum()?;
+    pub fn try_new(input: PseudoGradientManifestInput<'_>) -> Result<Self, SchemaError> {
+        let checksum = input.pack.checksum()?;
         let manifest_id = ContentId::derive(&(
-            experiment_id.as_str(),
-            revision_id.as_str(),
-            peer_id.as_str(),
-            round_cursor.round_id.as_u64(),
-            round_cursor.base_checkpoint_id.as_str(),
-            &codec,
-            pack.layout_hash.as_str(),
-            pack.values.len(),
+            input.experiment_id.as_str(),
+            input.revision_id.as_str(),
+            input.peer_id.as_str(),
+            input.round_cursor.round_id.as_u64(),
+            input.round_cursor.base_checkpoint_id.as_str(),
+            &input.codec,
+            input.pack.layout_hash.as_str(),
+            input.pack.values.len(),
             checksum.as_str(),
-            chunk_count,
-            total_encoded_bytes,
+            input.chunk_count,
+            input.total_encoded_bytes,
         ))?;
 
         Ok(Self {
             manifest_id,
-            experiment_id,
-            revision_id,
-            peer_id,
-            round_cursor,
-            codec,
-            model_schema_hash: pack.model_schema_hash.clone(),
-            layout_hash: pack.layout_hash.clone(),
-            parameter_count: pack.parameter_count() as u64,
+            experiment_id: input.experiment_id,
+            revision_id: input.revision_id,
+            peer_id: input.peer_id,
+            round_cursor: input.round_cursor,
+            codec: input.codec,
+            model_schema_hash: input.pack.model_schema_hash.clone(),
+            layout_hash: input.pack.layout_hash.clone(),
+            parameter_count: input.pack.parameter_count() as u64,
             checksum,
-            chunk_count,
-            total_encoded_bytes,
+            chunk_count: input.chunk_count,
+            total_encoded_bytes: input.total_encoded_bytes,
             signature_bundle: Vec::new(),
-            created_at,
+            created_at: input.created_at,
         })
     }
 }

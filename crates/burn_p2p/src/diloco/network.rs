@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use anyhow::{Context, anyhow, ensure};
 use chrono::Utc;
@@ -56,6 +59,15 @@ struct RemoteDiLoCoState {
     outer_optimizer_state: StateBlob,
 }
 
+struct DiLoCoFinalizeBroadcast<'a> {
+    experiment: &'a ExperimentHandle,
+    participants: &'a [PeerId],
+    local_peer_id: &'a PeerId,
+    round_cursor: &'a RoundCursor,
+    participant_count: u16,
+    aggregate_checksum: Option<ContentId>,
+}
+
 fn request_timeout(deadline: Instant) -> Option<Duration> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
@@ -66,7 +78,8 @@ fn request_timeout(deadline: Instant) -> Option<Duration> {
 }
 
 fn checkpoint_due(policy: &DiLoCoPolicy, round: &RoundCursor) -> bool {
-    ((round.round_id.as_u64() + 1) % u64::from(policy.checkpoint_interval_rounds.max(1))) == 0
+    (round.round_id.as_u64() + 1)
+        .is_multiple_of(u64::from(policy.checkpoint_interval_rounds.max(1)))
 }
 
 fn diloco_state_signature_acceptable(
@@ -77,9 +90,11 @@ fn diloco_state_signature_acceptable(
     if state.signature_bundle.is_empty() {
         return true;
     }
-    diloco_peer_has_auth(&snapshot.control_plane, peer_id)
-        .then(|| verify_diloco_state_snapshot_signature(&snapshot.control_plane, peer_id, state))
-        .unwrap_or(true)
+    if diloco_peer_has_auth(&snapshot.control_plane, peer_id) {
+        verify_diloco_state_snapshot_signature(&snapshot.control_plane, peer_id, state)
+    } else {
+        true
+    }
 }
 
 fn diloco_manifest_signature_acceptable(
@@ -90,11 +105,11 @@ fn diloco_manifest_signature_acceptable(
     if manifest.signature_bundle.is_empty() {
         return true;
     }
-    diloco_peer_has_auth(&snapshot.control_plane, peer_id)
-        .then(|| {
-            verify_diloco_gradient_manifest_signature(&snapshot.control_plane, peer_id, manifest)
-        })
-        .unwrap_or(true)
+    if diloco_peer_has_auth(&snapshot.control_plane, peer_id) {
+        verify_diloco_gradient_manifest_signature(&snapshot.control_plane, peer_id, manifest)
+    } else {
+        true
+    }
 }
 
 fn diloco_peer_has_auth(control_plane: &ControlPlaneSnapshot, peer_id: &PeerId) -> bool {
@@ -104,15 +119,85 @@ fn diloco_peer_has_auth(control_plane: &ControlPlaneSnapshot, peer_id: &PeerId) 
         .any(|announcement| &announcement.peer_id == peer_id)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiLoCoCandidateRoute {
+    Direct,
+    Unknown,
+    RelayOnly,
+}
+
+impl DiLoCoCandidateRoute {
+    fn preference_rank(self) -> u8 {
+        match self {
+            Self::Direct => 0,
+            Self::Unknown => 1,
+            Self::RelayOnly => 2,
+        }
+    }
+}
+
+fn diloco_candidate_route(
+    control_plane: &ControlPlaneSnapshot,
+    peer_id: &PeerId,
+) -> DiLoCoCandidateRoute {
+    let mut saw_relay = false;
+    for address in control_plane
+        .peer_directory_announcements
+        .iter()
+        .filter(|announcement| &announcement.peer_id == peer_id)
+        .flat_map(|announcement| announcement.addresses.iter())
+    {
+        if address.is_relay_circuit() {
+            saw_relay = true;
+        } else {
+            return DiLoCoCandidateRoute::Direct;
+        }
+    }
+    if saw_relay {
+        DiLoCoCandidateRoute::RelayOnly
+    } else {
+        DiLoCoCandidateRoute::Unknown
+    }
+}
+
+fn compare_diloco_candidate_transport(
+    policy: &DiLoCoPolicy,
+    control_plane: &ControlPlaneSnapshot,
+    left: &PeerId,
+    right: &PeerId,
+) -> Ordering {
+    if policy.topology_policy.prefer_low_latency {
+        diloco_candidate_route(control_plane, left)
+            .preference_rank()
+            .cmp(&diloco_candidate_route(control_plane, right).preference_rank())
+    } else {
+        Ordering::Equal
+    }
+}
+
+fn relay_allowed_for_diloco_candidate(
+    policy: &DiLoCoPolicy,
+    control_plane: &ControlPlaneSnapshot,
+    peer_id: &PeerId,
+) -> bool {
+    policy.topology_policy.allow_relay
+        || diloco_candidate_route(control_plane, peer_id) != DiLoCoCandidateRoute::RelayOnly
+}
+
 fn order_diloco_candidates(
     policy: &DiLoCoPolicy,
+    control_plane: &ControlPlaneSnapshot,
     local_peer_id: &PeerId,
     round_cursor: &RoundCursor,
-    candidates: &mut [PeerId],
+    candidates: &mut Vec<PeerId>,
 ) -> anyhow::Result<()> {
+    candidates.retain(|peer_id| relay_allowed_for_diloco_candidate(policy, control_plane, peer_id));
     match policy.topology_policy.mode {
         DiLoCoTopologyMode::DeterministicRendezvous | DiLoCoTopologyMode::RelayAssisted => {
-            candidates.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+            candidates.sort_by(|left, right| {
+                compare_diloco_candidate_transport(policy, control_plane, left, right)
+                    .then_with(|| left.as_str().cmp(right.as_str()))
+            });
         }
         DiLoCoTopologyMode::GossipNeighborhood => {
             let round_id = round_cursor.round_id.as_u64();
@@ -129,10 +214,13 @@ fn order_diloco_candidates(
                 })
                 .collect::<Result<Vec<_>, burn_p2p_core::SchemaError>>()?;
             ordered.sort_by(|left, right| {
-                left.0
-                    .as_str()
-                    .cmp(right.0.as_str())
-                    .then_with(|| left.1.as_str().cmp(right.1.as_str()))
+                compare_diloco_candidate_transport(policy, control_plane, &left.1, &right.1)
+                    .then_with(|| {
+                        left.0
+                            .as_str()
+                            .cmp(right.0.as_str())
+                            .then_with(|| left.1.as_str().cmp(right.1.as_str()))
+                    })
             });
             for (slot, (_, peer_id)) in candidates.iter_mut().zip(ordered) {
                 *slot = peer_id;
@@ -334,29 +422,29 @@ where
         self.persist_and_publish_diloco_state(&storage, experiment, &mut state)
             .context("publish DiLoCo outer-apply state")?;
 
-        let (next_parameters, next_outer_optimizer_state) = (|| -> anyhow::Result<_> {
+        let (next_parameters, next_outer_optimizer_state) = {
             let project = &mut self
                 .node
                 .as_mut()
                 .expect("running node should retain prepared node")
                 .project;
-            Ok(project.apply_aggregated_outer_update(
+            project.apply_aggregated_outer_update(
                 &state.current_parameters,
                 &aggregate,
                 &state.outer_optimizer_state,
                 &policy.outer_optimizer_policy,
-            )?)
-        })()
+            )
+        }
         .context("apply DiLoCo outer update")?;
         state.current_parameters = next_parameters;
-        state.outer_optimizer_state = (|| -> anyhow::Result<_> {
+        state.outer_optimizer_state = {
             let project = &mut self
                 .node
                 .as_mut()
                 .expect("running node should retain prepared node")
                 .project;
-            Ok(project.save_outer_optimizer_state(&next_outer_optimizer_state)?)
-        })()
+            project.save_outer_optimizer_state(&next_outer_optimizer_state)
+        }
         .context("persist DiLoCo outer optimizer state")?;
 
         let next_base_checkpoint_id =
@@ -386,12 +474,14 @@ where
         }
         self.persist_and_publish_diloco_state(&storage, experiment, &mut state)?;
         self.broadcast_diloco_finalize(
-            experiment,
-            &participant_peer_ids,
-            &local_peer_id,
-            &completed_round,
-            contributions.len() as u16,
-            Some(aggregate.checksum()?),
+            DiLoCoFinalizeBroadcast {
+                experiment,
+                participants: &participant_peer_ids,
+                local_peer_id: &local_peer_id,
+                round_cursor: &completed_round,
+                participant_count: contributions.len() as u16,
+                aggregate_checksum: Some(aggregate.checksum()?),
+            },
             &policy,
         );
         self.set_experiment_idle_state(experiment, NodeRuntimeState::IdleReady);
@@ -665,7 +755,13 @@ where
             .into_iter()
             .filter(|peer_id| peer_id != local_peer_id)
             .collect::<Vec<_>>();
-        order_diloco_candidates(policy, local_peer_id, round_cursor, &mut candidates)?;
+        order_diloco_candidates(
+            policy,
+            &telemetry_snapshot.control_plane,
+            local_peer_id,
+            round_cursor,
+            &mut candidates,
+        )?;
         let fanout = usize::from(policy.topology_policy.fanout)
             .max(usize::from(policy.target_group_size))
             .max(1);
@@ -770,30 +866,25 @@ where
 
     fn broadcast_diloco_finalize(
         &self,
-        experiment: &ExperimentHandle,
-        participants: &[PeerId],
-        local_peer_id: &PeerId,
-        round_cursor: &RoundCursor,
-        participant_count: u16,
-        aggregate_checksum: Option<ContentId>,
+        broadcast: DiLoCoFinalizeBroadcast<'_>,
         policy: &DiLoCoPolicy,
     ) {
         let deadline =
             Instant::now() + Duration::from_millis(u64::from(policy.aggregation_timeout_ms.max(1)));
-        for peer_id in participants {
-            if peer_id == local_peer_id {
+        for peer_id in broadcast.participants {
+            if peer_id == broadcast.local_peer_id {
                 continue;
             }
             let Some(timeout) = request_timeout(deadline) else {
                 break;
             };
             let finalize = DiLoCoRoundFinalize {
-                experiment_id: experiment.experiment_id.clone(),
-                revision_id: experiment.revision_id.clone(),
-                peer_id: local_peer_id.clone(),
-                round_cursor: round_cursor.clone(),
-                participant_count,
-                aggregate_checksum: aggregate_checksum.clone(),
+                experiment_id: broadcast.experiment.experiment_id.clone(),
+                revision_id: broadcast.experiment.revision_id.clone(),
+                peer_id: broadcast.local_peer_id.clone(),
+                round_cursor: broadcast.round_cursor.clone(),
+                participant_count: broadcast.participant_count,
+                aggregate_checksum: broadcast.aggregate_checksum.clone(),
                 finalized_at: Utc::now(),
             };
             let _ = self
@@ -959,268 +1050,24 @@ where
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
-        io::{Cursor, ErrorKind},
+        io::ErrorKind,
         net::TcpListener,
         sync::{Mutex, OnceLock},
         thread,
     };
 
-    use burn_p2p_workload::P2pWorkload;
     use chrono::Utc;
     use semver::Version;
-    use serde::{Deserialize, Serialize};
     use tempfile::tempdir;
 
     use super::*;
+    use crate::diloco::test_support::ScalarDiLoCoTestWorkload;
     use crate::{
-        ArtifactBuildSpec, AuthConfig, CapabilityEstimate, ChunkingScheme, ContentId, DatasetId,
-        DatasetManifest, DatasetRegistration, DatasetView, DatasetViewId, EvalSplit,
-        ExperimentDirectoryEntry, ExperimentOptInPolicy, ExperimentResourceRequirements,
-        ExperimentScope, ExperimentVisibility, GenesisSpec, MainnetHandle, MetricReport,
-        MetricValue, NetworkId, NodeBuilder, PatchOutcome, PatchSupport, PeerRole, PeerRoleSet,
-        Precision, SupportedWorkload, SwarmAddress, TrainError, UpstreamAdapter, WindowCtx,
-        WindowReport, WorkloadId,
+        AuthConfig, ContentId, DatasetViewId, ExperimentDirectoryEntry, ExperimentOptInPolicy,
+        ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, GenesisSpec,
+        MainnetHandle, NetworkId, NodeBuilder, PeerDirectoryAnnouncement, PeerRole, PeerRoleSet,
+        SwarmAddress, WorkloadId,
     };
-
-    #[derive(Clone, Debug)]
-    struct NetworkScalarWorkload {
-        inner_lr: f32,
-    }
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct MomentumState {
-        velocity: f32,
-    }
-
-    impl P2pWorkload for NetworkScalarWorkload {
-        type Device = ();
-        type Model = f32;
-        type Batch = f32;
-        type WindowStats = BTreeMap<String, MetricValue>;
-
-        fn init_model(&self, _device: &Self::Device) -> Self::Model {
-            0.0
-        }
-
-        fn benchmark(&self, _model: &Self::Model, _device: &Self::Device) -> CapabilityEstimate {
-            CapabilityEstimate {
-                preferred_backends: vec!["ndarray".into()],
-                work_units_per_second: 32.0,
-                target_window_seconds: 1,
-            }
-        }
-
-        fn train_window(
-            &self,
-            ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
-        ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
-            let delta = ctx.batches.iter().copied().sum::<f32>() * self.inner_lr;
-            ctx.model += delta;
-            Ok(WindowReport {
-                contribution: None,
-                stats: BTreeMap::from([("delta".into(), MetricValue::Float(delta as f64))]),
-                completed_at: Utc::now(),
-            })
-        }
-
-        fn evaluate(&self, model: &Self::Model, _split: EvalSplit) -> MetricReport {
-            MetricReport {
-                metrics: BTreeMap::from([("model".into(), MetricValue::Float(*model as f64))]),
-                captured_at: Utc::now(),
-            }
-        }
-
-        fn apply_patch(&mut self, _patch: &crate::RuntimePatch) -> PatchOutcome {
-            PatchOutcome::Rejected("unsupported".into())
-        }
-
-        fn supported_patch_classes(&self) -> PatchSupport {
-            PatchSupport::default()
-        }
-
-        fn runtime_device(&self) -> Self::Device {}
-
-        fn dataset_registration(&self) -> anyhow::Result<DatasetRegistration> {
-            Ok(DatasetRegistration {
-                manifest: DatasetManifest {
-                    dataset_id: DatasetId::new("scalar-dataset"),
-                    source_uri: "memory://scalar-dataset".into(),
-                    format: "synthetic".into(),
-                    manifest_hash: ContentId::new("scalar-manifest"),
-                    metadata: BTreeMap::new(),
-                },
-                view: DatasetView {
-                    dataset_view_id: DatasetViewId::new("scalar-view"),
-                    dataset_id: DatasetId::new("scalar-dataset"),
-                    preprocessing_hash: ContentId::new("scalar-preprocess"),
-                    tokenizer_hash: None,
-                    manifest_hash: ContentId::new("scalar-manifest"),
-                    metadata: BTreeMap::new(),
-                },
-                upstream: UpstreamAdapter::Local {
-                    root: "/tmp".into(),
-                },
-            })
-        }
-
-        fn microshard_plan(
-            &self,
-            _registration: &DatasetRegistration,
-        ) -> anyhow::Result<crate::MicroShardPlan> {
-            unimplemented!("network DiLoCo tests inject batches directly")
-        }
-
-        fn load_batches(
-            &self,
-            _lease: &crate::AssignmentLease,
-            _cached_microshards: &[crate::CachedMicroShard],
-        ) -> anyhow::Result<Vec<Self::Batch>> {
-            unimplemented!("network DiLoCo tests inject batches directly")
-        }
-
-        fn load_model_artifact(
-            &self,
-            _model: Self::Model,
-            descriptor: &crate::ArtifactDescriptor,
-            store: &FsArtifactStore,
-            _device: &Self::Device,
-        ) -> anyhow::Result<Self::Model> {
-            Ok(serde_json::from_slice(
-                &store.materialize_artifact_bytes(descriptor)?,
-            )?)
-        }
-
-        fn materialize_model_artifact(
-            &self,
-            model: &Self::Model,
-            artifact_kind: crate::ArtifactKind,
-            head_id: HeadId,
-            base_head_id: Option<HeadId>,
-            store: &FsArtifactStore,
-        ) -> anyhow::Result<crate::ArtifactDescriptor> {
-            let bytes = serde_json::to_vec(model)?;
-            let mut spec = ArtifactBuildSpec::new(
-                artifact_kind,
-                Precision::Fp32,
-                ContentId::new("scalar-schema"),
-                "scalar-json",
-            )
-            .with_head(head_id);
-            if let Some(base_head_id) = base_head_id {
-                spec = spec.with_base_head(base_head_id);
-            }
-            Ok(store.store_artifact_reader(&spec, Cursor::new(bytes), ChunkingScheme::new(8)?)?)
-        }
-
-        fn contribution_metrics(
-            &self,
-            report: &WindowReport<Self::WindowStats>,
-        ) -> BTreeMap<String, MetricValue> {
-            report.stats.clone()
-        }
-
-        fn supported_workload(&self) -> SupportedWorkload {
-            SupportedWorkload {
-                workload_id: WorkloadId::new("scalar-diloco-network"),
-                workload_name: "Scalar DiLoCo Network".into(),
-                model_program_hash: ContentId::new("scalar-program"),
-                checkpoint_format_hash: ContentId::new("scalar-format"),
-                supported_revision_family: ContentId::new("scalar-family"),
-                resource_class: "cpu".into(),
-            }
-        }
-
-        fn model_schema_hash(&self) -> ContentId {
-            ContentId::new("scalar-schema")
-        }
-    }
-
-    impl DiLoCoWorkload for NetworkScalarWorkload {
-        fn export_parameter_pack(
-            &self,
-            model: &Self::Model,
-        ) -> anyhow::Result<FlattenedTensorPack> {
-            Ok(FlattenedTensorPack::new(
-                self.model_schema_hash(),
-                ContentId::new("scalar-layout"),
-                vec![*model],
-            ))
-        }
-
-        fn import_parameter_pack(
-            &self,
-            _device: &Self::Device,
-            pack: &FlattenedTensorPack,
-        ) -> anyhow::Result<Self::Model> {
-            Ok(*pack.values.first().unwrap_or(&0.0))
-        }
-
-        fn run_inner_steps(
-            &self,
-            model: &Self::Model,
-            batches: &[Self::Batch],
-            num_inner_steps: u32,
-            inner_optimizer_state: Option<&StateBlob>,
-        ) -> Result<crate::DiLoCoInnerLoopReport, TrainError> {
-            let mut local = *model;
-            for batch in batches
-                .iter()
-                .copied()
-                .cycle()
-                .take(num_inner_steps as usize)
-            {
-                local += batch * self.inner_lr;
-            }
-            Ok(crate::DiLoCoInnerLoopReport {
-                local_parameters: self
-                    .export_parameter_pack(&local)
-                    .map_err(|error| TrainError::new(error.to_string()))?,
-                inner_optimizer_state: inner_optimizer_state.cloned(),
-                steps_completed: num_inner_steps,
-                metrics: BTreeMap::from([("local_model".into(), MetricValue::Float(local as f64))]),
-            })
-        }
-
-        fn initialize_outer_optimizer_state(
-            &self,
-            _model: &Self::Model,
-            _policy: &crate::OuterOptimizerPolicy,
-        ) -> anyhow::Result<StateBlob> {
-            StateBlob::try_new(
-                "application/json",
-                serde_json::to_vec(&MomentumState { velocity: 0.0 })?,
-            )
-            .map_err(anyhow::Error::from)
-        }
-
-        fn apply_aggregated_outer_update(
-            &self,
-            base: &FlattenedTensorPack,
-            aggregate: &FlattenedTensorPack,
-            outer_optimizer_state: &StateBlob,
-            policy: &crate::OuterOptimizerPolicy,
-        ) -> anyhow::Result<(FlattenedTensorPack, StateBlob)> {
-            let mut state: MomentumState = serde_json::from_slice(&outer_optimizer_state.bytes)?;
-            let momentum = policy.momentum().unwrap_or(0.0) as f32;
-            let grad = aggregate.values[0];
-            state.velocity = momentum * state.velocity + grad;
-            let step = match policy {
-                crate::OuterOptimizerPolicy::Sgd { nesterov: true, .. } => {
-                    momentum * state.velocity + grad
-                }
-                _ => state.velocity,
-            };
-            let next = base.values[0] - ((policy.learning_rate() as f32) * step);
-            Ok((
-                FlattenedTensorPack::new(
-                    base.model_schema_hash.clone(),
-                    base.layout_hash.clone(),
-                    vec![next],
-                ),
-                StateBlob::try_new("application/json", serde_json::to_vec(&state)?)?,
-            ))
-        }
-    }
 
     fn native_swarm_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1239,6 +1086,7 @@ mod tests {
         ];
         let round_zero = RoundCursor::new(BaseCheckpointId::new("base"), 4);
         let round_one = round_zero.advance(BaseCheckpointId::new("base-next"));
+        let control_plane = ControlPlaneSnapshot::default();
         let policy = DiLoCoPolicy {
             topology_policy: crate::DiLoCoTopologyPolicy {
                 mode: DiLoCoTopologyMode::GossipNeighborhood,
@@ -1250,14 +1098,27 @@ mod tests {
         };
 
         let mut local_a = base.clone();
-        order_diloco_candidates(&policy, &PeerId::new("local-a"), &round_zero, &mut local_a)
-            .expect("order local a");
+        order_diloco_candidates(
+            &policy,
+            &control_plane,
+            &PeerId::new("local-a"),
+            &round_zero,
+            &mut local_a,
+        )
+        .expect("order local a");
         let mut local_b = base.clone();
-        order_diloco_candidates(&policy, &PeerId::new("local-b"), &round_zero, &mut local_b)
-            .expect("order local b");
+        order_diloco_candidates(
+            &policy,
+            &control_plane,
+            &PeerId::new("local-b"),
+            &round_zero,
+            &mut local_b,
+        )
+        .expect("order local b");
         let mut next_round = base.clone();
         order_diloco_candidates(
             &policy,
+            &control_plane,
             &PeerId::new("local-a"),
             &round_one,
             &mut next_round,
@@ -1267,6 +1128,78 @@ mod tests {
         assert_eq!(local_a.len(), base.len());
         assert_ne!(local_a, local_b);
         assert_ne!(local_a, next_round);
+    }
+
+    #[test]
+    fn diloco_topology_prefers_direct_candidates_and_filters_relay_only_paths() {
+        let direct = PeerId::new("peer-direct");
+        let relay_only = PeerId::new("peer-relay");
+        let unknown = PeerId::new("peer-unknown");
+        let mut control_plane = ControlPlaneSnapshot::default();
+        control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("net-diloco"),
+                peer_id: relay_only.clone(),
+                addresses: vec![
+                    SwarmAddress::new("/ip4/127.0.0.1/tcp/4001/p2p-circuit").expect("relay addr"),
+                ],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+        control_plane
+            .peer_directory_announcements
+            .push(PeerDirectoryAnnouncement {
+                network_id: NetworkId::new("net-diloco"),
+                peer_id: direct.clone(),
+                addresses: vec![SwarmAddress::new("/ip4/127.0.0.1/tcp/4002").expect("direct addr")],
+                advertised_roles: None,
+                announced_at: Utc::now(),
+            });
+        let round = RoundCursor::new(BaseCheckpointId::new("base"), 4);
+        let mut candidates = vec![relay_only.clone(), unknown.clone(), direct.clone()];
+        let policy = DiLoCoPolicy {
+            topology_policy: crate::DiLoCoTopologyPolicy {
+                mode: DiLoCoTopologyMode::RelayAssisted,
+                fanout: 3,
+                prefer_low_latency: true,
+                allow_relay: true,
+            },
+            ..DiLoCoPolicy::default()
+        };
+
+        order_diloco_candidates(
+            &policy,
+            &control_plane,
+            &PeerId::new("local"),
+            &round,
+            &mut candidates,
+        )
+        .expect("order relay-assisted candidates");
+
+        assert_eq!(
+            candidates,
+            vec![direct.clone(), unknown, relay_only.clone()]
+        );
+
+        let mut direct_only_candidates = vec![relay_only.clone(), direct.clone()];
+        let direct_only_policy = DiLoCoPolicy {
+            topology_policy: crate::DiLoCoTopologyPolicy {
+                allow_relay: false,
+                ..policy.topology_policy
+            },
+            ..DiLoCoPolicy::default()
+        };
+        order_diloco_candidates(
+            &direct_only_policy,
+            &control_plane,
+            &PeerId::new("local"),
+            &round,
+            &mut direct_only_candidates,
+        )
+        .expect("filter relay candidates");
+
+        assert_eq!(direct_only_candidates, vec![direct]);
     }
 
     fn loopback_listen_address() -> Option<SwarmAddress> {
@@ -1381,7 +1314,7 @@ mod tests {
             return;
         };
 
-        let mut seed = NodeBuilder::new(NetworkScalarWorkload { inner_lr: 0.5 })
+        let mut seed = NodeBuilder::new(ScalarDiLoCoTestWorkload::network(0.5))
             .with_mainnet(mainnet().genesis.clone())
             .with_storage(StorageConfig::new(seed_storage.path()))
             .with_auth(auth.clone())
@@ -1403,7 +1336,7 @@ mod tests {
             .expect("seed genesis head");
         let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
 
-        let mut peer = NodeBuilder::new(NetworkScalarWorkload { inner_lr: 0.25 })
+        let mut peer = NodeBuilder::new(ScalarDiLoCoTestWorkload::network(0.25))
             .with_mainnet(mainnet().genesis.clone())
             .with_storage(StorageConfig::new(peer_storage.path()))
             .with_auth(auth.clone())
@@ -1483,7 +1416,7 @@ mod tests {
         assert_eq!(seed_state.snapshot.round_cursor.round_id.as_u64(), 1);
         assert_eq!(peer_state.snapshot.round_cursor.round_id.as_u64(), 1);
 
-        let mut late_joiner = NodeBuilder::new(NetworkScalarWorkload { inner_lr: 0.125 })
+        let mut late_joiner = NodeBuilder::new(ScalarDiLoCoTestWorkload::network(0.125))
             .with_mainnet(mainnet().genesis.clone())
             .with_storage(StorageConfig::new(late_storage.path()))
             .with_auth(auth)

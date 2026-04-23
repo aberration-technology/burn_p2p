@@ -1,7 +1,8 @@
 use anyhow::{bail, ensure};
 use burn_p2p_core::{
     DiLoCoAggregationPolicy, ExperimentId, FlattenedTensorPack, GradientCodec, PeerId,
-    PseudoGradientChunk, PseudoGradientManifest, RevisionId, RoundCursor, SignMajorityTieBreak,
+    PseudoGradientChunk, PseudoGradientManifest, PseudoGradientManifestInput, RevisionId,
+    RoundCursor, SignMajorityTieBreak,
 };
 use chrono::Utc;
 use half::f16;
@@ -53,17 +54,17 @@ pub fn encode_pseudo_gradient(
         })
         .collect::<Vec<_>>();
 
-    let manifest = PseudoGradientManifest::try_new(
+    let manifest = PseudoGradientManifest::try_new(PseudoGradientManifestInput {
         experiment_id,
         revision_id,
         peer_id,
         round_cursor,
         codec,
-        &transport_pack,
-        chunks.len() as u32,
-        encoded.len() as u64,
+        pack: &transport_pack,
+        chunk_count: chunks.len() as u32,
+        total_encoded_bytes: encoded.len() as u64,
         created_at,
-    )?;
+    })?;
 
     let chunks = chunks
         .into_iter()
@@ -294,7 +295,7 @@ fn encode_values(codec: &GradientCodec, values: &[f32]) -> anyhow::Result<Vec<u8
     let mut bytes = Vec::new();
     match codec {
         GradientCodec::Fp32 => {
-            bytes.reserve(values.len() * std::mem::size_of::<f32>());
+            bytes.reserve(std::mem::size_of_val(values));
             for value in values {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
@@ -527,7 +528,7 @@ fn decode_qsgd_values(bytes: &[u8], expected_values: usize, bits: u8) -> anyhow:
         let sign = bytes[offset] as i8;
         offset += 1;
         ensure!(
-            matches!(sign, -1 | 0 | 1),
+            matches!(sign, -1..=1),
             "QSGD payload contains invalid sign {}",
             sign
         );

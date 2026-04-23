@@ -1,238 +1,11 @@
 use std::collections::BTreeMap;
 
-use burn_p2p_workload::P2pWorkload;
-use serde::{Deserialize, Serialize};
-
+use super::test_support::ScalarDiLoCoTestWorkload;
 use crate::{
-    BaseCheckpointId, CapabilityEstimate, DiLoCoAggregationPolicy, DiLoCoPolicy,
-    DiLoCoReferenceCoordinator, DiLoCoReferencePeer, DiLoCoWorkload, EvalSplit, ExperimentId,
-    FlattenedTensorPack, GradientCodec, MetricReport, MetricValue, OuterOptimizerPolicy,
-    PatchOutcome, PatchSupport, PeerId, RevisionId, SignMajorityTieBreak, StateBlob,
-    SupportedWorkload, TrainError, UpstreamAdapter, WindowCtx, WindowReport,
+    BaseCheckpointId, DiLoCoAggregationPolicy, DiLoCoPolicy, DiLoCoReferenceCoordinator,
+    DiLoCoReferencePeer, DiLoCoWorkload, ExperimentId, FlattenedTensorPack, GradientCodec,
+    OuterOptimizerPolicy, PeerId, RevisionId, SignMajorityTieBreak,
 };
-
-#[derive(Clone, Debug)]
-struct ScalarDiLoCoWorkload {
-    inner_lr: f32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct MomentumState {
-    velocity: f32,
-}
-
-impl crate::P2pWorkload for ScalarDiLoCoWorkload {
-    type Device = ();
-    type Model = f32;
-    type Batch = f32;
-    type WindowStats = BTreeMap<String, MetricValue>;
-
-    fn init_model(&self, _device: &Self::Device) -> Self::Model {
-        0.0
-    }
-
-    fn benchmark(&self, _model: &Self::Model, _device: &Self::Device) -> CapabilityEstimate {
-        CapabilityEstimate {
-            preferred_backends: vec!["ndarray".into()],
-            work_units_per_second: 16.0,
-            target_window_seconds: 1,
-        }
-    }
-
-    fn train_window(
-        &self,
-        ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
-    ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
-        let delta = ctx.batches.iter().copied().sum::<f32>() * self.inner_lr;
-        ctx.model += delta;
-        Ok(WindowReport {
-            contribution: None,
-            stats: BTreeMap::from([("delta".into(), MetricValue::Float(delta as f64))]),
-            completed_at: chrono::Utc::now(),
-        })
-    }
-
-    fn evaluate(&self, model: &Self::Model, _split: EvalSplit) -> MetricReport {
-        MetricReport {
-            metrics: BTreeMap::from([("model".into(), MetricValue::Float(*model as f64))]),
-            captured_at: chrono::Utc::now(),
-        }
-    }
-
-    fn apply_patch(&mut self, _patch: &crate::RuntimePatch) -> PatchOutcome {
-        PatchOutcome::Rejected("unsupported".into())
-    }
-
-    fn supported_patch_classes(&self) -> PatchSupport {
-        PatchSupport::default()
-    }
-
-    fn runtime_device(&self) -> Self::Device {}
-
-    fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
-        Ok(crate::DatasetRegistration {
-            manifest: crate::DatasetManifest {
-                dataset_id: crate::DatasetId::new("scalar-dataset"),
-                source_uri: "memory://scalar-dataset".into(),
-                format: "synthetic".into(),
-                manifest_hash: crate::ContentId::new("scalar-manifest"),
-                metadata: BTreeMap::new(),
-            },
-            view: crate::DatasetView {
-                dataset_view_id: crate::DatasetViewId::new("scalar-view"),
-                dataset_id: crate::DatasetId::new("scalar-dataset"),
-                preprocessing_hash: crate::ContentId::new("scalar-preprocess"),
-                tokenizer_hash: None,
-                manifest_hash: crate::ContentId::new("scalar-manifest"),
-                metadata: BTreeMap::new(),
-            },
-            upstream: UpstreamAdapter::Local {
-                root: "/tmp".into(),
-            },
-        })
-    }
-
-    fn microshard_plan(
-        &self,
-        _registration: &crate::DatasetRegistration,
-    ) -> anyhow::Result<crate::MicroShardPlan> {
-        unimplemented!("DiLoCo reference tests do not materialize microshards")
-    }
-
-    fn load_batches(
-        &self,
-        _lease: &crate::AssignmentLease,
-        _cached_microshards: &[crate::CachedMicroShard],
-    ) -> anyhow::Result<Vec<Self::Batch>> {
-        unimplemented!("DiLoCo reference tests inject batches directly")
-    }
-
-    fn load_model_artifact(
-        &self,
-        _model: Self::Model,
-        _descriptor: &crate::ArtifactDescriptor,
-        _store: &crate::FsArtifactStore,
-        _device: &Self::Device,
-    ) -> anyhow::Result<Self::Model> {
-        unimplemented!("DiLoCo reference tests do not load artifacts")
-    }
-
-    fn materialize_model_artifact(
-        &self,
-        _model: &Self::Model,
-        _artifact_kind: crate::ArtifactKind,
-        _head_id: crate::HeadId,
-        _base_head_id: Option<crate::HeadId>,
-        _store: &crate::FsArtifactStore,
-    ) -> anyhow::Result<crate::ArtifactDescriptor> {
-        unimplemented!("DiLoCo reference tests do not store artifacts")
-    }
-
-    fn contribution_metrics(
-        &self,
-        report: &WindowReport<Self::WindowStats>,
-    ) -> BTreeMap<String, MetricValue> {
-        report.stats.clone()
-    }
-
-    fn supported_workload(&self) -> SupportedWorkload {
-        SupportedWorkload {
-            workload_id: crate::WorkloadId::new("scalar-diloco"),
-            workload_name: "Scalar DiLoCo".into(),
-            model_program_hash: crate::ContentId::new("scalar-program"),
-            checkpoint_format_hash: crate::ContentId::new("scalar-format"),
-            supported_revision_family: crate::ContentId::new("scalar-family"),
-            resource_class: "cpu".into(),
-        }
-    }
-
-    fn model_schema_hash(&self) -> crate::ContentId {
-        crate::ContentId::new("scalar-schema")
-    }
-}
-
-impl DiLoCoWorkload for ScalarDiLoCoWorkload {
-    fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
-        Ok(FlattenedTensorPack::new(
-            self.model_schema_hash(),
-            crate::ContentId::new("scalar-layout"),
-            vec![*model],
-        ))
-    }
-
-    fn import_parameter_pack(
-        &self,
-        _device: &Self::Device,
-        pack: &FlattenedTensorPack,
-    ) -> anyhow::Result<Self::Model> {
-        Ok(*pack.values.first().unwrap_or(&0.0))
-    }
-
-    fn run_inner_steps(
-        &self,
-        model: &Self::Model,
-        batches: &[Self::Batch],
-        num_inner_steps: u32,
-        inner_optimizer_state: Option<&StateBlob>,
-    ) -> Result<burn_p2p_workload::DiLoCoInnerLoopReport, TrainError> {
-        let mut local = *model;
-        for batch in batches
-            .iter()
-            .copied()
-            .cycle()
-            .take(num_inner_steps as usize)
-        {
-            local += batch * self.inner_lr;
-        }
-        Ok(burn_p2p_workload::DiLoCoInnerLoopReport {
-            local_parameters: self
-                .export_parameter_pack(&local)
-                .map_err(|error| TrainError::new(error.to_string()))?,
-            inner_optimizer_state: inner_optimizer_state.cloned(),
-            steps_completed: num_inner_steps,
-            metrics: BTreeMap::from([("local_model".into(), MetricValue::Float(local as f64))]),
-        })
-    }
-
-    fn initialize_outer_optimizer_state(
-        &self,
-        _model: &Self::Model,
-        _policy: &OuterOptimizerPolicy,
-    ) -> anyhow::Result<StateBlob> {
-        StateBlob::try_new(
-            "application/json",
-            serde_json::to_vec(&MomentumState { velocity: 0.0 })?,
-        )
-        .map_err(anyhow::Error::from)
-    }
-
-    fn apply_aggregated_outer_update(
-        &self,
-        base: &FlattenedTensorPack,
-        aggregate: &FlattenedTensorPack,
-        outer_optimizer_state: &StateBlob,
-        policy: &OuterOptimizerPolicy,
-    ) -> anyhow::Result<(FlattenedTensorPack, StateBlob)> {
-        let mut state: MomentumState = serde_json::from_slice(&outer_optimizer_state.bytes)?;
-        let momentum = policy.momentum().unwrap_or(0.0) as f32;
-        let grad = aggregate.values[0];
-        state.velocity = momentum * state.velocity + grad;
-        let step = match policy {
-            OuterOptimizerPolicy::Sgd { nesterov: true, .. } => momentum * state.velocity + grad,
-            _ => state.velocity,
-        };
-        let next = base.values[0] - ((policy.learning_rate() as f32) * step);
-        let state = StateBlob::try_new("application/json", serde_json::to_vec(&state)?)?;
-        Ok((
-            FlattenedTensorPack::new(
-                base.model_schema_hash.clone(),
-                base.layout_hash.clone(),
-                vec![next],
-            ),
-            state,
-        ))
-    }
-}
 
 fn coordinator(policy: DiLoCoPolicy) -> DiLoCoReferenceCoordinator {
     DiLoCoReferenceCoordinator::new(
@@ -400,8 +173,9 @@ fn pseudo_gradient_aggregation_is_order_invariant() {
         crate::ContentId::new("layout"),
         vec![3.0, 1.0],
     );
-    let left = crate::average_pseudo_gradients(&[first.clone(), second.clone()]).unwrap();
-    let right = crate::average_pseudo_gradients(&[second, first]).unwrap();
+    let left = crate::average_pseudo_gradients(&[first.clone(), second.clone()])
+        .expect("average first ordering");
+    let right = crate::average_pseudo_gradients(&[second, first]).expect("average second ordering");
     assert_eq!(left, right);
     assert_eq!(left.values, vec![2.0, 2.0]);
 }
@@ -496,7 +270,7 @@ fn sign_majority_aggregation_obeys_threshold_and_tie_breaks() {
 
 #[test]
 fn reference_round_advances_cursor_and_emits_checkpoint() {
-    let workload = ScalarDiLoCoWorkload { inner_lr: 0.5 };
+    let workload = ScalarDiLoCoTestWorkload::reference(0.5);
     let policy = DiLoCoPolicy {
         num_inner_steps: 2,
         target_group_size: 2,
@@ -517,14 +291,14 @@ fn reference_round_advances_cursor_and_emits_checkpoint() {
             &policy,
             BaseCheckpointId::new("genesis"),
         )
-        .unwrap(),
+        .expect("bootstrap peer a"),
         DiLoCoReferencePeer::bootstrap(
             &workload,
             PeerId::new("peer-b"),
             &policy,
             BaseCheckpointId::new("genesis"),
         )
-        .unwrap(),
+        .expect("bootstrap peer b"),
     ];
     let batches = BTreeMap::from([
         (PeerId::new("peer-a"), vec![1.0, 1.0]),
@@ -544,7 +318,7 @@ fn reference_round_advances_cursor_and_emits_checkpoint() {
 
 #[test]
 fn reference_round_rejects_stale_peers() {
-    let workload = ScalarDiLoCoWorkload { inner_lr: 0.5 };
+    let workload = ScalarDiLoCoTestWorkload::reference(0.5);
     let policy = DiLoCoPolicy::default();
     let mut peers = vec![
         DiLoCoReferencePeer::bootstrap(
@@ -553,14 +327,14 @@ fn reference_round_rejects_stale_peers() {
             &policy,
             BaseCheckpointId::new("genesis"),
         )
-        .unwrap(),
+        .expect("bootstrap peer a"),
         DiLoCoReferencePeer::bootstrap(
             &workload,
             PeerId::new("peer-b"),
             &policy,
             BaseCheckpointId::new("genesis"),
         )
-        .unwrap(),
+        .expect("bootstrap peer b"),
     ];
     peers[1].round_cursor = peers[1]
         .round_cursor
@@ -577,7 +351,7 @@ fn reference_round_rejects_stale_peers() {
 
 #[test]
 fn checkpoint_restores_peer_for_rejoin() {
-    let workload = ScalarDiLoCoWorkload { inner_lr: 0.25 };
+    let workload = ScalarDiLoCoTestWorkload::reference(0.25);
     let policy = DiLoCoPolicy {
         checkpoint_interval_rounds: 1,
         ..DiLoCoPolicy::default()
@@ -589,7 +363,7 @@ fn checkpoint_restores_peer_for_rejoin() {
             &policy,
             BaseCheckpointId::new("genesis"),
         )
-        .unwrap(),
+        .expect("bootstrap peer a"),
     ];
     let batches = BTreeMap::from([(PeerId::new("peer-a"), vec![2.0, 2.0])]);
 

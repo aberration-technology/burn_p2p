@@ -2,6 +2,8 @@ mod codec;
 mod engine;
 mod network;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 
 pub use codec::{

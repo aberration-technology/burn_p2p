@@ -623,10 +623,7 @@ impl MemoryControlPlaneShell {
                             ));
                             match self.swarm.behaviour_mut().send_response(channel, response) {
                                 Ok(()) => Poll::Ready(LiveControlPlaneEvent::Other {
-                                    kind: format!(
-                                        "responded to DiLoCo request from {}",
-                                        peer.to_string()
-                                    ),
+                                    kind: format!("responded to DiLoCo request from {}", peer),
                                 }),
                                 Err(_) => Poll::Ready(LiveControlPlaneEvent::ResponseSendFailure {
                                     peer_id: peer.to_string(),
@@ -666,8 +663,7 @@ impl MemoryControlPlaneShell {
                             Poll::Ready(LiveControlPlaneEvent::Other {
                                 kind: format!(
                                     "received DiLoCo response {} from {}",
-                                    request_id.to_string(),
-                                    peer.to_string()
+                                    request_id, peer
                                 ),
                             })
                         }

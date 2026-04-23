@@ -295,9 +295,8 @@ impl DiLoCoReferenceCoordinator {
         }
         let updated_pack = updated_pack.expect("participant set is non-empty");
         let next_base_checkpoint_id = BaseCheckpointId::new(updated_pack.checksum()?.into_inner());
-        let checkpoint_due = ((baseline_cursor.round_id.as_u64() + 1)
-            % u64::from(self.policy.checkpoint_interval_rounds.max(1)))
-            == 0;
+        let checkpoint_due = (baseline_cursor.round_id.as_u64() + 1)
+            .is_multiple_of(u64::from(self.policy.checkpoint_interval_rounds.max(1)));
         let published_checkpoint = if checkpoint_due {
             let head_id = HeadId::new(format!("diloco-{}", next_base_checkpoint_id.as_str()));
             checkpoint_head_id = Some(head_id.clone());

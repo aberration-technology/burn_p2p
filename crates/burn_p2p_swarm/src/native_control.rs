@@ -1227,7 +1227,7 @@ impl NativeControlPlaneShell {
                                             Ok(()) => LiveControlPlaneEvent::Other {
                                                 kind: format!(
                                                     "responded to DiLoCo request from {}",
-                                                    peer.to_string()
+                                                    peer
                                                 ),
                                             },
                                             Err(_) => LiveControlPlaneEvent::ResponseSendFailure {
@@ -1270,8 +1270,8 @@ impl NativeControlPlaneShell {
                                         LiveControlPlaneEvent::Other {
                                             kind: format!(
                                                 "received DiLoCo response {} from {}",
-                                                request_id.to_string(),
-                                                peer.to_string()
+                                                request_id,
+                                                peer
                                             ),
                                         }
                                     }
