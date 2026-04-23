@@ -4,7 +4,7 @@ use burn_p2p_core::{
     ArtifactTargetKind, BrowserCapability, BrowserRole, BrowserRolePolicy, BrowserVisibilityPolicy,
     CapabilityCard, ClientPlatform, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
     ExperimentScope, ExperimentVisibility, LagPolicy, MergeTopologyPolicy, MergeWindowMissPolicy,
-    NetworkId, Precision, RevisionManifest, RobustnessPolicy,
+    NetworkId, Precision, RevisionManifest, RobustnessPolicy, TrainingProtocol,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ const LAG_REBASE_KEY: &str = "burn_p2p.revision.lag.max_head_lag_before_full_reb
 const LAG_SKEW_KEY: &str = "burn_p2p.revision.lag.max_window_skew_before_lease_revoke";
 const MERGE_WINDOW_MISS_POLICY_KEY: &str = "burn_p2p.revision.merge_window_miss_policy";
 const MERGE_TOPOLOGY_POLICY_JSON_KEY: &str = "burn_p2p.revision.merge_topology.policy_json";
+const TRAINING_PROTOCOL_JSON_KEY: &str = "burn_p2p.revision.training_protocol.policy_json";
 const BROWSER_ENABLED_KEY: &str = "burn_p2p.revision.browser.enabled";
 const BROWSER_VISIBILITY_POLICY_KEY: &str = "burn_p2p.revision.browser.visibility_policy";
 const BROWSER_ROLE_OBSERVER_KEY: &str = "burn_p2p.revision.browser.role.observer";
@@ -108,6 +109,8 @@ pub trait ExperimentDirectoryPolicyExt {
     fn merge_window_miss_policy(&self) -> MergeWindowMissPolicy;
     /// Returns the merge topology policy, when explicitly attached in directory metadata.
     fn merge_topology_policy(&self) -> Option<MergeTopologyPolicy>;
+    /// Returns the configured training protocol.
+    fn training_protocol(&self) -> TrainingProtocol;
     /// Performs the browser enabled operation.
     fn browser_enabled(&self) -> bool;
     /// Performs the browser role policy operation.
@@ -233,6 +236,13 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
         self.metadata
             .get(MERGE_TOPOLOGY_POLICY_JSON_KEY)
             .and_then(|value| serde_json::from_str(value).ok())
+    }
+
+    fn training_protocol(&self) -> TrainingProtocol {
+        self.metadata
+            .get(TRAINING_PROTOCOL_JSON_KEY)
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default()
     }
 
     fn browser_enabled(&self) -> bool {
@@ -439,6 +449,11 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
         self.metadata.insert(
             MERGE_WINDOW_MISS_POLICY_KEY.into(),
             revision.merge_window_miss_policy.as_str().into(),
+        );
+        self.metadata.insert(
+            TRAINING_PROTOCOL_JSON_KEY.into(),
+            serde_json::to_string(&revision.training_protocol)
+                .expect("revision training protocol should serialize to directory metadata"),
         );
         self.metadata.insert(
             BROWSER_ENABLED_KEY.into(),
@@ -665,6 +680,7 @@ mod tests {
         let revision = RevisionManifest {
             experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
+            training_protocol: burn_p2p_core::TrainingProtocol::default(),
             workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
             required_release_train_hash: ContentId::new("train-a"),
             model_schema_hash: ContentId::new("model-a"),
@@ -734,11 +750,37 @@ mod tests {
     }
 
     #[test]
+    fn entry_reads_diloco_training_protocol_from_metadata() {
+        let mut entry = entry();
+        let protocol = burn_p2p_core::TrainingProtocol::DiLoCo(burn_p2p_core::DiLoCoPolicy {
+            num_inner_steps: 8,
+            target_group_size: 4,
+            minimum_group_size: 2,
+            checkpoint_interval_rounds: 3,
+            codec: burn_p2p_core::GradientCodec::BlockwiseInt8 { block_size: 64 },
+            outer_optimizer_policy: burn_p2p_core::OuterOptimizerPolicy::Sgd {
+                learning_rate_micros: 250_000,
+                momentum_micros: Some(900_000),
+                nesterov: true,
+                weight_decay_micros: Some(10_000),
+            },
+            ..burn_p2p_core::DiLoCoPolicy::default()
+        });
+        entry.metadata.insert(
+            "burn_p2p.revision.training_protocol.policy_json".into(),
+            serde_json::to_string(&protocol).expect("training protocol json"),
+        );
+
+        assert_eq!(entry.training_protocol(), protocol);
+    }
+
+    #[test]
     fn directory_filters_browser_eligibility_and_artifact_target() {
         let mut browser_entry = entry();
         let browser_revision = RevisionManifest {
             experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
+            training_protocol: burn_p2p_core::TrainingProtocol::default(),
             workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
             required_release_train_hash: ContentId::new("train-a"),
             model_schema_hash: ContentId::new("model-a"),
@@ -823,6 +865,7 @@ mod tests {
         browser_entry.apply_revision_policy(&RevisionManifest {
             experiment_id: burn_p2p_core::ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
+            training_protocol: burn_p2p_core::TrainingProtocol::default(),
             workload_id: burn_p2p_core::WorkloadId::new("demo-workload"),
             required_release_train_hash: ContentId::new("train-a"),
             model_schema_hash: ContentId::new("model-a"),

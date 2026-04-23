@@ -4,6 +4,7 @@
 mod browser_edge;
 mod browser_runtime;
 mod control_shell;
+mod diloco_store;
 mod events;
 mod memory_control;
 mod memory_swarm;
@@ -25,11 +26,14 @@ use burn_p2p_core::time::Duration;
 use burn_p2p_core::time::Instant;
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
-    ContentId, ControlCertificate, DatasetViewId, DiffusionPromotionCertificate,
-    ExperimentDirectoryEntry, HeadDescriptor, HeadId, MergeCertificate, MergeWindowState,
-    MetricsLiveEvent, MicroShardId, NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet,
-    PeerWindowPlacementHint, ReducerAssignment, ReducerLoadReport, ReductionCertificate,
-    TelemetrySummary, TrainerPromotionAttestation, UpdateAnnounce, ValidationQuorumCertificate,
+    ContentId, ControlCertificate, DatasetViewId, DiLoCoRequest, DiLoCoResponse,
+    DiLoCoRoundFinalize, DiLoCoRoundHeartbeat, DiLoCoRoundOffer, DiLoCoStateSnapshot,
+    DiffusionPromotionCertificate, ExperimentDirectoryEntry, ExperimentId, FlattenedTensorPack,
+    HeadDescriptor, HeadId, MergeCertificate, MergeWindowState, MetricsLiveEvent, MicroShardId,
+    NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet, PeerWindowPlacementHint, PseudoGradientChunk,
+    PseudoGradientManifest, ReducerAssignment, ReducerLoadReport, ReductionCertificate, RevisionId,
+    StateBlob, TelemetrySummary, TrainerPromotionAttestation, UpdateAnnounce,
+    ValidationQuorumCertificate,
 };
 use burn_p2p_experiment::{
     ExperimentControlEnvelope, ExperimentLifecycleEnvelope, FleetScheduleEpochEnvelope,

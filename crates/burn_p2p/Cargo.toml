@@ -15,6 +15,7 @@ anyhow.workspace = true
 burn = { workspace = true, optional = true }
 chrono.workspace = true
 futures = "0.3"
+half = "2"
 hex.workspace = true
 libp2p-identity = "0.2.13"
 semver.workspace = true
@@ -39,11 +40,16 @@ default = []
 burn = ["dep:burn", "dep:burn_p2p_engine"]
 
 [dev-dependencies]
+criterion.workspace = true
 tempfile.workspace = true
 
 [[example]]
 name = "burn_ndarray_runtime"
 required-features = ["burn"]
+
+[[bench]]
+name = "diloco_codec"
+harness = false
 
 [lints]
 workspace = true

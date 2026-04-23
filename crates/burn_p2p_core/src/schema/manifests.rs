@@ -833,6 +833,9 @@ pub struct RevisionManifest {
     pub training_config_hash: ContentId,
     /// The merge topology policy hash.
     pub merge_topology_policy_hash: ContentId,
+    #[serde(default)]
+    /// The training protocol.
+    pub training_protocol: TrainingProtocol,
     /// The slot requirements.
     pub slot_requirements: ExperimentResourceRequirements,
     /// The activation window.

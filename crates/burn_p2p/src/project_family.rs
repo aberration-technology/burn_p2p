@@ -937,6 +937,7 @@ mod tests {
         let revision = RevisionManifest {
             experiment_id: crate::ExperimentId::new("exp-a"),
             revision_id: RevisionId::new("rev-a"),
+            training_protocol: crate::TrainingProtocol::default(),
             workload_id: WorkloadId::new("compiled"),
             required_release_train_hash: ContentId::new("train-a"),
             model_schema_hash: ContentId::new("schema-a"),

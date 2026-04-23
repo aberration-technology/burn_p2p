@@ -722,6 +722,8 @@ pub enum ControlPlaneRequest {
         /// The chunk ID.
         chunk_id: ChunkId,
     },
+    /// Uses the DiLoCo control-plane variant.
+    DiLoCo(Box<DiLoCoRequest>),
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -734,6 +736,8 @@ pub enum ControlPlaneResponse {
     ArtifactManifest(Option<ArtifactDescriptor>),
     /// Uses the artifact chunk variant.
     ArtifactChunk(Option<ArtifactChunkPayload>),
+    /// Uses the DiLoCo control-plane variant.
+    DiLoCo(Box<DiLoCoResponse>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

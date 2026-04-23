@@ -479,6 +479,32 @@ pub(crate) fn run_control_plane(
                     let mut snapshot = lock_telemetry_state(&state);
                     sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                 }
+                Ok(RuntimeCommand::PublishDiLoCoState {
+                    snapshot: diloco_snapshot,
+                    outer_optimizer_state,
+                    current_parameters,
+                }) => {
+                    let mut diloco_snapshot = diloco_snapshot;
+                    if let Ok(signature) =
+                        sign_diloco_state_snapshot(&signing_keypair, &diloco_snapshot)
+                    {
+                        diloco_snapshot.signature_bundle.push(signature);
+                    }
+                    shell.publish_diloco_state(
+                        diloco_snapshot,
+                        outer_optimizer_state,
+                        current_parameters,
+                    );
+                }
+                Ok(RuntimeCommand::PublishDiLoCoGradient { manifest, chunks }) => {
+                    let mut manifest = manifest;
+                    if let Ok(signature) =
+                        sign_diloco_gradient_manifest(&signing_keypair, &manifest)
+                    {
+                        manifest.signature_bundle.push(signature);
+                    }
+                    shell.publish_diloco_gradient(manifest, chunks);
+                }
                 Ok(RuntimeCommand::PublishArtifact {
                     descriptor,
                     chunks,
@@ -517,6 +543,17 @@ pub(crate) fn run_control_plane(
                 }) => {
                     let result = shell
                         .fetch_artifact_chunk(&peer_id, artifact_id, chunk_id, timeout)
+                        .map_err(|error| error.to_string());
+                    let _ = reply.send(result);
+                }
+                Ok(RuntimeCommand::FetchDiLoCo {
+                    peer_id,
+                    request,
+                    timeout,
+                    reply,
+                }) => {
+                    let result = shell
+                        .fetch_diloco(&peer_id, request, timeout)
                         .map_err(|error| error.to_string());
                     let _ = reply.send(result);
                 }

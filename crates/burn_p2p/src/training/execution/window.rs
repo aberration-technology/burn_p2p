@@ -103,6 +103,17 @@ impl<P> RunningNode<P> {
 
         let snapshots = self.fetch_experiment_snapshots(&experiment, Duration::from_secs(3))?;
         let telemetry_snapshot = self.telemetry().snapshot();
+        let training_protocol = crate::runtime_support::runtime_training_protocol(
+            self.config(),
+            &telemetry_snapshot,
+            &experiment,
+        );
+        if let crate::TrainingProtocol::DiLoCo(_) = training_protocol {
+            anyhow::bail!(
+                "revision {} is configured for TrainingProtocol::DiLoCo; live runtime train_window execution still uses artifact windows",
+                experiment.revision_id.as_str()
+            );
+        }
         let lag_assessment = self.assess_and_record_lag(&storage, &experiment, &snapshots)?;
         if matches!(
             lag_assessment.state,

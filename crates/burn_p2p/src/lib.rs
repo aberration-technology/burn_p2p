@@ -35,6 +35,7 @@ mod browser_join;
 mod candidate;
 mod candidate_screening;
 mod config;
+mod diloco;
 mod edge_auth;
 mod handles;
 mod metrics_runtime;
@@ -58,31 +59,37 @@ pub use burn_p2p_checkpoint::{
 pub use burn_p2p_core::{
     ActiveServiceSet, AdminMode, AggregateEnvelope, AggregateStats, AggregateTier, AppMode,
     ArtifactDescriptor, ArtifactId, ArtifactKind, ArtifactTargetKind, AssignmentLease,
-    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BrowserCapability,
+    AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BaseCheckpointId, BrowserCapability,
     BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, BrowserRole, BrowserRolePolicy,
     BrowserVisibilityPolicy, CanaryEvalReport, CapabilityCard, CapabilityEstimate, ChunkId,
     ClientPlatform, ClientReleaseManifest, ClientReleaseManifestBuilder, CohortRobustnessReport,
     CompiledFeatureSet, ConfiguredServiceSet, ContentId, ContributionReceipt,
     ContributionReceiptId, ContributionRollup, DatasetId, DatasetManifest, DatasetView,
-    DatasetViewId, DiffusionPromotionCertificate, DiffusionSteadyStatePolicy, EdgeAuthProvider,
-    EdgeFeature, EdgeServiceManifest, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
-    EvalProtocolOptions, ExperimentDirectoryEntry, ExperimentId, ExperimentManifest,
-    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
-    GenesisSpec, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId, HeadPromotionMode,
-    HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState, LeaderboardEntry,
-    LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId, MergeCertificate, MergePolicy,
-    MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope,
-    MetricTrustClass, MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest,
-    MicroShardId, NetworkEstimate, NetworkId, NetworkManifest, NetworkManifestBuilder, NodeCertId,
-    NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet,
-    PeerWindowMetrics, PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId,
-    ProfileMode, ProjectFamilyId, ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus,
-    ReducerLoadReport, ReductionCertificate, RejectionReason, ReleaseTrainManifest, RevisionId,
-    RevisionManifest, RevocationEpoch, RobustnessAlert, RobustnessDecision, RobustnessPolicy,
-    RobustnessPreset, SocialMode, SocialProfile, StudyId, SupportedWorkload,
-    SupportedWorkloadBuilder, TargetArtifactManifest, TelemetrySummary,
-    TrainerPromotionAttestation, TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats,
-    ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
+    DatasetViewId, DiLoCoAggregationPolicy, DiLoCoPolicy, DiLoCoRejoinPolicy, DiLoCoRequest,
+    DiLoCoResponse, DiLoCoRoundFinalize, DiLoCoRoundHeartbeat, DiLoCoRoundOffer,
+    DiLoCoStateSnapshot, DiLoCoTopologyMode, DiLoCoTopologyPolicy, DiffusionPromotionCertificate,
+    DiffusionSteadyStatePolicy, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest,
+    EvalAggregationRule, EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions,
+    ExperimentDirectoryEntry, ExperimentId, ExperimentManifest, ExperimentOptInPolicy,
+    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, FlattenedTensorPack,
+    GenesisSpec, GradientCodec, GroupId, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId,
+    HeadPromotionMode, HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState,
+    LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, LeaseId, MergeCertId,
+    MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy, MergeWindowMissPolicy,
+    MergeWindowState, MetricScope, MetricTrustClass, MetricValue, MetricsLedgerSegment,
+    MetricsMode, MetricsSnapshotManifest, MicroShardId, NetworkEstimate, NetworkId,
+    NetworkManifest, NetworkManifestBuilder, NodeCertId, NodeCertificate, NodeCertificateClaims,
+    OuterOptimizerPolicy, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
+    PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId, ProfileMode,
+    ProjectFamilyId, PseudoGradientChunk, PseudoGradientManifest, ReducerAssignment,
+    ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport, ReductionCertificate,
+    RejectionReason, ReleaseTrainManifest, RevisionId, RevisionManifest, RevocationEpoch,
+    RobustnessAlert, RobustnessDecision, RobustnessPolicy, RobustnessPreset, RoundCursor, RoundId,
+    RoundPhase, SignMajorityTieBreak, SignatureAlgorithm, SignatureMetadata, SignedPayload,
+    SocialMode, SocialProfile, StateBlob, StudyId, SupportedWorkload, SupportedWorkloadBuilder,
+    TargetArtifactManifest, TelemetrySummary, TrainerPromotionAttestation, TrainingProtocol,
+    TrustScore, UpdateAnnounce, UpdateFeatureSketch, UpdateNormStats, ValidationQuorumCertificate,
+    WindowActivation, WindowId, WorkloadId,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,
@@ -136,8 +143,8 @@ pub use burn_p2p_swarm::{
     native_browser_webtransport_gateway_runtime_supported, plan_browser_seed_dials,
 };
 pub use burn_p2p_workload::{
-    ContinuousTrainerPolicy, DirectoryMetadataAttachment, EvalSplit,
-    GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
+    ContinuousTrainerPolicy, DiLoCoInnerLoopReport, DiLoCoWorkload, DirectoryMetadataAttachment,
+    EvalSplit, GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
     LeaseDataPipelineDescriptor, LeaseDataPipelineKind, MergeModelCandidate, MetricReport,
     P2pWorkload, PatchOutcome, ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy,
     TrainingWindowOutcome, TrainingWindowTiming, ValidationCoordinationState,
@@ -153,6 +160,12 @@ pub use config::{
     ControlHandle, DatasetConfig, IdentityConfig, MetricsRetentionBudget, MetricsRetentionConfig,
     MetricsRetentionPreset, NodeConfig, NodeRuntimeState, NodeTelemetrySnapshot, RuntimeStatus,
     SlotAssignmentState, SlotRuntimeState, StorageConfig, TelemetryHandle, TrustBundleState,
+};
+pub use diloco::{
+    DiLoCoPeerContribution, DiLoCoReferenceCheckpoint, DiLoCoReferenceCoordinator,
+    DiLoCoReferencePeer, DiLoCoReferenceRoundOutcome, DiLoCoRoundOutcome, EncodedPseudoGradient,
+    aggregate_pseudo_gradients, average_pseudo_gradients, decode_pseudo_gradient,
+    encode_pseudo_gradient,
 };
 pub use edge_auth::{
     EdgeAuthClient, EdgeAuthClientError, EdgeEnrollmentConfig, EdgeEnrollmentResult,

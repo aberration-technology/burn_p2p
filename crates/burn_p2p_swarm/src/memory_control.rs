@@ -1,4 +1,5 @@
 use super::*;
+use crate::diloco_store::DiLoCoControlStore;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryControlPlaneShell {
@@ -8,6 +9,8 @@ pub struct MemoryControlPlaneShell {
     hot_index: ControlPlaneHotIndex,
     artifacts: BTreeMap<ArtifactId, ArtifactDescriptor>,
     chunks: BTreeMap<(ArtifactId, ChunkId), ArtifactChunkPayload>,
+    diloco: DiLoCoControlStore,
+    completed_diloco_responses: BTreeMap<String, (String, DiLoCoResponse)>,
     subscribed_topics: BTreeSet<String>,
     pending_events: VecDeque<LiveControlPlaneEvent>,
 }
@@ -49,6 +52,8 @@ impl MemoryControlPlaneShell {
             hot_index: ControlPlaneHotIndex::default(),
             artifacts: BTreeMap::new(),
             chunks: BTreeMap::new(),
+            diloco: DiLoCoControlStore::default(),
+            completed_diloco_responses: BTreeMap::new(),
             subscribed_topics: BTreeSet::new(),
             pending_events: VecDeque::new(),
         })
@@ -268,6 +273,85 @@ impl MemoryControlPlaneShell {
             self.chunks
                 .insert((artifact_id.clone(), chunk.chunk.chunk_id.clone()), chunk);
         }
+    }
+
+    /// Publishes the local DiLoCo state snapshot, outer optimizer state, and current parameters.
+    pub fn publish_diloco_state(
+        &mut self,
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    ) {
+        self.diloco
+            .publish_state(snapshot, outer_optimizer_state, current_parameters);
+    }
+
+    /// Publishes one encoded pseudo-gradient manifest and chunk set.
+    pub fn publish_diloco_gradient(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    ) {
+        self.diloco.publish_gradient(manifest, chunks);
+    }
+
+    pub(crate) fn request_diloco_id(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        self.settle_request_response();
+        let peer_id = peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .send_request(&peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)))
+            .to_string())
+    }
+
+    pub fn fetch_diloco(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> Result<DiLoCoResponse, SwarmError> {
+        self.settle_request_response();
+        let request_id = self.request_diloco_id(peer_id, request)?;
+        let mut deferred_events = std::mem::take(&mut self.pending_events);
+
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Some((response_peer_id, response)) =
+                self.completed_diloco_responses.remove(&request_id)
+            {
+                self.pending_events.extend(deferred_events);
+                if response_peer_id != peer_id {
+                    return Err(SwarmError::Request(format!(
+                        "DiLoCo response peer mismatch: expected {}, got {}",
+                        peer_id, response_peer_id
+                    )));
+                }
+                return Ok(response);
+            }
+            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
+                }
+            }
+        }
+
+        self.pending_events.extend(deferred_events);
+        Err(SwarmError::TimedOut("diloco"))
     }
 
     /// Performs the request snapshot operation.
@@ -533,6 +617,23 @@ impl MemoryControlPlaneShell {
                                 }),
                             }
                         }
+                        ControlPlaneRequest::DiLoCo(request) => {
+                            let response = ControlPlaneResponse::DiLoCo(Box::new(
+                                self.diloco.respond(*request),
+                            ));
+                            match self.swarm.behaviour_mut().send_response(channel, response) {
+                                Ok(()) => Poll::Ready(LiveControlPlaneEvent::Other {
+                                    kind: format!(
+                                        "responded to DiLoCo request from {}",
+                                        peer.to_string()
+                                    ),
+                                }),
+                                Err(_) => Poll::Ready(LiveControlPlaneEvent::ResponseSendFailure {
+                                    peer_id: peer.to_string(),
+                                    message: "DiLoCo response channel closed".into(),
+                                }),
+                            }
+                        }
                     },
                     request_response::Message::Response {
                         request_id,
@@ -557,6 +658,17 @@ impl MemoryControlPlaneShell {
                                 peer_id: peer.to_string(),
                                 request_id: request_id.to_string(),
                                 payload,
+                            })
+                        }
+                        ControlPlaneResponse::DiLoCo(response) => {
+                            self.completed_diloco_responses
+                                .insert(request_id.to_string(), (peer.to_string(), *response));
+                            Poll::Ready(LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "received DiLoCo response {} from {}",
+                                    request_id.to_string(),
+                                    peer.to_string()
+                                ),
                             })
                         }
                     },
@@ -852,6 +964,85 @@ impl MemoryControlPlaneShell {
             self.chunks
                 .insert((artifact_id.clone(), chunk.chunk.chunk_id.clone()), chunk);
         }
+    }
+
+    /// Publishes the local DiLoCo state snapshot, outer optimizer state, and current parameters.
+    pub fn publish_diloco_state(
+        &mut self,
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    ) {
+        self.diloco
+            .publish_state(snapshot, outer_optimizer_state, current_parameters);
+    }
+
+    /// Publishes one encoded pseudo-gradient manifest and chunk set.
+    pub fn publish_diloco_gradient(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    ) {
+        self.diloco.publish_gradient(manifest, chunks);
+    }
+
+    pub(crate) fn request_diloco_id(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        self.settle_request_response();
+        let peer_id = peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .send_request(&peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)))
+            .to_string())
+    }
+
+    pub fn fetch_diloco(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> Result<DiLoCoResponse, SwarmError> {
+        self.settle_request_response();
+        let request_id = self.request_diloco_id(peer_id, request)?;
+        let mut deferred_events = std::mem::take(&mut self.pending_events);
+
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Some((response_peer_id, response)) =
+                self.completed_diloco_responses.remove(&request_id)
+            {
+                self.pending_events.extend(deferred_events);
+                if response_peer_id != peer_id {
+                    return Err(SwarmError::Request(format!(
+                        "DiLoCo response peer mismatch: expected {}, got {}",
+                        peer_id, response_peer_id
+                    )));
+                }
+                return Ok(response);
+            }
+            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+                match event {
+                    LiveControlPlaneEvent::RequestFailure {
+                        request_id: Some(failure_id),
+                        message,
+                        ..
+                    } if failure_id == request_id => {
+                        self.pending_events.extend(deferred_events);
+                        return Err(SwarmError::Request(message));
+                    }
+                    other => deferred_events.push_back(other),
+                }
+            }
+        }
+
+        self.pending_events.extend(deferred_events);
+        Err(SwarmError::TimedOut("diloco"))
     }
 
     /// Performs the request snapshot operation.

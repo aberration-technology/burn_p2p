@@ -177,6 +177,15 @@ impl StorageConfig {
         ))
     }
 
+    pub(crate) fn scoped_diloco_state_path(&self, experiment: &ExperimentHandle) -> PathBuf {
+        self.state_dir().join(format!(
+            "diloco-state-{}-{}-{}.json",
+            experiment.study_id.as_str(),
+            experiment.experiment_id.as_str(),
+            experiment.revision_id.as_str()
+        ))
+    }
+
     pub(crate) fn scoped_limit_profile_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "limit-profile-{}-{}-{}.json",

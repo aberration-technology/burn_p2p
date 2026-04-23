@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use burn_p2p_core::{
     ContentId, DatasetViewId, EvalAggregationRule, EvalMetricDef, EvalProtocolManifest,
     EvalProtocolOptions, ExperimentId, HeadId, MergePolicy, MergeTopologyPolicy, NetworkId,
-    RevisionId, RobustnessPolicy, StudyId,
+    RevisionId, RobustnessPolicy, StudyId, TrainingProtocol,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,9 @@ pub struct ExperimentSpec {
     pub merge_policy: MergePolicy,
     /// The merge topology.
     pub merge_topology: MergeTopologyPolicy,
+    #[serde(default)]
+    /// The training protocol.
+    pub training_protocol: TrainingProtocol,
     /// The tags.
     pub tags: BTreeSet<String>,
     /// The metadata.
@@ -98,6 +101,7 @@ impl ExperimentSpec {
             model_schema_hash,
             merge_policy,
             merge_topology: MergeTopologyPolicy::default(),
+            training_protocol: TrainingProtocol::default(),
             tags: BTreeSet::new(),
             metadata: BTreeMap::new(),
         })
@@ -106,6 +110,12 @@ impl ExperimentSpec {
     /// Returns a copy configured with the merge topology.
     pub fn with_merge_topology(mut self, merge_topology: MergeTopologyPolicy) -> Self {
         self.merge_topology = merge_topology;
+        self
+    }
+
+    /// Returns a copy configured with the training protocol.
+    pub fn with_training_protocol(mut self, training_protocol: TrainingProtocol) -> Self {
+        self.training_protocol = training_protocol;
         self
     }
 }
@@ -160,6 +170,9 @@ pub struct RevisionSpec {
     pub compatibility: RevisionCompatibility,
     /// The patch support.
     pub patch_support: PatchSupport,
+    #[serde(default)]
+    /// The training protocol pinned for this revision.
+    pub training_protocol: TrainingProtocol,
     /// The created at.
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,6 +210,7 @@ impl RevisionSpec {
             config_hash,
             compatibility,
             patch_support,
+            training_protocol: TrainingProtocol::default(),
             created_at,
             metrics_policy: None,
             robustness_policy: None,
@@ -206,6 +220,12 @@ impl RevisionSpec {
     /// Returns a copy configured with a metrics policy.
     pub fn with_metrics_policy(mut self, metrics_policy: RevisionMetricsPolicy) -> Self {
         self.metrics_policy = Some(metrics_policy);
+        self
+    }
+
+    /// Returns a copy configured with the training protocol.
+    pub fn with_training_protocol(mut self, training_protocol: TrainingProtocol) -> Self {
+        self.training_protocol = training_protocol;
         self
     }
 

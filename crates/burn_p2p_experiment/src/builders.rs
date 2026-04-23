@@ -395,6 +395,7 @@ mod tests {
         RevisionManifest {
             experiment_id: ExperimentId::new("experiment"),
             revision_id: RevisionId::new("revision"),
+            training_protocol: burn_p2p_core::TrainingProtocol::default(),
             workload_id: WorkloadId::new("workload"),
             required_release_train_hash: ContentId::new("release"),
             model_schema_hash: ContentId::new("schema"),

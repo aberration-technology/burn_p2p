@@ -21,6 +21,15 @@ pub(crate) enum RuntimeCommand {
     PublishAuth(Box<PeerAuthAnnouncement>),
     PublishDirectory(ExperimentDirectoryAnnouncement),
     PublishMetrics(MetricsAnnouncement),
+    PublishDiLoCoState {
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    },
+    PublishDiLoCoGradient {
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    },
     PublishArtifact {
         descriptor: ArtifactDescriptor,
         chunks: Vec<ArtifactChunkPayload>,
@@ -43,6 +52,12 @@ pub(crate) enum RuntimeCommand {
         chunk_id: ChunkId,
         timeout: Duration,
         reply: mpsc::Sender<Result<Option<ArtifactChunkPayload>, String>>,
+    },
+    FetchDiLoCo {
+        peer_id: String,
+        request: DiLoCoRequest,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<DiLoCoResponse, String>>,
     },
     DialAddress {
         address: SwarmAddress,

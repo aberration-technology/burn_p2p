@@ -519,6 +519,7 @@ fn apply_browser_revision_policy(entry: &mut ExperimentDirectoryEntry, browser_m
     entry.apply_revision_policy(&RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("capture-release-train"),
         model_schema_hash: entry.model_schema_hash.clone(),

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Utc;
+use serde::Serialize;
 
 use super::{
     ActiveServiceSet, AdminMode, AppMode, ArtifactAlias, ArtifactAliasScope,
@@ -753,5 +754,62 @@ fn diffusion_steady_state_policy_round_trips_and_preserves_defaults() {
             support_margin: 1,
             allow_solo_promotion: true,
         })
+    );
+}
+
+#[test]
+fn diloco_training_protocol_round_trips_through_cbor() {
+    let payload = super::TrainingProtocol::DiLoCo(super::DiLoCoPolicy {
+        num_inner_steps: 8,
+        target_group_size: 4,
+        minimum_group_size: 2,
+        checkpoint_interval_rounds: 3,
+        codec: super::GradientCodec::BlockwiseInt8 { block_size: 128 },
+        aggregation_policy: super::DiLoCoAggregationPolicy::SignMajority {
+            minimum_agreement_micros: 650_000,
+            tie_break: super::SignMajorityTieBreak::Negative,
+        },
+        topology_policy: super::DiLoCoTopologyPolicy {
+            mode: super::DiLoCoTopologyMode::GossipNeighborhood,
+            fanout: 12,
+            prefer_low_latency: false,
+            allow_relay: true,
+        },
+        outer_optimizer_policy: super::OuterOptimizerPolicy::Sgd {
+            learning_rate_micros: 250_000,
+            momentum_micros: Some(900_000),
+            nesterov: true,
+            weight_decay_micros: Some(10_000),
+        },
+        ..super::DiLoCoPolicy::default()
+    });
+
+    let encoded = deterministic_cbor(&payload).expect("encode diloco protocol");
+    let decoded: super::TrainingProtocol =
+        from_cbor_slice(&encoded).expect("decode diloco protocol");
+
+    assert_eq!(decoded, payload);
+}
+
+#[test]
+fn diloco_topology_policy_preserves_partial_config_defaults() {
+    #[derive(Serialize)]
+    struct PartialDiLoCoTopologyPolicy {
+        mode: super::DiLoCoTopologyMode,
+    }
+
+    let payload = PartialDiLoCoTopologyPolicy {
+        mode: super::DiLoCoTopologyMode::GossipNeighborhood,
+    };
+    let encoded = deterministic_cbor(&payload).expect("encode partial diloco topology policy");
+    let decoded: super::DiLoCoTopologyPolicy =
+        from_cbor_slice(&encoded).expect("decode partial diloco topology policy");
+
+    assert_eq!(
+        decoded,
+        super::DiLoCoTopologyPolicy {
+            mode: super::DiLoCoTopologyMode::GossipNeighborhood,
+            ..super::DiLoCoTopologyPolicy::default()
+        }
     );
 }

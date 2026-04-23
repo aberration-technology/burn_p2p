@@ -3,6 +3,7 @@
 
 mod backend;
 mod data_pipeline;
+mod diloco;
 mod directory_metadata;
 mod execution;
 
@@ -26,6 +27,7 @@ pub use data_pipeline::{
     GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
     LeaseDataPipelineDescriptor, LeaseDataPipelineKind, WorkloadInputSource,
 };
+pub use diloco::{DiLoCoInnerLoopReport, DiLoCoWorkload};
 pub use directory_metadata::{
     DirectoryMetadataAttachment, find_matching_directory_entry,
     find_matching_directory_entry_with_predicate,

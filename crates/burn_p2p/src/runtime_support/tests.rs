@@ -4,10 +4,11 @@ use super::placement::{
 };
 use super::*;
 use burn_p2p_core::{
-    AuthProvider, BackendClass, ContentId, FleetPlacementPeer, FleetPlacementSnapshot,
-    MetricsLiveEvent, MetricsLiveEventKind, NodeCertificate, NodeCertificateClaims,
-    PeerAuthEnvelope, PrincipalId, ProjectFamilyId, RevocationEpoch, SignatureAlgorithm,
-    SignatureMetadata,
+    AuthProvider, BackendClass, BaseCheckpointId, ContentId, DiLoCoPolicy, DiLoCoStateSnapshot,
+    FleetPlacementPeer, FleetPlacementSnapshot, GradientCodec, MetricsLiveEvent,
+    MetricsLiveEventKind, NodeCertificate, NodeCertificateClaims, PeerAuthEnvelope, PrincipalId,
+    ProjectFamilyId, PseudoGradientManifest, RevocationEpoch, RoundCursor, RoundPhase,
+    SignatureAlgorithm, SignatureMetadata, TrainingProtocol,
 };
 use burn_p2p_experiment::{
     ActivationTarget, FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
@@ -129,6 +130,78 @@ fn advertise_auth_peer(
         });
 }
 
+#[test]
+fn diloco_state_and_manifest_signatures_verify_against_peer_auth() {
+    let keypair = Keypair::generate_ed25519();
+    let peer_id =
+        PeerId::new(libp2p_identity::PeerId::from_public_key(&keypair.public()).to_string());
+    let mut telemetry = test_snapshot([PeerRole::TrainerCpu]);
+    advertise_auth_peer(&mut telemetry, peer_id.as_str(), &keypair, Utc::now());
+
+    let mut state = DiLoCoStateSnapshot {
+        experiment_id: ExperimentId::new("exp-diloco"),
+        revision_id: RevisionId::new("rev-diloco"),
+        training_protocol: TrainingProtocol::DiLoCo(DiLoCoPolicy::default()),
+        round_cursor: RoundCursor::new(BaseCheckpointId::new("base"), 4),
+        checkpoint_head_id: None,
+        latest_gradient_manifest_id: None,
+        current_parameter_checksum: None,
+        outer_optimizer_state: None,
+        signature_bundle: Vec::new(),
+        updated_at: Utc::now(),
+    };
+    state
+        .signature_bundle
+        .push(sign_diloco_state_snapshot(&keypair, &state).expect("sign diloco state"));
+    assert!(verify_diloco_state_snapshot_signature(
+        &telemetry.control_plane,
+        &peer_id,
+        &state
+    ));
+
+    let mut tampered_state = state.clone();
+    tampered_state.round_cursor.phase = RoundPhase::Aggregate;
+    assert!(!verify_diloco_state_snapshot_signature(
+        &telemetry.control_plane,
+        &peer_id,
+        &tampered_state
+    ));
+
+    let pack = FlattenedTensorPack::new(
+        ContentId::new("schema"),
+        ContentId::new("layout"),
+        vec![1.0, -2.0, 0.5],
+    );
+    let mut manifest = PseudoGradientManifest::try_new(
+        ExperimentId::new("exp-diloco"),
+        RevisionId::new("rev-diloco"),
+        peer_id.clone(),
+        RoundCursor::new(BaseCheckpointId::new("base"), 4),
+        GradientCodec::Fp32,
+        &pack,
+        1,
+        12,
+        Utc::now(),
+    )
+    .expect("manifest");
+    manifest
+        .signature_bundle
+        .push(sign_diloco_gradient_manifest(&keypair, &manifest).expect("sign diloco manifest"));
+    assert!(verify_diloco_gradient_manifest_signature(
+        &telemetry.control_plane,
+        &peer_id,
+        &manifest
+    ));
+
+    let mut tampered_manifest = manifest.clone();
+    tampered_manifest.total_encoded_bytes += 1;
+    assert!(!verify_diloco_gradient_manifest_signature(
+        &telemetry.control_plane,
+        &peer_id,
+        &tampered_manifest
+    ));
+}
+
 fn publish_schedule_epoch(
     snapshot: &mut NodeTelemetrySnapshot,
     epoch: FleetScheduleEpoch,
@@ -158,6 +231,64 @@ fn publish_schedule_epoch(
             certificate,
             announced_at,
         });
+}
+
+#[test]
+fn runtime_training_protocol_prefers_directory_entry_metadata() {
+    let protocol = crate::TrainingProtocol::DiLoCo(crate::DiLoCoPolicy {
+        num_inner_steps: 8,
+        target_group_size: 4,
+        minimum_group_size: 2,
+        checkpoint_interval_rounds: 3,
+        codec: crate::GradientCodec::BlockwiseInt8 { block_size: 64 },
+        outer_optimizer_policy: crate::OuterOptimizerPolicy::Sgd {
+            learning_rate_micros: 250_000,
+            momentum_micros: Some(900_000),
+            nesterov: true,
+            weight_decay_micros: Some(10_000),
+        },
+        ..crate::DiLoCoPolicy::default()
+    });
+    let mut entry = ExperimentDirectoryEntry {
+        network_id: NetworkId::new("net-test"),
+        study_id: StudyId::new("study"),
+        experiment_id: ExperimentId::new("experiment"),
+        workload_id: WorkloadId::new("workload"),
+        display_name: "runtime test".into(),
+        model_schema_hash: ContentId::new("schema"),
+        dataset_view_id: DatasetViewId::new("view"),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::new(),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 1024,
+            estimated_window_seconds: 30,
+        },
+        visibility: ExperimentVisibility::Public,
+        opt_in_policy: ExperimentOptInPolicy::Open,
+        current_revision_id: RevisionId::new("revision"),
+        current_head_id: None,
+        allowed_roles: PeerRoleSet::default_trainer(),
+        allowed_scopes: BTreeSet::from([ExperimentScope::Train {
+            experiment_id: ExperimentId::new("experiment"),
+        }]),
+        metadata: BTreeMap::new(),
+    };
+    entry.metadata.insert(
+        "burn_p2p.revision.training_protocol.policy_json".into(),
+        serde_json::to_string(&protocol).expect("training protocol json"),
+    );
+    let config = NodeConfig {
+        auth: Some(AuthConfig::default().with_experiment_directory([entry])),
+        ..NodeConfig::default()
+    };
+
+    let resolved = runtime_training_protocol(
+        &config,
+        &test_snapshot([PeerRole::TrainerCpu]),
+        &test_experiment_handle(),
+    );
+    assert_eq!(resolved, protocol);
 }
 
 #[test]

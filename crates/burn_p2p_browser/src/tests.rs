@@ -118,6 +118,7 @@ fn conformance_revision_manifest() -> burn_p2p::RevisionManifest {
     burn_p2p::RevisionManifest {
         experiment_id: ExperimentId::new("exp-browser"),
         revision_id: RevisionId::new("rev-browser"),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: WorkloadId::new("browser-demo"),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: ContentId::new("model-browser"),
@@ -1035,6 +1036,7 @@ fn browser_storage_clears_replay_state_when_directory_revision_advances() {
 
     let next_revision = burn_p2p::RevisionManifest {
         revision_id: RevisionId::new("rev-next"),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         ..conformance_revision_manifest()
     };
     let entry = ExperimentDirectoryProjectionBuilder::from_revision(
@@ -1099,6 +1101,7 @@ fn browser_join_policy_prefers_requested_role_and_falls_back_safely() {
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -1222,6 +1225,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
     portal_entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: portal_entry.experiment_id.clone(),
         revision_id: portal_entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: portal_entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: portal_entry.model_schema_hash.clone(),
@@ -1253,6 +1257,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
     blocked_entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: blocked_entry.experiment_id.clone(),
         revision_id: blocked_entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: blocked_entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: blocked_entry.model_schema_hash.clone(),
@@ -1343,6 +1348,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -1492,6 +1498,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -1695,6 +1702,7 @@ fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selec
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -1856,6 +1864,7 @@ fn worker_runtime_apply_command_emits_selection_and_storage_events() {
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -2096,6 +2105,7 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: entry.experiment_id.clone(),
         revision_id: entry.current_revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: entry.workload_id.clone(),
         required_release_train_hash: ContentId::new("train-browser"),
         model_schema_hash: entry.model_schema_hash.clone(),
@@ -5071,6 +5081,7 @@ fn browser_app_model_surfaces_current_directory_revision_when_assignment_is_stal
     };
     let next_revision = burn_p2p::RevisionManifest {
         revision_id: RevisionId::new("rev-next"),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         ..conformance_revision_manifest()
     };
     let entry = ExperimentDirectoryProjectionBuilder::from_revision(
@@ -6635,6 +6646,7 @@ fn browser_portal_client_clears_stale_replay_state_before_syncing_superseded_rev
                 "Browser Demo",
                 &burn_p2p::RevisionManifest {
                     revision_id: RevisionId::new("rev-next"),
+                    training_protocol: burn_p2p::TrainingProtocol::default(),
                     ..conformance_revision_manifest()
                 },
             )

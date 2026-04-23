@@ -17,6 +17,7 @@ use crate::{
 
 mod browser_swarm;
 mod capabilities;
+mod diloco;
 mod edge;
 mod manifests;
 mod metrics;
@@ -27,6 +28,7 @@ mod runtime;
 
 pub use browser_swarm::*;
 pub use capabilities::*;
+pub use diloco::*;
 pub use edge::*;
 pub use manifests::*;
 pub use metrics::*;

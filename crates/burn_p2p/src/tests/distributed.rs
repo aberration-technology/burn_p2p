@@ -385,6 +385,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
     lag_directory_entry.apply_revision_policy(&crate::RevisionManifest {
         experiment_id: experiment.experiment_id.clone(),
         revision_id: experiment.revision_id.clone(),
+        training_protocol: crate::TrainingProtocol::default(),
         workload_id: lag_directory_entry.workload_id.clone(),
         required_release_train_hash: crate::ContentId::new("train-synthetic"),
         model_schema_hash: lag_directory_entry.model_schema_hash.clone(),

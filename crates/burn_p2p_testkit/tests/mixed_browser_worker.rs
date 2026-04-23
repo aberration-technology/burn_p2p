@@ -30,6 +30,7 @@ fn browser_revision_manifest(
     RevisionManifest {
         experiment_id,
         revision_id,
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id,
         required_release_train_hash: ContentId::new("synthetic-train"),
         model_schema_hash: ContentId::new("synthetic-model-schema"),

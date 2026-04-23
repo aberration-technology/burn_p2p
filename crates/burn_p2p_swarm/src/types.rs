@@ -249,6 +249,12 @@ pub struct ProtocolSet {
     pub microshard_fetch: ProtocolId,
     /// The telemetry snapshot.
     pub telemetry_snapshot: ProtocolId,
+    /// The DiLoCo control.
+    pub diloco_control: ProtocolId,
+    /// The DiLoCo delta.
+    pub diloco_delta: ProtocolId,
+    /// The DiLoCo state.
+    pub diloco_state: ProtocolId,
 }
 
 impl ProtocolSet {
@@ -262,6 +268,9 @@ impl ProtocolSet {
             chunk_fetch: ProtocolId::new(format!("{base}/chunk-fetch"))?,
             microshard_fetch: ProtocolId::new(format!("{base}/microshard-fetch"))?,
             telemetry_snapshot: ProtocolId::new(format!("{base}/telemetry-snapshot"))?,
+            diloco_control: ProtocolId::new(format!("{base}/diloco/control"))?,
+            diloco_delta: ProtocolId::new(format!("{base}/diloco/delta"))?,
+            diloco_state: ProtocolId::new(format!("{base}/diloco/state"))?,
         })
     }
 }

@@ -237,6 +237,33 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to send metrics announcement: {error}"))
     }
 
+    /// Publishes the local DiLoCo state snapshot, outer optimizer state, and current parameters.
+    pub fn publish_diloco_state(
+        &self,
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishDiLoCoState {
+                snapshot,
+                outer_optimizer_state,
+                current_parameters,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo state: {error}"))
+    }
+
+    /// Publishes one encoded DiLoCo pseudo-gradient manifest and chunk set.
+    pub fn publish_diloco_gradient(
+        &self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(RuntimeCommand::PublishDiLoCoGradient { manifest, chunks })
+            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo gradient: {error}"))
+    }
+
     /// Performs the request snapshot operation.
     pub fn request_snapshot(&self, peer_id: impl Into<String>) -> anyhow::Result<()> {
         self.tx
@@ -393,12 +420,194 @@ impl ControlHandle {
         }
     }
 
+    /// Fetches a generic DiLoCo request/response payload.
+    pub fn fetch_diloco(
+        &self,
+        peer_id: impl Into<String>,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        let peer_id = peer_id.into();
+        let telemetry_snapshot = self.telemetry.snapshot();
+        let peer = PeerId::new(peer_id.clone());
+        let (runtime_timeout, fallback_timeout) =
+            split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
+        let request_for_runtime = request.clone();
+        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.tx
+                .send(RuntimeCommand::FetchDiLoCo {
+                    peer_id: peer_id.clone(),
+                    request: request_for_runtime.clone(),
+                    timeout: attempt_timeout,
+                    reply: reply_tx,
+                })
+                .map_err(|error| anyhow::anyhow!("failed to request DiLoCo payload: {error}"))?;
+            self.recv_runtime_reply(reply_rx, "diloco")
+        });
+
+        match runtime_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => self
+                .fetch_diloco_via_sidecar(&peer_id, request, fallback_timeout)
+                .map_err(|fallback_error| {
+                    anyhow::anyhow!(
+                        "runtime DiLoCo fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                    )
+                }),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn fetch_diloco_state_snapshot(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<DiLoCoStateSnapshot>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::StateSnapshot {
+                experiment_id,
+                revision_id,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::StateSnapshot(snapshot) => Ok(snapshot),
+            other => anyhow::bail!("unexpected DiLoCo state response: {other:?}"),
+        }
+    }
+
+    pub fn fetch_diloco_outer_optimizer_state(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<StateBlob>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::OuterOptimizerState {
+                experiment_id,
+                revision_id,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::OuterOptimizerState(state) => Ok(state),
+            other => anyhow::bail!("unexpected DiLoCo outer-state response: {other:?}"),
+        }
+    }
+
+    pub fn fetch_diloco_current_parameters(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<FlattenedTensorPack>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::CurrentParameters {
+                experiment_id,
+                revision_id,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::CurrentParameters(parameters) => Ok(parameters),
+            other => anyhow::bail!("unexpected DiLoCo parameter response: {other:?}"),
+        }
+    }
+
+    pub fn fetch_diloco_gradient_manifest(
+        &self,
+        peer_id: impl Into<String>,
+        manifest_id: ContentId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<PseudoGradientManifest>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::GradientManifest { manifest_id },
+            timeout,
+        )? {
+            DiLoCoResponse::GradientManifest(manifest) => Ok(manifest),
+            other => anyhow::bail!("unexpected DiLoCo manifest response: {other:?}"),
+        }
+    }
+
+    pub fn fetch_diloco_gradient_chunk(
+        &self,
+        peer_id: impl Into<String>,
+        manifest_id: ContentId,
+        chunk_index: u32,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<PseudoGradientChunk>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::GradientChunk {
+                manifest_id,
+                chunk_index,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::GradientChunk(chunk) => Ok(chunk),
+            other => anyhow::bail!("unexpected DiLoCo chunk response: {other:?}"),
+        }
+    }
+
+    pub fn send_diloco_round_offer(
+        &self,
+        peer_id: impl Into<String>,
+        offer: DiLoCoRoundOffer,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        self.fetch_diloco(peer_id, DiLoCoRequest::RoundOffer(Box::new(offer)), timeout)
+    }
+
+    pub fn send_diloco_round_heartbeat(
+        &self,
+        peer_id: impl Into<String>,
+        heartbeat: DiLoCoRoundHeartbeat,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::RoundHeartbeat(Box::new(heartbeat)),
+            timeout,
+        )
+    }
+
+    pub fn send_diloco_round_finalize(
+        &self,
+        peer_id: impl Into<String>,
+        finalize: DiLoCoRoundFinalize,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::RoundFinalize(Box::new(finalize)),
+            timeout,
+        )
+    }
+
     /// Performs the shutdown operation.
     pub fn shutdown(&self) -> anyhow::Result<()> {
         match self.tx.send(RuntimeCommand::Shutdown) {
             Ok(()) => Ok(()),
             Err(_) => Ok(()),
         }
+    }
+
+    fn fetch_diloco_via_sidecar(
+        &self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        let mut shell = self.connect_fetch_sidecar(peer_id, timeout)?;
+        shell
+            .fetch_diloco(peer_id, request, timeout)
+            .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
     fn fetch_artifact_manifest_via_sidecar(

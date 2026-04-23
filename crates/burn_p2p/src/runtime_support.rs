@@ -9,6 +9,7 @@ use sysinfo::{Disks, System};
 mod control_plane;
 mod persistence;
 mod placement;
+mod signing;
 #[cfg(test)]
 mod tests;
 mod topology;
@@ -36,6 +37,10 @@ pub(crate) use placement::{
     build_fleet_placement_snapshot, local_training_adaptation_factor, local_training_schedule_hint,
     runtime_training_assignment_peers, sign_fleet_placement_snapshot,
 };
+pub(crate) use signing::{
+    sign_diloco_gradient_manifest, sign_diloco_state_snapshot,
+    verify_diloco_gradient_manifest_signature, verify_diloco_state_snapshot_signature,
+};
 #[cfg(test)]
 pub(crate) use topology::experiment_snapshot_peer_ids;
 pub(crate) use topology::{
@@ -47,9 +52,10 @@ pub(crate) use topology::{
     metric_quality, open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids,
     resolve_canonical_head, runtime_assign_reducers, runtime_merge_topology_policy,
     runtime_robustness_policy, runtime_topology_peers, runtime_training_peers,
-    runtime_validator_peers, runtime_validators, runtime_window_reducers,
-    snapshots_with_local_control_plane, update_announces_from_connected_snapshots,
-    update_feature_sketch_from_metrics, update_norm_stats,
+    runtime_training_protocol, runtime_validator_peers, runtime_validators,
+    runtime_window_reducers, snapshots_with_local_control_plane,
+    update_announces_from_connected_snapshots, update_feature_sketch_from_metrics,
+    update_norm_stats,
 };
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{

@@ -50,6 +50,7 @@ fn browser_directory_snapshot(
     let revision = RevisionManifest {
         experiment_id: experiment_id.clone(),
         revision_id: revision_id.clone(),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: workload_id.clone(),
         required_release_train_hash: ContentId::new("browser-train"),
         model_schema_hash: ContentId::new("browser-model"),

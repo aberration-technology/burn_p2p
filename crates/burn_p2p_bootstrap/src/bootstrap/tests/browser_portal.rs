@@ -469,6 +469,7 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
     auth_config.directory_entries[0].apply_revision_policy(&burn_p2p::RevisionManifest {
         experiment_id: burn_p2p::ExperimentId::new("exp-auth"),
         revision_id: burn_p2p::RevisionId::new("rev-auth"),
+        training_protocol: burn_p2p::TrainingProtocol::default(),
         workload_id: burn_p2p::WorkloadId::new("auth-demo"),
         required_release_train_hash: ContentId::new("demo-train"),
         model_schema_hash: burn_p2p::ContentId::new("model-auth"),

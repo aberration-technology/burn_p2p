@@ -250,6 +250,48 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Publishes the local DiLoCo state snapshot, outer optimizer state, and current parameters.
+    pub fn publish_diloco_state(
+        &mut self,
+        snapshot: DiLoCoStateSnapshot,
+        outer_optimizer_state: Option<StateBlob>,
+        current_parameters: Option<FlattenedTensorPack>,
+    ) {
+        match self {
+            Self::Memory(shell) => {
+                shell.publish_diloco_state(snapshot, outer_optimizer_state, current_parameters)
+            }
+            Self::Native(shell) => {
+                shell.publish_diloco_state(snapshot, outer_optimizer_state, current_parameters)
+            }
+        }
+    }
+
+    /// Publishes one encoded pseudo-gradient manifest and chunk set.
+    pub fn publish_diloco_gradient(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+    ) {
+        match self {
+            Self::Memory(shell) => shell.publish_diloco_gradient(manifest, chunks),
+            Self::Native(shell) => shell.publish_diloco_gradient(manifest, chunks),
+        }
+    }
+
+    /// Fetches one DiLoCo request/response payload from the remote peer.
+    pub fn fetch_diloco(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> Result<DiLoCoResponse, SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.fetch_diloco(peer_id, request, timeout),
+            Self::Native(shell) => shell.fetch_diloco(peer_id, request, timeout),
+        }
+    }
+
     /// Performs the snapshot operation.
     pub fn snapshot(&self) -> &ControlPlaneSnapshot {
         match self {

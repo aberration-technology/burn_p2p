@@ -1195,6 +1195,16 @@ pub(crate) fn update_announces_from_connected_snapshots(
     updates.into_values().collect()
 }
 
+pub(crate) fn runtime_training_protocol(
+    config: &NodeConfig,
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+) -> TrainingProtocol {
+    active_experiment_directory_entry(config, snapshot, experiment)
+        .map(|entry| entry.training_protocol())
+        .unwrap_or_default()
+}
+
 pub(crate) fn runtime_merge_topology_policy(
     config: &NodeConfig,
     snapshot: &NodeTelemetrySnapshot,
