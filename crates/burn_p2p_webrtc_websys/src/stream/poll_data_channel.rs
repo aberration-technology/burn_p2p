@@ -146,7 +146,9 @@ impl PollDataChannel {
             move |ev: MessageEvent| {
                 let data = js_sys::Uint8Array::new(&ev.data());
 
-                let mut read_buffer = read_buffer.lock().unwrap();
+                let mut read_buffer = read_buffer
+                    .lock()
+                    .expect("browser data channel read buffer mutex poisoned");
 
                 if read_buffer.len() + data.length() as usize > MAX_MSG_LEN {
                     overloaded.store(true, Ordering::SeqCst);
@@ -254,7 +256,10 @@ impl AsyncRead for PollDataChannel {
 
         futures::ready!(this.poll_ready(cx))?;
 
-        let mut read_buffer = this.read_buffer.lock().unwrap();
+        let mut read_buffer = this
+            .read_buffer
+            .lock()
+            .expect("browser data channel read buffer mutex poisoned");
 
         if read_buffer.is_empty() {
             this.new_data_waker.register(cx.waker());

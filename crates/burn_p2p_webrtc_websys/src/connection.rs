@@ -208,9 +208,12 @@ pub(crate) struct RtcPeerConnection {
 impl RtcPeerConnection {
     pub(crate) async fn new(algorithm: String) -> Result<Self, Error> {
         let algo: Object = Object::new();
-        Reflect::set(&algo, &"name".into(), &"ECDSA".into()).unwrap();
-        Reflect::set(&algo, &"namedCurve".into(), &"P-256".into()).unwrap();
-        Reflect::set(&algo, &"hash".into(), &algorithm.into()).unwrap();
+        Reflect::set(&algo, &"name".into(), &"ECDSA".into())
+            .expect("failed to set RTC certificate algorithm name");
+        Reflect::set(&algo, &"namedCurve".into(), &"P-256".into())
+            .expect("failed to set RTC certificate named curve");
+        Reflect::set(&algo, &"hash".into(), &algorithm.into())
+            .expect("failed to set RTC certificate hash algorithm");
 
         let certificate_promise =
             web_sys::RtcPeerConnection::generate_certificate_with_object(&algo)
@@ -405,7 +408,7 @@ mod sdp_tests {
     fn test_fingerprint() {
         let sdp = "v=0\r\no=- 0 0 IN IP6 ::1\r\ns=-\r\nc=IN IP6 ::1\r\nt=0 0\r\na=ice-lite\r\nm=application 61885 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=setup:passive\r\na=ice-ufrag:libp2p+webrtc+v1/YwapWySn6fE6L9i47PhlB6X4gzNXcgFs\r\na=ice-pwd:libp2p+webrtc+v1/YwapWySn6fE6L9i47PhlB6X4gzNXcgFs\r\na=fingerprint:sha-256 A8:17:77:1E:02:7E:D1:2B:53:92:70:A6:8E:F9:02:CC:21:72:3A:92:5D:F4:97:5F:27:C4:5E:75:D4:F4:31:89\r\na=sctp-port:5000\r\na=max-message-size:16384\r\na=candidate:1467250027 1 UDP 1467250027 ::1 61885 typ host\r\n";
 
-        let fingerprint = parse_fingerprint(sdp).unwrap();
+        let fingerprint = parse_fingerprint(sdp).expect("expected SDP fingerprint");
 
         assert_eq!(fingerprint.algorithm(), "sha-256");
         assert_eq!(
@@ -418,7 +421,7 @@ mod sdp_tests {
     fn parses_lf_only_fingerprint() {
         let sdp = "v=0\na=fingerprint:sha-256 A8:17:77:1E:02:7E:D1:2B:53:92:70:A6:8E:F9:02:CC:21:72:3A:92:5D:F4:97:5F:27:C4:5E:75:D4:F4:31:89\n";
 
-        let fingerprint = parse_fingerprint(sdp).unwrap();
+        let fingerprint = parse_fingerprint(sdp).expect("expected SDP fingerprint");
 
         assert_eq!(
             fingerprint.to_sdp_format(),

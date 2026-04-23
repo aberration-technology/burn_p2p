@@ -27,10 +27,9 @@ fn data_channel_state_label(state: RtcDataChannelState) -> &'static str {
     }
 }
 
-fn send_handshake_open_result(
-    sender: &Rc<RefCell<Option<oneshot::Sender<Result<(), String>>>>>,
-    result: Result<(), String>,
-) {
+type HandshakeOpenSender = Rc<RefCell<Option<oneshot::Sender<Result<(), String>>>>>;
+
+fn send_handshake_open_result(sender: &HandshakeOpenSender, result: Result<(), String>) {
     if let Some(sender) = sender.borrow_mut().take() {
         let _ = sender.send(result);
     }
