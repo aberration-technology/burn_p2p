@@ -1124,25 +1124,13 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
     }
 
     for outcome in &trainer_outcomes {
-        let artifact_deadline = Instant::now() + test_timeout(Duration::from_secs(30));
-        loop {
-            match reducer.sync_artifact_from_peer(
-                &outcome.contribution.peer_id,
-                outcome.head.artifact_id.clone(),
-            ) {
-                Ok(_) => break,
-                Err(error) => {
-                    assert!(
-                        Instant::now() < artifact_deadline,
-                        "reducer did not warm trainer artifact {} from {}: {}",
-                        outcome.head.artifact_id.as_str(),
-                        outcome.contribution.peer_id.as_str(),
-                        error,
-                    );
-                }
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
+        reducer
+            .wait_for_artifact_from_peers(
+                std::slice::from_ref(&outcome.contribution.peer_id),
+                &outcome.head.artifact_id,
+                test_timeout(Duration::from_secs(30)),
+            )
+            .expect("reducer did not warm trainer artifact from the live network");
     }
 
     let reduced = reducer
