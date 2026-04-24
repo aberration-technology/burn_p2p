@@ -250,10 +250,7 @@ fn direct_browser_seed_multiaddr_for_host(
     if request_host_is_ip_literal {
         return rewrite_browser_seed_host(address, host_prefix);
     }
-    if browser_direct_seed_uses_publishable_ip(address) {
-        return Some(address.to_owned());
-    }
-    None
+    rewrite_browser_seed_host(address, host_prefix)
 }
 
 fn browser_direct_seed_uses_publishable_ip(address: &str) -> bool {

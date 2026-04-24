@@ -333,10 +333,10 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
         let forwarded_multiaddrs = &forwarded_signed_seeds.payload.payload.seeds[0].multiaddrs;
         assert!(
             forwarded_multiaddrs.contains(
-                &"/ip4/198.51.100.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+                &"/dns4/edge.example/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
                     .to_owned()
             ),
-            "browser seed advertisement should preserve publishable ip-based webrtc-direct seeds for dns hosts, got {forwarded_multiaddrs:?}"
+            "browser seed advertisement should rewrite publishable ip-based webrtc-direct seeds to the public dns host, got {forwarded_multiaddrs:?}"
         );
         assert!(
             !forwarded_multiaddrs.iter().any(|addr| addr.contains("/wss")),
