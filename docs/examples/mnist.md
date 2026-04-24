@@ -84,16 +84,20 @@ Main files:
   node topology, experiment setup, training windows, and checkpoint flow
 - `examples/mnist_p2p_demo/src/scenario.rs`: thin wrapper from core run to
   correctness export
-- `examples/mnist_p2p_demo/src/data.rs`: mnist subset preparation, shard files,
-  fetch manifest, lease-to-batch loading
+- `examples/mnist_p2p_demo/src/data/`: mnist subset preparation, shard files,
+  fetch manifest, and lease-to-batch loading
 - `examples/mnist_p2p_demo/src/correctness/browser.rs`: browser runtime drills,
   browser dataset access probe, browser portal export contracts
 - `examples/mnist_p2p_demo/src/correctness/export.rs`: summary and browser
   export contracts
 - `examples/mnist_p2p_demo/src/correctness/report.rs`: correctness summaries
   derived from the core run
-- `examples/mnist_p2p_demo/src/model.rs`: model, train/eval steps, custom
+- `examples/mnist_p2p_demo/src/model/`: model, train/eval steps, custom
   metrics
+- `examples/torch_mnist_p2p_demo/src/main.rs`: native Rust harness for the
+  Python/Torch `P2pWorkload`
+- `examples/torch_mnist_p2p_demo/python/torch_mnist_p2p_demo/runtime.py`:
+  subprocess-owned Torch model, dataset preparation, training, and validation
 
 ## Burn Integration
 
@@ -132,6 +136,23 @@ Browser data transport in the demo is intentionally not raw shard gossip:
 - native dataset preparation uses Burn's mnist dataset helpers on the host side
 - the browser wasm probe does not depend on `burn/vision`; it reads the
   prepared shard records directly and trains with `burn["webgpu", "autodiff"]`
+
+## Python/Torch Adapter
+
+`examples/torch_mnist_p2p_demo` proves the same runtime boundary without using
+Burn for model execution.
+
+It uses:
+
+- `burn_p2p_python` as the Rust adapter
+- a Python subprocess for Torch model state, train steps, validation, and shard
+  preparation
+- the same `NodeBuilder`, trainer session, validator promotion, canonical-head
+  sync, dataset planning, and fetch-manifest path as native workloads
+
+This demo is intentionally small. It is the quickest way to verify that a
+non-Burn runtime can plug into `P2pWorkload` while leaving p2p orchestration,
+leases, validation, storage, and head sync in Rust.
 
 ## Portal And Testkit
 
@@ -173,6 +194,14 @@ Run the example crate directly:
 
 ```bash
 cargo run --manifest-path examples/mnist_p2p_demo/Cargo.toml -- --output ./target/mnist-demo
+```
+
+Run the Python/Torch adapter demo:
+
+```bash
+cargo run --manifest-path examples/torch_mnist_p2p_demo/Cargo.toml -- \
+  --root ./target/torch-mnist-demo \
+  --python python3
 ```
 
 Run the full local sanity lane:

@@ -191,6 +191,14 @@ single-machine mixed-fleet mnist sanity run:
 cargo xtask e2e mnist --profile smoke --keep-artifacts
 ```
 
+python/torch adapter sanity run:
+
+```bash
+cargo run --manifest-path examples/torch_mnist_p2p_demo/Cargo.toml -- \
+  --root ./target/torch-mnist-demo \
+  --python python3
+```
+
 best follow-up docs:
 
 - [docs/examples/mnist.md](docs/examples/mnist.md)

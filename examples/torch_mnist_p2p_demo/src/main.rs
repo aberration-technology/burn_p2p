@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -25,9 +26,63 @@ use serde_json::json;
 
 const SAMPLE_COUNT: u64 = 512;
 const SHARD_COUNT: u32 = 8;
+const DEFAULT_ROOT: &str = ".burn_p2p-python-mnist";
+const DEFAULT_PYTHON: &str = "python3";
+
+#[derive(Debug)]
+struct DemoArgs {
+    root: PathBuf,
+    python_executable: PathBuf,
+}
+
+impl DemoArgs {
+    fn parse() -> anyhow::Result<Self> {
+        let mut root = PathBuf::from(DEFAULT_ROOT);
+        let mut python_executable = PathBuf::from(DEFAULT_PYTHON);
+        let mut args = env::args_os().skip(1);
+
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--help") | Some("-h") => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                Some("--root") => {
+                    root = args.next().context("--root requires a path")?.into();
+                }
+                Some("--python") => {
+                    python_executable = args.next().context("--python requires a path")?.into();
+                }
+                Some(value) if value.starts_with("--root=") => {
+                    root = PathBuf::from(&value["--root=".len()..]);
+                }
+                Some(value) if value.starts_with("--python=") => {
+                    python_executable = PathBuf::from(&value["--python=".len()..]);
+                }
+                _ => bail!("unknown argument {arg:?}; use --help for usage"),
+            }
+        }
+
+        Ok(Self {
+            root,
+            python_executable,
+        })
+    }
+}
+
+fn print_help() {
+    println!(
+        "Python/Torch MNIST burn_p2p demo\n\n\
+         Usage: torch_mnist_p2p_demo [--root PATH] [--python PATH]\n\n\
+         Options:\n  \
+           --root PATH    Output/cache root [default: {DEFAULT_ROOT}]\n  \
+           --python PATH  Python executable for dataset prep and workers [default: {DEFAULT_PYTHON}]"
+    );
+}
 
 fn main() -> anyhow::Result<()> {
-    let root = PathBuf::from(".burn_p2p-python-mnist");
+    let args = DemoArgs::parse()?;
+    let root = args.root;
     let dataset_root = root.join("dataset");
     let mnist_root = root.join("mnist");
     let validator_storage = root.join("validator");
@@ -36,12 +91,22 @@ fn main() -> anyhow::Result<()> {
 
     let _ = fs::remove_dir_all(&validator_storage);
     let _ = fs::remove_dir_all(&trainer_storage);
-    prepare_demo_dataset(&dataset_root, &mnist_root, &python_root)?;
+    prepare_demo_dataset(
+        &dataset_root,
+        &mnist_root,
+        &python_root,
+        &args.python_executable,
+    )?;
 
     let dataset_config = build_dataset_config(&dataset_root)?;
     write_fetch_manifest(&dataset_config)?;
 
-    let project_config = build_project_config(dataset_config.clone(), &python_root, &mnist_root)?;
+    let project_config = build_project_config(
+        dataset_config.clone(),
+        &python_root,
+        &mnist_root,
+        &args.python_executable,
+    )?;
     let validator_project = PythonTorchProject::new_with_data_pipeline(
         project_config.clone(),
         build_micro_epoch_pipeline(&dataset_config),
@@ -52,8 +117,10 @@ fn main() -> anyhow::Result<()> {
         validator_project.probe_capability().preferred_backends,
         validator_project.probe_capability().work_units_per_second
     );
-    let trainer_project =
-        PythonTorchProject::new_with_data_pipeline(project_config, build_micro_epoch_pipeline(&dataset_config))?;
+    let trainer_project = PythonTorchProject::new_with_data_pipeline(
+        project_config,
+        build_micro_epoch_pipeline(&dataset_config),
+    )?;
 
     let genesis = GenesisSpec {
         network_id: burn_p2p::NetworkId::new("torch-mnist-python-demo"),
@@ -172,10 +239,11 @@ fn build_project_config(
     dataset: PythonTorchDatasetConfig,
     python_root: &Path,
     mnist_root: &Path,
+    python_executable: &Path,
 ) -> anyhow::Result<PythonTorchWorkloadConfig> {
     let workload = workload_manifest();
     let runtime = PythonTorchRuntimeConfig::new(
-        "python3",
+        python_executable,
         "torch_mnist_p2p_demo.runtime:TorchMnistWorkload",
         json!({
             "mnist_root": mnist_root,
@@ -269,6 +337,7 @@ fn prepare_demo_dataset(
     dataset_root: &Path,
     mnist_root: &Path,
     python_root: &Path,
+    python_executable: &Path,
 ) -> anyhow::Result<()> {
     if dataset_root.exists() {
         fs::remove_dir_all(dataset_root)?;
@@ -277,7 +346,7 @@ fn prepare_demo_dataset(
     fs::create_dir_all(mnist_root)?;
 
     let pythonpath = joined_pythonpath([python_root.to_path_buf()])?;
-    let status = Command::new("python3")
+    let status = Command::new(python_executable)
         .arg("-m")
         .arg("torch_mnist_p2p_demo.runtime")
         .arg("prepare-dataset")

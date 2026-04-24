@@ -34,11 +34,11 @@ use burn_p2p_views::BrowserAppSurface;
 use chrono::Utc;
 
 use crate::{
+    core::promotion_mode_slug,
     correctness::export::{
         BrowserDatasetAccessSummary, BrowserRoleExerciseSummary, BrowserScenarioExport,
         CaptureInteraction,
     },
-    core::promotion_mode_slug,
     data::PreparedMnistData,
 };
 
@@ -402,8 +402,7 @@ fn exercise_browser_role(
     );
     runtime.update_transport_status(live_transport.clone());
 
-    let degraded =
-        BrowserTransportStatus::disabled().with_last_error("simulated transport stall");
+    let degraded = BrowserTransportStatus::disabled().with_last_error("simulated transport stall");
     runtime.update_transport_status(degraded);
     let stalled = runtime.state.clone();
     runtime.update_transport_status(live_transport);

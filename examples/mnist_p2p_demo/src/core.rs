@@ -18,15 +18,15 @@ use burn::{
 };
 use burn_p2p::{
     AuthConfig, BrowserRolePolicy, BrowserVisibilityPolicy, ChunkingScheme, ClientPlatform,
-    ClientReleaseManifest, ContentId, ExperimentDirectoryEntry, ExperimentDirectoryPolicyExt,
-    ExperimentId, ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope,
-    ExperimentVisibility, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadPromotionMode,
-    HeadPromotionPolicy, LagPolicy, MergeCertificate, MergeStrategy, MergeTopologyPolicy,
-    MetricTrustClass, MetricValue, NetworkManifest, P2pWorkload, PeerId, PeerRole, PeerRoleSet,
-    PeerWindowMetrics, PeerWindowStatus, Precision, PrincipalId, ProjectFamilyId,
-    ReducerCohortMetrics, RevisionId, RevisionManifest, StorageConfig, StudyId,
-    SupportedWorkload, TrainingProtocol, WindowActivation, WindowId, WorkloadId,
-    DiffusionSteadyStatePolicy,
+    ClientReleaseManifest, ContentId, DiffusionSteadyStatePolicy, ExperimentDirectoryEntry,
+    ExperimentDirectoryPolicyExt, ExperimentId, ExperimentOptInPolicy,
+    ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, HeadDescriptor,
+    HeadEvalReport, HeadEvalStatus, HeadPromotionMode, HeadPromotionPolicy, LagPolicy,
+    MergeCertificate, MergeStrategy, MergeTopologyPolicy, MetricTrustClass, MetricValue,
+    NetworkManifest, P2pWorkload, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
+    PeerWindowStatus, Precision, PrincipalId, ProjectFamilyId, ReducerCohortMetrics, RevisionId,
+    RevisionManifest, StorageConfig, StudyId, SupportedWorkload, TrainingProtocol,
+    WindowActivation, WindowId, WorkloadId,
     burn::{
         BurnArtifactConfig, BurnRecordPrecision, BurnTarget, BurnWorkloadConfig, from_learner,
         from_loaders, inspect_module,
@@ -729,7 +729,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 "trainer-a2 did not observe promoted baseline head on time",
             );
             wait_for_head_artifacts(
-                &[(TRAINER_A1_LABEL, &trainer_a1), (TRAINER_A2_LABEL, &trainer_a2)],
+                &[
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                ],
                 &baseline_head_providers,
                 &baseline_head.artifact_id,
                 Duration::from_secs(20),
@@ -890,7 +893,10 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
                 "trainer-a2 did not observe restart-promoted baseline head on time",
             );
             wait_for_head_artifacts(
-                &[(TRAINER_A1_LABEL, &trainer_a1), (TRAINER_A2_LABEL, &trainer_a2)],
+                &[
+                    (TRAINER_A1_LABEL, &trainer_a1),
+                    (TRAINER_A2_LABEL, &trainer_a2),
+                ],
                 &baseline_head_providers,
                 &baseline_head.artifact_id,
                 Duration::from_secs(20),
@@ -1206,14 +1212,13 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
         network_manifest,
         low_lr_learning_rate,
     } = context;
-    let diffusion_auth = AuthConfig::new().with_experiment_directory(
-        mnist_runtime_directory_entries(
+    let diffusion_auth =
+        AuthConfig::new().with_experiment_directory(mnist_runtime_directory_entries(
             &network_manifest,
             &supported_workload,
             &prepared_data,
             HeadPromotionMode::DiffusionSteadyState,
-        ),
-    );
+        ));
     let build_trainer_project = |learning_rate: f64| -> anyhow::Result<_> {
         let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
         let prepared_for_eval = prepared_data.clone();
@@ -1392,7 +1397,10 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
     trainer_b.publish_head_provider(&low_lr, &low_lr_head)?;
     wait_for_artifact_from_provider(
         (TRAINER_A1_LABEL, &trainer_a1),
-        [(TRAINER_A2_LABEL, &trainer_a2), (TRAINER_A3_LABEL, &trainer_a3)],
+        [
+            (TRAINER_A2_LABEL, &trainer_a2),
+            (TRAINER_A3_LABEL, &trainer_a3),
+        ],
         &trainer_a1_peer_id,
         &baseline_head.artifact_id,
         demo_provider_artifact_timeout(),
@@ -1432,10 +1440,7 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
             supported_workload.workload_id.clone(),
         ),
     ];
-    let mut baseline_head_providers = vec![
-        trainer_a1_peer_id.clone(),
-        trainer_a3_peer_id.clone(),
-    ];
+    let mut baseline_head_providers = vec![trainer_a1_peer_id.clone(), trainer_a3_peer_id.clone()];
     write_demo_phase(&output, "cluster-ready")?;
 
     for round_index in 0..args.baseline_rounds {
@@ -1783,11 +1788,7 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
             &format!("low-lr-round-{}-validation-complete", round_index + 1),
         )?;
         low_lr_head = validation.merged_head.clone();
-        republish_head_from_nodes(
-            [(TRAINER_B_LABEL, &mut trainer_b)],
-            &low_lr,
-            &low_lr_head,
-        )?;
+        republish_head_from_nodes([(TRAINER_B_LABEL, &mut trainer_b)], &low_lr, &low_lr_head)?;
         write_demo_phase(
             &output,
             &format!("low-lr-round-{}-topology-synced", round_index + 1),
@@ -3290,9 +3291,27 @@ where
     }
 
     let cohort_diagnostics = [
-        diffusion_snapshot_summary(TRAINER_A1_LABEL, trainer_a, experiment, target_window_id, &base_head.head_id),
-        diffusion_snapshot_summary(TRAINER_A2_LABEL, trainer_b, experiment, target_window_id, &base_head.head_id),
-        diffusion_snapshot_summary(TRAINER_A3_LABEL, trainer_c, experiment, target_window_id, &base_head.head_id),
+        diffusion_snapshot_summary(
+            TRAINER_A1_LABEL,
+            trainer_a,
+            experiment,
+            target_window_id,
+            &base_head.head_id,
+        ),
+        diffusion_snapshot_summary(
+            TRAINER_A2_LABEL,
+            trainer_b,
+            experiment,
+            target_window_id,
+            &base_head.head_id,
+        ),
+        diffusion_snapshot_summary(
+            TRAINER_A3_LABEL,
+            trainer_c,
+            experiment,
+            target_window_id,
+            &base_head.head_id,
+        ),
     ]
     .join(" | ");
     let promoted_head = promoted_head.with_context(|| {
@@ -4083,7 +4102,8 @@ fn collect_node_records<P>(
     nodes: &[(&str, &burn_p2p::RunningNode<P>)],
     storage_root: &Path,
 ) -> Vec<CoreNodeRecord> {
-    nodes.iter()
+    nodes
+        .iter()
         .map(|(label, node)| node_record(label, *node, &storage_root.join(label)))
         .collect()
 }
@@ -4091,7 +4111,8 @@ fn collect_node_records<P>(
 fn collect_final_snapshots<P>(
     nodes: &[(&str, &burn_p2p::RunningNode<P>)],
 ) -> BTreeMap<String, burn_p2p::NodeTelemetrySnapshot> {
-    nodes.iter()
+    nodes
+        .iter()
         .map(|(label, node)| ((*label).to_string(), node.telemetry().snapshot()))
         .collect()
 }
@@ -4099,7 +4120,8 @@ fn collect_final_snapshots<P>(
 fn browser_seed_records_from_nodes<P>(
     nodes: &[(&str, &burn_p2p::RunningNode<P>)],
 ) -> Vec<BrowserSeedRecord> {
-    nodes.iter()
+    nodes
+        .iter()
         .filter_map(|(_, node)| {
             let snapshot = node.telemetry().snapshot();
             let multiaddrs = snapshot
@@ -4161,7 +4183,8 @@ fn resolve_browser_provider<'a, P>(
     label: &str,
     nodes: &'a [(&'a str, &'a burn_p2p::RunningNode<P>)],
 ) -> anyhow::Result<(&'a str, &'a burn_p2p::RunningNode<P>)> {
-    nodes.iter()
+    nodes
+        .iter()
         .copied()
         .find(|(node_label, _)| *node_label == label)
         .with_context(|| format!("unsupported browser dataset source trainer {label}"))
@@ -4174,10 +4197,7 @@ where
     write_demo_phase(input.output, "browser-handoff-start")?;
     write_demo_phase(
         input.output,
-        &format!(
-            "browser-handoff-source-{}",
-            input.browser_provider_label
-        ),
+        &format!("browser-handoff-source-{}", input.browser_provider_label),
     )?;
     let browser_dataset = prepare_live_browser_dataset_transport(
         input.browser_provider,
@@ -4250,8 +4270,10 @@ where
     };
     write_demo_phase(input.output, "browser-handoff-edge-config-ready")?;
     write_live_browser_edge_config(input.output, &browser_edge_config)?;
-    let peer_dataset_root =
-        materialize_live_browser_dataset_bundle(input.output, &browser_edge_config.browser_dataset.bundle)?;
+    let peer_dataset_root = materialize_live_browser_dataset_bundle(
+        input.output,
+        &browser_edge_config.browser_dataset.bundle,
+    )?;
     let peer_head_artifact_root = materialize_live_browser_head_artifact_bundle(
         input.output,
         &browser_edge_config.browser_head_artifact,
@@ -4274,7 +4296,8 @@ where
     .with_context(|| {
         format!(
             "failed to write {}",
-            input.output
+            input
+                .output
                 .join("browser-peer-head-artifact-root.txt")
                 .display()
         )
@@ -4478,12 +4501,13 @@ where
                     head.artifact_id.as_str()
                 )
             })?;
-        node.publish_head_provider(experiment, head).with_context(|| {
-            format!(
-                "{label} could not republish promoted head {}",
-                head.head_id.as_str()
-            )
-        })?;
+        node.publish_head_provider(experiment, head)
+            .with_context(|| {
+                format!(
+                    "{label} could not republish promoted head {}",
+                    head.head_id.as_str()
+                )
+            })?;
     }
     Ok(())
 }
@@ -4551,7 +4575,6 @@ fn shutdown_node<P>(label: &str, node: burn_p2p::RunningNode<P>) -> anyhow::Resu
         .with_context(|| format!("{label} did not terminate cleanly"))?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
