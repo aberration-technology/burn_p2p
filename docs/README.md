@@ -6,32 +6,19 @@ code.
 code, tests, examples, deployment configs, and scripts are the source of
 truth. docs here should stay short and code-adjacent.
 
-## start here
+## primary docs
 
 - [features.md](features.md): feature flags, crate composition, and common
   dependency shapes
 - [downstream-burn-guide.md](downstream-burn-guide.md): integrating
   `burn_p2p` into a Burn project
-- [burn-dragon-productization-roadmap.md](burn-dragon-productization-roadmap.md):
-  upstream work needed to make `burn_p2p` a cleaner product/runtime surface for
-  `burn_dragon_p2p`
 - [learning-dynamics.md](learning-dynamics.md): how windowed p2p averaging
   learns, how contributions are weighted, and where it differs from sync ddp
-- [memory-retention.md](memory-retention.md): crate-by-crate memory-growth
-  audit, retention boundaries, and the remaining long-run operator/storage
-  tradeoffs
 - [protocol-shape.md](protocol-shape.md): reducer vs validator authority,
   canonical promotion, and the intended trust boundary
 - [browser-transport-backend.md](browser-transport-backend.md): browser
   WebRTC/WebTransport backend choice, runtime state contract, and deployment
   gates
-- [formal-verification-plan.md](formal-verification-plan.md): how to use veil
-  to prove protocol safety without leaking lean tooling into the rust runtime
-- [production-roadmap.md](production-roadmap.md): what is already production
-  hardened, what only has seams today, and what is still open work
-- [network-administration-roadmap.md](network-administration-roadmap.md):
-  target model for experiment lifecycle, network reuse, control-plane
-  orchestration, and scheduler authority
 - [examples/mnist.md](examples/mnist.md): real single-machine mnist p2p demo,
   multi-node topology, browser captures, and artifact outputs
 - [operator-runbook.md](operator-runbook.md): deployment and operator guidance
@@ -47,6 +34,23 @@ truth. docs here should stay short and code-adjacent.
   locally and in CI
 - [testing/adversarial.md](testing/adversarial.md): robustness smoke, matrix,
   seeded replay, and benchmark commands
+
+## planning records
+
+these are status records, not configuration source of truth. keep them aligned
+with code when they are useful, and delete or shorten them when implementation
+has moved into tests, deploy settings, or crate APIs.
+
+- [burn-dragon-productization-roadmap.md](burn-dragon-productization-roadmap.md):
+  upstream/downstream boundary notes for `burn_dragon_p2p`
+- [production-roadmap.md](production-roadmap.md): production hardening status
+  and remaining operator gaps
+- [network-administration-roadmap.md](network-administration-roadmap.md):
+  lifecycle, scheduler, and multi-experiment administration status
+- [memory-retention.md](memory-retention.md): memory-growth audit and remaining
+  long-run retention boundaries
+- [formal-verification-plan.md](formal-verification-plan.md): veil proof scope,
+  command surface, and current verified slice
 
 ## code first
 

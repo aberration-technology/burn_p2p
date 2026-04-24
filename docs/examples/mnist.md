@@ -121,13 +121,13 @@ Why `BurnShardedDataset` matters:
 - the demo proves shard fetch / assignment behavior through the normal
   `from_loaders(...)` + `.with_sharded_dataset(...)` path
 
-Browser data transport in the demo is intentionally not p2p shard gossip:
+Browser data transport in the demo is intentionally not raw shard gossip:
 
 - browser-style shard access reads `fetch-manifest.json` from the dataset origin
 - browser-style shard access fetches only the assigned shard locators for the
   active lease
-- mnist shard bytes remain lease-scoped; the browser may consume an edge-served
-  bundle or a signed peer bundle materialized from a p2p-synced artifact
+- mnist shard bytes remain lease-scoped; the live browser probe now expects the
+  `p2p-signed-peer-bundle` path when that transport is advertised
 - shard payloads are not broadcast over the peer overlay
 - native dataset preparation uses Burn's mnist dataset helpers on the host side
 - the browser wasm probe does not depend on `burn/vision`; it reads the
@@ -215,7 +215,8 @@ the top-level xtask artifact summary:
 - `shard_assignments_are_distinct`
 - `browser_dataset_access.fetch_manifest_requested`
 - `browser_dataset_access.fetched_only_leased_shards`
-- `browser_dataset_access.shards_distributed_over_p2p == true`
+- `browser_dataset_access.shards_distributed_over_p2p == true` when the live
+  browser run advertises the `p2p-signed-peer-bundle` path
 - `browser_wasm_probe.browser_execution.live_browser_training`
 - `browser_wasm_probe.browser_execution.browser_latency_emulated`
 - `browser_wasm_probe.browser_execution.slower_profile_increased_total_time`

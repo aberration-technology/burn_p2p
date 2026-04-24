@@ -1,9 +1,14 @@
 # `burn_p2p_webrtc_websys`
 
-Patched browser WebRTC-direct transport for burn_p2p, exposed through `web-sys` bindings.
+Patched browser WebRTC-direct transport for `burn_p2p`, exposed through
+`web-sys` bindings.
 
 ## Usage
 
-Use with `Swarm::with_wasm_executor` to enable the `wasm-bindgen` executor for the `Swarm`.
+This crate is an internal transport dependency of `burn_p2p_swarm`'s wasm
+browser runtime. Downstream browser apps normally use `burn_p2p_browser` or the
+`burn_p2p_swarm::WasmBrowserSwarmRuntime` boundary instead of constructing this
+transport directly.
 
-See the [browser-webrtc](../../examples/browser-webrtc) example for a full example.
+The operational contract for browser WebRTC/WebTransport support lives in
+[../../docs/browser-transport-backend.md](../../docs/browser-transport-backend.md).

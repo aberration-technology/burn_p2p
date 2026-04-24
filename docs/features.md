@@ -86,7 +86,7 @@ notes:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.25", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.36", features = ["burn"] }
 ```
 
 ## `burn_p2p_browser`
@@ -170,7 +170,7 @@ example:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.25", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.36", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",
@@ -230,18 +230,25 @@ notes:
 
 current workspace crates with no public feature flags:
 
+- `burn_p2p_admin`
+- `burn_p2p_auth_external`
+- `burn_p2p_auth_github`
+- `burn_p2p_auth_oauth`
+- `burn_p2p_auth_oidc`
+- `burn_p2p_browser`
 - `burn_p2p_core`
 - `burn_p2p_checkpoint`
-- `burn_p2p_limits`
 - `burn_p2p_dataloader`
-- `burn_p2p_experiment`
-- `burn_p2p_security`
-- `burn_p2p_swarm`
+- `burn_p2p_e2e`
 - `burn_p2p_engine`
+- `burn_p2p_experiment`
+- `burn_p2p_limits`
 - `burn_p2p_metrics`
 - `burn_p2p_python`
+- `burn_p2p_security`
+- `burn_p2p_swarm`
 - `burn_p2p_views`
-- `burn_p2p_browser`
+- `burn_p2p_webrtc_websys`
 - `burn_p2p_workload`
 
 `burn_p2p_testkit` is intentionally not a downstream dependency surface. it is
@@ -255,22 +262,22 @@ smallest burn training app:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.25", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.36", features = ["burn"] }
 ```
 
 browser runtime app:
 
 ```toml
 [dependencies]
-burn_p2p_browser = "=0.21.0-pre.25"
-burn_p2p_views = "=0.21.0-pre.25"
+burn_p2p_browser = "=0.21.0-pre.36"
+burn_p2p_views = "=0.21.0-pre.36"
 ```
 
 browser or desktop reference ui:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.25", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.36", default-features = false, features = [
   "interactive",
   "browser-join",
   "web-client",
@@ -281,7 +288,7 @@ native desktop portal host:
 
 ```toml
 [dependencies]
-burn_p2p_app = { version = "=0.21.0-pre.25", default-features = false, features = [
+burn_p2p_app = { version = "=0.21.0-pre.36", default-features = false, features = [
   "interactive",
   "desktop-client",
 ] }
@@ -291,7 +298,7 @@ reference bootstrap/browser-edge deployment:
 
 ```toml
 [dependencies]
-burn_p2p_bootstrap = { version = "=0.21.0-pre.25", default-features = false, features = [
+burn_p2p_bootstrap = { version = "=0.21.0-pre.36", default-features = false, features = [
   "admin-http",
   "metrics",
   "browser-edge",
