@@ -1,12 +1,14 @@
 use std::{
+    fmt,
     future::Future,
+    net::IpAddr,
     pin::Pin,
     task::{Context, Poll},
 };
 
 use futures::future::FutureExt;
 use libp2p_core::{
-    multiaddr::Multiaddr,
+    multiaddr::{Multiaddr, Protocol},
     muxing::StreamMuxerBox,
     transport::{Boxed, DialOpts, ListenerId, Transport as _, TransportError, TransportEvent},
 };
@@ -23,6 +25,7 @@ fn console_debug(message: impl AsRef<str>) {
 #[derive(Clone)]
 pub struct Config {
     keypair: Keypair,
+    ice_servers: Vec<String>,
 }
 
 /// A WebTransport [`Transport`](libp2p_core::Transport) that works with `web-sys`.
@@ -30,12 +33,36 @@ pub struct Transport {
     config: Config,
 }
 
+const DEFAULT_ICE_SERVERS: &[&str] = &[
+    "stun:stun.cloudflare.com:3478",
+    "stun:stun.l.google.com:19302",
+];
+
 impl Config {
     /// Constructs a new configuration for the [`Transport`].
     pub fn new(keypair: &Keypair) -> Self {
         Config {
             keypair: keypair.to_owned(),
+            ice_servers: DEFAULT_ICE_SERVERS
+                .iter()
+                .map(|server| (*server).to_owned())
+                .collect(),
         }
+    }
+
+    /// Returns a copy configured with explicit browser ICE servers.
+    pub fn with_ice_servers<I, S>(mut self, ice_servers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.ice_servers = ice_servers.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Returns the configured browser ICE server URLs.
+    pub fn ice_servers(&self) -> &[String] {
+        &self.ice_servers
     }
 }
 
@@ -88,24 +115,29 @@ impl libp2p_core::Transport for Transport {
             ));
         }
 
-        let (sock_addr, server_fingerprint) = libp2p_webrtc_utils::parse_webrtc_dial_addr(&addr)
+        let (target, server_fingerprint) = parse_webrtc_dial_target(&addr)
             .ok_or_else(|| TransportError::MultiaddrNotSupported(addr.clone()))?;
 
-        if sock_addr.port() == 0 || sock_addr.ip().is_unspecified() {
+        if target.port == 0 || target.is_unspecified_ip() {
             return Err(TransportError::MultiaddrNotSupported(addr));
         }
+        let config = self.config.clone();
         console_debug(format!(
-            "libp2p webrtc-direct: dialing browser seed multiaddr={} socket={} fingerprint={}",
+            "libp2p webrtc-direct: dialing browser seed multiaddr={} target={} fingerprint={} ice_servers={}",
             addr,
-            sock_addr,
+            target,
             server_fingerprint.to_sdp_format(),
+            config.ice_servers.len(),
         ));
 
-        let config = self.config.clone();
-
         Ok(async move {
-            let (peer_id, connection) =
-                upgrade::outbound(sock_addr, server_fingerprint, config.keypair.clone()).await?;
+            let (peer_id, connection) = upgrade::outbound(
+                target,
+                server_fingerprint,
+                config.keypair.clone(),
+                config.ice_servers,
+            )
+            .await?;
 
             Ok((peer_id, connection))
         }
@@ -118,6 +150,97 @@ impl libp2p_core::Transport for Transport {
     ) -> Poll<TransportEvent<Self::ListenerUpgrade, Self::Error>> {
         Poll::Pending
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WebRtcDialTarget {
+    address: WebRtcDialAddress,
+    port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WebRtcDialAddress {
+    Ip(IpAddr),
+    Dns(String),
+}
+
+impl WebRtcDialTarget {
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) fn candidate_address(&self) -> String {
+        match &self.address {
+            WebRtcDialAddress::Ip(ip) => ip.to_string(),
+            WebRtcDialAddress::Dns(host) => host.clone(),
+        }
+    }
+
+    pub(crate) fn connection_address(&self) -> (&'static str, String) {
+        match &self.address {
+            WebRtcDialAddress::Ip(IpAddr::V4(ip)) => ("IP4", ip.to_string()),
+            WebRtcDialAddress::Ip(IpAddr::V6(ip)) => ("IP6", ip.to_string()),
+            WebRtcDialAddress::Dns(_) => ("IP4", "0.0.0.0".to_owned()),
+        }
+    }
+
+    pub(crate) fn socket_addr(&self) -> Option<std::net::SocketAddr> {
+        match &self.address {
+            WebRtcDialAddress::Ip(ip) => Some(std::net::SocketAddr::new(*ip, self.port)),
+            WebRtcDialAddress::Dns(_) => None,
+        }
+    }
+
+    fn is_unspecified_ip(&self) -> bool {
+        matches!(self.address, WebRtcDialAddress::Ip(ip) if ip.is_unspecified())
+    }
+}
+
+impl fmt::Display for WebRtcDialTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.candidate_address(), self.port)
+    }
+}
+
+pub(crate) fn parse_webrtc_dial_target(
+    addr: &Multiaddr,
+) -> Option<(WebRtcDialTarget, libp2p_webrtc_utils::Fingerprint)> {
+    let mut iter = addr.iter();
+
+    let address = match iter.next()? {
+        Protocol::Ip4(ip) => WebRtcDialAddress::Ip(IpAddr::from(ip)),
+        Protocol::Ip6(ip) => WebRtcDialAddress::Ip(IpAddr::from(ip)),
+        Protocol::Dns(host)
+        | Protocol::Dns4(host)
+        | Protocol::Dns6(host)
+        | Protocol::Dnsaddr(host) => {
+            let host = host.trim();
+            if host.is_empty() {
+                return None;
+            }
+            WebRtcDialAddress::Dns(host.to_owned())
+        }
+        _ => return None,
+    };
+
+    let port = iter.next()?;
+    let webrtc = iter.next()?;
+    let certhash = iter.next()?;
+
+    let (port, fingerprint) = match (port, webrtc, certhash) {
+        (Protocol::Udp(port), Protocol::WebRTCDirect, Protocol::Certhash(cert_hash)) => {
+            let fingerprint = libp2p_webrtc_utils::Fingerprint::try_from_multihash(cert_hash)?;
+            (port, fingerprint)
+        }
+        _ => return None,
+    };
+
+    match iter.next() {
+        Some(Protocol::P2p(_)) | None => {}
+        Some(_) => return None,
+    }
+
+    Some((WebRtcDialTarget { address, port }, fingerprint))
 }
 
 /// Checks if local Firefox.
@@ -149,4 +272,35 @@ fn maybe_local_firefox() -> bool {
     // AND hostname is either localhost or  "127.0.0.1"
     (ua.contains("firefox") || ua.contains("seamonkey") || ua.contains("iceape"))
         && (hostname == "localhost" || hostname == "127.0.0.1" || hostname == "[::1]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, DEFAULT_ICE_SERVERS, parse_webrtc_dial_target};
+
+    #[test]
+    fn default_config_includes_public_stun_servers() {
+        let keypair =
+            libp2p_identity::Keypair::ed25519_from_bytes([7_u8; 32]).expect("test keypair");
+        let config = Config::new(&keypair);
+
+        assert_eq!(config.ice_servers(), DEFAULT_ICE_SERVERS);
+    }
+
+    #[test]
+    fn parses_dns_webrtc_direct_dial_targets() {
+        let addr = "/dns4/edge.dragon.aberration.technology/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+            .parse()
+            .expect("multiaddr");
+
+        let (target, _fingerprint) = parse_webrtc_dial_target(&addr).expect("dial target");
+
+        assert_eq!(
+            target.candidate_address(),
+            "edge.dragon.aberration.technology"
+        );
+        assert_eq!(target.connection_address(), ("IP4", "0.0.0.0".to_owned()));
+        assert_eq!(target.port(), 443);
+        assert_eq!(target.to_string(), "edge.dragon.aberration.technology:443");
+    }
 }

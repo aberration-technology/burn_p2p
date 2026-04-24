@@ -1,4 +1,4 @@
-use std::{cell::RefCell, io, net::SocketAddr, rc::Rc};
+use std::{cell::RefCell, io, rc::Rc};
 
 use futures::{AsyncRead, AsyncWrite, AsyncWriteExt, channel::oneshot};
 use libp2p_core::{UpgradeInfo, upgrade::InboundConnectionUpgrade};
@@ -10,7 +10,10 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{Event, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState};
 
 use super::Error;
-use crate::{Connection, Stream, connection::RtcPeerConnection, error::AuthenticationError, sdp};
+use crate::{
+    Connection, Stream, connection::RtcPeerConnection, error::AuthenticationError, sdp,
+    transport::WebRtcDialTarget,
+};
 
 fn console_debug(message: impl AsRef<str>) {
     web_sys::console::debug_1(&JsValue::from_str(message.as_ref()));
@@ -105,26 +108,34 @@ async fn wait_for_handshake_data_channel_open(channel: &RtcDataChannel) -> Resul
 /// Upgrades an outbound WebRTC connection by creating the data channel
 /// and conducting a Noise handshake
 pub(crate) async fn outbound(
-    sock_addr: SocketAddr,
+    target: WebRtcDialTarget,
     remote_fingerprint: Fingerprint,
     id_keys: Keypair,
+    ice_servers: Vec<String>,
 ) -> Result<(PeerId, Connection), Error> {
-    let fut = SendWrapper::new(outbound_inner(sock_addr, remote_fingerprint, id_keys));
+    let fut = SendWrapper::new(outbound_inner(
+        target,
+        remote_fingerprint,
+        id_keys,
+        ice_servers,
+    ));
     fut.await
 }
 
 /// Inner outbound function that is wrapped in [SendWrapper]
 async fn outbound_inner(
-    sock_addr: SocketAddr,
+    target: WebRtcDialTarget,
     remote_fingerprint: Fingerprint,
     id_keys: Keypair,
+    ice_servers: Vec<String>,
 ) -> Result<(PeerId, Connection), Error> {
     console_debug(format!(
-        "libp2p webrtc-direct: starting outbound upgrade addr={} remote_fingerprint={}",
-        sock_addr,
+        "libp2p webrtc-direct: starting outbound upgrade target={} remote_fingerprint={}",
+        target,
         remote_fingerprint.to_sdp_format(),
     ));
-    let rtc_peer_connection = RtcPeerConnection::new(remote_fingerprint.algorithm()).await?;
+    let rtc_peer_connection =
+        RtcPeerConnection::new(remote_fingerprint.algorithm(), &ice_servers).await?;
     rtc_peer_connection.log_state("created");
 
     // Must create the data channel before creating the offer so it is included in SDP.
@@ -143,7 +154,7 @@ async fn outbound_inner(
         .set_local_description(munged_offer)
         .await?;
 
-    let answer = sdp::answer(sock_addr, remote_fingerprint, &ufrag, &offer);
+    let answer = sdp::answer(&target, remote_fingerprint, &ufrag, &offer);
     rtc_peer_connection.set_remote_description(answer).await?;
 
     let local_fingerprint = rtc_peer_connection.local_fingerprint()?;

@@ -14,7 +14,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     Event, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelInit,
-    RtcDataChannelType, RtcSessionDescriptionInit,
+    RtcDataChannelType, RtcIceServer, RtcSessionDescriptionInit,
 };
 
 use super::{Error, Stream};
@@ -206,7 +206,7 @@ pub(crate) struct RtcPeerConnection {
 }
 
 impl RtcPeerConnection {
-    pub(crate) async fn new(algorithm: String) -> Result<Self, Error> {
+    pub(crate) async fn new(algorithm: String, ice_servers: &[String]) -> Result<Self, Error> {
         let algo: Object = Object::new();
         Reflect::set(&algo, &"name".into(), &"ECDSA".into())
             .expect("failed to set RTC certificate algorithm name");
@@ -226,9 +226,15 @@ impl RtcPeerConnection {
         let certificate_arr = js_sys::Array::new();
         certificate_arr.push(&certificate);
         config.set_certificates(&certificate_arr);
+        if !ice_servers.is_empty() {
+            config.set_ice_servers(&rtc_ice_servers(ice_servers).into());
+        }
 
         let inner = web_sys::RtcPeerConnection::new_with_configuration(&config)?;
-        console_debug("libp2p webrtc-direct: created browser RTCPeerConnection");
+        console_debug(format!(
+            "libp2p webrtc-direct: created browser RTCPeerConnection ice_servers={}",
+            ice_servers.len()
+        ));
 
         let on_connection_state_change = {
             let inner = inner.clone();
@@ -356,6 +362,16 @@ impl RtcPeerConnection {
 
         Ok(())
     }
+}
+
+fn rtc_ice_servers(ice_servers: &[String]) -> js_sys::Array {
+    let servers = js_sys::Array::new();
+    for url in ice_servers {
+        let server = RtcIceServer::new();
+        server.set_urls_str(url);
+        servers.push(&server);
+    }
+    servers
 }
 
 impl Drop for RtcPeerConnection {

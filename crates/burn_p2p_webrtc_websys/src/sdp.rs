@@ -1,19 +1,54 @@
-use std::net::SocketAddr;
-
 use libp2p_webrtc_utils::Fingerprint;
 use web_sys::{RtcSdpType, RtcSessionDescriptionInit};
 
+use crate::transport::WebRtcDialTarget;
+
 /// Creates the SDP answer used by the client.
 pub(crate) fn answer(
-    addr: SocketAddr,
+    target: &WebRtcDialTarget,
     server_fingerprint: Fingerprint,
     client_ufrag: &str,
     browser_offer: &str,
 ) -> RtcSessionDescriptionInit {
     let answer_obj = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
-    let answer = libp2p_webrtc_utils::sdp::answer(addr, server_fingerprint, client_ufrag);
+    let answer = render_answer(target, server_fingerprint, client_ufrag);
     answer_obj.set_sdp(&answer_for_browser_offer(answer, browser_offer));
     answer_obj
+}
+
+fn render_answer(
+    target: &WebRtcDialTarget,
+    server_fingerprint: Fingerprint,
+    client_ufrag: &str,
+) -> String {
+    if let Some(addr) = target.socket_addr() {
+        return libp2p_webrtc_utils::sdp::answer(addr, server_fingerprint, client_ufrag);
+    }
+
+    let (connection_address_type, connection_address) = target.connection_address();
+    let candidate_address = target.candidate_address();
+    format!(
+        "v=0\r\n\
+         o=- 0 0 IN {connection_address_type} {connection_address}\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         a=ice-lite\r\n\
+         m=application {target_port} UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         c=IN {connection_address_type} {connection_address}\r\n\
+         a=mid:0\r\n\
+         a=ice-options:ice2\r\n\
+         a=ice-ufrag:{client_ufrag}\r\n\
+         a=ice-pwd:{client_ufrag}\r\n\
+         a=fingerprint:{fingerprint_algorithm} {fingerprint_value}\r\n\
+         a=setup:passive\r\n\
+         a=sctp-port:5000\r\n\
+         a=max-message-size:16384\r\n\
+         a=candidate:1467250027 1 UDP 1467250027 {candidate_address} {target_port} typ host\r\n\
+         a=end-of-candidates\r\n",
+        target_port = target.port(),
+        fingerprint_algorithm = server_fingerprint.algorithm(),
+        fingerprint_value = server_fingerprint.to_sdp_format(),
+    )
 }
 
 fn answer_for_browser_offer(answer: String, browser_offer: &str) -> String {
@@ -145,7 +180,9 @@ pub(crate) fn offer(offer: &str, client_ufrag: &str) -> RtcSessionDescriptionIni
 
 #[cfg(test)]
 mod tests {
-    use super::answer_for_browser_offer;
+    use super::{answer_for_browser_offer, render_answer};
+    use crate::transport::parse_webrtc_dial_target;
+    use libp2p_webrtc_utils::Fingerprint;
 
     const BASE_ANSWER: &str = "v=0\r\no=- 0 0 IN IP4 1.2.3.4\r\ns=-\r\nt=0 0\r\na=ice-lite\r\nm=application 443 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 1.2.3.4\r\na=mid:0\r\na=ice-options:ice2\r\na=ice-ufrag:ufrag\r\na=ice-pwd:ufrag\r\na=fingerprint:sha-256 AA:BB\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:16384\r\na=candidate:1467250027 1 UDP 1467250027 1.2.3.4 443 typ host\r\na=end-of-candidates\r\n";
 
@@ -170,5 +207,24 @@ mod tests {
         assert!(!answer.contains("a=group:"));
         assert!(!answer.contains("a=sendrecv\r\n"));
         assert!(answer.contains("a=ice-options:ice2\r\n"));
+    }
+
+    #[test]
+    fn answer_renders_dns_candidate_with_neutral_connection_address() {
+        let addr = "/dns4/edge.dragon.aberration.technology/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+            .parse()
+            .expect("multiaddr");
+        let (target, _fingerprint) = parse_webrtc_dial_target(&addr).expect("dial target");
+
+        let answer = render_answer(
+            &target,
+            Fingerprint::raw([0xAA; 32]),
+            "libp2p+webrtc+v1/test",
+        );
+
+        assert!(answer.contains("c=IN IP4 0.0.0.0\r\n"));
+        assert!(answer.contains(
+            "a=candidate:1467250027 1 UDP 1467250027 edge.dragon.aberration.technology 443 typ host\r\n"
+        ));
     }
 }
