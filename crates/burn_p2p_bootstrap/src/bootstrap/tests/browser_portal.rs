@@ -331,12 +331,26 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
                 .await
                 .expect("decode forwarded browser seed advertisement");
         let forwarded_multiaddrs = &forwarded_signed_seeds.payload.payload.seeds[0].multiaddrs;
+        assert_eq!(
+            forwarded_multiaddrs.first().map(String::as_str),
+            Some(
+                "/dns4/edge.example/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+            ),
+            "browser seed advertisement should prefer the public dns seed before ip fallbacks"
+        );
         assert!(
             forwarded_multiaddrs.contains(
                 &"/dns4/edge.example/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
                     .to_owned()
             ),
             "browser seed advertisement should rewrite publishable ip-based webrtc-direct seeds to the public dns host, got {forwarded_multiaddrs:?}"
+        );
+        assert!(
+            forwarded_multiaddrs.contains(
+                &"/ip4/198.51.100.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+                    .to_owned()
+            ),
+            "browser seed advertisement should retain the publishable ip literal as a webrtc-direct fallback for browsers that cannot ICE against the dns candidate, got {forwarded_multiaddrs:?}"
         );
         assert!(
             !forwarded_multiaddrs.iter().any(|addr| addr.contains("/wss")),

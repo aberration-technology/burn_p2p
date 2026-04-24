@@ -168,15 +168,13 @@ fn browser_seed_multiaddrs_for_host(
     let mut multiaddrs = Vec::new();
     if surface.webrtc_direct {
         multiaddrs.extend(
-            browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct").filter_map(
-                |address| {
-                    direct_browser_seed_multiaddr_for_host(
-                        address.as_str(),
-                        &host_prefix,
-                        request_host_is_ip_literal,
-                    )
-                },
-            ),
+            browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct").flat_map(|address| {
+                direct_browser_seed_multiaddr_for_host(
+                    address.as_str(),
+                    &host_prefix,
+                    request_host_is_ip_literal,
+                )
+            }),
         );
     }
     if surface.webtransport_gateway {
@@ -246,11 +244,21 @@ fn direct_browser_seed_multiaddr_for_host(
     address: &str,
     host_prefix: &str,
     request_host_is_ip_literal: bool,
-) -> Option<String> {
+) -> Vec<String> {
+    let Some(rewritten) = rewrite_browser_seed_host(address, host_prefix) else {
+        return Vec::new();
+    };
     if request_host_is_ip_literal {
-        return rewrite_browser_seed_host(address, host_prefix);
+        return vec![rewritten];
     }
-    rewrite_browser_seed_host(address, host_prefix)
+
+    let mut multiaddrs = vec![rewritten];
+    if browser_direct_seed_uses_publishable_ip(address)
+        && !multiaddrs.iter().any(|multiaddr| multiaddr == address)
+    {
+        multiaddrs.push(address.to_owned());
+    }
+    multiaddrs
 }
 
 fn browser_direct_seed_uses_publishable_ip(address: &str) -> bool {
@@ -290,7 +298,7 @@ fn rewrite_browser_seed_host(address: &str, host_prefix: &str) -> Option<String>
         return None;
     }
     match segments[0] {
-        "ip4" | "ip6" | "dns4" | "dns6" => {}
+        "ip4" | "ip6" | "dns" | "dns4" | "dns6" | "dnsaddr" => {}
         _ => return None,
     }
     Some(format!("{host_prefix}/{}", segments[2..].join("/")))
