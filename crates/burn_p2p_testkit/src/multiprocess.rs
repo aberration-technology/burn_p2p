@@ -22,6 +22,8 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+const OPTIONAL_CANONICAL_ADVANCE_TIMEOUT: Duration = Duration::from_secs(1);
+
 #[cfg(feature = "native-gpu-probe")]
 use burn::{
     backend::{Autodiff, Cuda, NdArray, Wgpu, wgpu},
@@ -1370,6 +1372,7 @@ where
     let poll_interval = Duration::from_millis(config.poll_interval_ms.max(10));
     let sync_timeout = Duration::from_secs(config.sync_timeout_secs);
     let merge_timeout = Duration::from_secs(config.merge_wait_timeout_secs);
+    let canonical_advance_timeout = trainer_canonical_advance_timeout(config, merge_timeout);
     let mut start_barrier_pending = true;
 
     for window_index in 0..config.window_count.max(1) {
@@ -1429,7 +1432,7 @@ where
                 CanonicalAdvanceWait {
                     base_head_id: &synced_head.head_id,
                     completed_window: &outcome,
-                    timeout: merge_timeout,
+                    timeout: canonical_advance_timeout,
                     poll_interval,
                     report,
                     paths: ReportPaths {
@@ -1458,6 +1461,17 @@ where
     }
 
     wait_for_shutdown_sentinel(config, poll_interval, report)
+}
+
+fn trainer_canonical_advance_timeout(
+    config: &SyntheticProcessConfig,
+    merge_timeout: Duration,
+) -> Duration {
+    if config.canonical_advance_required {
+        merge_timeout
+    } else {
+        OPTIONAL_CANONICAL_ADVANCE_TIMEOUT
+    }
 }
 
 fn wait_for_shutdown_sentinel(
@@ -2249,10 +2263,7 @@ pub fn run_synthetic_process_soak(
             validator_report = wait_for_process_report(
                 &validator_report_path,
                 Duration::from_secs(config.merge_wait_timeout_secs.max(5) * 2),
-                |report| {
-                    report.merge_count >= round_count as usize
-                        && report.receipt_count >= round_count as usize
-                },
+                |report| validator_completed_synthetic_rounds(report, round_count),
             )?;
         }
 
@@ -2324,8 +2335,8 @@ pub fn run_synthetic_process_soak(
                 &validator_report_path,
                 Duration::from_secs(config.merge_wait_timeout_secs.max(5) * 2),
                 |report| {
-                    report.merge_count >= expected_merges
-                        && report.receipt_count >= expected_receipts
+                    report.receipt_count >= expected_receipts
+                        && validator_completed_synthetic_rounds(report, expected_merges as u32)
                 },
             )?;
             completed_rounds = round + 1;
@@ -2367,6 +2378,26 @@ fn trainer_finished_windows(report: &SyntheticProcessReport, expected_windows: u
         .filter(|timeline| timeline.trained_at.is_some())
         .count()
         >= expected_windows as usize
+}
+
+fn validator_completed_synthetic_rounds(
+    report: &SyntheticProcessReport,
+    expected_rounds: u32,
+) -> bool {
+    let expected_rounds = expected_rounds as usize;
+    if synthetic_merged_head_window(report).is_some_and(|window| window >= expected_rounds) {
+        return report.merge_count > 0 && report.receipt_count > 0;
+    }
+
+    report.merge_count >= expected_rounds && report.receipt_count >= expected_rounds
+}
+
+fn synthetic_merged_head_window(report: &SyntheticProcessReport) -> Option<usize> {
+    let head_id = report
+        .merged_head_id
+        .as_deref()
+        .or(report.observed_canonical_head_id.as_deref())?;
+    head_id.rsplit_once("-window-")?.1.parse().ok()
 }
 
 struct SyntheticProcessChild {
