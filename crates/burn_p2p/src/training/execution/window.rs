@@ -96,9 +96,11 @@ impl<P> RunningNode<P> {
         ) {
             crate::TrainingProtocol::ArtifactWindows => self
                 .train_window_once(experiment)
+                .map(Box::new)
                 .map(TrainingProtocolStepOutcome::ArtifactWindow),
             crate::TrainingProtocol::DiLoCo(_) => self
                 .diloco_round_once(experiment)
+                .map(Box::new)
                 .map(TrainingProtocolStepOutcome::DiLoCoRound),
         }
     }

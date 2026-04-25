@@ -35,9 +35,9 @@ use planning::{
 #[derive(Debug)]
 pub enum TrainingProtocolStepOutcome<T> {
     /// One artifact-window training update was published.
-    ArtifactWindow(TrainingWindowOutcome<T>),
+    ArtifactWindow(Box<TrainingWindowOutcome<T>>),
     /// One DiLoCo synchronization round completed.
-    DiLoCoRound(crate::DiLoCoRoundOutcome),
+    DiLoCoRound(Box<crate::DiLoCoRoundOutcome>),
 }
 
 struct TrainingPreparedState {
