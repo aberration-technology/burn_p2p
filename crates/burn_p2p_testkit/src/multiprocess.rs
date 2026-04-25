@@ -1457,7 +1457,26 @@ where
         }
     }
 
-    Ok(())
+    wait_for_shutdown_sentinel(config, poll_interval, report)
+}
+
+fn wait_for_shutdown_sentinel(
+    config: &SyntheticProcessConfig,
+    poll_interval: Duration,
+    report: &mut SyntheticProcessReport,
+) -> anyhow::Result<()> {
+    let Some(shutdown_sentinel) = config.shutdown_sentinel.as_ref() else {
+        return Ok(());
+    };
+
+    loop {
+        if shutdown_sentinel.exists() {
+            return Ok(());
+        }
+        refresh_report_counts(report, &config.storage_root)?;
+        write_report(&config.report_path, report)?;
+        thread::sleep(poll_interval);
+    }
 }
 
 fn run_continuous_trainer_process<W>(
@@ -1557,7 +1576,7 @@ where
         write_report(&config.report_path, report)?;
     }
 
-    Ok(())
+    wait_for_shutdown_sentinel(config, poll_interval, report)
 }
 
 fn refresh_runtime_view<W>(
@@ -2168,6 +2187,7 @@ pub fn run_synthetic_process_soak(
     if config.persistent_trainers {
         let mut trainers = Vec::new();
         let start_sentinel = config.root.join("trainers.start");
+        let shutdown_sentinel = config.root.join("trainers.stop");
         for index in 0..trainer_count {
             let report_path = config.root.join(format!("trainer-{index}-report.json"));
             let config_path = config.root.join(format!("trainer-{index}.json"));
@@ -2180,6 +2200,7 @@ pub fn run_synthetic_process_soak(
             trainer_config.workload_kind = config.workload_kind;
             trainer_config.native_backend = config.trainer_backend;
             trainer_config.start_sentinel = Some(start_sentinel.clone());
+            trainer_config.shutdown_sentinel = Some(shutdown_sentinel.clone());
             trainer_config.persist_identity = true;
             trainer_config.startup_timeout_secs = config.startup_timeout_secs;
             trainer_config.poll_interval_ms = config.poll_interval_ms;
@@ -2209,9 +2230,12 @@ pub fn run_synthetic_process_soak(
         }
         fs::write(&start_sentinel, b"start")?;
 
-        for (report_path, child) in &mut trainers {
-            child.wait_success()?;
-            trainer_reports.push(read_process_report(report_path)?);
+        for (report_path, _) in &trainers {
+            let _ = wait_for_process_report(
+                report_path,
+                Duration::from_secs(config.merge_wait_timeout_secs.max(5) * 2),
+                |report| trainer_finished_windows(report, round_count),
+            )?;
         }
 
         if config.continuous_training {
@@ -2230,6 +2254,12 @@ pub fn run_synthetic_process_soak(
                         && report.receipt_count >= round_count as usize
                 },
             )?;
+        }
+
+        fs::write(&shutdown_sentinel, b"stop")?;
+        for (report_path, child) in &mut trainers {
+            child.wait_success()?;
+            trainer_reports.push(read_process_report(report_path)?);
         }
         completed_rounds = round_count;
     } else {
@@ -2328,6 +2358,15 @@ pub fn run_synthetic_process_soak(
     summary.dynamics_summary = derive_synthetic_network_dynamics_summary(&summary);
 
     Ok(summary)
+}
+
+fn trainer_finished_windows(report: &SyntheticProcessReport, expected_windows: u32) -> bool {
+    report
+        .window_timelines
+        .iter()
+        .filter(|timeline| timeline.trained_at.is_some())
+        .count()
+        >= expected_windows as usize
 }
 
 struct SyntheticProcessChild {
