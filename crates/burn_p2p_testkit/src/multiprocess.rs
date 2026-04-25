@@ -1373,6 +1373,7 @@ where
     let sync_timeout = Duration::from_secs(config.sync_timeout_secs);
     let merge_timeout = Duration::from_secs(config.merge_wait_timeout_secs);
     let canonical_advance_timeout = trainer_canonical_advance_timeout(config, merge_timeout);
+    let mut next_base_head = None;
     let mut start_barrier_pending = true;
 
     for window_index in 0..config.window_count.max(1) {
@@ -1380,7 +1381,11 @@ where
             window_index,
             ..SyntheticWindowTimeline::default()
         });
-        let synced_head = wait_for_synced_head(node, experiment, sync_timeout, poll_interval)?;
+        let synced_head = if let Some(head) = next_base_head.take() {
+            head
+        } else {
+            wait_for_synced_head(node, experiment, sync_timeout, poll_interval)?
+        };
         report.synced_head_id = Some(synced_head.head_id.to_string());
         if let Some(timeline) = report.window_timelines.last_mut() {
             timeline.synced_at = Some(Utc::now());
@@ -1446,6 +1451,7 @@ where
                     if let Some(timeline) = report.window_timelines.last_mut() {
                         timeline.canonical_advanced_at = Some(Utc::now());
                     }
+                    next_base_head = Some(observed_head);
                 }
                 Err(_error) if !config.canonical_advance_required => {
                     if let Some(timeline) = report.window_timelines.last_mut() {
