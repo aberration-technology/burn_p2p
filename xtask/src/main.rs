@@ -2839,11 +2839,15 @@ fn run_stress_multiprocess(workspace: &Workspace, args: MultiprocessArgs) -> any
         .unwrap_or_else(|| Duration::from_secs(60))
         .as_secs();
     let window_count = args
-        .common
-        .profile
-        .settings()
-        .trainer_windows
-        .max(((duration_secs / 30).max(1)) as u32);
+        .windows
+        .unwrap_or_else(|| {
+            args.common
+                .profile
+                .settings()
+                .trainer_windows
+                .max(((duration_secs / 30).max(1)) as u32)
+        })
+        .max(1);
     let config = SyntheticSoakConfig {
         root: artifacts.root.join("synthetic-soak"),
         workload_kind: SyntheticWorkloadKind::Scalar,
@@ -4157,6 +4161,8 @@ fn run_ci_nightly(workspace: &Workspace, args: CiArgs) -> anyhow::Result<()> {
                     "16",
                     "--duration",
                     "5m",
+                    "--windows",
+                    "2",
                     "--keep-artifacts",
                 ],
             ),

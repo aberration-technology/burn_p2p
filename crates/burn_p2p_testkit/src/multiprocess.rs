@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-const OPTIONAL_CANONICAL_ADVANCE_TIMEOUT: Duration = Duration::from_secs(1);
+const OPTIONAL_CANONICAL_ADVANCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "native-gpu-probe")]
 use burn::{

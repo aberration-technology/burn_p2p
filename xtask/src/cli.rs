@@ -288,6 +288,9 @@ pub struct MultiprocessArgs {
     /// Approximate run duration, for example 90s or 2m.
     #[arg(long)]
     pub duration: Option<String>,
+    /// Explicit trainer window count for deterministic CI soak sizing.
+    #[arg(long)]
+    pub windows: Option<u32>,
 }
 
 #[derive(Debug, Args, Clone)]
