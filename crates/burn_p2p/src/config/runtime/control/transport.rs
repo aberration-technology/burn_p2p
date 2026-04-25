@@ -1,6 +1,5 @@
 use super::*;
 
-const CONNECTED_RUNTIME_FETCH_PROBE: Duration = Duration::from_secs(5);
 const DISCONNECTED_RUNTIME_FETCH_PROBE: Duration = Duration::from_millis(750);
 
 pub(super) fn split_fetch_timeout(
@@ -8,12 +7,11 @@ pub(super) fn split_fetch_timeout(
     peer_id: &PeerId,
     timeout: Duration,
 ) -> (Duration, Duration) {
-    let runtime_probe = if crate::runtime_support::connected_peer_ids(snapshot).contains(peer_id) {
-        CONNECTED_RUNTIME_FETCH_PROBE
-    } else {
-        DISCONNECTED_RUNTIME_FETCH_PROBE
-    };
+    if crate::runtime_support::connected_peer_ids(snapshot).contains(peer_id) {
+        return (timeout, Duration::ZERO);
+    }
 
+    let runtime_probe = DISCONNECTED_RUNTIME_FETCH_PROBE;
     if timeout <= runtime_probe {
         return (timeout, Duration::ZERO);
     }
@@ -72,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn split_fetch_timeout_probes_connected_runtime_before_sidecar_fallback() {
+    fn split_fetch_timeout_keeps_connected_fetch_on_runtime_path() {
         let peer_id = PeerId::new("12D3KooWConnectedFetchTimeout1111111111111111111111");
         let mut snapshot = test_snapshot();
         snapshot.connected_peer_ids.insert(peer_id.clone());
@@ -81,8 +79,8 @@ mod tests {
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&snapshot, &peer_id, Duration::from_secs(10));
 
-        assert_eq!(runtime_timeout, Duration::from_secs(5));
-        assert_eq!(fallback_timeout, Duration::from_secs(5));
+        assert_eq!(runtime_timeout, Duration::from_secs(10));
+        assert_eq!(fallback_timeout, Duration::ZERO);
     }
 
     #[test]
