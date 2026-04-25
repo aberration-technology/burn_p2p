@@ -56,6 +56,11 @@ keep your existing burn model, optimizer, scheduler, and loaders.
 use `train_window_once(...)` instead when you want a single strictly
 orchestrated training window with no retained session state.
 
+for revisions using `TrainingProtocol::DiLoCo`, use `train_protocol_once(...)`
+or `diloco_round_once(...)`. `train_window_once(...)` intentionally stays an
+artifact-window primitive so artifact publication and DiLoCo checkpoint rounds
+do not share an ambiguous return contract.
+
 `burn_p2p` handles:
 
 - head sync

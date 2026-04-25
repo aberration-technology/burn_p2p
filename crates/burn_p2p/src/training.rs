@@ -27,6 +27,19 @@ use planning::{
     wait_for_prefetch_completion,
 };
 
+/// Outcome from one live training-protocol step.
+///
+/// Artifact-window revisions publish a normal training window. DiLoCo revisions
+/// complete one inner/outer synchronization round and may publish a checkpoint
+/// head when the active policy's checkpoint interval is due.
+#[derive(Debug)]
+pub enum TrainingProtocolStepOutcome<T> {
+    /// One artifact-window training update was published.
+    ArtifactWindow(TrainingWindowOutcome<T>),
+    /// One DiLoCo synchronization round completed.
+    DiLoCoRound(crate::DiLoCoRoundOutcome),
+}
+
 struct TrainingPreparedState {
     experiment: ExperimentHandle,
     assignment: SlotAssignmentState,

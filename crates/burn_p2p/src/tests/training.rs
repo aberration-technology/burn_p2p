@@ -2,6 +2,60 @@ use super::support::*;
 use burn_p2p_core::PeerWindowStatus;
 
 #[test]
+fn train_window_once_rejects_diloco_revisions() {
+    let dataset_dir = tempdir().expect("dataset dir");
+    let storage_root = std::env::temp_dir().join(format!(
+        "burn-p2p-diloco-window-guard-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let project = SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    };
+    create_runtime_dataset(dataset_dir.path());
+
+    let experiment = experiment();
+    let mut directory_entry = runtime_directory_entry(&experiment);
+    directory_entry.metadata.insert(
+        "burn_p2p.revision.training_protocol.policy_json".into(),
+        serde_json::to_string(&crate::TrainingProtocol::DiLoCo(
+            crate::DiLoCoPolicy::default(),
+        ))
+        .expect("diloco policy json"),
+    );
+    let auth = crate::AuthConfig::new().with_experiment_directory(vec![directory_entry]);
+
+    let mut running = NodeBuilder::new(project)
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(storage_root))
+        .with_auth(auth)
+        .spawn()
+        .expect("diloco guard spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().local_peer_id.is_some(),
+        "diloco guard runtime did not start",
+    );
+
+    let error = running
+        .train_window_once(&experiment)
+        .expect_err("artifact-window training should reject DiLoCo revisions");
+    assert!(
+        error
+            .to_string()
+            .contains("use train_protocol_once or diloco_round_once"),
+        "{error:#}"
+    );
+
+    running.shutdown().expect("diloco guard shutdown");
+    let _ = running
+        .await_termination()
+        .expect("diloco guard termination");
+}
+
+#[test]
 fn runtime_rebudgets_next_window_after_slow_observed_throughput() {
     let dataset_dir = tempdir().expect("dataset dir");
     let storage_root = std::env::temp_dir().join(format!(

@@ -81,6 +81,8 @@ where
     /// Trains one new window immediately using the current warm model, then
     /// publishes the resulting candidate without waiting for a validator merge.
     pub fn train_next_window(&mut self) -> anyhow::Result<TrainingWindowOutcome<P::WindowStats>> {
+        self.node
+            .ensure_artifact_windows_protocol(&self.experiment)?;
         let _ = self.sync_canonical_head()?;
         self.wait_for_canonical_visibility_if_too_far_ahead()?;
         let prepared = self

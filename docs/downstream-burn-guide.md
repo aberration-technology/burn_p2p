@@ -319,6 +319,11 @@ use it when you explicitly want one published window and no retained trainer
 session state, or when you want external orchestration to wait for every
 canonical promotion before continuing.
 
+if a revision is configured with `TrainingProtocol::DiLoCo`, call
+`train_protocol_once()` or `diloco_round_once()` instead. The artifact-window
+entrypoints reject DiLoCo revisions so callers cannot accidentally treat a
+DiLoCo synchronization round as a normal published artifact window.
+
 one important point: a trainer is not enough by itself. a validator / authority
 path must already exist in the network to initialize the revision head and
 validate/promote candidate updates.

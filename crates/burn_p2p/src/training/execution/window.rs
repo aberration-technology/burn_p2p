@@ -46,6 +46,7 @@ impl<P> RunningNode<P> {
     where
         P: P2pWorkload,
     {
+        self.ensure_artifact_windows_protocol(experiment)?;
         let prepared = self.prepare_training_state(experiment, pinned_head)?;
         let execution = self.execute_training_window(&prepared.experiment, &prepared)?;
         let publish_latency_ms =
@@ -72,6 +73,104 @@ impl<P> RunningNode<P> {
             },
             report: execution.report,
         })
+    }
+
+    /// Performs one live training step using the active revision protocol.
+    ///
+    /// This is the protocol-aware entrypoint for runtimes that can execute both
+    /// artifact windows and DiLoCo rounds. Existing callers that require a
+    /// published artifact-window head should keep using [`Self::train_window_once`].
+    pub fn train_protocol_once(
+        &mut self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<TrainingProtocolStepOutcome<P::WindowStats>>
+    where
+        P: DiLoCoWorkload,
+        P::Batch: Clone,
+    {
+        let telemetry_snapshot = self.telemetry().snapshot();
+        match crate::runtime_support::runtime_training_protocol(
+            self.config(),
+            &telemetry_snapshot,
+            experiment,
+        ) {
+            crate::TrainingProtocol::ArtifactWindows => self
+                .train_window_once(experiment)
+                .map(TrainingProtocolStepOutcome::ArtifactWindow),
+            crate::TrainingProtocol::DiLoCo(_) => self
+                .diloco_round_once(experiment)
+                .map(TrainingProtocolStepOutcome::DiLoCoRound),
+        }
+    }
+
+    /// Performs one DiLoCo round using the same lease planning and data-loading
+    /// path as artifact-window training.
+    pub fn diloco_round_once(
+        &mut self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<DiLoCoRoundOutcome>
+    where
+        P: DiLoCoWorkload,
+        P::Batch: Clone,
+    {
+        let prepared = self.prepare_training_state(experiment, None)?;
+        let capability = {
+            let project = &mut self
+                .node
+                .as_mut()
+                .expect("running node should retain prepared node")
+                .project;
+            let device = project.runtime_device();
+            let model = project.init_model(&device);
+            project.benchmark(&model, &device)
+        };
+        let planned = self.plan_training_window(&prepared.experiment, &prepared, &capability)?;
+        {
+            let mut snapshot = self
+                .telemetry
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            snapshot.set_node_state(NodeRuntimeState::LeasePending);
+            snapshot.set_primary_slot_state(SlotRuntimeState::FetchingShards(
+                prepared.assignment.clone(),
+            ));
+        }
+        let cache = ShardCache::new(prepared.storage.dataset_cache_dir());
+        let cached_microshards = cache.fetch_lease_microshards(
+            &planned.registration,
+            &planned.microshard_plan,
+            &planned.lease.lease,
+        )?;
+        let batches = {
+            let project = &mut self
+                .node
+                .as_mut()
+                .expect("running node should retain prepared node")
+                .project;
+            project.load_batches(&planned.lease.lease, &cached_microshards)?
+        };
+        self.diloco_round_once_with_batches(&prepared.experiment, &batches)
+    }
+
+    pub(in crate::training) fn ensure_artifact_windows_protocol(
+        &self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<()> {
+        let telemetry_snapshot = self.telemetry().snapshot();
+        if let crate::TrainingProtocol::DiLoCo(_) =
+            crate::runtime_support::runtime_training_protocol(
+                self.config(),
+                &telemetry_snapshot,
+                experiment,
+            )
+        {
+            anyhow::bail!(
+                "revision {} is configured for TrainingProtocol::DiLoCo; use train_protocol_once or diloco_round_once for protocol-aware execution",
+                experiment.revision_id.as_str()
+            );
+        }
+        Ok(())
     }
 
     pub(in crate::training) fn prepare_training_state(
@@ -103,17 +202,6 @@ impl<P> RunningNode<P> {
 
         let snapshots = self.fetch_experiment_snapshots(&experiment, Duration::from_secs(3))?;
         let telemetry_snapshot = self.telemetry().snapshot();
-        let training_protocol = crate::runtime_support::runtime_training_protocol(
-            self.config(),
-            &telemetry_snapshot,
-            &experiment,
-        );
-        if let crate::TrainingProtocol::DiLoCo(_) = training_protocol {
-            anyhow::bail!(
-                "revision {} is configured for TrainingProtocol::DiLoCo; live runtime train_window execution still uses artifact windows",
-                experiment.revision_id.as_str()
-            );
-        }
         let lag_assessment = self.assess_and_record_lag(&storage, &experiment, &snapshots)?;
         if matches!(
             lag_assessment.state,

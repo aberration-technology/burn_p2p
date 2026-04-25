@@ -200,7 +200,7 @@ use runtime_support::{
     update_announces_from_connected_snapshots, update_feature_sketch_from_metrics,
     update_norm_stats, verify_snapshot_admission,
 };
-pub use training::ContinuousTrainer;
+pub use training::{ContinuousTrainer, TrainingProtocolStepOutcome};
 
 /// Public APIs for checkpoint.
 pub mod checkpoint {
