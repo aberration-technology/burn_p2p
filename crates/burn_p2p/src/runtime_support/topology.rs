@@ -531,6 +531,68 @@ pub(crate) fn latest_head_from_snapshot(
         })
 }
 
+pub(crate) fn head_provider_peers(
+    primary_provider: Option<&PeerId>,
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    local_control_plane: &ControlPlaneSnapshot,
+    local_peer_id: Option<&PeerId>,
+    experiment: &ExperimentHandle,
+    head: &HeadDescriptor,
+) -> Vec<PeerId> {
+    fn provider_is_usable(peer_id: &PeerId) -> bool {
+        !matches!(peer_id.as_str(), "local" | "unknown-provider")
+    }
+
+    fn announcement_matches_head(
+        announcement: &HeadAnnouncement,
+        experiment: &ExperimentHandle,
+        head: &HeadDescriptor,
+    ) -> bool {
+        matches_experiment_head(&announcement.head, experiment)
+            && announcement.head.head_id == head.head_id
+            && announcement.head.artifact_id == head.artifact_id
+    }
+
+    dedupe_peer_ids(
+        primary_provider
+            .into_iter()
+            .filter(|peer_id| provider_is_usable(peer_id))
+            .cloned()
+            .chain(
+                local_control_plane
+                    .head_announcements
+                    .iter()
+                    .filter(|announcement| {
+                        announcement_matches_head(announcement, experiment, head)
+                    })
+                    .filter_map(|announcement| {
+                        announcement
+                            .provider_peer_id
+                            .as_ref()
+                            .or(local_peer_id)
+                            .filter(|peer_id| provider_is_usable(peer_id))
+                            .cloned()
+                    }),
+            )
+            .chain(snapshots.iter().flat_map(|(snapshot_peer_id, snapshot)| {
+                snapshot
+                    .head_announcements
+                    .iter()
+                    .filter(move |announcement| {
+                        announcement_matches_head(announcement, experiment, head)
+                    })
+                    .filter_map(move |announcement| {
+                        let peer_id = announcement
+                            .provider_peer_id
+                            .as_ref()
+                            .unwrap_or(snapshot_peer_id)
+                            .clone();
+                        provider_is_usable(&peer_id).then_some(peer_id)
+                    })
+            })),
+    )
+}
+
 fn latest_remote_head(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     experiment: &ExperimentHandle,

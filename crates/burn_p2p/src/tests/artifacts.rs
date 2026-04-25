@@ -1357,6 +1357,98 @@ fn prioritized_experiment_snapshot_peer_ids_lead_with_merge_and_quorum_peers() {
 }
 
 #[test]
+fn head_provider_peers_collect_matching_real_providers() {
+    let experiment = experiment();
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let primary_provider = crate::PeerId::new("peer-primary");
+    let local_peer = crate::PeerId::new("peer-local");
+    let remote_provider = crate::PeerId::new("peer-remote-provider");
+    let snapshot_peer = crate::PeerId::new("peer-snapshot-owner");
+    let created_at = Utc::now();
+    let head = HeadDescriptor {
+        head_id: crate::HeadId::new("head-canonical"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("artifact-canonical"),
+        parent_head_id: Some(crate::HeadId::new("head-parent")),
+        global_step: 7,
+        created_at,
+        metrics: BTreeMap::new(),
+    };
+    let mismatched_head = HeadDescriptor {
+        artifact_id: crate::ArtifactId::new("artifact-other"),
+        ..head.clone()
+    };
+    let local_control_plane = crate::ControlPlaneSnapshot {
+        head_announcements: vec![
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: Some(crate::PeerId::new("local")),
+                head: head.clone(),
+                announced_at: created_at,
+            },
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: None,
+                head: head.clone(),
+                announced_at: created_at,
+            },
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: Some(primary_provider.clone()),
+                head: head.clone(),
+                announced_at: created_at,
+            },
+        ],
+        ..Default::default()
+    };
+    let remote_snapshot = crate::ControlPlaneSnapshot {
+        head_announcements: vec![
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: Some(remote_provider.clone()),
+                head: head.clone(),
+                announced_at: created_at,
+            },
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: None,
+                head: head.clone(),
+                announced_at: created_at,
+            },
+            HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: Some(crate::PeerId::new("unknown-provider")),
+                head: head.clone(),
+                announced_at: created_at,
+            },
+            HeadAnnouncement {
+                overlay,
+                provider_peer_id: Some(crate::PeerId::new("peer-unrelated")),
+                head: mismatched_head,
+                announced_at: created_at,
+            },
+        ],
+        ..Default::default()
+    };
+
+    let providers = crate::runtime_support::head_provider_peers(
+        Some(&primary_provider),
+        &[(snapshot_peer.clone(), remote_snapshot)],
+        &local_control_plane,
+        Some(&local_peer),
+        &experiment,
+        &head,
+    );
+
+    assert_eq!(
+        providers,
+        vec![primary_provider, local_peer, remote_provider, snapshot_peer]
+    );
+}
+
+#[test]
 fn prioritized_artifact_source_peers_keep_requested_provider_first_without_unrelated_connected_peers()
  {
     let requested_peer = crate::PeerId::new("peer-requested");

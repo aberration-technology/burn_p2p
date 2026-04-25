@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime_support::{
-    load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
+    head_provider_peers, load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
 };
 
 impl<P> RunningNode<P> {
@@ -278,7 +278,8 @@ impl<P> RunningNode<P> {
         // Head adoption may require pulling a newly promoted artifact from the
         // network. Give larger runtime payloads enough room to materialize
         // before the caller falls back to another outer retry loop.
-        const HEAD_SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+        let head_sync_wait_timeout =
+            ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
         const HEAD_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         let assignment = SlotAssignmentState::from_experiment(experiment);
@@ -330,19 +331,36 @@ impl<P> RunningNode<P> {
         };
         let store = FsArtifactStore::new(storage.root.clone());
         if !store.has_complete_artifact(&head.artifact_id)? && head.global_step > 0 {
-            let deadline = Instant::now() + HEAD_SYNC_WAIT_TIMEOUT;
+            let provider_peer_ids = head_provider_peers(
+                Some(&source_peer_id),
+                &snapshots,
+                &telemetry_snapshot.control_plane,
+                telemetry_snapshot.local_peer_id.as_ref(),
+                experiment,
+                &head,
+            );
+            let deadline = Instant::now() + head_sync_wait_timeout;
             loop {
-                match self.sync_artifact_from_peer_bounded(
-                    &source_peer_id,
-                    head.artifact_id.clone(),
-                    HEAD_SYNC_WAIT_TIMEOUT,
-                ) {
-                    Ok(_) => break,
-                    Err(error) if is_transient_artifact_sync_error(&error) => {
-                        if Instant::now() >= deadline {
-                            return Ok(None);
-                        }
-                    }
+                let result = if provider_peer_ids.is_empty() {
+                    self.sync_artifact_from_peer_bounded(
+                        &source_peer_id,
+                        head.artifact_id.clone(),
+                        head_sync_wait_timeout,
+                    )
+                    .map(|_| ())
+                } else {
+                    self.wait_for_artifact_from_peers(
+                        &provider_peer_ids,
+                        &head.artifact_id,
+                        head_sync_wait_timeout,
+                    )
+                };
+                match result {
+                    Ok(()) => break,
+                    Err(error)
+                        if is_transient_artifact_sync_error(&error)
+                            && Instant::now() < deadline => {}
+                    Err(error) if is_transient_artifact_sync_error(&error) => return Ok(None),
                     Err(error) => return Err(error),
                 }
                 std::thread::sleep(HEAD_SYNC_POLL_INTERVAL);

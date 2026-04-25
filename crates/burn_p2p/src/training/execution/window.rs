@@ -267,7 +267,8 @@ impl<P> RunningNode<P> {
             NodeRuntimeState::HeadSync,
             Some(SlotRuntimeState::MaterializingBase(assignment.clone())),
         );
-        const BASE_HEAD_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
+        let base_head_sync_timeout =
+            crate::node::ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
         if let Some((source_peer_id, source_head)) = current_head.as_ref()
             && !store.has_complete_artifact(&source_head.artifact_id)?
         {
@@ -278,11 +279,30 @@ impl<P> RunningNode<P> {
                     source_head.artifact_id.as_str(),
                 );
             }
-            if let Err(error) = self.sync_artifact_from_peer_bounded(
-                source_peer_id,
-                source_head.artifact_id.clone(),
-                BASE_HEAD_SYNC_TIMEOUT,
-            ) && source_head.global_step > 0
+            let provider_peer_ids = head_provider_peers(
+                Some(source_peer_id),
+                &snapshots,
+                &telemetry_snapshot.control_plane,
+                telemetry_snapshot.local_peer_id.as_ref(),
+                &experiment,
+                source_head,
+            );
+            let result = if provider_peer_ids.is_empty() {
+                self.sync_artifact_from_peer_bounded(
+                    source_peer_id,
+                    source_head.artifact_id.clone(),
+                    base_head_sync_timeout,
+                )
+                .map(|_| ())
+            } else {
+                self.wait_for_artifact_from_peers(
+                    &provider_peer_ids,
+                    &source_head.artifact_id,
+                    base_head_sync_timeout,
+                )
+            };
+            if let Err(error) = result
+                && source_head.global_step > 0
             {
                 return Err(error);
             }

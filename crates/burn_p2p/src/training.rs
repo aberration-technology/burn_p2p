@@ -4,9 +4,9 @@ use crate::metrics_runtime::{
     build_training_peer_window_metrics, persist_peer_window_metrics,
 };
 use crate::runtime_support::{
-    LagAssessment, active_experiment_directory_entry, local_training_adaptation_factor,
-    local_training_schedule_hint, runtime_training_assignment_peers,
-    snapshots_with_local_control_plane,
+    LagAssessment, active_experiment_directory_entry, head_provider_peers,
+    local_training_adaptation_factor, local_training_schedule_hint,
+    runtime_training_assignment_peers, snapshots_with_local_control_plane,
 };
 use burn_p2p_core::{MetricsLiveEventKind, MicroShard};
 use std::collections::BTreeSet;

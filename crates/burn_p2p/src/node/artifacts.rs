@@ -483,7 +483,7 @@ pub(crate) fn fair_request_timeout(
     Some(request_timeout.min(slice).min(remaining))
 }
 
-pub(super) fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {
+pub(crate) fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {
     if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
         ci
     } else {

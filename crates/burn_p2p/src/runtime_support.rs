@@ -46,7 +46,7 @@ pub(crate) use topology::experiment_snapshot_peer_ids;
 pub(crate) use topology::{
     LagAssessment, active_experiment_directory_entry, assess_head_lag, cached_connected_snapshots,
     connected_peer_ids, effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch,
-    experiment_has_lifecycle_plan, latest_head_from_snapshot,
+    experiment_has_lifecycle_plan, head_provider_peers, latest_head_from_snapshot,
     latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
     latest_reducer_assignment_from_snapshot, matches_experiment_head, merge_control_plane_snapshot,
     metric_quality, open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids,

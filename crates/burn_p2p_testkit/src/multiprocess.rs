@@ -11,7 +11,7 @@ use anyhow::Context;
 use burn_p2p::{
     ArtifactBuildSpec, ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard,
     CapabilityEstimate, ChunkingScheme, DatasetRegistration, DatasetSizing, EvalSplit,
-    FsArtifactStore, GenesisSpec, MetricReport, MetricValue, MicroShardPlanner,
+    FsArtifactStore, GenesisSpec, HeadDescriptor, MetricReport, MetricValue, MicroShardPlanner,
     MicroShardPlannerConfig, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, PeerRole,
     PeerRoleSet, RuntimePatch, ShardFetchManifest, StorageConfig, SwarmAddress, TrainError,
     UpstreamAdapter, WindowCtx, WindowReport,
@@ -1403,7 +1403,13 @@ where
             start_barrier_pending = false;
         }
 
-        let outcome = train_window_once_with_retry(node, experiment, sync_timeout, poll_interval)?;
+        let outcome = train_window_once_with_retry(
+            node,
+            experiment,
+            &synced_head,
+            sync_timeout,
+            poll_interval,
+        )?;
         report.trained_head_id = Some(outcome.head.head_id.to_string());
         report.trained_parent_head_id = outcome
             .head
@@ -1640,6 +1646,7 @@ where
 fn train_window_once_with_retry<W>(
     node: &mut burn_p2p::RunningNode<W>,
     experiment: &burn_p2p::ExperimentHandle,
+    base_head: &HeadDescriptor,
     timeout: Duration,
     poll_interval: Duration,
 ) -> anyhow::Result<burn_p2p::TrainingWindowOutcome<BTreeMap<String, MetricValue>>>
@@ -1650,7 +1657,7 @@ where
     let deadline = Instant::now() + timeout;
     let mut last_transient_error = None;
     while Instant::now() < deadline {
-        match node.train_window_once(experiment) {
+        match node.train_window_once_with_pinned_head(experiment, Some(base_head)) {
             Ok(outcome) => return Ok(outcome),
             Err(error) if is_transient_runtime_error(&error) => {
                 last_transient_error = Some(error.to_string());
