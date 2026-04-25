@@ -545,11 +545,19 @@ impl<P> RunningNode<P> {
             if already_cached {
                 continue;
             }
-            self.wait_for_artifact_from_peers(
-                &candidate.provider_peer_ids,
-                &candidate.head.artifact_id,
-                VALIDATION_ARTIFACT_SYNC_TIMEOUT,
-            )?;
+            if self
+                .wait_for_artifact_from_peers(
+                    &candidate.provider_peer_ids,
+                    &candidate.head.artifact_id,
+                    VALIDATION_ARTIFACT_SYNC_TIMEOUT,
+                )
+                .is_err()
+            {
+                // Missing candidate artifacts are retried by later validation
+                // passes; one unavailable provider should not block the
+                // reducer from merging already materialized candidates.
+                continue;
+            }
             let loaded = {
                 let node = self
                     .node
@@ -635,7 +643,7 @@ impl<P> RunningNode<P> {
             .ok_or_else(|| anyhow::anyhow!("validation candidate cache was not initialized"))?;
         let all_candidate_models = candidate_heads
             .iter()
-            .map(|candidate| {
+            .filter_map(|candidate| {
                 cache
                     .candidates
                     .iter()
@@ -644,15 +652,8 @@ impl<P> RunningNode<P> {
                             && cached.head.artifact_id == candidate.head.artifact_id
                     })
                     .map(ValidationCandidateView::from)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "validation candidate cache missing artifact {} for peer {}",
-                            candidate.head.artifact_id.as_str(),
-                            candidate.origin_peer_id.as_str()
-                        )
-                    })
             })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         let base_model = cache
             .base_model
             .as_ref()

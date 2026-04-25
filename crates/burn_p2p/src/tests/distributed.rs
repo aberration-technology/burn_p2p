@@ -1120,6 +1120,9 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
     let experiment_for_seed = experiment.clone();
     let experiment_for_trainer_b = experiment.clone();
     let experiment_for_trainer_c = experiment.clone();
+    let seed_base_head = genesis_head.clone();
+    let trainer_b_base_head = genesis_head.clone();
+    let trainer_c_base_head = genesis_head.clone();
     let seed_ref = &mut seed;
     let trainer_b_ref = &mut trainer_b;
     let trainer_c_ref = &mut trainer_c;
@@ -1128,19 +1131,25 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
         let seed_barrier = std::sync::Arc::clone(&start_barrier);
         let seed_run = scope.spawn(move || {
             seed_barrier.wait();
-            seed.train_window_once(&experiment_for_seed)
+            seed.train_window_once_with_pinned_head(&experiment_for_seed, Some(&seed_base_head))
         });
         let trainer_b = trainer_b_ref;
         let trainer_b_barrier = std::sync::Arc::clone(&start_barrier);
         let trainer_b_run = scope.spawn(move || {
             trainer_b_barrier.wait();
-            trainer_b.train_window_once(&experiment_for_trainer_b)
+            trainer_b.train_window_once_with_pinned_head(
+                &experiment_for_trainer_b,
+                Some(&trainer_b_base_head),
+            )
         });
         let trainer_c = trainer_c_ref;
         let trainer_c_barrier = std::sync::Arc::clone(&start_barrier);
         let trainer_c_run = scope.spawn(move || {
             trainer_c_barrier.wait();
-            trainer_c.train_window_once(&experiment_for_trainer_c)
+            trainer_c.train_window_once_with_pinned_head(
+                &experiment_for_trainer_c,
+                Some(&trainer_c_base_head),
+            )
         });
         let seed_window = seed_run
             .join()
@@ -1292,38 +1301,46 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
             metric_float(&trainer_c_window.report.stats, "model"),
         ),
     ]);
-    let converged_snapshots = [
-        seed_telemetry.snapshot(),
-        trainer_b_telemetry.snapshot(),
-        trainer_c_telemetry.snapshot(),
-    ];
-    let support_attestation = converged_snapshots
-        .iter()
-        .flat_map(|snapshot| {
-            snapshot
-                .control_plane
-                .trainer_promotion_attestation_announcements
-                .iter()
-        })
-        .filter(|announcement| {
-            announcement.attestation.study_id == experiment.study_id
-                && announcement.attestation.experiment_id == experiment.experiment_id
-                && announcement.attestation.revision_id == experiment.revision_id
-                && announcement.attestation.window_id == WindowId(1)
-                && announcement.attestation.base_head_id == genesis_head.head_id
-                && announcement.attestation.merged_head_id == promoted_head.head_id
-                && announcement.attestation.merged_artifact_id == promoted_head.artifact_id
-        })
-        .max_by(|left, right| {
-            left.attestation
-                .accepted_update_count
-                .cmp(&right.attestation.accepted_update_count)
-                .then(left.attestation.issued_at.cmp(&right.attestation.issued_at))
-                .then(left.announced_at.cmp(&right.announced_at))
-        })
-        .expect("promoted diffusion head should have visible trainer support")
-        .attestation
-        .clone();
+    let support_deadline = Instant::now() + test_timeout(Duration::from_secs(10));
+    let (support_attestation, converged_snapshots) = loop {
+        let snapshots = [
+            seed_telemetry.snapshot(),
+            trainer_b_telemetry.snapshot(),
+            trainer_c_telemetry.snapshot(),
+        ];
+        if let Some(attestation) = snapshots
+            .iter()
+            .flat_map(|snapshot| {
+                snapshot
+                    .control_plane
+                    .trainer_promotion_attestation_announcements
+                    .iter()
+            })
+            .filter(|announcement| {
+                announcement.attestation.study_id == experiment.study_id
+                    && announcement.attestation.experiment_id == experiment.experiment_id
+                    && announcement.attestation.revision_id == experiment.revision_id
+                    && announcement.attestation.window_id == WindowId(1)
+                    && announcement.attestation.base_head_id == genesis_head.head_id
+                    && announcement.attestation.merged_head_id == promoted_head.head_id
+                    && announcement.attestation.merged_artifact_id == promoted_head.artifact_id
+            })
+            .max_by(|left, right| {
+                left.attestation
+                    .accepted_update_count
+                    .cmp(&right.attestation.accepted_update_count)
+                    .then(left.attestation.issued_at.cmp(&right.attestation.issued_at))
+                    .then(left.announced_at.cmp(&right.announced_at))
+            })
+        {
+            break (attestation.attestation.clone(), snapshots);
+        }
+        assert!(
+            Instant::now() < support_deadline,
+            "promoted diffusion head should have visible trainer support"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
     assert!(
         support_attestation.accepted_update_count >= 2,
         "diffusion promotion should not be solo-supported"
