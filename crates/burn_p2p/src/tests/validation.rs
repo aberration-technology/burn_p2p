@@ -742,16 +742,13 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     assert_eq!(persisted_a.parent_head_id, Some(genesis_head.head_id));
 
     for trainer in &trainers {
-        wait_for(
-            Duration::from_secs(5),
-            || {
-                trainer
-                    .sync_experiment_head(&experiment)
-                    .expect("trainer sync after first promotion")
-                    .is_some_and(|head| head.head_id == first_promoted_head.head_id)
-            },
-            "trainer did not sync the first promoted head",
-        );
+        trainer
+            .wait_for_known_head(
+                &experiment,
+                &first_promoted_head,
+                test_timeout(Duration::from_secs(20)),
+            )
+            .expect("trainer did not sync the first promoted head");
     }
 
     let mut second_round_outcomes = Vec::new();

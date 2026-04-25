@@ -349,6 +349,32 @@ impl<P> RunningNode<P> {
             }
         }
         persist_head_state(&storage, experiment, &head)?;
+        persist_json(storage.scoped_head_path(&head.head_id), &head)?;
+        store.pin_head(&head.head_id)?;
+        store.pin_artifact(&head.artifact_id)?;
+        if head.global_step > 0 {
+            let telemetry_snapshot = self.telemetry().snapshot();
+            if let Some(local_peer_id) = telemetry_snapshot.local_peer_id.clone() {
+                let already_announced = telemetry_snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| {
+                        announcement.provider_peer_id.as_ref() == Some(&local_peer_id)
+                            && announcement.head.head_id == head.head_id
+                            && announcement.head.artifact_id == head.artifact_id
+                    });
+                if !already_announced {
+                    self.publish_artifact_from_store(&head.artifact_id)?;
+                    self.control.publish_head(HeadAnnouncement {
+                        overlay: experiment.overlay_set()?.heads,
+                        provider_peer_id: Some(local_peer_id),
+                        head: head.clone(),
+                        announced_at: Utc::now(),
+                    })?;
+                }
+            }
+        }
         self.update_lag_status(LagState::Current, 0, self.lag_policy(experiment));
         self.set_experiment_idle_state(experiment, NodeRuntimeState::IdleReady);
         Ok(Some(head))
