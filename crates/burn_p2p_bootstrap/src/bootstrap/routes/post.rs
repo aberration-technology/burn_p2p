@@ -69,6 +69,19 @@ fn write_auth_error_response(
     Ok(())
 }
 
+fn write_auth_rejection_response(
+    stream: &mut TcpStream,
+    message: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response(
+        stream,
+        "403 Forbidden",
+        "text/plain; charset=utf-8",
+        message.into_bytes(),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn handle_browser_post_route(
     stream: &mut TcpStream,
     context: &HttpServerContext,
@@ -160,23 +173,50 @@ pub(crate) fn handle_auth_post_route(
         ("POST", "/enroll") => {
             let effective_revocation_epoch = current_revocation_epoch(auth, &context.state);
             let enroll: BootstrapEnrollRequest = serde_json::from_slice(&request.body)?;
+            if enroll.app_semver < auth.minimum_client_version {
+                write_auth_rejection_response(
+                    stream,
+                    format!(
+                        "client version {} is below authority minimum {}",
+                        enroll.app_semver, auth.minimum_client_version,
+                    ),
+                )?;
+                return Ok(true);
+            }
             if enroll.release_train_hash != auth.required_release_train_hash {
-                return Err(format!(
-                    "release train {} is not permitted by this authority",
-                    enroll.release_train_hash.as_str(),
-                )
-                .into());
+                write_auth_rejection_response(
+                    stream,
+                    format!(
+                        "release train {} is not permitted by this authority",
+                        enroll.release_train_hash.as_str(),
+                    ),
+                )?;
+                return Ok(true);
             }
             if !auth.allowed_target_artifact_hashes.is_empty()
                 && !auth
                     .allowed_target_artifact_hashes
                     .contains(&enroll.target_artifact_hash)
             {
-                return Err(format!(
-                    "target artifact {} is not permitted by this authority",
-                    enroll.target_artifact_hash.as_str(),
-                )
-                .into());
+                write_auth_rejection_response(
+                    stream,
+                    format!(
+                        "target artifact {} is not permitted by this authority",
+                        enroll.target_artifact_hash.as_str(),
+                    ),
+                )?;
+                return Ok(true);
+            }
+            let expected_protocol_major = protocol_major_from_version(&auth.protocol_version);
+            if enroll.protocol_major != expected_protocol_major {
+                write_auth_rejection_response(
+                    stream,
+                    format!(
+                        "protocol major {} is not permitted by this authority (expected {})",
+                        enroll.protocol_major, expected_protocol_major,
+                    ),
+                )?;
+                return Ok(true);
             }
             let session = auth
                 .get_enrollment_session(&enroll.session_id)?
@@ -375,8 +415,8 @@ pub(crate) fn execute_admin_action(
                 .auth_state
                 .as_ref()
                 .ok_or("browser-edge auth is not configured")?;
-            Ok(burn_p2p_bootstrap::AdminResult::TrustBundle(Some(
-                current_trust_bundle(auth, &context.state),
+            Ok(burn_p2p_bootstrap::AdminResult::TrustBundle(Box::new(
+                Some(current_trust_bundle(auth, &context.state)),
             )))
         }
         _ => {

@@ -228,6 +228,31 @@ fn http_routes_serve_status_and_static_auth_flow() {
         },
     ));
     let session_header = session["session_id"].as_str().expect("session id string");
+
+    let stale_protocol_enroll = issue_request(
+        context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/enroll",
+            body: Some(serde_json::json!({
+                "session_id": session["session_id"],
+                "app_semver": "0.1.0",
+                "release_train_hash": "demo-train",
+                "target_artifact_hash": "demo-artifact-native",
+                "protocol_major": 1,
+                "peer_id": "peer-stale-protocol",
+                "peer_public_key_hex": "001122",
+                "requested_scopes": ["Connect"],
+                "client_policy_hash": null,
+                "serial": 1,
+                "ttl_seconds": 300,
+            })),
+            headers: &[],
+        },
+    );
+    assert!(stale_protocol_enroll.starts_with("HTTP/1.1 403 Forbidden"));
+    assert!(response_body(&stale_protocol_enroll).contains("protocol major 1"));
+
     let directory_headers = [("x-session-id", session_header)];
     let directory = response_json(&issue_request(
         context.clone(),

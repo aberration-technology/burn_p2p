@@ -597,6 +597,8 @@ fn metrics_routes_export_snapshots_ledger_and_head_views() {
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+                    protocol_major: 0,
+                    app_semver: semver::Version::new(0, 1, 0),
                     release_train_hash: ContentId::new("demo-train"),
                     target_artifact_id: "native-test-client".into(),
                     target_artifact_hash: ContentId::new("demo-artifact-native"),

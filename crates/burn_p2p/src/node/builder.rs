@@ -163,43 +163,9 @@ impl<P> NodeBuilder<P> {
 
         if let Some(release_manifest) = &config.client_release_manifest {
             if let Some(network_manifest) = &config.network_manifest {
-                if release_manifest.project_family_id != network_manifest.project_family_id {
-                    anyhow::bail!(
-                        "client release family {} does not match network family {}",
-                        release_manifest.project_family_id.as_str(),
-                        network_manifest.project_family_id.as_str(),
-                    );
-                }
-
-                if release_manifest.release_train_hash
-                    != network_manifest.required_release_train_hash
-                {
-                    anyhow::bail!(
-                        "release train hash {} does not match network requirement {}",
-                        release_manifest.release_train_hash.as_str(),
-                        network_manifest.required_release_train_hash.as_str(),
-                    );
-                }
-
-                if !network_manifest.allowed_target_artifact_hashes.is_empty()
-                    && !network_manifest
-                        .allowed_target_artifact_hashes
-                        .contains(&release_manifest.target_artifact_hash)
-                {
-                    anyhow::bail!(
-                        "target artifact hash {} is not allowed by network {}",
-                        release_manifest.target_artifact_hash.as_str(),
-                        network_manifest.network_id.as_str(),
-                    );
-                }
-
-                if release_manifest.protocol_major != network_manifest.protocol_major {
-                    anyhow::bail!(
-                        "client release protocol major {} does not match network protocol major {}",
-                        release_manifest.protocol_major,
-                        network_manifest.protocol_major,
-                    );
-                }
+                release_manifest
+                    .validate_for_network(network_manifest)
+                    .map_err(anyhow::Error::from)?;
             }
 
             if let Some(workload_id) = &config.selected_workload_id

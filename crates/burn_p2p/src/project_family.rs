@@ -445,40 +445,9 @@ fn validate_network_manifest(
         );
     }
 
-    if network_manifest.required_release_train_hash != release_manifest.release_train_hash {
-        anyhow::bail!(
-            "network {} requires release train {}, but family {} exposes {}",
-            network_manifest.network_id.as_str(),
-            network_manifest.required_release_train_hash.as_str(),
-            project_family_id.as_str(),
-            release_manifest.release_train_hash.as_str(),
-        );
-    }
-
-    if !network_manifest.allowed_target_artifact_hashes.is_empty()
-        && !network_manifest
-            .allowed_target_artifact_hashes
-            .contains(&release_manifest.target_artifact_hash)
-    {
-        anyhow::bail!(
-            "network {} does not allow target artifact {} for family {}",
-            network_manifest.network_id.as_str(),
-            release_manifest.target_artifact_hash.as_str(),
-            project_family_id.as_str(),
-        );
-    }
-
-    if network_manifest.protocol_major != release_manifest.protocol_major {
-        anyhow::bail!(
-            "network {} requires protocol major {}, but family {} exposes {}",
-            network_manifest.network_id.as_str(),
-            network_manifest.protocol_major,
-            project_family_id.as_str(),
-            release_manifest.protocol_major,
-        );
-    }
-
-    Ok(())
+    release_manifest
+        .validate_for_network(network_manifest)
+        .map_err(anyhow::Error::from)
 }
 
 impl<P> NodeBuilder<P>
@@ -757,6 +726,7 @@ mod tests {
             network_id: NetworkId::new("network-a"),
             project_family_id: ProjectFamilyId::new("family-a"),
             protocol_major: 1,
+            minimum_client_version: semver::Version::new(0, 1, 0),
             required_release_train_hash: ContentId::new("train-a"),
             allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
             authority_public_keys: vec!["authority-key".into()],

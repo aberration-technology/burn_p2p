@@ -158,6 +158,7 @@ fn main() -> anyhow::Result<()> {
         network_id: genesis.network_id.clone(),
         project_family_id: burn_p2p::ProjectFamilyId::new("burn-ndarray-family"),
         protocol_major: 0,
+        minimum_client_version: Version::new(0, 0, 0),
         required_release_train_hash: ContentId::new("burn-ndarray-train"),
         allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
             "burn-ndarray-artifact-native",

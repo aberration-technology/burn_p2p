@@ -1,5 +1,9 @@
 use super::*;
 
+fn default_minimum_client_version() -> Version {
+    Version::new(0, 0, 0)
+}
+
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -239,6 +243,12 @@ pub struct TrustBundleExport {
     pub network_id: NetworkId,
     /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    #[serde(default)]
+    /// The protocol major admitted by this authority.
+    pub protocol_major: u16,
+    #[serde(default = "default_minimum_client_version")]
+    /// The minimum client app version admitted by this authority.
+    pub minimum_client_version: Version,
     /// The required release train hash.
     pub required_release_train_hash: ContentId,
     #[serde(default)]
@@ -486,6 +496,12 @@ pub struct BrowserDirectorySnapshot {
 pub struct BrowserEdgeSnapshot {
     /// The network ID.
     pub network_id: NetworkId,
+    #[serde(default)]
+    /// The protocol major admitted by this edge.
+    pub protocol_major: u16,
+    #[serde(default = "default_minimum_client_version")]
+    /// The minimum client app version admitted by this edge.
+    pub minimum_client_version: Version,
     /// The edge mode.
     pub edge_mode: BrowserEdgeMode,
     /// The browser mode.

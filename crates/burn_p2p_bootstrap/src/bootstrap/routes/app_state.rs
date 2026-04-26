@@ -9,19 +9,35 @@ pub(crate) fn current_browser_portal_snapshot(
     remaining_work_units: Option<u64>,
 ) -> Result<burn_p2p_bootstrap::BrowserEdgeSnapshot, Box<dyn std::error::Error>> {
     let directory = current_browser_directory_snapshot(plan, auth_state, request)?;
-    let (required_release_train_hash, allowed_target_artifact_hashes) = auth_state
+    let (
+        protocol_major,
+        minimum_client_version,
+        required_release_train_hash,
+        allowed_target_artifact_hashes,
+    ) = auth_state
         .map(|auth| {
             (
+                protocol_major_from_version(&auth.protocol_version),
+                auth.minimum_client_version.clone(),
                 Some(auth.required_release_train_hash.clone()),
                 auth.allowed_target_artifact_hashes.clone(),
             )
         })
-        .unwrap_or_else(|| (None, BTreeSet::new()));
+        .unwrap_or_else(|| {
+            (
+                protocol_major_from_version(&plan.genesis.protocol_version),
+                semver::Version::new(0, 0, 0),
+                None,
+                BTreeSet::new(),
+            )
+        });
     let state = lock_shared(state, "bootstrap admin state")?;
     Ok(state.browser_portal_snapshot(
         plan,
         BrowserEdgeSnapshotConfig {
             captured_at: Utc::now(),
+            protocol_major,
+            minimum_client_version,
             remaining_work_units,
             directory,
             edge_mode: browser_edge_mode(plan),

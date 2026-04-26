@@ -48,7 +48,6 @@ use burn_p2p_publish::{DownloadTicketRequest, DownloadTicketResponse, HeadArtifa
 use chrono::{Duration as ChronoDuration, Utc};
 #[cfg(not(target_arch = "wasm32"))]
 use libp2p_identity::Keypair;
-#[cfg(not(target_arch = "wasm32"))]
 use semver::Version;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -132,6 +131,7 @@ pub struct LiveBrowserProbeManifest {
     pub lease_id: String,
     pub leased_microshards: Vec<String>,
     pub release_train_hash: String,
+    pub app_semver: String,
     pub target_artifact_id: String,
     pub target_artifact_hash: String,
     pub workload_id: String,
@@ -204,6 +204,7 @@ pub struct BrowserLiveParticipantConfig {
     pub network_id: String,
     pub selected_head_id: String,
     pub release_train_hash: String,
+    pub app_semver: Version,
     pub target_artifact_id: String,
     pub target_artifact_hash: String,
     pub principal_id: String,
@@ -250,7 +251,7 @@ pub async fn start_live_browser_participant(
         },
     ]);
     let bindings = BrowserUiBindings::from_edge_snapshot(&config.edge_base_url, &snapshot);
-    let enrollment = BrowserEnrollmentConfig::from_edge_snapshot(
+    let enrollment = BrowserEnrollmentConfig::from_edge_snapshot_with_app_version(
         &snapshot,
         if config.target_artifact_id.is_empty() {
             DEFAULT_TARGET_ARTIFACT_ID
@@ -258,6 +259,7 @@ pub async fn start_live_browser_participant(
             &config.target_artifact_id
         },
         ContentId::new(config.target_artifact_hash.clone()),
+        config.app_semver.clone(),
         requested_scopes,
         900,
     )
@@ -628,6 +630,7 @@ impl LiveBrowserEdgeServer {
                 .map(|microshard| microshard.as_str().to_owned())
                 .collect(),
             release_train_hash: config.release_manifest.release_train_hash.as_str().into(),
+            app_semver: config.release_manifest.app_semver.to_string(),
             target_artifact_id: config.release_manifest.target_artifact_id.clone(),
             target_artifact_hash: config.release_manifest.target_artifact_hash.as_str().into(),
             workload_id: config.workload_id.as_str().into(),
@@ -829,6 +832,8 @@ fn build_snapshot(
     let transports = live_browser_transport_surface(config);
     BrowserEdgeSnapshot {
         network_id: config.network_manifest.network_id.clone(),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Full,
         browser_mode: BrowserMode::Trainer,
         social_mode: SocialMode::Public,
@@ -868,6 +873,8 @@ fn build_snapshot(
         trust_bundle: Some(TrustBundleExport {
             network_id: config.network_manifest.network_id.clone(),
             project_family_id: config.release_manifest.project_family_id.clone(),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: config.release_manifest.release_train_hash.clone(),
             allowed_target_artifact_hashes: BTreeSet::from([config
                 .release_manifest
@@ -1608,6 +1615,7 @@ mod tests {
             network_id: manifest.network_id.clone(),
             selected_head_id: manifest.selected_head_id.clone(),
             release_train_hash: manifest.release_train_hash.clone(),
+            app_semver: manifest.app_semver.parse().expect("probe app semver"),
             target_artifact_id: manifest.target_artifact_id.clone(),
             target_artifact_hash: manifest.target_artifact_hash.clone(),
             principal_id: manifest.principal_id.clone(),
@@ -1649,6 +1657,7 @@ mod tests {
             network_id: NetworkId::new("network"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family"),
             protocol_major: 0,
+            minimum_client_version: Version::new(0, 21, 0),
             required_release_train_hash: ContentId::new("train-hash"),
             allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-hash")]),
             authority_public_keys: Vec::new(),

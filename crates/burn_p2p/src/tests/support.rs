@@ -604,6 +604,7 @@ pub(super) fn switching_network_manifest() -> crate::NetworkManifest {
         project_family_id: crate::ProjectFamilyId::new("family-switch"),
         protocol_major: u16::try_from(mainnet().genesis.protocol_version.major)
             .expect("protocol major"),
+        minimum_client_version: Version::new(0, 0, 0),
         required_release_train_hash: crate::ContentId::new("train-switch"),
         allowed_target_artifact_hashes: BTreeSet::from([crate::ContentId::new(
             "artifact-native-switch",

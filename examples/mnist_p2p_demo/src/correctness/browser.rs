@@ -53,6 +53,8 @@ pub fn browser_scenarios(
 ) -> Vec<BrowserScenarioExport> {
     let build_snapshot = |browser_mode: BrowserMode| BrowserEdgeSnapshot {
         network_id: network_manifest.network_id.clone(),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Full,
         browser_mode,
         social_mode: SocialMode::Public,
@@ -84,6 +86,8 @@ pub fn browser_scenarios(
         trust_bundle: Some(TrustBundleExport {
             network_id: network_manifest.network_id.clone(),
             project_family_id: release_manifest.project_family_id.clone(),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: release_manifest.release_train_hash.clone(),
             allowed_target_artifact_hashes: BTreeSet::from([release_manifest
                 .target_artifact_hash

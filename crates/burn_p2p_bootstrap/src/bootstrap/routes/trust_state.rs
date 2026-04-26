@@ -57,6 +57,8 @@ pub(crate) fn current_trust_bundle(
     TrustBundleExport {
         network_id: auth.network_id.clone(),
         project_family_id: auth.project_family_id.clone(),
+        protocol_major: protocol_major_from_version(&auth.protocol_version),
+        minimum_client_version: auth.minimum_client_version.clone(),
         required_release_train_hash: auth.required_release_train_hash.clone(),
         allowed_target_artifact_hashes: auth.allowed_target_artifact_hashes.clone(),
         minimum_revocation_epoch: current_revocation_epoch(auth, state),

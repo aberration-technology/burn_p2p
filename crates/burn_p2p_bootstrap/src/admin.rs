@@ -157,7 +157,7 @@ pub enum AdminResult {
     /// Uses the reducer load variant.
     ReducerLoad(Vec<ReducerLoadAnnouncement>),
     /// Uses the trust bundle variant.
-    TrustBundle(Option<TrustBundleExport>),
+    TrustBundle(Box<Option<TrustBundleExport>>),
     /// Uses the auth policy rolled out variant.
     AuthPolicyRolledOut {
         /// The minimum revocation epoch.
@@ -333,9 +333,9 @@ impl BootstrapPlan {
             AdminAction::ExportReducerLoad(query) => {
                 Ok(AdminResult::ReducerLoad(state.export_reducer_load(&query)))
             }
-            AdminAction::ExportTrustBundle => {
-                Ok(AdminResult::TrustBundle(state.trust_bundle.clone()))
-            }
+            AdminAction::ExportTrustBundle => Ok(AdminResult::TrustBundle(Box::new(
+                state.trust_bundle.clone(),
+            ))),
             AdminAction::RolloutAuthPolicy(rollout) => {
                 if let Some(minimum_revocation_epoch) = rollout.minimum_revocation_epoch {
                     state.minimum_revocation_epoch = Some(

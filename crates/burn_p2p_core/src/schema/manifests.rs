@@ -1,5 +1,9 @@
 use super::*;
 
+fn default_minimum_client_version() -> Version {
+    Version::new(0, 0, 0)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Describes the dataset.
 pub struct DatasetManifest {
@@ -137,6 +141,241 @@ impl ClientReleaseManifest {
     pub fn target_kind(&self) -> ArtifactTargetKind {
         ArtifactTargetKind::parse(&self.target_artifact_id)
     }
+
+    /// Verifies that this release may join the given network.
+    pub fn validate_for_network(
+        &self,
+        network: &NetworkManifest,
+    ) -> Result<(), NetworkCompatibilityError> {
+        let context = format!("network {}", network.network_id.as_str());
+        if self.project_family_id != network.project_family_id {
+            return Err(NetworkCompatibilityError::ProjectFamilyMismatch {
+                context,
+                expected: network.project_family_id.clone(),
+                found: self.project_family_id.clone(),
+            });
+        }
+
+        validate_release_train(
+            &context,
+            &network.required_release_train_hash,
+            &self.release_train_hash,
+        )?;
+        validate_allowed_target_artifact(
+            &context,
+            &network.allowed_target_artifact_hashes,
+            &self.target_artifact_hash,
+        )?;
+        validate_protocol_major(&context, network.protocol_major, self.protocol_major)?;
+        validate_minimum_client_version(
+            &context,
+            &network.minimum_client_version,
+            &self.app_semver,
+        )?;
+        Ok(())
+    }
+
+    /// Verifies that this release matches the compatibility policy advertised
+    /// by a browser edge snapshot and its embedded trust bundle.
+    pub fn validate_for_edge_snapshot(
+        &self,
+        snapshot: &BrowserEdgeSnapshot,
+    ) -> Result<(), NetworkCompatibilityError> {
+        if let Some(trust_bundle) = snapshot.trust_bundle.as_ref() {
+            if trust_bundle.network_id != snapshot.network_id {
+                return Err(NetworkCompatibilityError::EdgeNetworkMismatch {
+                    snapshot: snapshot.network_id.clone(),
+                    trust_bundle: trust_bundle.network_id.clone(),
+                });
+            }
+            if trust_bundle.protocol_major != snapshot.protocol_major {
+                return Err(NetworkCompatibilityError::EdgeProtocolMajorMismatch {
+                    snapshot: snapshot.protocol_major,
+                    trust_bundle: trust_bundle.protocol_major,
+                });
+            }
+            if self.project_family_id != trust_bundle.project_family_id {
+                return Err(NetworkCompatibilityError::ProjectFamilyMismatch {
+                    context: "trust bundle".into(),
+                    expected: trust_bundle.project_family_id.clone(),
+                    found: self.project_family_id.clone(),
+                });
+            }
+            validate_release_train(
+                "trust bundle",
+                &trust_bundle.required_release_train_hash,
+                &self.release_train_hash,
+            )?;
+            validate_minimum_client_version(
+                "trust bundle",
+                &trust_bundle.minimum_client_version,
+                &self.app_semver,
+            )?;
+            validate_allowed_target_artifact(
+                "trust bundle",
+                &trust_bundle.allowed_target_artifact_hashes,
+                &self.target_artifact_hash,
+            )?;
+        }
+
+        validate_protocol_major(
+            "edge snapshot",
+            snapshot.protocol_major,
+            self.protocol_major,
+        )?;
+        validate_minimum_client_version(
+            "edge snapshot",
+            &snapshot.minimum_client_version,
+            &self.app_semver,
+        )?;
+        if let Some(required_release_train_hash) = snapshot.required_release_train_hash.as_ref() {
+            validate_release_train(
+                "edge snapshot",
+                required_release_train_hash,
+                &self.release_train_hash,
+            )?;
+        }
+        validate_allowed_target_artifact(
+            "edge snapshot",
+            &snapshot.allowed_target_artifact_hashes,
+            &self.target_artifact_hash,
+        )?;
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Describes why a client release cannot join a network or edge.
+pub enum NetworkCompatibilityError {
+    /// The project family does not match the advertised network family.
+    #[error("{context} targets project family {expected}, but client release is {found}")]
+    ProjectFamilyMismatch {
+        /// Human-readable compatibility source.
+        context: String,
+        /// Expected project family.
+        expected: ProjectFamilyId,
+        /// Client release project family.
+        found: ProjectFamilyId,
+    },
+    /// The release train hash is not the active network train.
+    #[error("{context} requires release train {expected}, but client release is {found}")]
+    ReleaseTrainMismatch {
+        /// Human-readable compatibility source.
+        context: String,
+        /// Required release train hash.
+        expected: ContentId,
+        /// Client release train hash.
+        found: ContentId,
+    },
+    /// The target artifact hash is not admitted by the network.
+    #[error("{context} does not allow target artifact {found}")]
+    TargetArtifactNotAllowed {
+        /// Human-readable compatibility source.
+        context: String,
+        /// Allowed target artifact hashes.
+        allowed: BTreeSet<ContentId>,
+        /// Client release target artifact hash.
+        found: ContentId,
+    },
+    /// The protocol major does not match the network protocol major.
+    #[error("{context} requires protocol major {expected}, but client release uses {found}")]
+    ProtocolMajorMismatch {
+        /// Human-readable compatibility source.
+        context: String,
+        /// Required protocol major.
+        expected: u16,
+        /// Client release protocol major.
+        found: u16,
+    },
+    /// The client app version is below the network minimum.
+    #[error("{context} requires client version >= {minimum}, but client release is {found}")]
+    ClientVersionTooOld {
+        /// Human-readable compatibility source.
+        context: String,
+        /// Minimum client app version.
+        minimum: Version,
+        /// Client release app version.
+        found: Version,
+    },
+    /// The edge snapshot and trust bundle disagree about the network.
+    #[error("edge snapshot network {snapshot} does not match trust bundle network {trust_bundle}")]
+    EdgeNetworkMismatch {
+        /// Top-level snapshot network.
+        snapshot: NetworkId,
+        /// Trust bundle network.
+        trust_bundle: NetworkId,
+    },
+    /// The edge snapshot and trust bundle disagree about protocol major.
+    #[error(
+        "edge snapshot protocol major {snapshot} does not match trust bundle protocol major {trust_bundle}"
+    )]
+    EdgeProtocolMajorMismatch {
+        /// Top-level snapshot protocol major.
+        snapshot: u16,
+        /// Trust bundle protocol major.
+        trust_bundle: u16,
+    },
+}
+
+fn validate_release_train(
+    context: &str,
+    expected: &ContentId,
+    found: &ContentId,
+) -> Result<(), NetworkCompatibilityError> {
+    if found != expected {
+        return Err(NetworkCompatibilityError::ReleaseTrainMismatch {
+            context: context.to_owned(),
+            expected: expected.clone(),
+            found: found.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_allowed_target_artifact(
+    context: &str,
+    allowed: &BTreeSet<ContentId>,
+    found: &ContentId,
+) -> Result<(), NetworkCompatibilityError> {
+    if !allowed.is_empty() && !allowed.contains(found) {
+        return Err(NetworkCompatibilityError::TargetArtifactNotAllowed {
+            context: context.to_owned(),
+            allowed: allowed.clone(),
+            found: found.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_protocol_major(
+    context: &str,
+    expected: u16,
+    found: u16,
+) -> Result<(), NetworkCompatibilityError> {
+    if found != expected {
+        return Err(NetworkCompatibilityError::ProtocolMajorMismatch {
+            context: context.to_owned(),
+            expected,
+            found,
+        });
+    }
+    Ok(())
+}
+
+fn validate_minimum_client_version(
+    context: &str,
+    minimum: &Version,
+    found: &Version,
+) -> Result<(), NetworkCompatibilityError> {
+    if found < minimum {
+        return Err(NetworkCompatibilityError::ClientVersionTooOld {
+            context: context.to_owned(),
+            minimum: minimum.clone(),
+            found: found.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Builder for one supported-workload manifest entry.
@@ -305,6 +544,9 @@ pub struct NetworkManifest {
     pub project_family_id: ProjectFamilyId,
     /// The protocol major.
     pub protocol_major: u16,
+    #[serde(default = "default_minimum_client_version")]
+    /// The minimum client app version admitted by this network.
+    pub minimum_client_version: Version,
     /// The required release train hash.
     pub required_release_train_hash: ContentId,
     /// The allowed target artifact hashes.
@@ -326,6 +568,7 @@ pub struct NetworkManifestBuilder {
     network_id: NetworkId,
     project_family_id: ProjectFamilyId,
     protocol_major: u16,
+    minimum_client_version: Version,
     required_release_train_hash: ContentId,
     allowed_target_artifact_hashes: BTreeSet<ContentId>,
     authority_public_keys: Vec<String>,
@@ -350,6 +593,7 @@ impl NetworkManifestBuilder {
             network_id,
             project_family_id,
             protocol_major,
+            minimum_client_version: Version::new(0, 0, 0),
             required_release_train_hash,
             allowed_target_artifact_hashes: BTreeSet::new(),
             authority_public_keys: Vec::new(),
@@ -364,6 +608,12 @@ impl NetworkManifestBuilder {
     pub fn with_allowed_target_artifact_hash(mut self, target_artifact_hash: ContentId) -> Self {
         self.allowed_target_artifact_hashes
             .insert(target_artifact_hash);
+        self
+    }
+
+    /// Sets the minimum client app version admitted by the network.
+    pub fn with_minimum_client_version(mut self, minimum_client_version: Version) -> Self {
+        self.minimum_client_version = minimum_client_version;
         self
     }
 
@@ -385,6 +635,7 @@ impl NetworkManifestBuilder {
             network_id: self.network_id,
             project_family_id: self.project_family_id,
             protocol_major: self.protocol_major,
+            minimum_client_version: self.minimum_client_version,
             required_release_train_hash: self.required_release_train_hash,
             allowed_target_artifact_hashes: self.allowed_target_artifact_hashes,
             authority_public_keys: self.authority_public_keys,

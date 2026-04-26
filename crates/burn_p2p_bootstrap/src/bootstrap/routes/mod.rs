@@ -29,6 +29,10 @@ pub(crate) fn lock_shared<'a, T>(
         .map_err(|_| IoError::other(format!("{label} lock poisoned")).into())
 }
 
+pub(crate) fn protocol_major_from_version(protocol_version: &semver::Version) -> u16 {
+    u16::try_from(protocol_version.major).expect("protocol major must fit in u16")
+}
+
 pub(crate) fn with_admin_state<T, E, F>(
     state: &Arc<Mutex<BootstrapAdminState>>,
     f: F,

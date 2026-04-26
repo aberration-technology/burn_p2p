@@ -600,6 +600,7 @@ pub(super) fn build_auth_portal(
         minimum_revocation_epoch: Mutex::new(RevocationEpoch(config.minimum_revocation_epoch)),
         reenrollment: Mutex::new(config.reenrollment.clone()),
         project_family_id: config.project_family_id.clone(),
+        minimum_client_version: config.minimum_client_version.clone(),
         required_release_train_hash: config.required_release_train_hash.clone(),
         allowed_target_artifact_hashes: config.allowed_target_artifact_hashes.clone(),
     };
@@ -815,6 +816,7 @@ mod tests {
             persist_provider_tokens: false,
             issuer_key_id: default_issuer_key_id(),
             project_family_id: ProjectFamilyId::new("demo-family"),
+            minimum_client_version: semver::Version::new(0, 1, 0),
             required_release_train_hash: ContentId::new("demo-train"),
             allowed_target_artifact_hashes: BTreeSet::new(),
             session_ttl_seconds: 300,

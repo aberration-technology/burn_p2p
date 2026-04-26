@@ -18,12 +18,12 @@ use super::{
     LagState, LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, MergeStrategy,
     MergeTopologyPolicy, MergeWindowMissPolicy, MetricTrustClass, MetricValue,
     MetricsLedgerSegment, MetricsLiveEvent, MetricsLiveEventKind, MetricsMode,
-    MetricsSnapshotManifest, MetricsSyncCursor, NetworkManifest, NodeCertificate,
-    NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics, PeerWindowStatus,
-    ProfileMode, PublicationAccessMode, PublicationMode, PublicationTarget, PublicationTargetKind,
-    PublishedArtifactRecord, PublishedArtifactStatus, ReducerCohortMetrics, ReducerCohortStatus,
-    RejectionReason, RobustnessPolicy, RobustnessPreset, SchemaEnvelope, SocialMode, SocialProfile,
-    SupportedWorkload, UpdateFeatureSketch, WindowActivation, WindowId,
+    MetricsSnapshotManifest, MetricsSyncCursor, NetworkCompatibilityError, NetworkManifest,
+    NodeCertificate, NodeCertificateClaims, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
+    PeerWindowStatus, ProfileMode, PublicationAccessMode, PublicationMode, PublicationTarget,
+    PublicationTargetKind, PublishedArtifactRecord, PublishedArtifactStatus, ReducerCohortMetrics,
+    ReducerCohortStatus, RejectionReason, RobustnessPolicy, RobustnessPreset, SchemaEnvelope,
+    SocialMode, SocialProfile, SupportedWorkload, UpdateFeatureSketch, WindowActivation, WindowId,
 };
 use crate::{
     RevocationEpoch,
@@ -160,6 +160,7 @@ fn release_and_network_manifests_round_trip() {
         network_id: crate::id::NetworkId::new("network-a"),
         project_family_id: crate::id::ProjectFamilyId::new("family-a"),
         protocol_major: 1,
+        minimum_client_version: semver::Version::new(0, 1, 0),
         required_release_train_hash: ContentId::new("train-a"),
         allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
         authority_public_keys: vec!["001122".into()],
@@ -178,6 +179,70 @@ fn release_and_network_manifests_round_trip() {
 
     assert_eq!(decoded_release, release);
     assert_eq!(decoded_network, network);
+}
+
+#[test]
+fn client_release_rejects_incompatible_network_manifest() {
+    let release = ClientReleaseManifest {
+        project_family_id: crate::id::ProjectFamilyId::new("family-a"),
+        release_train_hash: ContentId::new("train-a"),
+        target_artifact_id: "native-linux-x86_64".into(),
+        target_artifact_hash: ContentId::new("artifact-native-a"),
+        target_platform: ClientPlatform::Native,
+        app_semver: semver::Version::new(0, 2, 0),
+        git_commit: "deadbeef".into(),
+        cargo_lock_hash: ContentId::new("cargo-lock"),
+        burn_version_string: "0.21.0-pre.3".into(),
+        enabled_features_hash: ContentId::new("features"),
+        protocol_major: 1,
+        supported_workloads: Vec::new(),
+        built_at: Utc::now(),
+    };
+    let mut network = NetworkManifest {
+        network_id: crate::id::NetworkId::new("network-a"),
+        project_family_id: crate::id::ProjectFamilyId::new("family-a"),
+        protocol_major: 1,
+        minimum_client_version: semver::Version::new(0, 1, 0),
+        required_release_train_hash: ContentId::new("train-a"),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-native-a")]),
+        authority_public_keys: Vec::new(),
+        bootstrap_addrs: Vec::new(),
+        auth_policy_hash: ContentId::new("auth-policy"),
+        created_at: Utc::now(),
+        description: "test network".into(),
+    };
+
+    release
+        .validate_for_network(&network)
+        .expect("compatible release should pass");
+
+    network.protocol_major = 2;
+    let error = release
+        .validate_for_network(&network)
+        .expect_err("protocol mismatch must fail");
+    assert!(matches!(
+        error,
+        NetworkCompatibilityError::ProtocolMajorMismatch {
+            expected: 2,
+            found: 1,
+            ..
+        }
+    ));
+
+    network.protocol_major = release.protocol_major;
+    network.minimum_client_version = semver::Version::new(0, 3, 0);
+    let error = release
+        .validate_for_network(&network)
+        .expect_err("stale client version must fail");
+    assert!(matches!(
+        error,
+        NetworkCompatibilityError::ClientVersionTooOld {
+            minimum,
+            found,
+            ..
+        } if minimum == semver::Version::new(0, 3, 0)
+            && found == semver::Version::new(0, 2, 0)
+    ));
 }
 
 #[test]

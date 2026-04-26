@@ -122,6 +122,8 @@ pub(super) struct BootstrapAuthConfig {
     #[serde(default = "default_issuer_key_id")]
     pub issuer_key_id: String,
     pub project_family_id: burn_p2p::ProjectFamilyId,
+    #[serde(default = "default_minimum_client_version")]
+    pub minimum_client_version: semver::Version,
     pub required_release_train_hash: ContentId,
     #[serde(default)]
     pub allowed_target_artifact_hashes: BTreeSet<ContentId>,
@@ -333,8 +335,12 @@ pub(super) struct BootstrapAuthPrincipal {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct BootstrapEnrollRequest {
     pub session_id: ContentId,
+    #[serde(default = "default_minimum_client_version")]
+    pub app_semver: semver::Version,
     pub release_train_hash: ContentId,
     pub target_artifact_hash: ContentId,
+    #[serde(default)]
+    pub protocol_major: u16,
     pub peer_id: PeerId,
     pub peer_public_key_hex: String,
     pub requested_scopes: BTreeSet<ExperimentScope>,
@@ -546,6 +552,7 @@ pub(super) struct AuthPortalState {
     pub(super) minimum_revocation_epoch: Mutex<RevocationEpoch>,
     pub(super) reenrollment: Mutex<Option<BootstrapReenrollmentConfig>>,
     pub(super) project_family_id: burn_p2p::ProjectFamilyId,
+    pub(super) minimum_client_version: semver::Version,
     pub(super) required_release_train_hash: ContentId,
     pub(super) allowed_target_artifact_hashes: BTreeSet<ContentId>,
 }
@@ -573,6 +580,10 @@ pub(super) enum AuthSessionStateStore {
 
 pub(super) fn default_issuer_key_id() -> String {
     "bootstrap-auth".into()
+}
+
+fn default_minimum_client_version() -> semver::Version {
+    semver::Version::new(0, 0, 0)
 }
 
 pub(super) fn default_true() -> bool {

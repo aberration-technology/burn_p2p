@@ -261,6 +261,8 @@ fn browser_portal_snapshot(snapshot: &AppSnapshotView) -> BrowserEdgeSnapshot {
 
     BrowserEdgeSnapshot {
         network_id: network_id.clone(),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: browser_edge_mode(snapshot.edge_mode.as_str()),
         browser_mode: browser_mode(snapshot.browser_mode.as_str()),
         social_mode: if snapshot.social_enabled {
@@ -311,6 +313,8 @@ fn browser_portal_snapshot(snapshot: &AppSnapshotView) -> BrowserEdgeSnapshot {
         trust_bundle: Some(TrustBundleExport {
             network_id,
             project_family_id: ProjectFamilyId::new("browser-capture-family"),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: snapshot
                 .trust
                 .required_release_train_hash

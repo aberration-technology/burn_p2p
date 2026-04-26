@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 pub struct BrowserEdgeSnapshot {
     /// The network ID.
     pub network_id: NetworkId,
+    /// The protocol major admitted by this edge.
+    pub protocol_major: u16,
+    /// The minimum client app version admitted by this edge.
+    pub minimum_client_version: semver::Version,
     /// The edge mode.
     pub edge_mode: BrowserEdgeMode,
     /// The browser mode.
@@ -58,6 +62,10 @@ pub struct BrowserEdgeSnapshot {
 pub struct BrowserEdgeSnapshotConfig {
     /// The captured at.
     pub captured_at: DateTime<Utc>,
+    /// The protocol major admitted by this edge.
+    pub protocol_major: u16,
+    /// The minimum client app version admitted by this edge.
+    pub minimum_client_version: semver::Version,
     /// The remaining work units.
     pub remaining_work_units: Option<u64>,
     /// The directory.
@@ -115,6 +123,8 @@ impl BootstrapAdminState {
     ) -> BrowserEdgeSnapshot {
         BrowserEdgeSnapshot {
             network_id: plan.genesis.network_id.clone(),
+            protocol_major: config.protocol_major,
+            minimum_client_version: config.minimum_client_version,
             edge_mode: config.edge_mode,
             browser_mode: config.browser_mode,
             social_mode: config.social_mode,

@@ -441,6 +441,7 @@ pub(super) fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig 
         persist_provider_tokens: false,
         issuer_key_id: default_issuer_key_id(),
         project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+        minimum_client_version: Version::new(0, 1, 0),
         required_release_train_hash: ContentId::new("demo-train"),
         allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("demo-artifact-native")]),
         session_ttl_seconds: 300,

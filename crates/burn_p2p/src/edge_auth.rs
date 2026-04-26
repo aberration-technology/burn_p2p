@@ -1,13 +1,21 @@
 use std::collections::BTreeSet;
 
-use burn_p2p_core::{BrowserEdgeSnapshot, BrowserLoginProvider, TrustBundleExport};
+use burn_p2p_core::{
+    BrowserEdgeSnapshot, BrowserLoginProvider, ClientReleaseManifest, NetworkCompatibilityError,
+    TrustBundleExport,
+};
 use chrono::{DateTime, Utc};
+use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     CallbackPayload, ContentId, ExperimentScope, LoginRequest, LoginStart, NetworkId,
     NodeCertificate, PeerId, PrincipalId, PrincipalSession, ProjectFamilyId,
 };
+
+fn default_enrollment_app_semver() -> Version {
+    Version::new(0, 0, 0)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures one edge-backed enrollment and auth session flow.
@@ -16,6 +24,10 @@ pub struct EdgeEnrollmentConfig {
     pub network_id: NetworkId,
     /// The project family identifier expected by the edge.
     pub project_family_id: ProjectFamilyId,
+    /// The protocol major expected by the edge.
+    pub protocol_major: u16,
+    /// The client app version presented during enrollment.
+    pub app_semver: Version,
     /// The required release train hash.
     pub release_train_hash: ContentId,
     /// Human-readable local target artifact identifier.
@@ -45,12 +57,32 @@ pub struct EdgeEnrollmentConfig {
 }
 
 impl EdgeEnrollmentConfig {
-    /// Creates a config from the bootstrap edge snapshot and the selected
-    /// target artifact.
-    pub fn from_edge_snapshot(
+    /// Creates a config from the bootstrap edge snapshot and a concrete client
+    /// release manifest.
+    pub fn from_edge_snapshot_for_release(
+        snapshot: &BrowserEdgeSnapshot,
+        release_manifest: &ClientReleaseManifest,
+        requested_scopes: BTreeSet<ExperimentScope>,
+        session_ttl_secs: i64,
+    ) -> Result<Self, EdgeAuthClientError> {
+        release_manifest.validate_for_edge_snapshot(snapshot)?;
+        Self::from_edge_snapshot_with_app_version(
+            snapshot,
+            release_manifest.target_artifact_id.clone(),
+            release_manifest.target_artifact_hash.clone(),
+            release_manifest.app_semver.clone(),
+            requested_scopes,
+            session_ttl_secs,
+        )
+    }
+
+    /// Creates a config from the bootstrap edge snapshot, selected target
+    /// artifact, and actual client app version.
+    pub fn from_edge_snapshot_with_app_version(
         snapshot: &BrowserEdgeSnapshot,
         target_artifact_id: impl Into<String>,
         target_artifact_hash: ContentId,
+        app_semver: Version,
         requested_scopes: BTreeSet<ExperimentScope>,
         session_ttl_secs: i64,
     ) -> Result<Self, EdgeAuthClientError> {
@@ -62,6 +94,37 @@ impl EdgeEnrollmentConfig {
             .login_providers
             .first()
             .ok_or(EdgeAuthClientError::MissingLoginProvider)?;
+
+        if trust_bundle.network_id != snapshot.network_id {
+            return Err(NetworkCompatibilityError::EdgeNetworkMismatch {
+                snapshot: snapshot.network_id.clone(),
+                trust_bundle: trust_bundle.network_id.clone(),
+            }
+            .into());
+        }
+        if trust_bundle.protocol_major != snapshot.protocol_major {
+            return Err(NetworkCompatibilityError::EdgeProtocolMajorMismatch {
+                snapshot: snapshot.protocol_major,
+                trust_bundle: trust_bundle.protocol_major,
+            }
+            .into());
+        }
+        if app_semver < snapshot.minimum_client_version {
+            return Err(NetworkCompatibilityError::ClientVersionTooOld {
+                context: "edge snapshot".into(),
+                minimum: snapshot.minimum_client_version.clone(),
+                found: app_semver,
+            }
+            .into());
+        }
+        if app_semver < trust_bundle.minimum_client_version {
+            return Err(NetworkCompatibilityError::ClientVersionTooOld {
+                context: "trust bundle".into(),
+                minimum: trust_bundle.minimum_client_version.clone(),
+                found: app_semver,
+            }
+            .into());
+        }
 
         if !snapshot.allowed_target_artifact_hashes.is_empty()
             && !snapshot
@@ -76,6 +139,8 @@ impl EdgeEnrollmentConfig {
         Ok(Self {
             network_id: snapshot.network_id.clone(),
             project_family_id: trust_bundle.project_family_id.clone(),
+            protocol_major: snapshot.protocol_major,
+            app_semver,
             release_train_hash: snapshot
                 .required_release_train_hash
                 .clone()
@@ -92,6 +157,26 @@ impl EdgeEnrollmentConfig {
             requested_scopes,
             session_ttl_secs,
         })
+    }
+
+    /// Creates a config from the bootstrap edge snapshot and the selected
+    /// target artifact. Prefer `from_edge_snapshot_for_release` for production
+    /// enrollment so the request reports the concrete client version.
+    pub fn from_edge_snapshot(
+        snapshot: &BrowserEdgeSnapshot,
+        target_artifact_id: impl Into<String>,
+        target_artifact_hash: ContentId,
+        requested_scopes: BTreeSet<ExperimentScope>,
+        session_ttl_secs: i64,
+    ) -> Result<Self, EdgeAuthClientError> {
+        Self::from_edge_snapshot_with_app_version(
+            snapshot,
+            target_artifact_id,
+            target_artifact_hash,
+            default_enrollment_app_semver(),
+            requested_scopes,
+            session_ttl_secs,
+        )
     }
 
     /// Returns the first provider advertised by the edge snapshot.
@@ -180,10 +265,16 @@ pub struct EdgePeerIdentity {
 pub struct EdgePeerEnrollmentRequest {
     /// Authenticated session identifier.
     pub session_id: ContentId,
+    /// Client app version presented during enrollment.
+    #[serde(default = "default_enrollment_app_semver")]
+    pub app_semver: Version,
     /// Release train hash expected by the edge.
     pub release_train_hash: ContentId,
     /// Target artifact hash expected by the edge.
     pub target_artifact_hash: ContentId,
+    /// Protocol major expected by the edge.
+    #[serde(default)]
+    pub protocol_major: u16,
     /// Peer identifier requesting a certificate.
     pub peer_id: PeerId,
     /// Hex-encoded peer public key.
@@ -239,6 +330,10 @@ pub enum EdgeAuthClientError {
     MissingDevicePath,
     #[error("target artifact {0} is not approved by the edge")]
     UnapprovedTargetArtifact(ContentId),
+    #[error("network compatibility check failed: {0}")]
+    NetworkCompatibility(#[from] NetworkCompatibilityError),
+    #[error("edge snapshot mismatch: {0}")]
+    EdgeSnapshotMismatch(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -261,6 +356,8 @@ pub enum EdgeAuthClientError {
 ///     EdgeEnrollmentConfig {
 ///         network_id: burn_p2p::NetworkId::new("demo"),
 ///         project_family_id: burn_p2p::ProjectFamilyId::new("family"),
+///         protocol_major: 0,
+///         app_semver: semver::Version::new(0, 1, 0),
 ///         release_train_hash: ContentId::new("release-train"),
 ///         target_artifact_id: "native-peer".into(),
 ///         target_artifact_hash: ContentId::new("artifact"),
@@ -329,8 +426,10 @@ impl EdgeAuthClient {
     ) -> EdgePeerEnrollmentRequest {
         EdgePeerEnrollmentRequest {
             session_id: session.session_id.clone(),
+            app_semver: self.enrollment.app_semver.clone(),
             release_train_hash: self.enrollment.release_train_hash.clone(),
             target_artifact_hash: self.enrollment.target_artifact_hash.clone(),
+            protocol_major: self.enrollment.protocol_major,
             peer_id: identity.peer_id.clone(),
             peer_public_key_hex: identity.peer_public_key_hex.clone(),
             requested_scopes: self.enrollment.requested_scopes.clone(),
@@ -571,6 +670,8 @@ mod tests {
     fn edge_enrollment_config_captures_device_flow_when_available() {
         let snapshot = BrowserEdgeSnapshot {
             network_id: NetworkId::new("demo"),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             edge_mode: burn_p2p_core::BrowserEdgeMode::Peer,
             browser_mode: crate::BrowserMode::Observer,
             social_mode: crate::SocialMode::Disabled,
@@ -605,6 +706,8 @@ mod tests {
             trust_bundle: Some(TrustBundleExport {
                 network_id: NetworkId::new("demo"),
                 project_family_id: ProjectFamilyId::new("family"),
+                protocol_major: 0,
+                minimum_client_version: semver::Version::new(0, 0, 0),
                 required_release_train_hash: ContentId::new("release"),
                 allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact")]),
                 active_issuer_peer_id: PeerId::new("issuer"),

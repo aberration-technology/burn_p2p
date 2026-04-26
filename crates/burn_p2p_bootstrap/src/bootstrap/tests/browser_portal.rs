@@ -57,6 +57,8 @@ fn browser_portal_client_round_trips_against_live_http_router() {
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "native-test-client".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -274,6 +276,8 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "native-test-client".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -582,6 +586,8 @@ fn browser_portal_client_syncs_worker_runtime_and_flushes_receipts_against_live_
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -792,6 +798,8 @@ fn browser_portal_client_completes_github_login_via_exchange_callback() {
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -972,6 +980,8 @@ fn browser_portal_client_completes_github_login_via_upstream_token_exchange() {
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -1154,6 +1164,8 @@ fn browser_portal_client_refreshes_and_logs_out_provider_session_via_live_http_r
         let enrollment = BrowserEnrollmentConfig {
             network_id: NetworkId::new("secure-demo"),
             project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("demo-train"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("demo-artifact-native"),

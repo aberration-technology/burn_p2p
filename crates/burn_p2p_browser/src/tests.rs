@@ -44,6 +44,8 @@ const TEST_EDGE_WEBTRANSPORT_SEED: &str = "/dns4/edge.example/udp/443/quic-v1/we
 fn browser_test_edge_snapshot() -> BrowserEdgeSnapshot {
     BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Trainer,
         social_mode: burn_p2p::SocialMode::Public,
@@ -2710,6 +2712,8 @@ fn enrollment_config_and_bindings_can_be_derived_from_edge_snapshot() {
     let artifact_hash = ContentId::new("artifact-browser");
     let snapshot = BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Verifier,
         social_mode: burn_p2p::SocialMode::Public,
@@ -2759,6 +2763,8 @@ fn enrollment_config_and_bindings_can_be_derived_from_edge_snapshot() {
         trust_bundle: Some(TrustBundleExport {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: ContentId::new("train-browser"),
             allowed_target_artifact_hashes: BTreeSet::from([artifact_hash.clone()]),
             minimum_revocation_epoch: RevocationEpoch(3),
@@ -2798,6 +2804,8 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
     let artifact_hash = ContentId::new("artifact-browser");
     let mut snapshot = BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Verifier,
         social_mode: burn_p2p::SocialMode::Public,
@@ -2840,6 +2848,8 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
         trust_bundle: Some(TrustBundleExport {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: ContentId::new("train-browser"),
             allowed_target_artifact_hashes: BTreeSet::from([artifact_hash.clone()]),
             minimum_revocation_epoch: RevocationEpoch(3),
@@ -2936,6 +2946,8 @@ fn session_and_storage_snapshots_capture_enrollment_and_signed_state() {
         trust_bundle: Some(TrustBundleExport {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            minimum_client_version: semver::Version::new(0, 0, 0),
             required_release_train_hash: ContentId::new("train-browser"),
             allowed_target_artifact_hashes: BTreeSet::from([ContentId::new("artifact-browser")]),
             minimum_revocation_epoch: RevocationEpoch(5),
@@ -3658,6 +3670,8 @@ fn browser_portal_client_collects_multiple_metrics_live_events_from_sse_stream()
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -3694,6 +3708,8 @@ fn browser_edge_client_trusted_callback_header_completes_provider_login() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -3772,6 +3788,8 @@ fn browser_portal_client_streams_metrics_events_into_worker_runtime() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -5012,6 +5030,8 @@ fn browser_conformance_harness_exposes_persisted_active_training_lease() {
 fn browser_app_controller_exposes_persisted_active_training_lease() {
     let snapshot = BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
+        protocol_major: 0,
+        minimum_client_version: semver::Version::new(0, 0, 0),
         edge_mode: BrowserEdgeMode::Peer,
         browser_mode: burn_p2p::BrowserMode::Trainer,
         social_mode: burn_p2p::SocialMode::Public,
@@ -5445,6 +5465,8 @@ fn browser_portal_client_pumps_metrics_events_into_worker_without_duplicate_repl
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -5585,6 +5607,8 @@ fn browser_portal_client_syncs_active_head_artifact_into_worker_cache_once() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -5703,6 +5727,8 @@ fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() 
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -5827,6 +5853,8 @@ fn browser_portal_client_resumes_edge_download_after_partial_failure() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -5949,6 +5977,8 @@ fn browser_portal_client_leaves_artifact_replay_checkpoint_on_sync_failure() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6067,6 +6097,8 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6183,6 +6215,8 @@ fn browser_portal_client_syncs_live_head_via_peer_transport_without_publication_
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6282,6 +6316,8 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view(
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6401,6 +6437,8 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6516,6 +6554,8 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6615,6 +6655,8 @@ fn browser_portal_client_clears_stale_replay_state_before_syncing_superseded_rev
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6771,6 +6813,8 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -6925,6 +6969,8 @@ fn browser_portal_client_does_not_reuse_checkpoint_when_publication_metadata_cha
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),
@@ -7064,6 +7110,8 @@ fn browser_portal_client_pumps_edge_metrics_sync_into_worker_without_sse() {
         BrowserEnrollmentConfig {
             network_id: NetworkId::new("net-browser"),
             project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
             release_train_hash: ContentId::new("train-browser"),
             target_artifact_id: "browser-wasm".into(),
             target_artifact_hash: ContentId::new("artifact-browser"),

@@ -2785,6 +2785,7 @@ pub(crate) fn network_manifest(release_manifest: &ClientReleaseManifest) -> Netw
         network_id: burn_p2p::NetworkId::new(NETWORK_ID),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: BTreeSet::from([release_manifest
             .target_artifact_hash

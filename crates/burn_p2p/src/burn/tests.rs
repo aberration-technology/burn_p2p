@@ -487,6 +487,7 @@ fn trainer_builder_wraps_single_burn_workload_with_trainer_roles() {
         network_id: crate::NetworkId::new("tiny-network"),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
             .target_artifact_hash
@@ -546,6 +547,7 @@ fn validator_builder_wraps_single_burn_workload_with_validator_roles() {
         network_id: crate::NetworkId::new("tiny-network"),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
             .target_artifact_hash
@@ -726,6 +728,7 @@ fn from_loaders_builder_wraps_single_burn_workload_with_trainer_roles() {
         network_id: crate::NetworkId::new("tiny-network"),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
             .target_artifact_hash
@@ -789,6 +792,7 @@ fn from_learner_validator_builder_does_not_require_training_dataset_hooks() {
         network_id: crate::NetworkId::new("tiny-network"),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
             .target_artifact_hash
@@ -858,6 +862,7 @@ fn from_learner_custom_non_training_builder_does_not_require_training_dataset_ho
         network_id: crate::NetworkId::new("tiny-network"),
         project_family_id: release_manifest.project_family_id.clone(),
         protocol_major: release_manifest.protocol_major,
+        minimum_client_version: release_manifest.app_semver.clone(),
         required_release_train_hash: release_manifest.release_train_hash.clone(),
         allowed_target_artifact_hashes: std::collections::BTreeSet::from([release_manifest
             .target_artifact_hash

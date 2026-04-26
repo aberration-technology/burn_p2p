@@ -14,8 +14,9 @@ use burn_p2p_core::ChunkDescriptor;
 use burn_p2p_core::{
     ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
     BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
-    BrowserTransportFamily, MetricsLiveEvent, PublicationTargetId, PublishedArtifactRecord,
-    PublishedArtifactStatus, RunId, SchemaEnvelope, SignedPayload, TrustBundleExport,
+    BrowserTransportFamily, ClientReleaseManifest, MetricsLiveEvent, NetworkCompatibilityError,
+    PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId, SchemaEnvelope,
+    SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
     CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
@@ -28,6 +29,7 @@ use burn_p2p_publish::{
 use burn_p2p_swarm::{BrowserEdgeControlPlaneClient, BrowserEdgeControlPlanePaths};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
+use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -35,6 +37,10 @@ use crate::{
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
     BrowserWorkerRuntime, resolve_browser_seed_bootstrap,
 };
+
+fn default_enrollment_app_semver() -> Version {
+    Version::new(0, 0, 0)
+}
 
 #[derive(Clone, Debug)]
 struct ActiveHeadArtifactSyncPlan {
@@ -66,6 +72,10 @@ pub struct BrowserEnrollmentConfig {
     pub network_id: NetworkId,
     /// The project family ID.
     pub project_family_id: ProjectFamilyId,
+    /// The protocol major expected by the edge.
+    pub protocol_major: u16,
+    /// The client app version presented during enrollment.
+    pub app_semver: Version,
     /// The release train hash.
     pub release_train_hash: ContentId,
     /// The target artifact ID.
@@ -87,11 +97,32 @@ pub struct BrowserEnrollmentConfig {
 }
 
 impl BrowserEnrollmentConfig {
-    /// Creates a value from the app snapshot.
-    pub fn from_edge_snapshot(
+    /// Creates a value from the app snapshot and a concrete client release
+    /// manifest.
+    pub fn from_edge_snapshot_for_release(
+        snapshot: &BrowserEdgeSnapshot,
+        release_manifest: &ClientReleaseManifest,
+        requested_scopes: BTreeSet<ExperimentScope>,
+        session_ttl_secs: i64,
+    ) -> Result<Self, BrowserAuthClientError> {
+        release_manifest.validate_for_edge_snapshot(snapshot)?;
+        Self::from_edge_snapshot_with_app_version(
+            snapshot,
+            release_manifest.target_artifact_id.clone(),
+            release_manifest.target_artifact_hash.clone(),
+            release_manifest.app_semver.clone(),
+            requested_scopes,
+            session_ttl_secs,
+        )
+    }
+
+    /// Creates a value from the app snapshot, selected target artifact, and
+    /// actual client app version.
+    pub fn from_edge_snapshot_with_app_version(
         snapshot: &BrowserEdgeSnapshot,
         target_artifact_id: impl Into<String>,
         target_artifact_hash: ContentId,
+        app_semver: Version,
         requested_scopes: BTreeSet<ExperimentScope>,
         session_ttl_secs: i64,
     ) -> Result<Self, BrowserAuthClientError> {
@@ -103,6 +134,37 @@ impl BrowserEnrollmentConfig {
             .login_providers
             .first()
             .ok_or(BrowserAuthClientError::MissingLoginProvider)?;
+
+        if trust_bundle.network_id != snapshot.network_id {
+            return Err(NetworkCompatibilityError::EdgeNetworkMismatch {
+                snapshot: snapshot.network_id.clone(),
+                trust_bundle: trust_bundle.network_id.clone(),
+            }
+            .into());
+        }
+        if trust_bundle.protocol_major != snapshot.protocol_major {
+            return Err(NetworkCompatibilityError::EdgeProtocolMajorMismatch {
+                snapshot: snapshot.protocol_major,
+                trust_bundle: trust_bundle.protocol_major,
+            }
+            .into());
+        }
+        if app_semver < snapshot.minimum_client_version {
+            return Err(NetworkCompatibilityError::ClientVersionTooOld {
+                context: "edge snapshot".into(),
+                minimum: snapshot.minimum_client_version.clone(),
+                found: app_semver,
+            }
+            .into());
+        }
+        if app_semver < trust_bundle.minimum_client_version {
+            return Err(NetworkCompatibilityError::ClientVersionTooOld {
+                context: "trust bundle".into(),
+                minimum: trust_bundle.minimum_client_version.clone(),
+                found: app_semver,
+            }
+            .into());
+        }
 
         if !snapshot.allowed_target_artifact_hashes.is_empty()
             && !snapshot
@@ -117,6 +179,8 @@ impl BrowserEnrollmentConfig {
         Ok(Self {
             network_id: snapshot.network_id.clone(),
             project_family_id: trust_bundle.project_family_id.clone(),
+            protocol_major: snapshot.protocol_major,
+            app_semver,
             release_train_hash: snapshot
                 .required_release_train_hash
                 .clone()
@@ -130,6 +194,26 @@ impl BrowserEnrollmentConfig {
             requested_scopes,
             session_ttl_secs,
         })
+    }
+
+    /// Creates a value from the app snapshot and the selected target artifact.
+    /// Prefer `from_edge_snapshot_for_release` for production enrollment so the
+    /// request reports the concrete client version.
+    pub fn from_edge_snapshot(
+        snapshot: &BrowserEdgeSnapshot,
+        target_artifact_id: impl Into<String>,
+        target_artifact_hash: ContentId,
+        requested_scopes: BTreeSet<ExperimentScope>,
+        session_ttl_secs: i64,
+    ) -> Result<Self, BrowserAuthClientError> {
+        Self::from_edge_snapshot_with_app_version(
+            snapshot,
+            target_artifact_id,
+            target_artifact_hash,
+            default_enrollment_app_semver(),
+            requested_scopes,
+            session_ttl_secs,
+        )
     }
 
     /// Creates a minimal config for viewer-first runtime sync without assuming auth enrollment.
@@ -154,6 +238,8 @@ impl BrowserEnrollmentConfig {
                 .as_ref()
                 .map(|bundle| bundle.project_family_id.clone())
                 .unwrap_or_else(|| ProjectFamilyId::new("browser-family")),
+            protocol_major: snapshot.protocol_major,
+            app_semver: default_enrollment_app_semver(),
             release_train_hash: snapshot
                 .required_release_train_hash
                 .clone()
@@ -243,10 +329,16 @@ impl BrowserSessionState {
 pub struct BrowserPeerEnrollmentRequest {
     /// The session ID.
     pub session_id: ContentId,
+    /// Client app version presented during enrollment.
+    #[serde(default = "default_enrollment_app_semver")]
+    pub app_semver: Version,
     /// The release train hash.
     pub release_train_hash: ContentId,
     /// The target artifact hash.
     pub target_artifact_hash: ContentId,
+    /// The protocol major expected by the edge.
+    #[serde(default)]
+    pub protocol_major: u16,
     /// The peer ID.
     pub peer_id: PeerId,
     /// The peer public key hex.
@@ -389,6 +481,9 @@ pub enum BrowserAuthClientError {
     #[error("target artifact {0} is not approved by the browser edge")]
     /// Uses the unapproved target artifact variant.
     UnapprovedTargetArtifact(ContentId),
+    #[error("network compatibility check failed: {0}")]
+    /// Uses the network compatibility variant.
+    NetworkCompatibility(#[from] NetworkCompatibilityError),
     #[error("browser edge snapshot mismatch: {0}")]
     /// Uses the edge snapshot mismatch variant.
     EdgeSnapshotMismatch(&'static str),
@@ -917,8 +1012,10 @@ impl BrowserEdgeClient {
     ) -> BrowserPeerEnrollmentRequest {
         BrowserPeerEnrollmentRequest {
             session_id: session.session_id.clone(),
+            app_semver: self.enrollment.app_semver.clone(),
             release_train_hash: self.enrollment.release_train_hash.clone(),
             target_artifact_hash: self.enrollment.target_artifact_hash.clone(),
+            protocol_major: self.enrollment.protocol_major,
             peer_id: identity.peer_id.clone(),
             peer_public_key_hex: identity.peer_public_key_hex.clone(),
             requested_scopes: self.enrollment.requested_scopes.clone(),

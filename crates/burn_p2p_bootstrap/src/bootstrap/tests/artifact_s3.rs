@@ -171,6 +171,8 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+                    protocol_major: 0,
+                    app_semver: semver::Version::new(0, 1, 0),
                     release_train_hash: ContentId::new("demo-train"),
                     target_artifact_id: "native-test-client".into(),
                     target_artifact_hash: ContentId::new("demo-artifact-native"),
@@ -431,6 +433,8 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
                 BrowserEnrollmentConfig {
                     network_id: NetworkId::new("secure-demo"),
                     project_family_id: burn_p2p::ProjectFamilyId::new("demo-family"),
+                    protocol_major: 0,
+                    app_semver: semver::Version::new(0, 1, 0),
                     release_train_hash: ContentId::new("demo-train"),
                     target_artifact_id: "native-test-client".into(),
                     target_artifact_hash: ContentId::new("demo-artifact-native"),

@@ -133,6 +133,7 @@ fn main() -> anyhow::Result<()> {
         network_id: genesis.network_id.clone(),
         project_family_id: ProjectFamilyId::new("torch-mnist-python-family"),
         protocol_major: 0,
+        minimum_client_version: Version::new(0, 0, 0),
         required_release_train_hash: ContentId::new("torch-mnist-python-train"),
         allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
             "torch-mnist-python-artifact",
