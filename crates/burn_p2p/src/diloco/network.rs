@@ -83,32 +83,34 @@ fn checkpoint_due(policy: &DiLoCoPolicy, round: &RoundCursor) -> bool {
 }
 
 fn diloco_state_signature_acceptable(
+    policy: &DiLoCoPolicy,
     snapshot: &crate::NodeTelemetrySnapshot,
     peer_id: &PeerId,
     state: &DiLoCoStateSnapshot,
 ) -> bool {
     if state.signature_bundle.is_empty() {
-        return true;
+        return !policy.require_signed_peer_payloads;
     }
     if diloco_peer_has_auth(&snapshot.control_plane, peer_id) {
         verify_diloco_state_snapshot_signature(&snapshot.control_plane, peer_id, state)
     } else {
-        true
+        !policy.require_signed_peer_payloads
     }
 }
 
 fn diloco_manifest_signature_acceptable(
+    policy: &DiLoCoPolicy,
     snapshot: &crate::NodeTelemetrySnapshot,
     peer_id: &PeerId,
     manifest: &PseudoGradientManifest,
 ) -> bool {
     if manifest.signature_bundle.is_empty() {
-        return true;
+        return !policy.require_signed_peer_payloads;
     }
     if diloco_peer_has_auth(&snapshot.control_plane, peer_id) {
         verify_diloco_gradient_manifest_signature(&snapshot.control_plane, peer_id, manifest)
     } else {
-        true
+        !policy.require_signed_peer_payloads
     }
 }
 
@@ -679,7 +681,8 @@ where
             ) else {
                 continue;
             };
-            if !diloco_state_signature_acceptable(&telemetry_snapshot, &peer_id, &snapshot) {
+            if !diloco_state_signature_acceptable(policy, &telemetry_snapshot, &peer_id, &snapshot)
+            {
                 continue;
             }
             if snapshot.training_protocol != TrainingProtocol::DiLoCo(policy.clone()) {
@@ -787,6 +790,12 @@ where
                 };
                 if snapshot.round_cursor.round_id == round_cursor.round_id
                     && snapshot.round_cursor.base_checkpoint_id == round_cursor.base_checkpoint_id
+                    && diloco_state_signature_acceptable(
+                        policy,
+                        &telemetry_snapshot,
+                        peer_id,
+                        &snapshot,
+                    )
                 {
                     compatible.insert(peer_id.clone());
                     progressed = true;
@@ -926,7 +935,12 @@ where
                     continue;
                 };
                 let telemetry_snapshot = self.telemetry().snapshot();
-                if !diloco_state_signature_acceptable(&telemetry_snapshot, &peer_id, &snapshot) {
+                if !diloco_state_signature_acceptable(
+                    policy,
+                    &telemetry_snapshot,
+                    &peer_id,
+                    &snapshot,
+                ) {
                     continue;
                 }
                 let Some(manifest_id) = snapshot.latest_gradient_manifest_id.clone() else {
@@ -939,7 +953,12 @@ where
                 ) else {
                     continue;
                 };
-                if !diloco_manifest_signature_acceptable(&telemetry_snapshot, &peer_id, &manifest) {
+                if !diloco_manifest_signature_acceptable(
+                    policy,
+                    &telemetry_snapshot,
+                    &peer_id,
+                    &manifest,
+                ) {
                     continue;
                 }
                 if manifest.round_cursor.round_id != round_cursor.round_id

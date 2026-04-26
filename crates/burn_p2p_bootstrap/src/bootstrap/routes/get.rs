@@ -24,6 +24,9 @@ pub(crate) fn handle_get_route(
     if request.method == "GET"
         && let Some(page) = page_request_from_path(&request.path, "/receipts/page")?
     {
+        if !authorize_admin_route(stream, context, request, AdminCapability::ExportReceipts)? {
+            return Ok(true);
+        }
         let query = ReceiptQuery {
             study_id: None,
             experiment_id: None,
@@ -38,6 +41,9 @@ pub(crate) fn handle_get_route(
     if request.method == "GET"
         && let Some(page) = page_request_from_path(&request.path, "/heads/page")?
     {
+        if !authorize_admin_route(stream, context, request, AdminCapability::ExportHeads)? {
+            return Ok(true);
+        }
         let heads = with_admin_state(state, |state| {
             state.export_heads_page(
                 &burn_p2p_bootstrap::HeadQuery {
@@ -56,6 +62,9 @@ pub(crate) fn handle_get_route(
     if request.method == "GET"
         && let Some(page) = page_request_from_path(&request.path, "/merges/page")?
     {
+        if !authorize_admin_route(stream, context, request, AdminCapability::ExportHeads)? {
+            return Ok(true);
+        }
         let merges = with_admin_state(state, |state| state.export_merges_page(page))?;
         write_json(stream, &merges)?;
         return Ok(true);
@@ -65,6 +74,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_audit_request_from_path(&request.path, "/operator/audit")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let (audit_summary, audit_facets, audit_page) = with_admin_state(state, |state| {
             Ok::<_, Box<dyn std::error::Error>>((
                 state.export_operator_audit_summary(&query)?,
@@ -86,6 +103,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_audit_request_from_path(&request.path, "/operator/audit/page")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let audit_page = with_admin_state(state, |state| {
             state.export_operator_audit_page(&query, page)
         })?;
@@ -97,6 +122,14 @@ pub(crate) fn handle_get_route(
         && let Some(query) =
             operator_audit_summary_request_from_path(&request.path, "/operator/audit/summary")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let audit_summary =
             with_admin_state(state, |state| state.export_operator_audit_summary(&query))?;
         write_json(stream, &audit_summary)?;
@@ -107,6 +140,14 @@ pub(crate) fn handle_get_route(
         && let Some((limit, query)) =
             operator_audit_facets_request_from_path(&request.path, "/operator/audit/facets")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let audit_facets = with_admin_state(state, |state| {
             state.export_operator_audit_facets(&query, limit)
         })?;
@@ -118,6 +159,14 @@ pub(crate) fn handle_get_route(
         && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot/view")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let replay_snapshot = with_admin_state(state, |state| {
             state.export_operator_replay_snapshot(captured_at)
         })?;
@@ -143,6 +192,14 @@ pub(crate) fn handle_get_route(
         && let Some(captured_at) =
             operator_replay_request_from_path(&request.path, "/operator/replay/snapshot")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let replay_snapshot = with_admin_state(state, |state| {
             state.export_operator_replay_snapshot(captured_at)
         })?;
@@ -154,6 +211,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_replay_page_request_from_path(&request.path, "/operator/replay")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let replay_page = with_admin_state(state, |state| {
             state.export_operator_replay_page(&query, page)
         })?;
@@ -170,6 +235,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_replay_page_request_from_path(&request.path, "/operator/replay/page")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let replay_page = with_admin_state(state, |state| {
             state.export_operator_replay_page(&query, page)
         })?;
@@ -181,6 +254,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_control_replay_page_request_from_path(&request.path, "/operator/control")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let (control_summary, control_page) = with_admin_state(state, |state| {
             Ok::<_, Box<dyn std::error::Error>>((
                 state.export_operator_control_replay_summary(&query)?,
@@ -201,6 +282,14 @@ pub(crate) fn handle_get_route(
         && let Some((page, query)) =
             operator_control_replay_page_request_from_path(&request.path, "/operator/control/page")?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let control_page = with_admin_state(state, |state| {
             state.export_operator_control_replay_page(&query, page)
         })?;
@@ -214,6 +303,14 @@ pub(crate) fn handle_get_route(
             "/operator/control/summary",
         )?
     {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let control_summary = with_admin_state(state, |state| {
             state.export_operator_control_replay_summary(&query)
         })?;
@@ -222,12 +319,28 @@ pub(crate) fn handle_get_route(
     }
 
     if request.method == "GET" && request.path == "/operator/retention" {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let retention = with_admin_state(state, |state| state.export_operator_retention_summary())?;
         write_json(stream, &retention)?;
         return Ok(true);
     }
 
     if request.method == "GET" && request.path == "/operator/retention/view" {
+        if !authorize_admin_route(
+            stream,
+            context,
+            request,
+            AdminCapability::ExportOperatorControlReplay,
+        )? {
+            return Ok(true);
+        }
         let retention = with_admin_state(state, |state| state.export_operator_retention_summary())?;
         write_response(
             stream,
@@ -282,6 +395,14 @@ pub(crate) fn handle_get_route(
             write_json(stream, &diagnostics)?;
         }
         ("GET", "/diagnostics/bundle") => {
+            if !authorize_admin_route(
+                stream,
+                context,
+                request,
+                AdminCapability::ExportDiagnosticsBundle,
+            )? {
+                return Ok(true);
+            }
             let bundle = current_diagnostics_bundle(plan, state, *remaining_work_units);
             write_json(stream, &bundle)?;
         }
@@ -401,8 +522,17 @@ pub(crate) fn handle_get_route(
                 render_openmetrics(&diagnostics).into_bytes(),
             )?;
         }
-        ("GET", "/events") => write_event_stream(stream, plan, state, *remaining_work_units)?,
+        ("GET", "/events") => {
+            if !authorize_admin_route(stream, context, request, AdminCapability::ExportDiagnostics)?
+            {
+                return Ok(true);
+            }
+            write_event_stream(stream, plan, state, *remaining_work_units)?
+        }
         ("GET", "/receipts") => {
+            if !authorize_admin_route(stream, context, request, AdminCapability::ExportReceipts)? {
+                return Ok(true);
+            }
             let query = ReceiptQuery {
                 study_id: None,
                 experiment_id: None,
@@ -415,6 +545,9 @@ pub(crate) fn handle_get_route(
             write_json(stream, &receipts)?;
         }
         ("GET", "/heads") => {
+            if !authorize_admin_route(stream, context, request, AdminCapability::ExportHeads)? {
+                return Ok(true);
+            }
             let heads = with_admin_state(state, |state| {
                 Ok::<_, std::convert::Infallible>(state.export_heads(
                     &burn_p2p_bootstrap::HeadQuery {
@@ -428,6 +561,10 @@ pub(crate) fn handle_get_route(
             write_json(stream, &heads)?;
         }
         ("GET", "/reducers/load") => {
+            if !authorize_admin_route(stream, context, request, AdminCapability::ExportReducerLoad)?
+            {
+                return Ok(true);
+            }
             let reducer_load = with_admin_state(state, |state| {
                 Ok::<_, std::convert::Infallible>(state.export_reducer_load(
                     &burn_p2p_bootstrap::ReducerLoadQuery {

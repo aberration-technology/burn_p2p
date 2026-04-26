@@ -1,5 +1,12 @@
 use super::*;
 
+const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024;
+const MAX_HEADER_LINE_BYTES: usize = 16 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
 pub(crate) fn write_event_stream(
     stream: &mut TcpStream,
     plan: &BootstrapPlan,
@@ -131,20 +138,28 @@ pub(crate) fn is_sse_disconnect(error: &std::io::Error) -> bool {
 pub(crate) fn read_request(
     stream: &TcpStream,
 ) -> Result<Option<HttpRequest>, Box<dyn std::error::Error>> {
+    stream.set_read_timeout(Some(HTTP_READ_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    let Some(request_line) = read_bounded_line(&mut reader, MAX_REQUEST_LINE_BYTES)? else {
         return Ok(None);
-    }
+    };
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().ok_or("missing method")?.to_owned();
     let path = parts.next().ok_or("missing path")?.to_owned();
     let mut headers = BTreeMap::new();
+    let mut header_bytes = 0usize;
 
     loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
+        let Some(line) = read_bounded_line(&mut reader, MAX_HEADER_LINE_BYTES)? else {
+            break;
+        };
+        header_bytes = header_bytes
+            .checked_add(line.len())
+            .ok_or("request headers exceeded maximum size")?;
+        if header_bytes > MAX_HEADER_BYTES {
+            return Err(format!("request headers exceeded {MAX_HEADER_BYTES} bytes").into());
+        }
         if line == "\r\n" || line.is_empty() {
             break;
         }
@@ -154,10 +169,15 @@ pub(crate) fn read_request(
         }
     }
 
-    let content_length = headers
-        .get("content-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
+    let content_length = match headers.get("content-length") {
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| format!("invalid content-length header `{value}`"))?,
+        None => 0,
+    };
+    if content_length > MAX_BODY_BYTES {
+        return Err(format!("request body exceeded {MAX_BODY_BYTES} bytes").into());
+    }
     let mut body = vec![0_u8; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body)?;
@@ -169,6 +189,36 @@ pub(crate) fn read_request(
         headers,
         body,
     }))
+}
+
+fn read_bounded_line(
+    reader: &mut BufReader<TcpStream>,
+    max_len: usize,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0_u8; 1];
+        match reader.read(&mut byte)? {
+            0 => {
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+            _ => {
+                bytes.push(byte[0]);
+                if bytes.len() > max_len {
+                    return Err(format!("request line exceeded {max_len} bytes").into());
+                }
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| format!("request line was not utf-8: {error}").into())
 }
 
 pub(crate) fn write_json(
@@ -240,8 +290,18 @@ pub(crate) fn write_response_with_headers_for_method(
     headers: &[(&str, String)],
     body: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    stream.set_write_timeout(Some(HTTP_WRITE_TIMEOUT))?;
     let mut wire = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        concat!(
+            "HTTP/1.1 {}\r\n",
+            "Content-Type: {}\r\n",
+            "Content-Length: {}\r\n",
+            "Connection: close\r\n",
+            "X-Content-Type-Options: nosniff\r\n",
+            "Referrer-Policy: no-referrer\r\n",
+        ),
+        status,
+        content_type,
         body.len()
     );
     for (name, value) in headers {

@@ -683,42 +683,6 @@ pub(crate) fn artifact_publication_enabled(state: &Arc<Mutex<BootstrapAdminState
 }
 
 #[cfg(feature = "artifact-publish")]
-pub(crate) fn authorize_admin_route(
-    stream: &mut TcpStream,
-    context: &HttpServerContext,
-    request: &HttpRequest,
-    required_capability: AdminCapability,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    if token_matches(
-        request,
-        context.admin_token.as_deref(),
-        context.allow_dev_admin_token,
-    ) {
-        return Ok(true);
-    }
-    let Some(capabilities) = request_admin_capabilities(request, context.auth_state.as_ref())
-    else {
-        write_response(
-            stream,
-            "401 Unauthorized",
-            "text/plain; charset=utf-8",
-            b"missing or invalid x-admin-token or x-session-id".to_vec(),
-        )?;
-        return Ok(false);
-    };
-    if !capabilities.contains(&required_capability) {
-        write_response(
-            stream,
-            "403 Forbidden",
-            "text/plain; charset=utf-8",
-            format!("session is not authorized for {:?}", required_capability).into_bytes(),
-        )?;
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-#[cfg(feature = "artifact-publish")]
 pub(crate) fn resolve_artifact_request_principal(
     request: &HttpRequest,
     auth_state: Option<&Arc<AuthPortalState>>,

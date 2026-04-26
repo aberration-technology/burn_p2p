@@ -154,8 +154,8 @@ fn operator_control_routes_expose_typed_control_replay_filters() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -166,8 +166,8 @@ fn operator_control_routes_expose_typed_control_replay_filters() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-control-routes.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -180,7 +180,7 @@ fn operator_control_routes_expose_typed_control_replay_filters() {
             method: "GET",
             path: "/operator/control/page?kind=schedule-epoch&network_id=secure-demo&window_id=8&peer_id=trainer-a",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     ));
     let items = control_page["items"]
@@ -197,7 +197,7 @@ fn operator_control_routes_expose_typed_control_replay_filters() {
             method: "GET",
             path: "/operator/control/summary?experiment_id=exp-b&window_id=7",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     ));
     assert_eq!(control_summary["record_count"], 1);
@@ -217,8 +217,8 @@ fn operator_control_html_route_renders_human_facing_page() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -229,8 +229,8 @@ fn operator_control_html_route_renders_human_facing_page() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-control-view.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -243,7 +243,7 @@ fn operator_control_html_route_renders_human_facing_page() {
             method: "GET",
             path: "/operator/control?kind=schedule-epoch&network_id=secure-demo&window_id=8&peer_id=trainer-a",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     );
     assert!(html.starts_with("HTTP/1.1 200 OK"));
@@ -272,8 +272,8 @@ fn operator_audit_html_route_renders_human_facing_page() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -284,8 +284,8 @@ fn operator_audit_html_route_renders_human_facing_page() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-audit-view.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -298,7 +298,7 @@ fn operator_audit_html_route_renders_human_facing_page() {
             method: "GET",
             path: "/operator/audit?kind=lifecycle-plan&experiment_id=exp-b",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     );
     assert!(html.starts_with("HTTP/1.1 200 OK"));
@@ -323,8 +323,8 @@ fn operator_replay_html_route_renders_human_facing_page() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -335,8 +335,8 @@ fn operator_replay_html_route_renders_human_facing_page() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-replay-view.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -349,7 +349,7 @@ fn operator_replay_html_route_renders_human_facing_page() {
             method: "GET",
             path: "/operator/replay?experiment_id=exp-b",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     );
     assert!(html.starts_with("HTTP/1.1 200 OK"));
@@ -373,8 +373,8 @@ fn operator_replay_snapshot_html_route_renders_human_facing_page() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -385,8 +385,8 @@ fn operator_replay_snapshot_html_route_renders_human_facing_page() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-replay-snapshot-view.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -399,7 +399,7 @@ fn operator_replay_snapshot_html_route_renders_human_facing_page() {
             method: "GET",
             path: "/operator/replay/snapshot/view",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     );
     assert!(html.starts_with("HTTP/1.1 200 OK"));
@@ -421,8 +421,8 @@ fn operator_retention_html_route_renders_human_facing_page() {
         config: Arc::new(Mutex::new(BootstrapDaemonConfig {
             spec: sample_spec(),
             http_bind_addr: None,
-            admin_token: None,
-            allow_dev_admin_token: false,
+            admin_token: Some("test-admin".into()),
+            allow_dev_admin_token: true,
             optional_services: BootstrapOptionalServicesConfig::default(),
             remaining_work_units: None,
             admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
@@ -433,8 +433,8 @@ fn operator_retention_html_route_renders_human_facing_page() {
             artifact_publication: None,
         })),
         config_path: Arc::new(temp.path().join("operator-retention-view.json")),
-        admin_token: None,
-        allow_dev_admin_token: false,
+        admin_token: Some("test-admin".into()),
+        allow_dev_admin_token: true,
         remaining_work_units: None,
         admin_signer_peer_id: PeerId::new("bootstrap-authority"),
         auth_state: None,
@@ -447,7 +447,7 @@ fn operator_retention_html_route_renders_human_facing_page() {
             method: "GET",
             path: "/operator/retention/view",
             body: None,
-            headers: &[],
+            headers: &[("x-admin-token", "test-admin")],
         },
     );
     assert!(html.starts_with("HTTP/1.1 200 OK"));

@@ -400,6 +400,10 @@ pub struct DiLoCoPolicy {
     /// Outer optimizer semantics applied after aggregation.
     #[serde(default)]
     pub outer_optimizer_policy: OuterOptimizerPolicy,
+    /// Whether remote DiLoCo state and pseudo-gradient manifests must carry
+    /// signatures from authenticated peers before they can participate.
+    #[serde(default)]
+    pub require_signed_peer_payloads: bool,
 }
 
 impl Default for DiLoCoPolicy {
@@ -416,6 +420,7 @@ impl Default for DiLoCoPolicy {
             topology_policy: DiLoCoTopologyPolicy::default(),
             rejoin_policy: DiLoCoRejoinPolicy::default(),
             outer_optimizer_policy: OuterOptimizerPolicy::default(),
+            require_signed_peer_payloads: false,
         }
     }
 }

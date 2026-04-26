@@ -86,25 +86,25 @@ impl FsArtifactStore {
     /// Performs the chunk path operation.
     pub fn chunk_path(&self, chunk_id: &ChunkId) -> PathBuf {
         self.chunks_dir()
-            .join(format!("{}.chunk", chunk_id.as_str()))
+            .join(format!("{}.chunk", chunk_id.path_component()))
     }
 
     /// Performs the manifest path operation.
     pub fn manifest_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.manifests_dir()
-            .join(format!("{}.json", artifact_id.as_str()))
+            .join(format!("{}.json", artifact_id.path_component()))
     }
 
     /// Performs the head pin path operation.
     pub fn head_pin_path(&self, head_id: &HeadId) -> PathBuf {
         self.pins_dir()
-            .join(format!("head-{}.pin", head_id.as_str()))
+            .join(format!("head-{}.pin", head_id.path_component()))
     }
 
     /// Performs the artifact pin path operation.
     pub fn artifact_pin_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.pins_dir()
-            .join(format!("artifact-{}.pin", artifact_id.as_str()))
+            .join(format!("artifact-{}.pin", artifact_id.path_component()))
     }
 
     /// Returns whether the value has chunk.
@@ -671,5 +671,19 @@ mod tests {
                 .expect("materialize"),
             payload
         );
+    }
+
+    #[test]
+    fn id_backed_paths_stay_inside_store_root() {
+        let dir = tempdir().expect("tempdir");
+        let store = FsArtifactStore::new(dir.path());
+
+        let chunk_path = store.chunk_path(&burn_p2p_core::ChunkId::new("../escape"));
+        assert!(chunk_path.starts_with(store.chunks_dir()));
+        assert!(!chunk_path.to_string_lossy().contains("../escape"));
+
+        let manifest_path = store.manifest_path(&burn_p2p_core::ArtifactId::new("nested/id"));
+        assert!(manifest_path.starts_with(store.manifests_dir()));
+        assert!(!manifest_path.to_string_lossy().contains("nested/id"));
     }
 }

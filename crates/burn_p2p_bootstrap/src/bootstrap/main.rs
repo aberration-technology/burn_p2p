@@ -1,7 +1,7 @@
 //! Bootstrap, edge, and operator-facing services for burn_p2p deployments.
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},

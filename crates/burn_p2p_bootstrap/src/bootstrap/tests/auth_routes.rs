@@ -137,13 +137,42 @@ fn http_routes_serve_status_and_static_auth_flow() {
         },
     ));
     assert_eq!(status["network_id"], "secure-demo");
+    let login = response_json(&issue_request(
+        context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/login/static",
+            body: Some(serde_json::json!({
+                "network_id": "secure-demo",
+                "principal_hint": "alice",
+                "requested_scopes": ["Connect", {"Train": {"experiment_id": "exp-auth"}}],
+            })),
+            headers: &[],
+        },
+    ));
+    let session = response_json(&issue_request(
+        context.clone(),
+        IssueRequestSpec {
+            method: "POST",
+            path: "/callback/static",
+            body: Some(serde_json::json!({
+                "login_id": login["login_id"],
+                "state": login["state"],
+                "principal_id": "alice",
+            })),
+            headers: &[],
+        },
+    ));
+    let session_header = session["session_id"].as_str().expect("session id string");
+    let directory_headers = [("x-session-id", session_header)];
+
     let bundle = response_json(&issue_request(
         context.clone(),
         IssueRequestSpec {
             method: "GET",
             path: "/diagnostics/bundle",
             body: None,
-            headers: &[],
+            headers: &directory_headers,
         },
     ));
     assert_eq!(bundle["plan"]["genesis"]["network_id"], "secure-demo");
@@ -159,7 +188,7 @@ fn http_routes_serve_status_and_static_auth_flow() {
             method: "GET",
             path: "/heads",
             body: None,
-            headers: &[],
+            headers: &directory_headers,
         },
     ));
     assert_eq!(heads.as_array().expect("heads array").len(), 1);
@@ -170,7 +199,7 @@ fn http_routes_serve_status_and_static_auth_flow() {
             method: "GET",
             path: "/reducers/load",
             body: None,
-            headers: &[],
+            headers: &directory_headers,
         },
     ));
     assert_eq!(
@@ -201,34 +230,6 @@ fn http_routes_serve_status_and_static_auth_flow() {
     ));
     assert_eq!(reenrollment, Value::Null);
 
-    let login = response_json(&issue_request(
-        context.clone(),
-        IssueRequestSpec {
-            method: "POST",
-            path: "/login/static",
-            body: Some(serde_json::json!({
-                "network_id": "secure-demo",
-                "principal_hint": "alice",
-                "requested_scopes": ["Connect", {"Train": {"experiment_id": "exp-auth"}}],
-            })),
-            headers: &[],
-        },
-    ));
-    let session = response_json(&issue_request(
-        context.clone(),
-        IssueRequestSpec {
-            method: "POST",
-            path: "/callback/static",
-            body: Some(serde_json::json!({
-                "login_id": login["login_id"],
-                "state": login["state"],
-                "principal_id": "alice",
-            })),
-            headers: &[],
-        },
-    ));
-    let session_header = session["session_id"].as_str().expect("session id string");
-
     let stale_protocol_enroll = issue_request(
         context.clone(),
         IssueRequestSpec {
@@ -253,7 +254,6 @@ fn http_routes_serve_status_and_static_auth_flow() {
     assert!(stale_protocol_enroll.starts_with("HTTP/1.1 403 Forbidden"));
     assert!(response_body(&stale_protocol_enroll).contains("protocol major 1"));
 
-    let directory_headers = [("x-session-id", session_header)];
     let directory = response_json(&issue_request(
         context.clone(),
         IssueRequestSpec {
@@ -405,7 +405,7 @@ fn http_routes_serve_status_and_static_auth_flow() {
             method: "GET",
             path: "/receipts",
             body: None,
-            headers: &[],
+            headers: &directory_headers,
         },
     ));
     assert_eq!(receipts.as_array().expect("receipts array").len(), 2);

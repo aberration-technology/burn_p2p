@@ -156,48 +156,48 @@ impl StorageConfig {
 
     pub(crate) fn scoped_transfer_path(&self, artifact_id: &ArtifactId) -> PathBuf {
         self.transfers_dir()
-            .join(format!("transfer-{}.json", artifact_id.as_str()))
+            .join(format!("transfer-{}.json", artifact_id.path_component()))
     }
 
     pub(crate) fn scoped_window_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "window-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_current_head_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "current-head-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_diloco_state_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "diloco-state-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_limit_profile_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "limit-profile-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_receipt_path(&self, receipt_id: &ContributionReceiptId) -> PathBuf {
         self.receipts_dir()
-            .join(format!("{}.json", receipt_id.as_str()))
+            .join(format!("{}.json", receipt_id.path_component()))
     }
 
     pub(crate) fn scoped_lease_path(
@@ -208,19 +208,20 @@ impl StorageConfig {
     ) -> PathBuf {
         self.leases_dir().join(format!(
             "lease-{}-{}-{}.json",
-            study_id.as_str(),
-            experiment_id.as_str(),
-            revision_id.as_str()
+            study_id.path_component(),
+            experiment_id.path_component(),
+            revision_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_merge_cert_path(&self, merge_cert_id: &MergeCertId) -> PathBuf {
         self.receipts_dir()
-            .join(format!("merge-{}.json", merge_cert_id.as_str()))
+            .join(format!("merge-{}.json", merge_cert_id.path_component()))
     }
 
     pub(crate) fn scoped_head_path(&self, head_id: &HeadId) -> PathBuf {
-        self.heads_dir().join(format!("{}.json", head_id.as_str()))
+        self.heads_dir()
+            .join(format!("{}.json", head_id.path_component()))
     }
 
     pub(crate) fn scoped_peer_window_metrics_path(
@@ -231,7 +232,7 @@ impl StorageConfig {
         self.metrics_dir().join(format!(
             "{}{}.json",
             self.scoped_peer_window_metrics_prefix(experiment),
-            lease_id.as_str()
+            lease_id.path_component()
         ))
     }
 
@@ -241,9 +242,9 @@ impl StorageConfig {
     ) -> String {
         format!(
             "peer-window-{}-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
         )
     }
 
@@ -253,8 +254,8 @@ impl StorageConfig {
     ) -> String {
         format!(
             "peer-window-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
         )
     }
 
@@ -267,8 +268,8 @@ impl StorageConfig {
         self.metrics_dir().join(format!(
             "{}{}-{}.json",
             self.scoped_reducer_cohort_metrics_prefix(experiment),
-            merge_window_id.as_str(),
-            reducer_group_id.as_str()
+            merge_window_id.path_component(),
+            reducer_group_id.path_component()
         ))
     }
 
@@ -278,18 +279,18 @@ impl StorageConfig {
     ) -> String {
         format!(
             "reducer-cohort-{}-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
         )
     }
 
     pub(crate) fn scoped_robustness_state_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.state_dir().join(format!(
             "robustness-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
@@ -300,9 +301,9 @@ impl StorageConfig {
     ) -> PathBuf {
         self.metrics_dir().join(format!(
             "cohort-robustness-{}-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
             window_id.0
         ))
     }
@@ -310,9 +311,9 @@ impl StorageConfig {
     pub(crate) fn scoped_trust_scores_path(&self, experiment: &ExperimentHandle) -> PathBuf {
         self.metrics_dir().join(format!(
             "trust-scores-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component()
         ))
     }
 
@@ -323,10 +324,10 @@ impl StorageConfig {
     ) -> PathBuf {
         self.metrics_dir().join(format!(
             "canary-report-{}-{}-{}-{}.json",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
-            head_id.as_str()
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
+            head_id.path_component()
         ))
     }
 
@@ -336,8 +337,8 @@ impl StorageConfig {
     ) -> String {
         format!(
             "reducer-cohort-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
         )
     }
 
@@ -350,17 +351,17 @@ impl StorageConfig {
         self.metrics_dir().join(format!(
             "{}{}-{}.json",
             self.scoped_head_eval_report_prefix(experiment),
-            head_id.as_str(),
-            eval_protocol_id.as_str()
+            head_id.path_component(),
+            eval_protocol_id.path_component()
         ))
     }
 
     pub(crate) fn scoped_head_eval_report_prefix(&self, experiment: &ExperimentHandle) -> String {
         format!(
             "head-eval-{}-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
         )
     }
 
@@ -370,8 +371,8 @@ impl StorageConfig {
     ) -> String {
         format!(
             "head-eval-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
         )
     }
 
@@ -383,7 +384,7 @@ impl StorageConfig {
         self.metrics_dir().join(format!(
             "{}{}.json",
             self.scoped_eval_protocol_manifest_prefix(experiment),
-            eval_protocol_id.as_str()
+            eval_protocol_id.path_component()
         ))
     }
 
@@ -393,9 +394,9 @@ impl StorageConfig {
     ) -> String {
         format!(
             "eval-protocol-{}-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
-            experiment.revision_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
+            experiment.revision_id.path_component(),
         )
     }
 
@@ -405,8 +406,8 @@ impl StorageConfig {
     ) -> String {
         format!(
             "eval-protocol-{}-{}-",
-            experiment.study_id.as_str(),
-            experiment.experiment_id.as_str(),
+            experiment.study_id.path_component(),
+            experiment.experiment_id.path_component(),
         )
     }
 }
