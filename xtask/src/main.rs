@@ -3603,9 +3603,19 @@ fn run_bench_network(workspace: &Workspace, args: BenchArgs) -> anyhow::Result<(
         }
     };
 
-    let peer_count = args.common.profile.settings().multiprocess_peers.max(4);
+    let ci_ndarray_fallback =
+        env::var_os("CI").is_some() && trainer_backend == SyntheticNativeBackend::NdArray;
+    let peer_count = if ci_ndarray_fallback {
+        4
+    } else {
+        args.common.profile.settings().multiprocess_peers.max(4)
+    };
     let trainer_count = peer_count.saturating_sub(1).max(1);
-    let trainer_window_count = args.common.profile.settings().trainer_windows.max(4);
+    let trainer_window_count = if ci_ndarray_fallback {
+        1
+    } else {
+        args.common.profile.settings().trainer_windows.max(4)
+    };
     let soak_config = SyntheticSoakConfig {
         root: artifacts.root.join("synthetic-soak"),
         workload_kind: SyntheticWorkloadKind::BurnLinear,
