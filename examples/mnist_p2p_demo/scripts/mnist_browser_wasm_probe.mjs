@@ -292,6 +292,7 @@ async function runProfile(page, profile, config, requestLog, origin) {
           network_id: config.network_id,
           selected_head_id: config.selected_head_id,
           release_train_hash: config.release_train_hash,
+          app_semver: config.app_semver,
           target_artifact_id: config.target_artifact_id,
           target_artifact_hash: config.target_artifact_hash,
           principal_id: config.principal_id,
