@@ -1651,6 +1651,10 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
                     .get("release_train_hash")
                     .and_then(serde_json::Value::as_str)
                     .context("browser live manifest missing release_train_hash")?,
+                "app_semver": browser_manifest
+                    .get("app_semver")
+                    .and_then(serde_json::Value::as_str)
+                    .context("browser live manifest missing app_semver")?,
                 "target_artifact_id": browser_manifest
                     .get("target_artifact_id")
                     .and_then(serde_json::Value::as_str)
