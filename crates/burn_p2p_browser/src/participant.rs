@@ -171,7 +171,7 @@ impl BrowserSessionRuntimeHandle {
             if let Some(error) = hard_error {
                 return Err(error.into());
             }
-            return Ok(events);
+            Ok(events)
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -222,7 +222,6 @@ impl BrowserSessionRuntimeHandle {
                 _ => None,
             })
             .unwrap_or_default();
-        self.refresh().await?;
 
         Ok(BrowserSessionTrainingOutcome {
             receipt_submission_accepted: !accepted_receipt_ids.is_empty(),

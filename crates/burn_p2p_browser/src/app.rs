@@ -696,7 +696,7 @@ impl BrowserAppController {
                 return Err(error);
             }
             persist_result?;
-            return Ok(self.view());
+            Ok(self.view())
         }
         #[cfg(not(target_arch = "wasm32"))]
         match self
@@ -796,10 +796,9 @@ pub(crate) async fn refresh_worker_runtime_preferring_direct_swarm(
     direct_swarm_runtime: Option<&mut WasmBrowserSwarmRuntime>,
     include_leaderboard: bool,
 ) -> (Vec<BrowserWorkerEvent>, Option<BrowserAuthClientError>) {
-    let mut direct_swarm_runtime = direct_swarm_runtime;
     let mut events = apply_direct_swarm_status_snapshot(runtime, direct_swarm_runtime.as_deref());
 
-    if let Some(direct_swarm_runtime) = direct_swarm_runtime.as_deref_mut() {
+    if let Some(direct_swarm_runtime) = direct_swarm_runtime {
         events.extend(ensure_direct_swarm_runtime_connected(runtime, direct_swarm_runtime).await);
         events.extend(wait_for_direct_swarm_bootstrap(runtime, direct_swarm_runtime).await);
         match sync_worker_runtime_from_direct_swarm(

@@ -18,7 +18,7 @@ core shape:
 
 ```toml
 [dependencies]
-burn_p2p = { version = "=0.21.0-pre.41", features = ["burn"] }
+burn_p2p = { version = "=0.21.0-pre.42", features = ["burn"] }
 ```
 
 ## happy path
