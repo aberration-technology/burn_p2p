@@ -17,6 +17,7 @@ use burn_p2p::{
     ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
     HeadId, LoginStart, NetworkId, PeerId, PeerRole, PeerRoleSet, PrincipalClaims, PrincipalId,
     PrincipalSession, RevisionId, StudyId, WindowActivation, WindowId, WorkloadId,
+    WorkloadTrainingContribution, WorkloadTrainingLease,
 };
 use burn_p2p_core::{
     ArtifactProfile, BackendClass, BrowserArtifactSource, BrowserDirectorySnapshot,
@@ -169,6 +170,7 @@ fn worker_bridge_messages_round_trip_through_json() {
         workload_id: WorkloadId::new("wgpu-demo"),
         budget: BrowserTrainingBudget::default(),
         lease: None,
+        contribution: None,
     });
     let bytes = serde_json::to_vec(&command).expect("serialize command");
     let decoded: BrowserWorkerCommand =
@@ -249,6 +251,7 @@ fn browser_conformance_harness_executes_authenticated_training_and_validation() 
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         })
         .expect("training result");
 
@@ -2064,6 +2067,7 @@ fn worker_runtime_apply_command_completes_validation_and_training_locally() {
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         }),
         None,
         None,
@@ -2074,9 +2078,149 @@ fn worker_runtime_apply_command_completes_validation_and_training_locally() {
                 artifact_id,
                 receipt_id: Some(receipt_id),
                 window_secs: 30,
+                ..
             }) if artifact_id == &ArtifactId::new("browser-artifact-exp-browser-rev-browser-browser-demo")
                 && receipt_id.as_str().starts_with("browser-training-receipt-exp-browser-rev-browser-browser-unenrolled-peer-")
-        )));
+    )));
+}
+
+#[test]
+fn worker_runtime_training_uses_contribution_receipt_metrics() {
+    let config = BrowserRuntimeConfig::new(
+        "https://edge.example",
+        NetworkId::new("net-browser"),
+        ContentId::new("train-browser"),
+        "browser-wasm",
+        ContentId::new("artifact-browser"),
+    );
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..config
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let now = Utc::now();
+    runtime.remember_session(BrowserSessionState {
+        session: Some(PrincipalSession {
+            session_id: ContentId::new("session-browser"),
+            network_id: NetworkId::new("net-browser"),
+            claims: PrincipalClaims {
+                principal_id: PrincipalId::new("principal-browser"),
+                provider: AuthProvider::Static {
+                    authority: "lab-auth".into(),
+                },
+                display_name: "Browser User".into(),
+                org_memberships: BTreeSet::new(),
+                group_memberships: BTreeSet::new(),
+                granted_roles: PeerRoleSet::default(),
+                granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                custom_claims: BTreeMap::new(),
+                issued_at: now,
+                expires_at: now,
+            },
+            issued_at: now,
+            expires_at: now,
+        }),
+        ..BrowserSessionState::default()
+    });
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-before"));
+    runtime.state = Some(BrowserRuntimeState::Trainer);
+
+    let events = runtime.apply_command(
+        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            workload_id: WorkloadId::new("browser-demo"),
+            budget: BrowserTrainingBudget::default(),
+            lease: Some(WorkloadTrainingLease {
+                lease_id: LeaseId::new("lease-browser"),
+                window_id: WindowId(7),
+                dataset_view_id: burn_p2p::DatasetViewId::new("dataset-view-browser"),
+                assignment_hash: ContentId::new("assignment-browser"),
+                microshards: vec![burn_p2p::MicroShardId::new("micro-browser")],
+            }),
+            contribution: Some(WorkloadTrainingContribution {
+                artifact_id: ArtifactId::new("browser-delta-artifact"),
+                completed_batches: 4,
+                completed_examples: 4,
+                completed_tokens: 4096,
+                training_time_ms: 1_250,
+                eval_time_ms: 80,
+                total_time_ms: 1_500,
+                artifact_published: true,
+                metadata: BTreeMap::from([
+                    ("backend".into(), "burn-webgpu-wasm".into()),
+                    ("receipt_payload_version".into(), "browser-window-v1".into()),
+                ]),
+            }),
+        }),
+        None,
+        None,
+    );
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::TrainingCompleted(BrowserTrainingResult {
+            artifact_id,
+            receipt_id: Some(_),
+            completed_batches: 4,
+            completed_examples: 4,
+            completed_tokens: 4096,
+            artifact_published: true,
+            ..
+        }) if artifact_id == &ArtifactId::new("browser-delta-artifact")
+    )));
+
+    let receipt = runtime
+        .storage
+        .pending_receipts
+        .iter()
+        .next()
+        .expect("training should enqueue one contribution receipt");
+    assert_eq!(
+        receipt.artifact_id,
+        ArtifactId::new("browser-delta-artifact")
+    );
+    assert_eq!(receipt.base_head_id, HeadId::new("head-before"));
+    assert_eq!(receipt.accepted_weight, 4096.0);
+    assert_eq!(
+        receipt.metrics.get("batch_count"),
+        Some(&MetricValue::Integer(4))
+    );
+    assert_eq!(
+        receipt.metrics.get("tokens_processed"),
+        Some(&MetricValue::Integer(4096))
+    );
+    assert_eq!(
+        receipt.metrics.get("training_time_ms"),
+        Some(&MetricValue::Integer(1_250))
+    );
+    assert_eq!(
+        receipt.metrics.get("artifact_published"),
+        Some(&MetricValue::Bool(true))
+    );
+    assert_eq!(
+        receipt.metrics.get("backend"),
+        Some(&MetricValue::Text("burn-webgpu-wasm".into()))
+    );
+    assert_eq!(
+        receipt.metrics.get("lease_id"),
+        Some(&MetricValue::Text("lease-browser".into()))
+    );
+    assert_eq!(
+        receipt.metrics.get("microshard_count"),
+        Some(&MetricValue::Integer(1))
+    );
 }
 
 #[test]
@@ -2475,6 +2619,7 @@ fn worker_runtime_flushes_and_acknowledges_receipt_outbox() {
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         }),
         None,
         None,
@@ -2567,6 +2712,56 @@ fn worker_runtime_flushes_receipt_outbox_in_bounded_batches() {
     assert_eq!(runtime.storage.pending_receipts.len(), 80);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_client_defers_retryable_receipt_submission_failure() {
+    let (base_url, request_count, handle) =
+        spawn_retryable_receipt_failure_server("502 Bad Gateway", 3);
+    let mut runtime = trainer_runtime_with_assignment("exp-browser", "rev-browser", "view-browser");
+    runtime
+        .config
+        .as_mut()
+        .expect("runtime config")
+        .edge_base_url = base_url.clone();
+    let _ = runtime.apply_command(
+        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            workload_id: WorkloadId::new("browser-demo"),
+            budget: BrowserTrainingBudget::default(),
+            lease: None,
+            contribution: None,
+        }),
+        None,
+        None,
+    );
+
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(&base_url),
+        BrowserEnrollmentConfig::for_runtime_sync(&browser_test_edge_snapshot()),
+    );
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async { client.flush_worker_receipts(&mut runtime).await })
+        .expect("retryable receipt failure should defer instead of fail");
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        BrowserWorkerEvent::ReceiptSubmissionDeferred {
+            pending_receipts: 1,
+            retryable: true,
+            reason,
+            ..
+        } if reason.contains("502")
+    )));
+    assert_eq!(runtime.storage.pending_receipts.len(), 1);
+    assert_eq!(*request_count.lock().expect("request count"), 3);
+    handle.join().expect("join receipt failure server");
+}
+
 #[test]
 fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
     let config = BrowserRuntimeConfig::new(
@@ -2618,6 +2813,7 @@ fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         }),
         None,
         None,
@@ -3260,6 +3456,31 @@ fn spawn_callback_capture_server() -> (String, std::thread::JoinHandle<String>) 
     });
 
     (base_url, handle)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_retryable_receipt_failure_server(
+    status: &'static str,
+    expected_requests: usize,
+) -> (String, Arc<Mutex<usize>>, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind receipt failure listener");
+    let base_url = format!("http://{}", listener.local_addr().expect("listener addr"));
+    let request_count = Arc::new(Mutex::new(0usize));
+    let thread_request_count = Arc::clone(&request_count);
+    let handle = thread::spawn(move || {
+        for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().expect("accept receipt request");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            *thread_request_count.lock().expect("request count") += 1;
+            let response =
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream
+                .write_all(response.as_bytes())
+                .expect("write receipt failure response");
+        }
+    });
+    (base_url, request_count, handle)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4864,6 +5085,7 @@ fn worker_runtime_training_with_lease_persists_active_training_lease() {
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: Some(lease.clone()),
+            contribution: None,
         }),
         None,
         None,
@@ -4897,6 +5119,7 @@ fn worker_runtime_training_without_lease_clears_previous_active_training_lease()
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         }),
         None,
         None,

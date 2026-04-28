@@ -33,9 +33,9 @@ pub use directory_metadata::{
     find_matching_directory_entry_with_predicate,
 };
 pub use execution::{
-    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingLease, WorkloadTrainingPlan,
-    WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadValidationPlan,
-    WorkloadValidationProgress, WorkloadValidationResult,
+    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingContribution,
+    WorkloadTrainingLease, WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult,
+    WorkloadValidationPlan, WorkloadValidationProgress, WorkloadValidationResult,
 };
 
 /// Returns the local filesystem root for one dataset registration when the

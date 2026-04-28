@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use burn_p2p_core::{
     ArtifactId, AssignmentLease, ContentId, ContributionReceiptId, DatasetViewId, ExperimentId,
     HeadId, LeaseId, MicroShardId, Precision, RevisionId, StudyId, WindowId, WorkloadId,
@@ -63,6 +65,32 @@ pub struct WorkloadTrainingLease {
     pub microshards: Vec<MicroShardId>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes concrete local work already completed for one host-neutral
+/// training window.
+pub struct WorkloadTrainingContribution {
+    /// The artifact or delta identifier emitted by the workload.
+    pub artifact_id: ArtifactId,
+    /// Completed optimizer batches.
+    pub completed_batches: u64,
+    /// Completed training examples.
+    pub completed_examples: u64,
+    /// Completed training tokens or sample-equivalent units.
+    pub completed_tokens: u64,
+    /// Time spent in the local training kernel.
+    pub training_time_ms: u64,
+    /// Time spent in the local evaluation pass.
+    pub eval_time_ms: u64,
+    /// Total local workload wall-clock time.
+    pub total_time_ms: u64,
+    /// Whether an artifact/delta was published through a peer-visible transport.
+    #[serde(default)]
+    pub artifact_published: bool,
+    /// Extra string metadata copied into contribution receipts.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
 impl From<&AssignmentLease> for WorkloadTrainingLease {
     fn from(value: &AssignmentLease) -> Self {
         Self {
@@ -97,6 +125,10 @@ pub struct WorkloadTrainingPlan {
     /// The exact assigned lease when one was provided by the runtime.
     #[serde(default)]
     pub lease: Option<WorkloadTrainingLease>,
+    /// Actual local work already performed by the workload, when the host
+    /// trains outside the shared worker harness.
+    #[serde(default)]
+    pub contribution: Option<WorkloadTrainingContribution>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +153,18 @@ pub struct WorkloadTrainingResult {
     pub receipt_id: Option<ContributionReceiptId>,
     /// Total training-window duration in seconds.
     pub window_secs: u64,
+    /// Completed optimizer batches.
+    #[serde(default)]
+    pub completed_batches: u64,
+    /// Completed training examples.
+    #[serde(default)]
+    pub completed_examples: u64,
+    /// Completed training tokens or sample-equivalent units.
+    #[serde(default)]
+    pub completed_tokens: u64,
+    /// Whether an artifact/delta was published through a peer-visible transport.
+    #[serde(default)]
+    pub artifact_published: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +234,7 @@ mod tests {
                 assignment_hash: ContentId::new("assign-hash"),
                 microshards: vec![MicroShardId::new("micro-a"), MicroShardId::new("micro-b")],
             }),
+            contribution: None,
         };
         let validation = WorkloadValidationPlan {
             head_id: HeadId::new("head"),

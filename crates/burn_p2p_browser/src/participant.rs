@@ -93,6 +93,12 @@ pub struct BrowserSessionTrainingOutcome {
     pub accepted_receipt_ids: Vec<String>,
     /// Whether at least one receipt submission was accepted.
     pub receipt_submission_accepted: bool,
+    /// Whether receipt submission completed local training but deferred edge acknowledgement.
+    pub receipt_submission_deferred: bool,
+    /// Pending receipt count after submission/deferral.
+    pub pending_receipt_count: usize,
+    /// Last receipt submission error, when acknowledgement was deferred.
+    pub receipt_submission_error: Option<String>,
     /// Final runtime state after training.
     pub runtime_state: Option<crate::BrowserRuntimeState>,
     /// Final active transport after training.
@@ -222,9 +228,33 @@ impl BrowserSessionRuntimeHandle {
                 _ => None,
             })
             .unwrap_or_default();
+        let deferred_submission = flush_events.iter().find_map(|event| match event {
+            BrowserWorkerEvent::ReceiptSubmissionDeferred {
+                pending_receipts,
+                reason,
+                ..
+            } => Some((*pending_receipts, reason.clone())),
+            _ => None,
+        });
+        let pending_receipt_count = flush_events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                BrowserWorkerEvent::ReceiptsAcknowledged {
+                    pending_receipts, ..
+                }
+                | BrowserWorkerEvent::ReceiptSubmissionDeferred {
+                    pending_receipts, ..
+                } => Some(*pending_receipts),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.runtime.storage.pending_receipts.len());
 
         Ok(BrowserSessionTrainingOutcome {
             receipt_submission_accepted: !accepted_receipt_ids.is_empty(),
+            receipt_submission_deferred: deferred_submission.is_some(),
+            pending_receipt_count,
+            receipt_submission_error: deferred_submission.map(|(_, reason)| reason),
             accepted_receipt_ids,
             emitted_receipt_id,
             runtime_state: self.runtime.state.clone(),

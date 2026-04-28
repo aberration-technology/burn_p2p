@@ -28,6 +28,8 @@ use burn_p2p_publish::{
 };
 use burn_p2p_swarm::{BrowserEdgeControlPlaneClient, BrowserEdgeControlPlanePaths};
 use chrono::{DateTime, Utc};
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::TimeoutFuture;
 use reqwest::StatusCode;
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -496,6 +498,33 @@ pub enum BrowserAuthClientError {
     #[error("metrics live stream closed before producing an event")]
     /// Uses the metrics stream closed variant.
     MetricsStreamClosed,
+}
+
+impl BrowserAuthClientError {
+    fn is_retryable_receipt_submission(&self) -> bool {
+        match self {
+            Self::Http(error) => match error.status() {
+                Some(StatusCode::REQUEST_TIMEOUT)
+                | Some(StatusCode::TOO_MANY_REQUESTS)
+                | Some(StatusCode::BAD_GATEWAY)
+                | Some(StatusCode::SERVICE_UNAVAILABLE)
+                | Some(StatusCode::GATEWAY_TIMEOUT) => true,
+                Some(status) => status.is_server_error(),
+                None => error.is_timeout() || error.is_connect() || error.is_request(),
+            },
+            Self::MetricsStreamClosed => false,
+            Self::Json(_)
+            | Self::Utf8(_)
+            | Self::MissingTrustBundle
+            | Self::MissingLoginProvider
+            | Self::MissingCallbackPath
+            | Self::UnapprovedTargetArtifact(_)
+            | Self::NetworkCompatibility(_)
+            | Self::EdgeSnapshotMismatch(_)
+            | Self::Swarm(_)
+            | Self::ArtifactTransport(_) => false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2115,6 +2144,7 @@ impl BrowserEdgeClient {
         let mut events =
             runtime.apply_command(BrowserWorkerCommand::FlushReceiptOutbox, None, None);
         let mut acknowledged_ids = Vec::new();
+        let mut deferred_submission: Option<BrowserWorkerEvent> = None;
 
         for event in &events {
             if let BrowserWorkerEvent::ReceiptOutboxReady {
@@ -2126,8 +2156,22 @@ impl BrowserEdgeClient {
                 if receipts.is_empty() {
                     continue;
                 }
-                let submission = self.submit_receipts(session_id, receipts).await?;
-                acknowledged_ids.extend(submission.accepted_receipt_ids);
+                let receipt_ids = receipts
+                    .iter()
+                    .map(|receipt| receipt.receipt_id.clone())
+                    .collect::<Vec<_>>();
+                match self.submit_receipts_with_retry(session_id, receipts).await {
+                    Ok(submission) => acknowledged_ids.extend(submission.accepted_receipt_ids),
+                    Err(error) if error.is_retryable_receipt_submission() => {
+                        deferred_submission = Some(BrowserWorkerEvent::ReceiptSubmissionDeferred {
+                            receipt_ids,
+                            pending_receipts: runtime.storage.pending_receipts.len(),
+                            reason: error.to_string(),
+                            retryable: true,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
 
@@ -2140,8 +2184,31 @@ impl BrowserEdgeClient {
                 None,
             ));
         }
+        if let Some(event) = deferred_submission {
+            events.push(event);
+        }
 
         Ok(events)
+    }
+
+    async fn submit_receipts_with_retry(
+        &self,
+        session_id: &ContentId,
+        receipts: &[ContributionReceipt],
+    ) -> Result<BrowserReceiptSubmissionResponse, BrowserAuthClientError> {
+        const MAX_ATTEMPTS: usize = 3;
+
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.submit_receipts(session_id, receipts).await {
+                Ok(response) => return Ok(response),
+                Err(error) if attempt < MAX_ATTEMPTS && error.is_retryable_receipt_submission() => {
+                    wait_receipt_retry_delay(attempt).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Performs the refresh session operation.
@@ -2406,6 +2473,19 @@ impl BrowserEdgeClient {
             .await?)
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+async fn wait_receipt_retry_delay(attempt: usize) {
+    const DELAYS_MS: [u32; 2] = [250, 1_000];
+    let delay_ms = DELAYS_MS
+        .get(attempt.saturating_sub(1))
+        .copied()
+        .unwrap_or(1_000);
+    TimeoutFuture::new(delay_ms).await;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn wait_receipt_retry_delay(_attempt: usize) {}
 
 #[cfg(target_arch = "wasm32")]
 async fn try_download_artifact_via_browser_peer_transport(

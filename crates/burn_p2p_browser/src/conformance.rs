@@ -106,6 +106,7 @@ pub fn browser_conformance_training_plan_with_lease(
         workload_id,
         budget: BrowserTrainingBudget::default(),
         lease: Some(lease),
+        contribution: None,
     }
 }
 

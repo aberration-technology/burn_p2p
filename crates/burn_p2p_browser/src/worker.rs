@@ -455,12 +455,17 @@ impl BrowserWorkerRuntime {
 
         let accepted_at = Utc::now();
         let peer_id = self.receipt_peer_id();
-        let artifact_id = ArtifactId::new(format!(
-            "browser-artifact-{}-{}-{}",
-            plan.experiment_id.as_str(),
-            plan.revision_id.as_str(),
-            plan.workload_id.as_str()
-        ));
+        let artifact_id = plan.contribution.as_ref().map_or_else(
+            || {
+                ArtifactId::new(format!(
+                    "browser-artifact-{}-{}-{}",
+                    plan.experiment_id.as_str(),
+                    plan.revision_id.as_str(),
+                    plan.workload_id.as_str()
+                ))
+            },
+            |contribution| contribution.artifact_id.clone(),
+        );
         let receipt_id = ContributionReceiptId::new(format!(
             "browser-training-receipt-{}-{}-{}-{}",
             plan.experiment_id.as_str(),
@@ -468,6 +473,80 @@ impl BrowserWorkerRuntime {
             peer_id.as_str(),
             accepted_at.timestamp_micros()
         ));
+        let mut metrics = BTreeMap::from([(
+            "window_secs".into(),
+            MetricValue::Integer(plan.budget.max_window_secs as i64),
+        )]);
+        if let Some(contribution) = plan.contribution.as_ref() {
+            metrics.extend([
+                (
+                    "batch_count".into(),
+                    MetricValue::Integer(contribution.completed_batches as i64),
+                ),
+                (
+                    "examples_processed".into(),
+                    MetricValue::Integer(contribution.completed_examples as i64),
+                ),
+                (
+                    "tokens_processed".into(),
+                    MetricValue::Integer(contribution.completed_tokens as i64),
+                ),
+                (
+                    "training_time_ms".into(),
+                    MetricValue::Integer(contribution.training_time_ms as i64),
+                ),
+                (
+                    "eval_time_ms".into(),
+                    MetricValue::Integer(contribution.eval_time_ms as i64),
+                ),
+                (
+                    "total_time_ms".into(),
+                    MetricValue::Integer(contribution.total_time_ms as i64),
+                ),
+                (
+                    "artifact_published".into(),
+                    MetricValue::Bool(contribution.artifact_published),
+                ),
+            ]);
+            for (key, value) in &contribution.metadata {
+                metrics.insert(key.clone(), MetricValue::Text(value.clone()));
+            }
+        }
+        if let Some(lease) = plan.lease.as_ref() {
+            metrics.extend([
+                (
+                    "lease_id".into(),
+                    MetricValue::Text(lease.lease_id.as_str().to_owned()),
+                ),
+                (
+                    "window_id".into(),
+                    MetricValue::Integer(lease.window_id.0 as i64),
+                ),
+                (
+                    "dataset_view_id".into(),
+                    MetricValue::Text(lease.dataset_view_id.as_str().to_owned()),
+                ),
+                (
+                    "assignment_hash".into(),
+                    MetricValue::Text(lease.assignment_hash.as_str().to_owned()),
+                ),
+                (
+                    "microshard_count".into(),
+                    MetricValue::Integer(lease.microshards.len() as i64),
+                ),
+            ]);
+        }
+        let accepted_weight = plan
+            .contribution
+            .as_ref()
+            .map(|contribution| {
+                contribution
+                    .completed_tokens
+                    .max(contribution.completed_examples)
+                    .max(contribution.completed_batches)
+                    .max(1) as f64
+            })
+            .unwrap_or(plan.budget.max_window_secs as f64);
         self.storage.queue_receipt(ContributionReceipt {
             receipt_id: receipt_id.clone(),
             peer_id,
@@ -481,11 +560,8 @@ impl BrowserWorkerRuntime {
                 .unwrap_or_else(|| HeadId::new("browser-base-head")),
             artifact_id: artifact_id.clone(),
             accepted_at,
-            accepted_weight: plan.budget.max_window_secs as f64,
-            metrics: BTreeMap::from([(
-                "window_secs".into(),
-                MetricValue::Integer(plan.budget.max_window_secs as i64),
-            )]),
+            accepted_weight,
+            metrics,
             merge_cert_id: None,
         });
 
@@ -493,6 +569,25 @@ impl BrowserWorkerRuntime {
             artifact_id,
             receipt_id: Some(receipt_id),
             window_secs: plan.budget.max_window_secs,
+            completed_batches: plan
+                .contribution
+                .as_ref()
+                .map(|contribution| contribution.completed_batches)
+                .unwrap_or(0),
+            completed_examples: plan
+                .contribution
+                .as_ref()
+                .map(|contribution| contribution.completed_examples)
+                .unwrap_or(0),
+            completed_tokens: plan
+                .contribution
+                .as_ref()
+                .map(|contribution| contribution.completed_tokens)
+                .unwrap_or(0),
+            artifact_published: plan
+                .contribution
+                .as_ref()
+                .is_some_and(|contribution| contribution.artifact_published),
         })
     }
 

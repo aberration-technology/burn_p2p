@@ -262,6 +262,7 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
             workload_id: WorkloadId::new("browser-demo"),
             budget: BrowserTrainingBudget::default(),
             lease: None,
+            contribution: None,
         }),
         Some(&directory),
         Some(&session),

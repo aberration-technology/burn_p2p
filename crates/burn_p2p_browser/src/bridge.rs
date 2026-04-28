@@ -99,6 +99,17 @@ pub enum BrowserWorkerEvent {
         /// The pending receipts.
         pending_receipts: usize,
     },
+    /// Uses the receipt submission deferred variant.
+    ReceiptSubmissionDeferred {
+        /// The receipt IDs that remain pending.
+        receipt_ids: Vec<ContributionReceiptId>,
+        /// The pending receipts.
+        pending_receipts: usize,
+        /// The submission failure reason.
+        reason: String,
+        /// Whether the failure should be retried automatically.
+        retryable: bool,
+    },
     /// Uses the storage updated variant.
     StorageUpdated(Box<BrowserStorageSnapshot>),
     /// Uses the metrics updated variant.

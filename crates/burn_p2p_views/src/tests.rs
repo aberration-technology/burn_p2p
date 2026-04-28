@@ -392,6 +392,10 @@ fn training_and_validation_summary_views_follow_shared_execution_payloads() {
         artifact_id: ArtifactId::new("artifact"),
         receipt_id: Some(ContributionReceiptId::new("receipt")),
         window_secs: 12,
+        completed_batches: 0,
+        completed_examples: 0,
+        completed_tokens: 0,
+        artifact_published: false,
     };
     let validation_result = WorkloadValidationResult {
         head_id: HeadId::new("head"),

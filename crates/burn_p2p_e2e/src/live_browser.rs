@@ -1632,6 +1632,7 @@ mod tests {
                     assignment_hash: ContentId::new("assign"),
                     microshards: vec![MicroShardId::new("micro-a")],
                 }),
+                contribution: None,
             },
         })
         .await

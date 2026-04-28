@@ -82,6 +82,37 @@ fn write_auth_rejection_response(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct BrowserReceiptErrorResponse {
+    error: &'static str,
+    detail: String,
+    retryable: bool,
+}
+
+fn write_browser_receipt_error_response(
+    stream: &mut TcpStream,
+    status: &'static str,
+    error: &'static str,
+    detail: impl Into<String>,
+    retryable: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_response(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        serde_json::to_vec_pretty(&BrowserReceiptErrorResponse {
+            error,
+            detail: detail.into(),
+            retryable,
+        })?,
+    )?;
+    Ok(())
+}
+
+fn session_log_prefix(session_id: &str) -> String {
+    session_id.chars().take(12).collect()
+}
+
 pub(crate) fn handle_browser_post_route(
     stream: &mut TcpStream,
     context: &HttpServerContext,
@@ -100,26 +131,118 @@ pub(crate) fn handle_browser_post_route(
         )?;
         return Ok(true);
     }
-    let auth = context
-        .auth_state
-        .as_ref()
-        .ok_or("browser-edge auth is not configured")?;
-    let session = request
-        .headers
-        .get("x-session-id")
-        .map(|session_id| auth.get_session(&ContentId::new(session_id.clone())))
-        .transpose()?
-        .flatten()
-        .ok_or("browser receipt submission requires x-session-id")?;
-    let receipts: Vec<burn_p2p::ContributionReceipt> = serde_json::from_slice(&request.body)?;
+    let Some(auth) = context.auth_state.as_ref() else {
+        write_browser_receipt_error_response(
+            stream,
+            "503 Service Unavailable",
+            "browser_edge_auth_unconfigured",
+            "browser-edge auth is not configured",
+            false,
+        )?;
+        return Ok(true);
+    };
+    let Some(session_id) = request.headers.get("x-session-id") else {
+        write_browser_receipt_error_response(
+            stream,
+            "401 Unauthorized",
+            "missing_session",
+            "browser receipt submission requires x-session-id",
+            false,
+        )?;
+        return Ok(true);
+    };
+    let session = match auth.get_session(&ContentId::new(session_id.clone())) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            write_browser_receipt_error_response(
+                stream,
+                "401 Unauthorized",
+                "unknown_session",
+                "browser receipt session is missing or expired",
+                false,
+            )?;
+            return Ok(true);
+        }
+        Err(error) => {
+            write_browser_receipt_error_response(
+                stream,
+                "401 Unauthorized",
+                "session_lookup_failed",
+                error.to_string(),
+                false,
+            )?;
+            return Ok(true);
+        }
+    };
+    let receipts: Vec<burn_p2p::ContributionReceipt> = match serde_json::from_slice(&request.body) {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            write_browser_receipt_error_response(
+                stream,
+                "400 Bad Request",
+                "invalid_receipts",
+                error.to_string(),
+                false,
+            )?;
+            return Ok(true);
+        }
+    };
     if receipts
         .iter()
         .any(|receipt| !session_allows_receipt_submission(&session, receipt))
     {
-        return Err("session is not authorized to submit one or more browser receipts".into());
+        write_browser_receipt_error_response(
+            stream,
+            "403 Forbidden",
+            "receipt_scope_denied",
+            "session is not authorized to submit one or more browser receipts",
+            false,
+        )?;
+        return Ok(true);
     }
-    let accepted_receipt_ids = lock_shared(&context.state, "bootstrap admin state")?
-        .ingest_browser_contribution_receipts(receipts)?;
+    let receipt_count = receipts.len();
+    let accepted_receipt_ids = match lock_shared(&context.state, "bootstrap admin state") {
+        Ok(mut state) => match state.ingest_browser_contribution_receipts(receipts) {
+            Ok(receipt_ids) => receipt_ids,
+            Err(error) => {
+                let session_prefix = session_log_prefix(session_id);
+                eprintln!(
+                    "browser receipt ingest failed: session_prefix={} receipt_count={} error={error}",
+                    session_prefix, receipt_count
+                );
+                write_browser_receipt_error_response(
+                    stream,
+                    "503 Service Unavailable",
+                    "receipt_persistence_failed",
+                    error.to_string(),
+                    true,
+                )?;
+                return Ok(true);
+            }
+        },
+        Err(error) => {
+            let session_prefix = session_log_prefix(session_id);
+            eprintln!(
+                "browser receipt state lock failed: session_prefix={} receipt_count={} error={error}",
+                session_prefix, receipt_count
+            );
+            write_browser_receipt_error_response(
+                stream,
+                "503 Service Unavailable",
+                "receipt_state_unavailable",
+                error.to_string(),
+                true,
+            )?;
+            return Ok(true);
+        }
+    };
+    let session_prefix = session_log_prefix(session_id);
+    eprintln!(
+        "browser receipts accepted: session_prefix={} submitted={} accepted={}",
+        session_prefix,
+        receipt_count,
+        accepted_receipt_ids.len()
+    );
     write_json(
         stream,
         &BrowserReceiptSubmissionResponse {

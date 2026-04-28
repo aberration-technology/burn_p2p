@@ -247,6 +247,22 @@ impl BrowserAppModel {
             BrowserWorkerEvent::ReceiptsAcknowledged { receipt_ids, .. } => {
                 self.runtime.storage.acknowledge_receipts(&receipt_ids);
             }
+            BrowserWorkerEvent::ReceiptSubmissionDeferred {
+                pending_receipts,
+                reason,
+                retryable,
+                ..
+            } => {
+                let retry_label = if retryable {
+                    "will retry"
+                } else {
+                    "requires operator attention"
+                };
+                self.last_error = Some(format!(
+                    "receipt submission pending ({pending_receipts} receipt{}): {reason}; {retry_label}",
+                    if pending_receipts == 1 { "" } else { "s" }
+                ));
+            }
             BrowserWorkerEvent::StorageUpdated(storage) => {
                 self.runtime.storage = *storage;
             }
