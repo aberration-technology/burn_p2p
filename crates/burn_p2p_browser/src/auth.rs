@@ -510,7 +510,7 @@ impl BrowserAuthClientError {
                 | Some(StatusCode::SERVICE_UNAVAILABLE)
                 | Some(StatusCode::GATEWAY_TIMEOUT) => true,
                 Some(status) => status.is_server_error(),
-                None => error.is_timeout() || error.is_connect() || error.is_request(),
+                None => error.is_timeout() || error.is_request(),
             },
             Self::MetricsStreamClosed => false,
             Self::Json(_)
