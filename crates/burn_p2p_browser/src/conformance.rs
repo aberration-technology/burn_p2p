@@ -178,7 +178,7 @@ impl BrowserConformanceHarness {
         plan: BrowserTrainingPlan,
     ) -> Result<BrowserTrainingResult, String> {
         let events = self.runtime.apply_command(
-            BrowserWorkerCommand::Train(plan),
+            BrowserWorkerCommand::Train(Box::new(plan)),
             Some(&self.directory),
             Some(&self.session),
         );

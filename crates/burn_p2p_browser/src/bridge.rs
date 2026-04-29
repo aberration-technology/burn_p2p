@@ -15,7 +15,7 @@ use crate::{
 /// Enumerates the supported browser worker command values.
 pub enum BrowserWorkerCommand {
     /// Uses the start variant.
-    Start(BrowserRuntimeConfig),
+    Start(Box<BrowserRuntimeConfig>),
     /// Uses the stop variant.
     Stop,
     /// Uses the suspend variant.
@@ -32,7 +32,7 @@ pub enum BrowserWorkerCommand {
     /// Uses the verify variant.
     Verify(BrowserValidationPlan),
     /// Uses the train variant.
-    Train(BrowserTrainingPlan),
+    Train(Box<BrowserTrainingPlan>),
     /// Uses the flush receipt outbox variant.
     FlushReceiptOutbox,
     /// Uses the acknowledge submitted receipts variant.

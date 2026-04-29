@@ -42,6 +42,10 @@ const TEST_EDGE_WEBRTC_DIRECT_SEED: &str = "/dns4/edge.example/udp/4001/webrtc-d
 const TEST_BOOTSTRAP_WEBRTC_DIRECT_SEED: &str = "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_EDGE_WEBTRANSPORT_SEED: &str = "/dns4/edge.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
+fn browser_train_command(plan: BrowserTrainingPlan) -> BrowserWorkerCommand {
+    BrowserWorkerCommand::Train(Box::new(plan))
+}
+
 fn browser_test_edge_snapshot() -> BrowserEdgeSnapshot {
     BrowserEdgeSnapshot {
         network_id: NetworkId::new("net-browser"),
@@ -163,7 +167,7 @@ fn conformance_revision_manifest() -> burn_p2p::RevisionManifest {
 
 #[test]
 fn worker_bridge_messages_round_trip_through_json() {
-    let command = BrowserWorkerCommand::Train(BrowserTrainingPlan {
+    let command = browser_train_command(BrowserTrainingPlan {
         study_id: StudyId::new("study-browser"),
         experiment_id: ExperimentId::new("exp-browser"),
         revision_id: RevisionId::new("rev-browser"),
@@ -2128,7 +2132,7 @@ fn worker_runtime_apply_command_completes_validation_and_training_locally() {
 
     runtime.state = Some(BrowserRuntimeState::Trainer);
     let events = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -2204,7 +2208,7 @@ fn worker_runtime_training_uses_contribution_receipt_metrics() {
     runtime.state = Some(BrowserRuntimeState::Trainer);
 
     let events = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -2682,7 +2686,7 @@ fn worker_runtime_flushes_and_acknowledges_receipt_outbox() {
     );
     runtime.state = Some(BrowserRuntimeState::Trainer);
     let _ = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -2794,7 +2798,7 @@ fn browser_client_defers_retryable_receipt_submission_failure() {
         .expect("runtime config")
         .edge_base_url = base_url.clone();
     let _ = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -2876,7 +2880,7 @@ fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
     });
 
     let events = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -5148,7 +5152,7 @@ fn worker_runtime_training_with_lease_persists_active_training_lease() {
     let lease = sample_training_lease();
 
     let events = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
@@ -5182,7 +5186,7 @@ fn worker_runtime_training_without_lease_clears_previous_active_training_lease()
         .remember_active_training_lease(sample_training_lease());
 
     let events = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        browser_train_command(BrowserTrainingPlan {
             study_id: StudyId::new("study-browser"),
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),

@@ -964,7 +964,7 @@ impl BrowserWorkerRuntime {
                 let capability = self.capability.clone().unwrap_or_default();
                 let transport = self.transport.clone();
                 let storage = self.storage.clone();
-                *self = Self::start(config, capability, transport);
+                *self = Self::start(*config, capability, transport);
                 self.storage = storage;
             }
             BrowserWorkerCommand::Stop => self.stop(),
@@ -983,7 +983,7 @@ impl BrowserWorkerRuntime {
                 }
                 Err(message) => events.push(BrowserWorkerEvent::Error { message }),
             },
-            BrowserWorkerCommand::Train(plan) => match self.execute_training(plan) {
+            BrowserWorkerCommand::Train(plan) => match self.execute_training(*plan) {
                 Ok(result) => events.push(BrowserWorkerEvent::TrainingCompleted(result)),
                 Err(message) => events.push(BrowserWorkerEvent::Error { message }),
             },

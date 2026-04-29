@@ -231,7 +231,7 @@ pub fn exercise_browser_roles(
             &directory,
             heads,
             BrowserRuntimeRole::BrowserTrainerWgpu,
-            Some(BrowserWorkerCommand::Train(BrowserTrainingPlan {
+            Some(BrowserWorkerCommand::Train(Box::new(BrowserTrainingPlan {
                 study_id: active_head.study_id.clone(),
                 experiment_id: active_head.experiment_id.clone(),
                 revision_id: active_head.revision_id.clone(),
@@ -243,7 +243,7 @@ pub fn exercise_browser_roles(
                 },
                 lease: None,
                 contribution: None,
-            })),
+            }))),
             Some("browser trainer exercises capability, assignment, transport, and receipt flow in the runtime drill; the e2e mnist harness pairs it with live burn/webgpu wasm execution against the same leased shards".into()),
         ),
     ])

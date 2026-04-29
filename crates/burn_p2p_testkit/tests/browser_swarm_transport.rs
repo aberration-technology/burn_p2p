@@ -389,7 +389,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
     );
 
     let pre_sync = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        BrowserWorkerCommand::Train(Box::new(BrowserTrainingPlan {
             study_id: study_id.clone(),
             experiment_id: experiment_id.clone(),
             revision_id: revision_id.clone(),
@@ -397,7 +397,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
             budget: BrowserTrainingBudget::default(),
             lease: None,
             contribution: None,
-        }),
+        })),
         Some(&directory),
         Some(&session),
     );
@@ -436,7 +436,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
     );
 
     let post_sync = runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        BrowserWorkerCommand::Train(Box::new(BrowserTrainingPlan {
             study_id,
             experiment_id,
             revision_id,
@@ -444,7 +444,7 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
             budget: BrowserTrainingBudget::default(),
             lease: None,
             contribution: None,
-        }),
+        })),
         Some(&directory),
         Some(&session),
     );

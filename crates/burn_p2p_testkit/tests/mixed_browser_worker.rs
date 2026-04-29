@@ -255,7 +255,7 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
     assert!(trainer_runtime.storage.active_assignment.is_some());
 
     let training_events = trainer_runtime.apply_command(
-        BrowserWorkerCommand::Train(BrowserTrainingPlan {
+        BrowserWorkerCommand::Train(Box::new(BrowserTrainingPlan {
             study_id: spec.study_id.clone(),
             experiment_id: spec.experiment_id.clone(),
             revision_id: spec.revision_id.clone(),
@@ -263,7 +263,7 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
             budget: BrowserTrainingBudget::default(),
             lease: None,
             contribution: None,
-        }),
+        })),
         Some(&directory),
         Some(&session),
     );

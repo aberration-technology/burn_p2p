@@ -220,7 +220,7 @@ impl BrowserSessionRuntimeHandle {
         let executed_plan = plan.clone();
         let training_events =
             self.runtime
-                .apply_command(BrowserWorkerCommand::Train(plan), None, None);
+                .apply_command(BrowserWorkerCommand::Train(Box::new(plan)), None, None);
         if let Some(message) = worker_error_message(&training_events) {
             return Err(BrowserSessionRuntimeError::Worker(message));
         }

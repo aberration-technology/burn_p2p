@@ -164,6 +164,21 @@ pub struct BrowserArtifactReplayCheckpoint {
     pub attempt_count: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// In-memory active-head artifact payload retained after replay checkpoint cleanup.
+struct BrowserActiveHeadArtifactCache {
+    /// Head whose artifact bytes are retained.
+    head_id: HeadId,
+    /// Complete artifact descriptor.
+    descriptor: ArtifactDescriptor,
+    /// Verified chunk payloads for peer-swarm artifact replay.
+    completed_chunks: Vec<BrowserArtifactReplayChunk>,
+    /// Complete edge prefix payload when the artifact came from edge range download.
+    edge_download_prefix: Option<BrowserArtifactReplayBytePrefix>,
+    /// Edge range segments retained when they reconstruct the complete prefix.
+    edge_download_segments: Vec<BrowserArtifactReplayByteSegment>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Declares how the browser receipt outbox is persisted.
 pub enum BrowserReceiptOutboxBackend {
@@ -331,6 +346,9 @@ pub struct BrowserStorageSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Durable checkpoint for resuming active-head artifact replay after offline failure.
     pub artifact_replay_checkpoint: Option<BrowserArtifactReplayCheckpoint>,
+    /// Complete active-head artifact payload retained for same-page browser training.
+    #[serde(skip)]
+    active_head_artifact_cache: Option<BrowserActiveHeadArtifactCache>,
     /// The stored certificate peer ID.
     pub stored_certificate_peer_id: Option<PeerId>,
     /// The active assignment.
@@ -365,6 +383,7 @@ impl Default for BrowserStorageSnapshot {
             last_metrics_sync_at: None,
             last_head_id: None,
             artifact_replay_checkpoint: None,
+            active_head_artifact_cache: None,
             stored_certificate_peer_id: None,
             active_assignment: None,
             active_training_lease: None,
@@ -458,6 +477,7 @@ impl BrowserStorageSnapshot {
             return false;
         }
         self.artifact_replay_checkpoint = None;
+        self.active_head_artifact_cache = None;
         self.last_head_id = None;
         self.last_head_artifact_transport = None;
         self.active_training_lease = None;
@@ -725,6 +745,13 @@ impl BrowserStorageSnapshot {
     /// Returns the active head artifact bytes when the replay cache still has a
     /// complete descriptor and byte payload in memory.
     pub fn active_head_artifact_bytes(&self) -> Option<(HeadId, ArtifactDescriptor, Vec<u8>)> {
+        if let Some(cache) = self.active_head_artifact_cache.as_ref()
+            && let Some(bytes) = active_head_artifact_cache_bytes(cache)
+            && self.cached_head_artifact_heads.contains(&cache.head_id)
+        {
+            return Some((cache.head_id.clone(), cache.descriptor.clone(), bytes));
+        }
+
         let descriptor = self.artifact_replay_descriptor()?.clone();
         let head_id = descriptor
             .head_id
@@ -787,6 +814,7 @@ impl BrowserStorageSnapshot {
     /// Performs the clear artifact replay checkpoint operation.
     pub fn clear_artifact_replay_checkpoint(&mut self) {
         self.artifact_replay_checkpoint = None;
+        self.active_head_artifact_cache = None;
         self.updated_at = Utc::now();
     }
 
@@ -803,10 +831,31 @@ impl BrowserStorageSnapshot {
         artifact_id: ArtifactId,
         transport: impl Into<String>,
     ) {
+        self.remember_active_head_artifact_cache(&head_id, &artifact_id);
+        self.artifact_replay_checkpoint = None;
         self.cached_head_artifact_heads.insert(head_id);
         self.cached_chunk_artifacts.insert(artifact_id);
         self.last_head_artifact_transport = Some(transport.into());
         self.updated_at = Utc::now();
+    }
+
+    fn remember_active_head_artifact_cache(&mut self, head_id: &HeadId, artifact_id: &ArtifactId) {
+        let Some(checkpoint) = self.artifact_replay_checkpoint.as_ref() else {
+            return;
+        };
+        if &checkpoint.head_id != head_id || &checkpoint.artifact_id != artifact_id {
+            return;
+        }
+        let Some(descriptor) = checkpoint.artifact_descriptor.clone() else {
+            return;
+        };
+        self.active_head_artifact_cache = Some(BrowserActiveHeadArtifactCache {
+            head_id: head_id.clone(),
+            descriptor,
+            completed_chunks: checkpoint.completed_chunks.clone(),
+            edge_download_prefix: checkpoint.edge_download_prefix.clone(),
+            edge_download_segments: checkpoint.edge_download_segments.clone(),
+        });
     }
 
     /// Performs the remember microshard operation.
@@ -883,6 +932,7 @@ impl BrowserStorageSnapshot {
         self.cached_head_artifact_heads.clear();
         self.last_head_artifact_transport = None;
         self.artifact_replay_checkpoint = None;
+        self.active_head_artifact_cache = None;
         self.cached_microshards.clear();
         self.updated_at = Utc::now();
     }
@@ -898,6 +948,39 @@ fn browser_artifact_replay_prefix_len(prefix: &BrowserArtifactReplayBytePrefix) 
 
 fn browser_artifact_replay_segment_len(segment: &BrowserArtifactReplayByteSegment) -> u64 {
     segment.persisted_bytes.max(segment.bytes.len() as u64)
+}
+
+fn active_head_artifact_cache_bytes(cache: &BrowserActiveHeadArtifactCache) -> Option<Vec<u8>> {
+    if let Some(prefix) = cache.edge_download_prefix.as_ref()
+        && !prefix.bytes.is_empty()
+        && prefix.bytes.len() as u64 == cache.descriptor.bytes_len
+    {
+        return Some(prefix.bytes.clone());
+    }
+    if let Some(bytes) = replay_edge_prefix_bytes_from_segments(&cache.edge_download_segments)
+        && bytes.len() as u64 == cache.descriptor.bytes_len
+    {
+        return Some(bytes);
+    }
+
+    let mut chunks = cache.descriptor.chunks.clone();
+    chunks.sort_by_key(|chunk| chunk.offset_bytes);
+    let capacity = usize::try_from(cache.descriptor.bytes_len).ok()?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for chunk in &chunks {
+        let chunk_bytes = cache
+            .completed_chunks
+            .iter()
+            .find(|candidate| candidate.chunk_id == chunk.chunk_id)
+            .and_then(|candidate| {
+                (!candidate.chunk_bytes.is_empty()).then_some(candidate.chunk_bytes.as_slice())
+            })?;
+        if chunk_bytes.len() as u64 != chunk.length_bytes {
+            return None;
+        }
+        bytes.extend_from_slice(chunk_bytes);
+    }
+    (bytes.len() as u64 == cache.descriptor.bytes_len).then_some(bytes)
 }
 
 fn replay_edge_prefix_bytes_from_segments(
