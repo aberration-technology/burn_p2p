@@ -1,4 +1,6 @@
-use burn_p2p::{ContentId, ExperimentId, RevisionId};
+use burn_p2p::{ArtifactDescriptor, ContentId, ExperimentId, HeadId, RevisionId};
+#[cfg(target_arch = "wasm32")]
+use burn_p2p::{ContributionReceiptId, UpdateAnnounce, UpdateNormStats};
 use thiserror::Error;
 
 use crate::{
@@ -13,7 +15,11 @@ use crate::{
     app::{establish_direct_swarm_runtime, refresh_worker_runtime_preferring_direct_swarm},
 };
 #[cfg(target_arch = "wasm32")]
-use burn_p2p_swarm::WasmBrowserSwarmRuntime;
+use burn_p2p_swarm::{ArtifactChunkPayload, UpdateEnvelopeAnnouncement};
+#[cfg(target_arch = "wasm32")]
+use burn_p2p_swarm::{BrowserSwarmRuntime, ExperimentOverlaySet, WasmBrowserSwarmRuntime};
+#[cfg(target_arch = "wasm32")]
+use chrono::Utc;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::TimeoutFuture;
 
@@ -99,6 +105,10 @@ pub struct BrowserSessionTrainingOutcome {
     pub pending_receipt_count: usize,
     /// Last receipt submission error, when acknowledgement was deferred.
     pub receipt_submission_error: Option<String>,
+    /// Whether the local training artifact was published through peer-visible transport.
+    pub artifact_published: bool,
+    /// Whether the peer-visible update announcement was published.
+    pub update_announced: bool,
     /// Final runtime state after training.
     pub runtime_state: Option<crate::BrowserRuntimeState>,
     /// Final active transport after training.
@@ -193,14 +203,21 @@ impl BrowserSessionRuntimeHandle {
         }
     }
 
+    /// Returns active head artifact bytes retained by the browser replay cache.
+    pub fn active_head_artifact_bytes(&self) -> Option<(HeadId, ArtifactDescriptor, Vec<u8>)> {
+        self.runtime.storage.active_head_artifact_bytes()
+    }
+
     /// Executes one training plan and flushes any emitted receipts.
     pub async fn run_training_plan(
         &mut self,
-        plan: BrowserTrainingPlan,
+        mut plan: BrowserTrainingPlan,
     ) -> Result<BrowserSessionTrainingOutcome, BrowserSessionRuntimeError> {
         self.refresh().await?;
         #[cfg(target_arch = "wasm32")]
         self.wait_for_direct_transport_handoff().await?;
+        let artifact_published = self.publish_training_artifact(&mut plan).await?;
+        let executed_plan = plan.clone();
         let training_events =
             self.runtime
                 .apply_command(BrowserWorkerCommand::Train(plan), None, None);
@@ -214,6 +231,13 @@ impl BrowserSessionRuntimeHandle {
                 .map(|receipt_id| receipt_id.as_str().to_owned()),
             _ => None,
         });
+
+        let update_announced = if artifact_published {
+            self.publish_training_update(&executed_plan, emitted_receipt_id.as_deref())
+                .await?
+        } else {
+            false
+        };
 
         let flush_events = self.client.flush_worker_receipts(&mut self.runtime).await?;
         let accepted_receipt_ids = flush_events
@@ -257,9 +281,209 @@ impl BrowserSessionRuntimeHandle {
             receipt_submission_error: deferred_submission.map(|(_, reason)| reason),
             accepted_receipt_ids,
             emitted_receipt_id,
+            artifact_published,
+            update_announced,
             runtime_state: self.runtime.state.clone(),
             transport: self.runtime.transport.active.clone(),
         })
+    }
+
+    async fn publish_training_artifact(
+        &mut self,
+        plan: &mut BrowserTrainingPlan,
+    ) -> Result<bool, BrowserSessionRuntimeError> {
+        let Some(contribution) = plan.contribution.as_mut() else {
+            return Ok(false);
+        };
+        let Some(artifact) = contribution.published_artifact.clone() else {
+            return Ok(false);
+        };
+        let peer_id = self
+            .runtime
+            .storage
+            .stored_certificate_peer_id
+            .clone()
+            .ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training requires an enrolled node certificate".into(),
+                )
+            })?;
+        if self.runtime.storage.session.session.is_none() {
+            return Err(BrowserSessionRuntimeError::MissingSession);
+        }
+
+        let descriptor = artifact.descriptor;
+        contribution.artifact_id = descriptor.artifact_id.clone();
+        contribution.base_head_id = contribution
+            .base_head_id
+            .clone()
+            .or_else(|| descriptor.base_head_id.clone())
+            .or_else(|| self.runtime.storage.last_head_id.clone());
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let chunks = artifact
+                .chunks
+                .into_iter()
+                .map(|chunk| ArtifactChunkPayload {
+                    artifact_id: descriptor.artifact_id.clone(),
+                    chunk: chunk.chunk,
+                    bytes: chunk.bytes,
+                    generated_at: Utc::now(),
+                })
+                .collect::<Vec<_>>();
+            let direct_swarm = self.direct_swarm_runtime.as_mut().ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training requires an active direct swarm runtime".into(),
+                )
+            })?;
+            direct_swarm
+                .publish_artifact(descriptor, chunks)
+                .await
+                .map_err(|error| {
+                    BrowserSessionRuntimeError::Worker(format!(
+                        "browser artifact publication failed for {}: {error}",
+                        peer_id.as_str()
+                    ))
+                })?;
+            contribution.artifact_published = true;
+            Ok(true)
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = peer_id;
+            let _ = descriptor;
+            Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training artifact publication is only available in wasm".into(),
+            ))
+        }
+    }
+
+    async fn publish_training_update(
+        &mut self,
+        plan: &BrowserTrainingPlan,
+        emitted_receipt_id: Option<&str>,
+    ) -> Result<bool, BrowserSessionRuntimeError> {
+        let Some(contribution) = plan.contribution.as_ref() else {
+            return Ok(false);
+        };
+        if contribution.published_artifact.is_none() || !contribution.artifact_published {
+            return Ok(false);
+        }
+        let Some(receipt_id) = emitted_receipt_id else {
+            return Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training update requires a local receipt id".into(),
+            ));
+        };
+        let Some(lease) = plan.lease.as_ref() else {
+            return Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training update requires an active training lease".into(),
+            ));
+        };
+        let peer_id = self
+            .runtime
+            .storage
+            .stored_certificate_peer_id
+            .clone()
+            .ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training update requires an enrolled node certificate"
+                        .into(),
+                )
+            })?;
+        let base_head_id = contribution
+            .base_head_id
+            .clone()
+            .or_else(|| self.runtime.storage.last_head_id.clone())
+            .ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training update requires a synced base head".into(),
+                )
+            })?;
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let config = self.runtime.config.as_ref().ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training update requires runtime config".into(),
+                )
+            })?;
+            let overlay = ExperimentOverlaySet::new(
+                config.network_id.clone(),
+                plan.study_id.clone(),
+                plan.experiment_id.clone(),
+            )
+            .map_err(|error| {
+                BrowserSessionRuntimeError::Worker(format!(
+                    "browser update overlay construction failed: {error}"
+                ))
+            })?
+            .heads;
+            let receipt_ids = vec![ContributionReceiptId::new(receipt_id.to_owned())];
+            let receipt_root = ContentId::derive(&receipt_ids).map_err(|error| {
+                BrowserSessionRuntimeError::Worker(format!(
+                    "browser update receipt root derivation failed: {error}"
+                ))
+            })?;
+            let sample_weight = contribution
+                .completed_tokens
+                .max(contribution.completed_examples)
+                .max(contribution.completed_batches)
+                .max(1) as f64;
+            let announcement = UpdateEnvelopeAnnouncement {
+                overlay,
+                update: UpdateAnnounce {
+                    peer_id: peer_id.clone(),
+                    study_id: plan.study_id.clone(),
+                    experiment_id: plan.experiment_id.clone(),
+                    revision_id: plan.revision_id.clone(),
+                    window_id: lease.window_id,
+                    base_head_id,
+                    lease_id: Some(lease.lease_id.clone()),
+                    delta_artifact_id: contribution.artifact_id.clone(),
+                    sample_weight,
+                    quality_weight: 1.0,
+                    norm_stats: UpdateNormStats {
+                        l2_norm: 0.0,
+                        max_abs: 0.0,
+                        clipped: false,
+                        non_finite_tensors: 0,
+                    },
+                    feature_sketch: None,
+                    receipt_root,
+                    receipt_ids,
+                    providers: vec![peer_id],
+                    announced_at: Utc::now(),
+                },
+            };
+            let direct_swarm = self.direct_swarm_runtime.as_mut().ok_or_else(|| {
+                BrowserSessionRuntimeError::Worker(
+                    "browser canonical training update requires an active direct swarm runtime"
+                        .into(),
+                )
+            })?;
+            direct_swarm
+                .publish_update(announcement)
+                .await
+                .map_err(|error| {
+                    BrowserSessionRuntimeError::Worker(format!(
+                        "browser update announcement failed: {error}"
+                    ))
+                })?;
+            Ok(true)
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = peer_id;
+            let _ = base_head_id;
+            let _ = receipt_id;
+            let _ = lease;
+            Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training update publication is only available in wasm".into(),
+            ))
+        }
     }
 
     #[cfg(target_arch = "wasm32")]

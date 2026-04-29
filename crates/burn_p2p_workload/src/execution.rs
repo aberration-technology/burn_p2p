@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use burn_p2p_core::{
-    ArtifactId, AssignmentLease, ContentId, ContributionReceiptId, DatasetViewId, ExperimentId,
-    HeadId, LeaseId, MicroShardId, Precision, RevisionId, StudyId, WindowId, WorkloadId,
+    ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ContentId,
+    ContributionReceiptId, DatasetViewId, ExperimentId, HeadId, LeaseId, MicroShardId, Precision,
+    RevisionId, StudyId, WindowId, WorkloadId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,25 @@ pub struct WorkloadTrainingLease {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents one chunk of a peer-visible training artifact.
+pub struct WorkloadTrainingArtifactChunk {
+    /// The chunk descriptor.
+    pub chunk: ChunkDescriptor,
+    /// The raw chunk bytes.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Carries a fully materialized training artifact across host boundaries.
+pub struct WorkloadTrainingArtifact {
+    /// The artifact descriptor advertised on the p2p control plane.
+    pub descriptor: ArtifactDescriptor,
+    /// The descriptor chunks with their raw bytes.
+    #[serde(default)]
+    pub chunks: Vec<WorkloadTrainingArtifactChunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Describes concrete local work already completed for one host-neutral
 /// training window.
 pub struct WorkloadTrainingContribution {
@@ -86,6 +106,12 @@ pub struct WorkloadTrainingContribution {
     /// Whether an artifact/delta was published through a peer-visible transport.
     #[serde(default)]
     pub artifact_published: bool,
+    /// The base head used to produce the artifact, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_head_id: Option<HeadId>,
+    /// Fully materialized artifact data to publish through the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_artifact: Option<WorkloadTrainingArtifact>,
     /// Extra string metadata copied into contribution receipts.
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,

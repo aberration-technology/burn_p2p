@@ -553,10 +553,11 @@ impl BrowserWorkerRuntime {
             study_id: plan.study_id.clone(),
             experiment_id: plan.experiment_id.clone(),
             revision_id: plan.revision_id.clone(),
-            base_head_id: self
-                .storage
-                .last_head_id
-                .clone()
+            base_head_id: plan
+                .contribution
+                .as_ref()
+                .and_then(|contribution| contribution.base_head_id.clone())
+                .or_else(|| self.storage.last_head_id.clone())
                 .unwrap_or_else(|| HeadId::new("browser-base-head")),
             artifact_id: artifact_id.clone(),
             accepted_at,

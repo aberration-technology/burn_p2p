@@ -722,6 +722,38 @@ impl BrowserStorageSnapshot {
             })
     }
 
+    /// Returns the active head artifact bytes when the replay cache still has a
+    /// complete descriptor and byte payload in memory.
+    pub fn active_head_artifact_bytes(&self) -> Option<(HeadId, ArtifactDescriptor, Vec<u8>)> {
+        let descriptor = self.artifact_replay_descriptor()?.clone();
+        let head_id = descriptor
+            .head_id
+            .clone()
+            .or_else(|| self.last_head_id.clone())?;
+        if !self.cached_head_artifact_heads.contains(&head_id) {
+            return None;
+        }
+
+        if let Some(bytes) = self.artifact_replay_edge_prefix_bytes()
+            && bytes.len() as u64 == descriptor.bytes_len
+        {
+            return Some((head_id, descriptor, bytes));
+        }
+
+        let mut chunks = descriptor.chunks.clone();
+        chunks.sort_by_key(|chunk| chunk.offset_bytes);
+        let capacity = usize::try_from(descriptor.bytes_len).ok()?;
+        let mut bytes = Vec::with_capacity(capacity);
+        for chunk in &chunks {
+            let chunk_bytes = self.artifact_replay_chunk_bytes(&chunk.chunk_id)?;
+            if chunk_bytes.len() as u64 != chunk.length_bytes {
+                return None;
+            }
+            bytes.extend_from_slice(chunk_bytes);
+        }
+        (bytes.len() as u64 == descriptor.bytes_len).then_some((head_id, descriptor, bytes))
+    }
+
     /// Returns a clone suitable for durable persistence with large replay chunk payloads
     /// externalized to IndexedDB metadata records.
     pub fn durable_replay_snapshot(&self) -> Self {
@@ -771,7 +803,6 @@ impl BrowserStorageSnapshot {
         artifact_id: ArtifactId,
         transport: impl Into<String>,
     ) {
-        self.clear_artifact_replay_checkpoint();
         self.cached_head_artifact_heads.insert(head_id);
         self.cached_chunk_artifacts.insert(artifact_id);
         self.last_head_artifact_transport = Some(transport.into());

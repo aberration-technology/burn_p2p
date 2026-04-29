@@ -149,11 +149,12 @@ pub use burn_p2p_workload::{
     P2pWorkload, PatchOutcome, ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy,
     TrainingWindowOutcome, TrainingWindowTiming, ValidationCoordinationState,
     ValidationDriveOutcome, ValidationOutcome, WindowCtx, WindowReport, WorkloadExecutionStage,
-    WorkloadInputSource, WorkloadTrainingBudget, WorkloadTrainingContribution,
-    WorkloadTrainingLease, WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult,
-    WorkloadValidationPlan, WorkloadValidationProgress, WorkloadValidationResult,
-    find_matching_directory_entry, find_matching_directory_entry_with_predicate,
-    local_upstream_root, local_upstream_root_for_pipeline, standard_contribution_weight,
+    WorkloadInputSource, WorkloadTrainingArtifact, WorkloadTrainingArtifactChunk,
+    WorkloadTrainingBudget, WorkloadTrainingContribution, WorkloadTrainingLease,
+    WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadValidationPlan,
+    WorkloadValidationProgress, WorkloadValidationResult, find_matching_directory_entry,
+    find_matching_directory_entry_with_predicate, local_upstream_root,
+    local_upstream_root_for_pipeline, standard_contribution_weight,
 };
 pub use config::{
     ArtifactTransferPhase, ArtifactTransferState, AuthConfig, ClientReenrollmentStatus,
