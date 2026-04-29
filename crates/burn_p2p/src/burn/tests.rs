@@ -4,8 +4,8 @@ use std::{
     net::TcpListener,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::Duration,
@@ -15,15 +15,15 @@ use super::*;
 use burn::{
     backend::{Autodiff, NdArray},
     data::{
-        dataloader::{batcher::Batcher, DataLoaderBuilder},
+        dataloader::{DataLoaderBuilder, batcher::Batcher},
         dataset::InMemDataset,
     },
     module::Module,
     nn::{Linear, LinearConfig},
-    optim::{adaptor::OptimizerAdaptor, SgdConfig},
+    optim::{SgdConfig, adaptor::OptimizerAdaptor},
     tensor::{
-        backend::{AutodiffBackend, Backend},
         ElementConversion, Tensor, TensorData,
+        backend::{AutodiffBackend, Backend},
     },
     train::{InferenceStep, ItemLazy, TrainOutput, TrainStep},
 };
@@ -474,11 +474,13 @@ fn burn_workload_adapter_supports_diloco_parameter_round_trip() {
         base_pack.parameter_count(),
         report.local_parameters.parameter_count()
     );
-    assert!(base_pack
-        .values
-        .iter()
-        .zip(&report.local_parameters.values)
-        .any(|(base, local)| (*base - *local).abs() > f32::EPSILON));
+    assert!(
+        base_pack
+            .values
+            .iter()
+            .zip(&report.local_parameters.values)
+            .any(|(base, local)| (*base - *local).abs() > f32::EPSILON)
+    );
 
     let restored = adapter
         .import_parameter_pack(&device, &report.local_parameters)
@@ -1018,9 +1020,11 @@ fn from_learner_trainer_builder_still_requires_training_dataset_hooks() {
     .err()
     .expect("trainer should require dataset hooks");
 
-    assert!(error
-        .to_string()
-        .contains("missing burn learner training data"));
+    assert!(
+        error
+            .to_string()
+            .contains("missing burn learner training data")
+    );
 }
 
 #[test]
@@ -1289,12 +1293,16 @@ fn sharded_dataset_http_upstream_fetches_only_assigned_shards() {
         requests,
         vec!["fetch-manifest.json".to_string(), selected_locator.clone()]
     );
-    assert!(!requests
-        .iter()
-        .any(|path| path.ends_with("00000.bin") && path != &selected_locator));
-    assert!(!requests
-        .iter()
-        .any(|path| path.ends_with("00002.bin") && path != &selected_locator));
+    assert!(
+        !requests
+            .iter()
+            .any(|path| path.ends_with("00000.bin") && path != &selected_locator)
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|path| path.ends_with("00002.bin") && path != &selected_locator)
+    );
 }
 
 #[test]

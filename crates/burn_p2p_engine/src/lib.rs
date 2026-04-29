@@ -14,8 +14,8 @@ use burn::{
     tensor::{Bool, Bytes, Int, Tensor},
 };
 use burn_p2p_checkpoint::{
-    build_artifact_descriptor_from_bytes, build_artifact_descriptor_from_file, ArtifactBuildSpec,
-    CheckpointError, ChunkingScheme,
+    ArtifactBuildSpec, CheckpointError, ChunkingScheme, build_artifact_descriptor_from_bytes,
+    build_artifact_descriptor_from_file,
 };
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactKind, ContentId, FlattenedTensorPack, HeadId, Precision,
@@ -1297,17 +1297,17 @@ mod tests {
         backend::NdArray,
         module::{Module, ModuleMapper, Param},
         nn::{Linear, LinearConfig},
-        tensor::{backend::Backend, Tensor},
+        tensor::{Tensor, backend::Backend},
     };
     use burn_p2p_core::Precision;
     use tempfile::tempdir;
 
     use super::{
-        apply_root_ema_modules, encode_record_bytes, encode_store_bytes, inspect_module,
-        load_record_bytes, load_store_bytes, materialize_record_file_artifact,
-        materialize_store_bytes_artifact, merge_weighted_mean_modules, module_schema_hash,
         BurnArtifactOptions, BurnMergeCandidate, BurnRecordBytesFormat, BurnRecordFileFormat,
-        BurnRecordPrecision, BurnStoreFormat, RecordArtifactFileOptions,
+        BurnRecordPrecision, BurnStoreFormat, RecordArtifactFileOptions, apply_root_ema_modules,
+        encode_record_bytes, encode_store_bytes, inspect_module, load_record_bytes,
+        load_store_bytes, materialize_record_file_artifact, materialize_store_bytes_artifact,
+        merge_weighted_mean_modules, module_schema_hash,
     };
     use burn_p2p_checkpoint::ChunkingScheme;
     use burn_p2p_core::ArtifactKind;
@@ -1355,14 +1355,18 @@ mod tests {
 
         assert_eq!(inventory.parameter_count, 2);
         assert_eq!(inventory.total_scalar_parameters, 10);
-        assert!(inventory
-            .parameters
-            .iter()
-            .any(|parameter| parameter.path == "linear.weight"));
-        assert!(inventory
-            .parameters
-            .iter()
-            .any(|parameter| parameter.path == "linear.bias"));
+        assert!(
+            inventory
+                .parameters
+                .iter()
+                .any(|parameter| parameter.path == "linear.weight")
+        );
+        assert!(
+            inventory
+                .parameters
+                .iter()
+                .any(|parameter| parameter.path == "linear.bias")
+        );
     }
 
     #[test]

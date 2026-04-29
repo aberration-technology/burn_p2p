@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use burn::{
     module::{AutodiffModule, Module},
-    optim::{lr_scheduler::LrScheduler, Optimizer},
+    optim::{Optimizer, lr_scheduler::LrScheduler},
     prelude::Backend,
     tensor::backend::AutodiffBackend,
     train::{InferenceStep, LearningComponentsMarker, LearningComponentsTypes, TrainStep},
@@ -21,16 +21,15 @@ use crate::{
 pub use burn::module::Module as BurnModule;
 pub use burn::prelude::Backend as BurnBackend;
 pub use burn_p2p_engine::{
-    apply_root_ema_modules, encode_record_bytes, encode_store_bytes,
-    flatten_module_float_parameters, inspect_module, load_record_bytes, load_record_file,
-    load_store_bytes, load_store_file, materialize_record_bytes_artifact,
+    BurnArtifactBytes, BurnArtifactFile, BurnCheckpointer, BurnEvaluator, BurnLearner,
+    BurnLearningCheckpointer, BurnMergeCandidate, BurnModuleInventory, BurnModuleParameter,
+    BurnModuleTarget, BurnRecordBytesFormat, BurnRecordFileFormat, BurnRecordPrecision,
+    BurnStoreFormat, BurnTensorKind, EngineError, apply_root_ema_modules, encode_record_bytes,
+    encode_store_bytes, flatten_module_float_parameters, inspect_module, load_record_bytes,
+    load_record_file, load_store_bytes, load_store_file, materialize_record_bytes_artifact,
     materialize_record_file_artifact, materialize_store_bytes_artifact,
     materialize_store_file_artifact, merge_weighted_mean_modules, module_schema_hash,
-    replace_module_float_parameters, save_record_file, save_store_file, BurnArtifactBytes,
-    BurnArtifactFile, BurnCheckpointer, BurnEvaluator, BurnLearner, BurnLearningCheckpointer,
-    BurnMergeCandidate, BurnModuleInventory, BurnModuleParameter, BurnModuleTarget,
-    BurnRecordBytesFormat, BurnRecordFileFormat, BurnRecordPrecision, BurnStoreFormat,
-    BurnTensorKind, EngineError,
+    replace_module_float_parameters, save_record_file, save_store_file,
 };
 pub use burn_p2p_workload::{
     DiLoCoInnerLoopReport, DiLoCoWorkload, WorkloadExecutionStage, WorkloadTrainingBudget,
@@ -426,7 +425,7 @@ impl BurnTarget {
 mod dataset;
 mod learner;
 pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
-pub use learner::{from_learner, from_loaders, BurnLearnerProject, BurnLearnerProjectBuilder};
+pub use learner::{BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders};
 
 /// Advanced learner-backed burn integration seam.
 ///

@@ -200,9 +200,9 @@ where
     pub fn with_benchmark(
         mut self,
         benchmark: impl Fn(&BurnLearnerModel<LC>, &BurnLearnerDevice<LC>) -> crate::CapabilityEstimate
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.benchmark = Arc::new(benchmark);
         self
@@ -277,13 +277,13 @@ where
     pub fn with_step_metrics(
         mut self,
         after_train_step: impl Fn(
-                usize,
-                &BurnLearnerOutput<LC>,
-                &mut BTreeMap<String, MetricValue>,
-            ) -> Result<(), TrainError>
-            + Send
-            + Sync
-            + 'static,
+            usize,
+            &BurnLearnerOutput<LC>,
+            &mut BTreeMap<String, MetricValue>,
+        ) -> Result<(), TrainError>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.after_train_step = Arc::new(after_train_step);
         self
@@ -292,10 +292,13 @@ where
     /// Overrides end-of-window metric extraction.
     pub fn with_window_metrics(
         mut self,
-        after_window: impl Fn(&BurnLearner<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
-            + Send
-            + Sync
-            + 'static,
+        after_window: impl Fn(
+            &BurnLearner<LC>,
+            &mut BTreeMap<String, MetricValue>,
+        ) -> Result<(), TrainError>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.after_window = Arc::new(after_window);
         self
