@@ -64,7 +64,7 @@ burn_p2p_experiment = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_expe
 burn_p2p_limits = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_limits" }
 burn_p2p_metrics = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_metrics" }
 burn_p2p_app = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_app", default-features = false }
-burn_p2p_publish = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_publish" }
+burn_p2p_publish = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_publish", default-features = false }
 burn_p2p_security = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_security" }
 burn_p2p_social = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_social", default-features = false }
 burn_p2p_swarm = { version = "=0.21.0-pre.43", path = "crates/burn_p2p_swarm" }
@@ -96,4 +96,3 @@ debug-assertions = false
 
 [profile.test.package."libp2p-request-response"]
 debug-assertions = false
-
