@@ -235,6 +235,7 @@ pub struct WorkloadValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn_p2p_core::ArtifactKind;
 
     #[test]
     fn workload_training_budget_defaults_to_browser_safe_limits() {
@@ -247,6 +248,15 @@ mod tests {
 
     #[test]
     fn workload_execution_payloads_round_trip_through_json() {
+        let artifact_chunk = WorkloadTrainingArtifactChunk {
+            chunk: ChunkDescriptor {
+                chunk_id: burn_p2p_core::ChunkId::new("chunk-0"),
+                offset_bytes: 0,
+                length_bytes: 4,
+                chunk_hash: ContentId::new("chunk-hash"),
+            },
+            bytes: vec![1, 2, 3, 4],
+        };
         let training = WorkloadTrainingPlan {
             study_id: StudyId::new("study"),
             experiment_id: ExperimentId::new("experiment"),
@@ -260,7 +270,33 @@ mod tests {
                 assignment_hash: ContentId::new("assign-hash"),
                 microshards: vec![MicroShardId::new("micro-a"), MicroShardId::new("micro-b")],
             }),
-            contribution: None,
+            contribution: Some(WorkloadTrainingContribution {
+                artifact_id: ArtifactId::new("artifact"),
+                completed_batches: 2,
+                completed_examples: 4,
+                completed_tokens: 8,
+                training_time_ms: 16,
+                eval_time_ms: 1,
+                total_time_ms: 17,
+                artifact_published: false,
+                base_head_id: Some(HeadId::new("base-head")),
+                published_artifact: Some(WorkloadTrainingArtifact {
+                    descriptor: ArtifactDescriptor {
+                        artifact_id: ArtifactId::new("artifact"),
+                        kind: ArtifactKind::FullHead,
+                        head_id: Some(HeadId::new("head")),
+                        base_head_id: Some(HeadId::new("base-head")),
+                        precision: Precision::Fp16,
+                        model_schema_hash: ContentId::new("schema"),
+                        record_format: "burn-record:named-mpk".into(),
+                        bytes_len: artifact_chunk.bytes.len() as u64,
+                        chunks: vec![artifact_chunk.chunk.clone()],
+                        root_hash: ContentId::new("artifact-root"),
+                    },
+                    chunks: vec![artifact_chunk],
+                }),
+                metadata: BTreeMap::from([("backend".into(), "burn-webgpu-wasm".into())]),
+            }),
         };
         let validation = WorkloadValidationPlan {
             head_id: HeadId::new("head"),
@@ -279,6 +315,14 @@ mod tests {
 
         assert_eq!(decoded_training, training);
         assert_eq!(decoded_validation, validation);
+        assert_eq!(
+            decoded_training
+                .contribution
+                .as_ref()
+                .and_then(|contribution| contribution.published_artifact.as_ref())
+                .map(|artifact| artifact.chunks[0].bytes.as_slice()),
+            Some([1, 2, 3, 4].as_slice())
+        );
     }
 
     #[test]

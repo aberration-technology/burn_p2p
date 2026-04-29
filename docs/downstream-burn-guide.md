@@ -323,6 +323,10 @@ if a revision is configured with `TrainingProtocol::DiLoCo`, call
 `train_protocol_once()` or `diloco_round_once()` instead. The artifact-window
 entrypoints reject DiLoCo revisions so callers cannot accidentally treat a
 DiLoCo synchronization round as a normal published artifact window.
+Burn-backed workloads use the shared deterministic float-parameter pack adapter
+for DiLoCo pseudo-gradient transport; workloads that need persistent inner
+optimizer state or non-SGD outer semantics should override the default
+`DiLoCoWorkload` hooks.
 
 one important point: a trainer is not enough by itself. a validator / authority
 path must already exist in the network to initialize the revision head and

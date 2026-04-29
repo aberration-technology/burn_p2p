@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use burn::{
     module::{AutodiffModule, Module},
-    optim::{Optimizer, lr_scheduler::LrScheduler},
+    optim::{lr_scheduler::LrScheduler, Optimizer},
     prelude::Backend,
     tensor::backend::AutodiffBackend,
     train::{InferenceStep, LearningComponentsMarker, LearningComponentsTypes, TrainStep},
@@ -11,28 +11,31 @@ use chrono::Utc;
 
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ChunkingScheme,
-    ClientReleaseManifest, ContentId, EvalSplit, FsArtifactStore, HeadId, MergeModelCandidate,
-    MergePolicy, MetricReport, MetricValue, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport,
-    Precision, RuntimePatch, SingleWorkloadProjectFamily, SupportedWorkload, TrainError,
-    TrainerCanonicalReconcileStrategy, WindowCtx, WindowReport,
+    ClientReleaseManifest, ContentId, DatasetViewId, EvalSplit, ExperimentId, FlattenedTensorPack,
+    FsArtifactStore, HeadId, LeaseId, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
+    NetworkId, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, PeerId, Precision, RevisionId,
+    RuntimePatch, SingleWorkloadProjectFamily, StateBlob, StudyId, SupportedWorkload, TrainError,
+    TrainerCanonicalReconcileStrategy, WindowCtx, WindowId, WindowReport,
 };
 
 pub use burn::module::Module as BurnModule;
 pub use burn::prelude::Backend as BurnBackend;
 pub use burn_p2p_engine::{
-    BurnArtifactBytes, BurnArtifactFile, BurnCheckpointer, BurnEvaluator, BurnLearner,
-    BurnLearningCheckpointer, BurnMergeCandidate, BurnModuleInventory, BurnModuleParameter,
-    BurnModuleTarget, BurnRecordBytesFormat, BurnRecordFileFormat, BurnRecordPrecision,
-    BurnStoreFormat, BurnTensorKind, EngineError, apply_root_ema_modules, encode_record_bytes,
-    encode_store_bytes, inspect_module, load_record_bytes, load_record_file, load_store_bytes,
-    load_store_file, materialize_record_bytes_artifact, materialize_record_file_artifact,
-    materialize_store_bytes_artifact, materialize_store_file_artifact, merge_weighted_mean_modules,
-    module_schema_hash, save_record_file, save_store_file,
+    apply_root_ema_modules, encode_record_bytes, encode_store_bytes,
+    flatten_module_float_parameters, inspect_module, load_record_bytes, load_record_file,
+    load_store_bytes, load_store_file, materialize_record_bytes_artifact,
+    materialize_record_file_artifact, materialize_store_bytes_artifact,
+    materialize_store_file_artifact, merge_weighted_mean_modules, module_schema_hash,
+    replace_module_float_parameters, save_record_file, save_store_file, BurnArtifactBytes,
+    BurnArtifactFile, BurnCheckpointer, BurnEvaluator, BurnLearner, BurnLearningCheckpointer,
+    BurnMergeCandidate, BurnModuleInventory, BurnModuleParameter, BurnModuleTarget,
+    BurnRecordBytesFormat, BurnRecordFileFormat, BurnRecordPrecision, BurnStoreFormat,
+    BurnTensorKind, EngineError,
 };
 pub use burn_p2p_workload::{
-    WorkloadExecutionStage, WorkloadTrainingBudget, WorkloadTrainingPlan, WorkloadTrainingProgress,
-    WorkloadTrainingResult, WorkloadValidationPlan, WorkloadValidationProgress,
-    WorkloadValidationResult,
+    DiLoCoInnerLoopReport, DiLoCoWorkload, WorkloadExecutionStage, WorkloadTrainingBudget,
+    WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadValidationPlan,
+    WorkloadValidationProgress, WorkloadValidationResult,
 };
 
 /// Type alias for the burn learning components used by [`BurnLearnerWorkload`].
@@ -423,7 +426,7 @@ impl BurnTarget {
 mod dataset;
 mod learner;
 pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
-pub use learner::{BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders};
+pub use learner::{from_learner, from_loaders, BurnLearnerProject, BurnLearnerProjectBuilder};
 
 /// Advanced learner-backed burn integration seam.
 ///
@@ -1068,6 +1071,97 @@ where
 
     fn model_schema_hash(&self) -> ContentId {
         self.model_schema_hash.clone()
+    }
+}
+
+impl<W> DiLoCoWorkload for BurnWorkloadAdapter<W>
+where
+    W: BurnWorkload,
+    W::Batch: Clone,
+{
+    fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
+        flatten_module_float_parameters::<W::Backend, _>(model, self.model_schema_hash.clone())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn import_parameter_pack(
+        &self,
+        device: &Self::Device,
+        pack: &FlattenedTensorPack,
+    ) -> anyhow::Result<Self::Model> {
+        let model = self.init_model(device);
+        replace_module_float_parameters::<W::Backend, _>(
+            &model,
+            self.model_schema_hash.clone(),
+            pack,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn run_inner_steps(
+        &self,
+        model: &Self::Model,
+        batches: &[Self::Batch],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, TrainError> {
+        if num_inner_steps > 0 && batches.is_empty() {
+            return Err(TrainError::new(
+                "DiLoCo inner loop requires at least one batch",
+            ));
+        }
+
+        let selected_batches = batches
+            .iter()
+            .cloned()
+            .cycle()
+            .take(num_inner_steps as usize)
+            .collect::<Vec<_>>();
+        let mut ctx = WindowCtx {
+            device: self.runtime_device(),
+            model: model.clone(),
+            lease: synthetic_diloco_inner_loop_lease(num_inner_steps),
+            cached_microshards: Vec::new(),
+            batches: selected_batches,
+        };
+        let report = self.train_window(&mut ctx)?;
+        let mut metrics = self.contribution_metrics(&report);
+        metrics.insert(
+            "diloco_inner_steps_completed".into(),
+            MetricValue::Integer(i64::from(num_inner_steps)),
+        );
+        metrics.insert(
+            "diloco_inner_state_input_present".into(),
+            MetricValue::Bool(inner_optimizer_state.is_some()),
+        );
+        let local_parameters = self
+            .export_parameter_pack(&ctx.model)
+            .map_err(|error| TrainError::new(error.to_string()))?;
+
+        Ok(DiLoCoInnerLoopReport {
+            local_parameters,
+            inner_optimizer_state: inner_optimizer_state.cloned(),
+            steps_completed: num_inner_steps,
+            metrics,
+        })
+    }
+}
+
+fn synthetic_diloco_inner_loop_lease(num_inner_steps: u32) -> AssignmentLease {
+    AssignmentLease {
+        lease_id: LeaseId::new("diloco-inner-loop"),
+        network_id: NetworkId::new("diloco-local"),
+        study_id: StudyId::new("diloco-local"),
+        experiment_id: ExperimentId::new("diloco-local"),
+        revision_id: RevisionId::new("diloco-local"),
+        peer_id: PeerId::new("diloco-local"),
+        dataset_view_id: DatasetViewId::new("diloco-local"),
+        window_id: WindowId(0),
+        granted_at: Utc::now(),
+        expires_at: Utc::now(),
+        budget_work_units: u64::from(num_inner_steps),
+        microshards: Vec::new(),
+        assignment_hash: ContentId::new(format!("diloco-inner-loop-{num_inner_steps}")),
     }
 }
 

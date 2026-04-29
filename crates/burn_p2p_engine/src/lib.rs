@@ -14,10 +14,12 @@ use burn::{
     tensor::{Bool, Bytes, Int, Tensor},
 };
 use burn_p2p_checkpoint::{
-    ArtifactBuildSpec, CheckpointError, ChunkingScheme, build_artifact_descriptor_from_bytes,
-    build_artifact_descriptor_from_file,
+    build_artifact_descriptor_from_bytes, build_artifact_descriptor_from_file, ArtifactBuildSpec,
+    CheckpointError, ChunkingScheme,
 };
-use burn_p2p_core::{ArtifactDescriptor, ArtifactKind, ContentId, HeadId, Precision};
+use burn_p2p_core::{
+    ArtifactDescriptor, ArtifactKind, ContentId, FlattenedTensorPack, HeadId, Precision,
+};
 use burn_store::{BurnpackStore, Collector, ModuleSnapshot, SafetensorsStore, TensorSnapshot};
 use serde::{Deserialize, Serialize};
 
@@ -467,6 +469,88 @@ where
     Ok(ContentId::derive(&shape_only)?)
 }
 
+/// Exports deterministic flattened float parameters from a Burn module.
+pub fn flatten_module_float_parameters<B, M>(
+    module: &M,
+    model_schema_hash: ContentId,
+) -> Result<FlattenedTensorPack, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    let snapshots = collect_float_snapshots::<B, M>(module)?;
+    let layout_hash = float_parameter_layout_hash(&snapshots)?;
+    let mut values = Vec::new();
+
+    for snapshot in snapshots.values() {
+        let data = snapshot
+            .to_data()
+            .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+        values.extend(data.iter::<f64>().map(|value| value as f32));
+    }
+
+    Ok(FlattenedTensorPack::new(
+        model_schema_hash,
+        layout_hash,
+        values,
+    ))
+}
+
+/// Restores a flattened float-parameter pack into a Burn module with the same layout.
+pub fn replace_module_float_parameters<B, M>(
+    base_module: &M,
+    model_schema_hash: ContentId,
+    pack: &FlattenedTensorPack,
+) -> Result<M, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    if pack.model_schema_hash != model_schema_hash {
+        return Err(EngineError::ModuleMerge(format!(
+            "flattened parameter pack schema mismatch: expected {}, got {}",
+            model_schema_hash.as_str(),
+            pack.model_schema_hash.as_str(),
+        )));
+    }
+
+    let snapshots = collect_float_snapshots::<B, M>(base_module)?;
+    let layout_hash = float_parameter_layout_hash(&snapshots)?;
+    if pack.layout_hash != layout_hash {
+        return Err(EngineError::ModuleMerge(format!(
+            "flattened parameter pack layout mismatch: expected {}, got {}",
+            layout_hash.as_str(),
+            pack.layout_hash.as_str(),
+        )));
+    }
+
+    let expected_values = snapshots
+        .values()
+        .map(|snapshot| snapshot.shape.iter().product::<usize>())
+        .sum::<usize>();
+    if pack.values.len() != expected_values {
+        return Err(EngineError::ModuleMerge(format!(
+            "flattened parameter pack value count mismatch: expected {}, got {}",
+            expected_values,
+            pack.values.len(),
+        )));
+    }
+
+    let mut offset = 0usize;
+    let mut replacements = BTreeMap::new();
+    for (path, snapshot) in snapshots {
+        let len = snapshot.shape.iter().product::<usize>();
+        let end = offset + len;
+        replacements.insert(
+            path,
+            burn::tensor::TensorData::new(pack.values[offset..end].to_vec(), snapshot.shape),
+        );
+        offset = end;
+    }
+
+    replace_float_tensors::<B, M>(base_module, replacements)
+}
+
 /// Performs the merge weighted mean modules operation relative to a shared base module.
 ///
 /// The merged value is computed as:
@@ -609,6 +693,16 @@ fn validate_snapshot_layout(
     }
 
     Ok(())
+}
+
+fn float_parameter_layout_hash(
+    snapshots: &BTreeMap<String, TensorSnapshot>,
+) -> Result<ContentId, EngineError> {
+    let layout = snapshots
+        .iter()
+        .map(|(path, snapshot)| (path.as_str(), snapshot.shape.as_slice()))
+        .collect::<Vec<_>>();
+    Ok(ContentId::derive(&layout)?)
 }
 
 fn weighted_mean_delta_tensor_data(

@@ -4,8 +4,8 @@ use std::{
     net::TcpListener,
     path::Path,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -15,15 +15,15 @@ use super::*;
 use burn::{
     backend::{Autodiff, NdArray},
     data::{
-        dataloader::{DataLoaderBuilder, batcher::Batcher},
+        dataloader::{batcher::Batcher, DataLoaderBuilder},
         dataset::InMemDataset,
     },
     module::Module,
     nn::{Linear, LinearConfig},
-    optim::{SgdConfig, adaptor::OptimizerAdaptor},
+    optim::{adaptor::OptimizerAdaptor, SgdConfig},
     tensor::{
-        ElementConversion, Tensor, TensorData,
         backend::{AutodiffBackend, Backend},
+        ElementConversion, Tensor, TensorData,
     },
     train::{InferenceStep, ItemLazy, TrainOutput, TrainStep},
 };
@@ -435,6 +435,76 @@ fn burn_workload_adapter_derives_schema_and_manifest() {
         ContentId::new("tiny-burnpack")
     );
     assert!(!adapter.model_schema_hash().as_str().is_empty());
+}
+
+#[test]
+fn burn_workload_adapter_supports_diloco_parameter_round_trip() {
+    let supported_workload = SupportedWorkload {
+        workload_id: crate::WorkloadId::new("tiny-learner-workload"),
+        workload_name: "Tiny Learner Workload".into(),
+        model_program_hash: ContentId::new("tiny-program"),
+        checkpoint_format_hash: ContentId::new("tiny-burnpack"),
+        supported_revision_family: ContentId::new("tiny-family"),
+        resource_class: "cpu".into(),
+    };
+    let adapter = TinyLearnerWorkload
+        .into_p2p_workload(BurnWorkloadConfig::standard(supported_workload))
+        .expect("adapter should build");
+    let device = adapter.runtime_device();
+    let model = adapter.init_model(&device);
+    let base_pack = adapter
+        .export_parameter_pack(&model)
+        .expect("export base parameters");
+    let batches = vec![
+        TinyLearnerWorkload::batch::<LearnerBackend>(&device, 1.0),
+        TinyLearnerWorkload::batch::<LearnerBackend>(&device, 2.0),
+    ];
+
+    let report = adapter
+        .run_inner_steps(&model, &batches, 2, None)
+        .expect("run DiLoCo inner steps");
+
+    assert_eq!(report.steps_completed, 2);
+    assert_eq!(
+        report.metrics.get("diloco_inner_steps_completed"),
+        Some(&MetricValue::Integer(2))
+    );
+    assert!(base_pack.is_compatible_with(&report.local_parameters));
+    assert_eq!(
+        base_pack.parameter_count(),
+        report.local_parameters.parameter_count()
+    );
+    assert!(base_pack
+        .values
+        .iter()
+        .zip(&report.local_parameters.values)
+        .any(|(base, local)| (*base - *local).abs() > f32::EPSILON));
+
+    let restored = adapter
+        .import_parameter_pack(&device, &report.local_parameters)
+        .expect("restore local parameters");
+    let restored_pack = adapter
+        .export_parameter_pack(&restored)
+        .expect("export restored parameters");
+    assert_eq!(
+        restored_pack.model_schema_hash,
+        report.local_parameters.model_schema_hash
+    );
+    assert_eq!(
+        restored_pack.layout_hash,
+        report.local_parameters.layout_hash
+    );
+    assert_eq!(
+        restored_pack.values.len(),
+        report.local_parameters.values.len()
+    );
+    for (restored, expected) in restored_pack
+        .values
+        .iter()
+        .zip(&report.local_parameters.values)
+    {
+        assert!((*restored - *expected).abs() <= f32::EPSILON);
+    }
 }
 
 #[test]
@@ -948,11 +1018,9 @@ fn from_learner_trainer_builder_still_requires_training_dataset_hooks() {
     .err()
     .expect("trainer should require dataset hooks");
 
-    assert!(
-        error
-            .to_string()
-            .contains("missing burn learner training data")
-    );
+    assert!(error
+        .to_string()
+        .contains("missing burn learner training data"));
 }
 
 #[test]
@@ -1221,16 +1289,12 @@ fn sharded_dataset_http_upstream_fetches_only_assigned_shards() {
         requests,
         vec!["fetch-manifest.json".to_string(), selected_locator.clone()]
     );
-    assert!(
-        !requests
-            .iter()
-            .any(|path| path.ends_with("00000.bin") && path != &selected_locator)
-    );
-    assert!(
-        !requests
-            .iter()
-            .any(|path| path.ends_with("00002.bin") && path != &selected_locator)
-    );
+    assert!(!requests
+        .iter()
+        .any(|path| path.ends_with("00000.bin") && path != &selected_locator));
+    assert!(!requests
+        .iter()
+        .any(|path| path.ends_with("00002.bin") && path != &selected_locator));
 }
 
 #[test]

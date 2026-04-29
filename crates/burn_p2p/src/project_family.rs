@@ -2,10 +2,11 @@ use semver::Version;
 
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ClientReleaseManifest,
-    ContentId, EvalSplit, FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy,
-    MetricReport, MetricValue, NetworkManifest, NodeBuilder, P2pWorkload, PatchOutcome,
-    PatchSupport, ProjectFamilyId, RuntimePatch, SupportedWorkload,
-    TrainerCanonicalReconcileStrategy, WindowCtx, WindowReport, WorkloadId,
+    ContentId, DiLoCoInnerLoopReport, DiLoCoWorkload, EvalSplit, FlattenedTensorPack,
+    FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
+    NetworkManifest, NodeBuilder, OuterOptimizerPolicy, P2pWorkload, PatchOutcome, PatchSupport,
+    ProjectFamilyId, RuntimePatch, StateBlob, SupportedWorkload, TrainerCanonicalReconcileStrategy,
+    WindowCtx, WindowReport, WorkloadId,
 };
 
 /// Groups one or more compatible workloads under a single project family.
@@ -295,6 +296,78 @@ where
     }
 }
 
+impl<W> DiLoCoWorkload for SingleWorkloadProjectFamily<W>
+where
+    W: DiLoCoWorkload + Clone,
+{
+    fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
+        self.workload.export_parameter_pack(model)
+    }
+
+    fn import_parameter_pack(
+        &self,
+        device: &Self::Device,
+        pack: &FlattenedTensorPack,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload.import_parameter_pack(device, pack)
+    }
+
+    fn run_inner_steps(
+        &self,
+        model: &Self::Model,
+        batches: &[Self::Batch],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, crate::TrainError> {
+        self.workload
+            .run_inner_steps(model, batches, num_inner_steps, inner_optimizer_state)
+    }
+
+    fn build_pseudo_gradient(
+        &self,
+        base: &FlattenedTensorPack,
+        local: &FlattenedTensorPack,
+    ) -> anyhow::Result<FlattenedTensorPack> {
+        self.workload.build_pseudo_gradient(base, local)
+    }
+
+    fn initialize_outer_optimizer_state(
+        &self,
+        model: &Self::Model,
+        policy: &OuterOptimizerPolicy,
+    ) -> anyhow::Result<StateBlob> {
+        self.workload
+            .initialize_outer_optimizer_state(model, policy)
+    }
+
+    fn apply_aggregated_outer_update(
+        &self,
+        base: &FlattenedTensorPack,
+        aggregate: &FlattenedTensorPack,
+        outer_optimizer_state: &StateBlob,
+        policy: &OuterOptimizerPolicy,
+    ) -> anyhow::Result<(FlattenedTensorPack, StateBlob)> {
+        self.workload
+            .apply_aggregated_outer_update(base, aggregate, outer_optimizer_state, policy)
+    }
+
+    fn save_outer_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.save_outer_optimizer_state(state)
+    }
+
+    fn load_outer_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.load_outer_optimizer_state(state)
+    }
+
+    fn save_inner_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.save_inner_optimizer_state(state)
+    }
+
+    fn load_inner_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.load_inner_optimizer_state(state)
+    }
+}
+
 impl<P> P2pWorkload for SelectedWorkloadProject<P>
 where
     P: P2pProjectFamily,
@@ -428,6 +501,79 @@ where
 
     fn switch_runtime_workload(&mut self, workload_id: &WorkloadId) -> anyhow::Result<()> {
         self.switch_workload(workload_id.clone())
+    }
+}
+
+impl<P> DiLoCoWorkload for SelectedWorkloadProject<P>
+where
+    P: P2pProjectFamily,
+    P::Workload: DiLoCoWorkload,
+{
+    fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
+        self.workload.export_parameter_pack(model)
+    }
+
+    fn import_parameter_pack(
+        &self,
+        device: &Self::Device,
+        pack: &FlattenedTensorPack,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload.import_parameter_pack(device, pack)
+    }
+
+    fn run_inner_steps(
+        &self,
+        model: &Self::Model,
+        batches: &[Self::Batch],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, crate::TrainError> {
+        self.workload
+            .run_inner_steps(model, batches, num_inner_steps, inner_optimizer_state)
+    }
+
+    fn build_pseudo_gradient(
+        &self,
+        base: &FlattenedTensorPack,
+        local: &FlattenedTensorPack,
+    ) -> anyhow::Result<FlattenedTensorPack> {
+        self.workload.build_pseudo_gradient(base, local)
+    }
+
+    fn initialize_outer_optimizer_state(
+        &self,
+        model: &Self::Model,
+        policy: &OuterOptimizerPolicy,
+    ) -> anyhow::Result<StateBlob> {
+        self.workload
+            .initialize_outer_optimizer_state(model, policy)
+    }
+
+    fn apply_aggregated_outer_update(
+        &self,
+        base: &FlattenedTensorPack,
+        aggregate: &FlattenedTensorPack,
+        outer_optimizer_state: &StateBlob,
+        policy: &OuterOptimizerPolicy,
+    ) -> anyhow::Result<(FlattenedTensorPack, StateBlob)> {
+        self.workload
+            .apply_aggregated_outer_update(base, aggregate, outer_optimizer_state, policy)
+    }
+
+    fn save_outer_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.save_outer_optimizer_state(state)
+    }
+
+    fn load_outer_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.load_outer_optimizer_state(state)
+    }
+
+    fn save_inner_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.save_inner_optimizer_state(state)
+    }
+
+    fn load_inner_optimizer_state(&self, state: &StateBlob) -> anyhow::Result<StateBlob> {
+        self.workload.load_inner_optimizer_state(state)
     }
 }
 
