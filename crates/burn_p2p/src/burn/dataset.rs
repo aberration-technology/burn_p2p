@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, marker::PhantomData, path::Path};
 
 use anyhow::Context;
 use burn::data::dataloader::batcher::Batcher;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 use super::*;
 
