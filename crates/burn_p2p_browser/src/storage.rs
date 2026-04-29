@@ -781,6 +781,31 @@ impl BrowserStorageSnapshot {
         (bytes.len() as u64 == descriptor.bytes_len).then_some((head_id, descriptor, bytes))
     }
 
+    /// Returns whether the active head artifact has complete bytes available locally.
+    pub fn active_head_artifact_ready(&self) -> bool {
+        let Some(head_id) = self.last_head_id.as_ref() else {
+            return false;
+        };
+        if !self.cached_head_artifact_heads.contains(head_id) {
+            return false;
+        }
+        if let Some(cache) = self.active_head_artifact_cache.as_ref()
+            && &cache.head_id == head_id
+        {
+            return active_head_artifact_cache_complete(cache);
+        }
+        let Some(descriptor) = self.artifact_replay_descriptor() else {
+            return false;
+        };
+        if let Some(bytes) = self.artifact_replay_edge_prefix_bytes() {
+            return bytes.len() as u64 == descriptor.bytes_len;
+        }
+        descriptor.chunks.iter().all(|chunk| {
+            self.artifact_replay_chunk_bytes(&chunk.chunk_id)
+                .is_some_and(|bytes| bytes.len() as u64 == chunk.length_bytes)
+        })
+    }
+
     /// Returns a clone suitable for durable persistence with large replay chunk payloads
     /// externalized to IndexedDB metadata records.
     pub fn durable_replay_snapshot(&self) -> Self {
@@ -983,6 +1008,26 @@ fn active_head_artifact_cache_bytes(cache: &BrowserActiveHeadArtifactCache) -> O
     (bytes.len() as u64 == cache.descriptor.bytes_len).then_some(bytes)
 }
 
+fn active_head_artifact_cache_complete(cache: &BrowserActiveHeadArtifactCache) -> bool {
+    if cache
+        .edge_download_prefix
+        .as_ref()
+        .is_some_and(|prefix| prefix.bytes.len() as u64 == cache.descriptor.bytes_len)
+    {
+        return true;
+    }
+    if replay_edge_segments_cover(&cache.edge_download_segments, cache.descriptor.bytes_len) {
+        return true;
+    }
+
+    cache.descriptor.chunks.iter().all(|chunk| {
+        cache.completed_chunks.iter().any(|candidate| {
+            candidate.chunk_id == chunk.chunk_id
+                && candidate.chunk_bytes.len() as u64 == chunk.length_bytes
+        })
+    })
+}
+
 fn replay_edge_prefix_bytes_from_segments(
     segments: &[BrowserArtifactReplayByteSegment],
 ) -> Option<Vec<u8>> {
@@ -1014,6 +1059,33 @@ fn replay_edge_prefix_bytes_from_segments(
         expected_offset = segment.start_offset.saturating_add(segment_len);
     }
     (!prefix.is_empty()).then_some(prefix)
+}
+
+fn replay_edge_segments_cover(
+    segments: &[BrowserArtifactReplayByteSegment],
+    total_bytes: u64,
+) -> bool {
+    if segments.is_empty() {
+        return false;
+    }
+
+    let mut sorted = segments.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|segment| segment.start_offset);
+    let mut expected_offset = 0u64;
+    for segment in sorted {
+        if segment.start_offset > expected_offset {
+            return false;
+        }
+        let segment_len = browser_artifact_replay_segment_len(segment);
+        if segment_len == 0 || segment.bytes.is_empty() {
+            return false;
+        }
+        expected_offset = expected_offset.max(segment.start_offset.saturating_add(segment_len));
+        if expected_offset >= total_bytes {
+            return true;
+        }
+    }
+    expected_offset >= total_bytes
 }
 
 fn remember_recent_receipt_id(

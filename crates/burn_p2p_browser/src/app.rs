@@ -37,7 +37,9 @@ use crate::{
 use crate::{
     BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
 };
-use burn_p2p_core::{BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload};
+use burn_p2p_core::{
+    BrowserArtifactSource, BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload,
+};
 #[cfg(any(test, target_arch = "wasm32"))]
 use burn_p2p_core::{BrowserSwarmStatus, BrowserTransportFamily};
 
@@ -204,6 +206,14 @@ pub struct BrowserAppModel {
     pub last_training: Option<crate::BrowserTrainingResult>,
 }
 
+fn browser_artifact_source_label(source: &BrowserArtifactSource) -> Option<String> {
+    match source {
+        BrowserArtifactSource::Unavailable => None,
+        BrowserArtifactSource::PeerSwarm => Some("p2p".into()),
+        BrowserArtifactSource::EdgeHttp => Some("edge-fallback".into()),
+    }
+}
+
 impl BrowserAppModel {
     /// Creates a new model from the current worker runtime state.
     pub fn from_runtime(runtime: BrowserWorkerRuntime) -> Self {
@@ -353,6 +363,17 @@ impl BrowserAppModel {
         let train_available = selected_experiment
             .as_ref()
             .is_some_and(|experiment| experiment.train_available);
+        let active_head_artifact_ready = storage.active_head_artifact_ready();
+        let active_head_artifact_error = (!active_head_artifact_ready
+            && storage.last_head_id.is_some())
+        .then(|| {
+            self.last_error
+                .clone()
+                .or_else(|| self.runtime.transport.last_error.clone())
+        })
+        .flatten();
+        let active_head_artifact_source =
+            browser_artifact_source_label(&swarm_status.artifact_source);
 
         BrowserAppClientView {
             network_id,
@@ -423,6 +444,9 @@ impl BrowserAppModel {
                     .last_head_id
                     .as_ref()
                     .map(|head_id| head_id.as_str().to_owned()),
+                active_head_artifact_ready,
+                active_head_artifact_source,
+                active_head_artifact_error,
                 cached_chunk_artifacts: storage.cached_chunk_artifacts.len(),
                 cached_microshards: storage.cached_microshards.len(),
                 pending_receipts: storage.pending_receipts.len(),

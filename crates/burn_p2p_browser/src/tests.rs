@@ -880,6 +880,7 @@ fn browser_storage_returns_active_head_artifact_bytes_after_sync() {
         "peer-swarm",
     );
 
+    assert!(storage.active_head_artifact_ready());
     let (head_id, descriptor, bytes) = storage
         .active_head_artifact_bytes()
         .expect("active head bytes retained");

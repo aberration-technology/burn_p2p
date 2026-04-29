@@ -326,6 +326,15 @@ pub struct BrowserAppTrainingView {
     /// The freshest visible head ID from the current browser runtime state.
     #[serde(default)]
     pub latest_head_id: Option<String>,
+    /// Whether the active head artifact bytes are available in the local replay cache.
+    #[serde(default)]
+    pub active_head_artifact_ready: bool,
+    /// Transport that delivered the active head artifact, when known.
+    #[serde(default)]
+    pub active_head_artifact_source: Option<String>,
+    /// Latest active-head artifact synchronization error, when available.
+    #[serde(default)]
+    pub active_head_artifact_error: Option<String>,
     /// Count of cached chunk artifacts.
     pub cached_chunk_artifacts: usize,
     /// Count of cached microshards.

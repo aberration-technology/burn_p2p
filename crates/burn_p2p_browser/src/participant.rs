@@ -151,16 +151,32 @@ impl BrowserSessionRuntimeHandle {
             BrowserTransportStatus::from_transport_surface(&snapshot.transports),
         );
         runtime.remember_session(session.clone());
-        client
-            .sync_worker_runtime(&mut runtime, Some(&session), config.include_leaderboard)
-            .await?;
         #[cfg(target_arch = "wasm32")]
-        let direct_swarm_runtime = if config.enable_direct_swarm {
-            let (direct_swarm_runtime, _) = establish_direct_swarm_runtime(&mut runtime).await;
+        let mut direct_swarm_runtime = if config.enable_direct_swarm {
+            let (direct_swarm_runtime, _events) =
+                establish_direct_swarm_runtime(&mut runtime).await;
             direct_swarm_runtime
         } else {
             None
         };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (_events, hard_error) = refresh_worker_runtime_preferring_direct_swarm(
+                &client,
+                &mut runtime,
+                Some(&session),
+                direct_swarm_runtime.as_mut(),
+                config.include_leaderboard,
+            )
+            .await;
+            if let Some(error) = hard_error {
+                return Err(error.into());
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        client
+            .sync_worker_runtime(&mut runtime, Some(&session), config.include_leaderboard)
+            .await?;
 
         Ok(Self {
             client,
@@ -206,6 +222,43 @@ impl BrowserSessionRuntimeHandle {
     /// Returns active head artifact bytes retained by the browser replay cache.
     pub fn active_head_artifact_bytes(&self) -> Option<(HeadId, ArtifactDescriptor, Vec<u8>)> {
         self.runtime.storage.active_head_artifact_bytes()
+    }
+
+    /// Refreshes the runtime and requires the active head artifact to be locally available.
+    pub async fn ensure_active_head_artifact_cached(
+        &mut self,
+    ) -> Result<(HeadId, ArtifactDescriptor, Vec<u8>), BrowserSessionRuntimeError> {
+        self.refresh().await?;
+        if let Some(artifact) = self.active_head_artifact_bytes() {
+            return Ok(artifact);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.wait_for_direct_transport_handoff().await?;
+            self.refresh().await?;
+            if let Some(artifact) = self.active_head_artifact_bytes() {
+                return Ok(artifact);
+            }
+        }
+
+        let head = self
+            .runtime
+            .storage
+            .last_head_id
+            .as_ref()
+            .map(|head_id| head_id.as_str().to_owned())
+            .unwrap_or_else(|| "none".into());
+        let source = self.runtime.swarm_status().artifact_source;
+        let error = self
+            .runtime
+            .transport
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "no artifact transport produced complete bytes".into());
+        Err(BrowserSessionRuntimeError::Worker(format!(
+            "active head artifact is unavailable after p2p sync: head={head} source={source:?}; {error}"
+        )))
     }
 
     /// Executes one training plan and flushes any emitted receipts.
