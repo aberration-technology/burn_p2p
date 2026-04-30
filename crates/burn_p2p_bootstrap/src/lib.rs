@@ -27,7 +27,7 @@ mod operator_store;
 mod publication;
 mod state;
 
-#[cfg(feature = "artifact-publish")]
+#[cfg(all(feature = "artifact-publish", feature = "browser-edge"))]
 use burn_p2p_publish::DEFAULT_PUBLICATION_TARGET_ID;
 use burn_p2p_swarm::SwarmError;
 use thiserror::Error;

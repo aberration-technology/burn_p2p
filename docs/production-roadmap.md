@@ -190,7 +190,7 @@ these roadmap items are still open work:
 
 the honest claim today is:
 
-- good `0.21.0-pre.48` decentralized training runtime
+- good `0.21.0-pre.49` decentralized training runtime
 - coherent validator-quorum authority boundary
 - sane deployment references
 - bounded long-run memory behavior in the main live runtime paths

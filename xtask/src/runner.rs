@@ -30,6 +30,8 @@ pub struct StepRecord {
 pub struct Workspace {
     pub root: PathBuf,
     cargo_bin: String,
+    cargo_clippy_bin: String,
+    cargo_fmt_bin: String,
     node_bin: String,
     npx_bin: String,
 }
@@ -50,9 +52,21 @@ impl Workspace {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("xtask should live under the workspace root"))?
             .to_path_buf();
+        let cargo_bin = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let cargo_clippy_bin = env::var("CARGO_CLIPPY")
+            .ok()
+            .or_else(|| sibling_tool(&cargo_bin, "cargo-clippy"))
+            .unwrap_or_else(|| "cargo-clippy".into());
+        let cargo_fmt_bin = env::var("CARGO_FMT")
+            .ok()
+            .or_else(|| sibling_tool(&cargo_bin, "cargo-fmt"))
+            .unwrap_or_else(|| "cargo-fmt".into());
+
         Ok(Self {
             root,
-            cargo_bin: env::var("CARGO").unwrap_or_else(|_| "cargo".into()),
+            cargo_bin,
+            cargo_clippy_bin,
+            cargo_fmt_bin,
             node_bin: env::var("NODE").unwrap_or_else(|_| "node".into()),
             npx_bin: env::var("NPX").unwrap_or_else(|_| "npx".into()),
         })
@@ -60,6 +74,14 @@ impl Workspace {
 
     pub fn cargo(&self) -> &str {
         &self.cargo_bin
+    }
+
+    pub fn cargo_clippy(&self) -> &str {
+        &self.cargo_clippy_bin
+    }
+
+    pub fn cargo_fmt(&self) -> &str {
+        &self.cargo_fmt_bin
     }
 
     pub fn node(&self) -> &str {
@@ -184,6 +206,38 @@ impl Workspace {
         )
     }
 
+    pub fn run_cargo_fmt<S: AsRef<str>>(
+        &self,
+        artifacts: &ArtifactLayout,
+        label: &str,
+        args: &[S],
+        envs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<StepRecord> {
+        self.run(
+            artifacts,
+            label,
+            self.cargo_fmt(),
+            &args
+                .iter()
+                .map(|value| value.as_ref().to_owned())
+                .collect::<Vec<_>>(),
+            envs,
+        )
+    }
+
+    pub fn run_cargo_clippy<S: AsRef<str>>(
+        &self,
+        artifacts: &ArtifactLayout,
+        label: &str,
+        args: &[S],
+        envs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<StepRecord> {
+        let mut rendered_args = Vec::with_capacity(args.len() + 1);
+        rendered_args.push("clippy".to_owned());
+        rendered_args.extend(args.iter().map(|value| value.as_ref().to_owned()));
+        self.run(artifacts, label, self.cargo_clippy(), &rendered_args, envs)
+    }
+
     pub fn run_node<S: AsRef<str>>(
         &self,
         artifacts: &ArtifactLayout,
@@ -202,6 +256,15 @@ impl Workspace {
             envs,
         )
     }
+}
+
+fn sibling_tool(program: &str, tool_name: &str) -> Option<String> {
+    let path = Path::new(program);
+    if !path.is_absolute() {
+        return None;
+    }
+    let candidate = path.with_file_name(tool_name);
+    candidate.exists().then(|| candidate.display().to_string())
 }
 
 impl SpawnedStep {

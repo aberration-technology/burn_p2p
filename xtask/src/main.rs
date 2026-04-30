@@ -583,18 +583,11 @@ fn run_fast_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()
     let artifacts = ArtifactLayout::create(&workspace.root, "check", args.profile)?;
     let envs = BTreeMap::new();
     let mut steps = Vec::new();
-    steps.push(workspace.run_cargo(&artifacts, "fmt", &["fmt", "--all", "--check"], &envs)?);
-    steps.push(workspace.run_cargo(
+    steps.push(workspace.run_cargo_fmt(&artifacts, "fmt", &["--all", "--", "--check"], &envs)?);
+    steps.push(workspace.run_cargo_clippy(
         &artifacts,
         "clippy",
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
+        &["--workspace", "--all-targets", "--", "-D", "warnings"],
         &envs,
     )?);
     steps.push(workspace.run_cargo(
@@ -677,9 +670,9 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
     let artifacts = ArtifactLayout::create(&workspace.root, "check-publish", args.profile)?;
     let envs = BTreeMap::new();
     let mut steps = Vec::new();
+    steps.push(workspace.run_cargo(&artifacts, "deny-supply-chain", &["deny", "check"], &envs)?);
+    steps.push(workspace.run_cargo_fmt(&artifacts, "fmt", &["--all", "--", "--check"], &envs)?);
     for (label, cargo_args) in [
-        ("deny-supply-chain", vec!["deny", "check"]),
-        ("fmt", vec!["fmt", "--all", "--check"]),
         (
             "clippy-workspace",
             vec![
@@ -854,7 +847,16 @@ fn run_publish_checks(workspace: &Workspace, args: CommonArgs) -> anyhow::Result
         if label == "test-docs" || label == "doc" {
             step_envs.insert("RUSTDOCFLAGS".into(), "-D warnings".into());
         }
-        steps.push(workspace.run_cargo(&artifacts, label, &cargo_args, &step_envs)?);
+        if cargo_args.first() == Some(&"clippy") {
+            steps.push(workspace.run_cargo_clippy(
+                &artifacts,
+                label,
+                &cargo_args[1..],
+                &step_envs,
+            )?);
+        } else {
+            steps.push(workspace.run_cargo(&artifacts, label, &cargo_args, &step_envs)?);
+        }
     }
 
     let allow_dirty = allow_dirty_packages();

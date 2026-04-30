@@ -14,9 +14,9 @@ struct RequestedByteRange {
 }
 
 #[cfg(feature = "artifact-publish")]
-const DEFAULT_PEER_ARTIFACT_MIRROR_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_PEER_ARTIFACT_MIRROR_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 #[cfg(feature = "artifact-publish")]
-const PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "artifact-publish")]
 fn mirror_peer_artifact_for_browser(
@@ -153,6 +153,49 @@ fn bounded_peer_artifact_mirror_timeout(deadline: Instant) -> Option<Duration> {
         return None;
     }
     Some(remaining.min(PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT))
+}
+
+#[cfg(feature = "artifact-publish")]
+fn peer_artifact_mirror_error_status(error: &str) -> &'static str {
+    if error.contains("timed out") || error.contains("timeout") {
+        "504 Gateway Timeout"
+    } else {
+        "502 Bad Gateway"
+    }
+}
+
+#[cfg(all(test, feature = "artifact-publish"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_artifact_mirror_timeouts_cover_large_head_checkpoints() {
+        assert_eq!(
+            DEFAULT_PEER_ARTIFACT_MIRROR_TIMEOUT,
+            Duration::from_secs(10 * 60)
+        );
+        assert_eq!(
+            PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT,
+            Duration::from_secs(60)
+        );
+
+        let bounded =
+            bounded_peer_artifact_mirror_timeout(Instant::now() + Duration::from_secs(120))
+                .expect("deadline should allow a bounded request timeout");
+        assert_eq!(bounded, PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn peer_artifact_mirror_errors_are_http_status_mapped() {
+        assert_eq!(
+            peer_artifact_mirror_error_status("timed out waiting for artifact-chunk"),
+            "504 Gateway Timeout"
+        );
+        assert_eq!(
+            peer_artifact_mirror_error_status("provider did not advertise artifact"),
+            "502 Bad Gateway"
+        );
+    }
 }
 
 #[cfg(all(feature = "browser-edge", feature = "artifact-publish"))]
@@ -705,8 +748,18 @@ pub(crate) fn handle_artifact_publish_post_route(
                 )?;
                 return Ok(true);
             };
-            let response = mirror_peer_artifact_for_browser(control, mirror)?;
-            write_json(stream, &response)?;
+            match mirror_peer_artifact_for_browser(control, mirror) {
+                Ok(response) => write_json(stream, &response)?,
+                Err(error) => {
+                    let body = format!("peer artifact mirror failed: {error}");
+                    write_response(
+                        stream,
+                        peer_artifact_mirror_error_status(&body),
+                        "text/plain; charset=utf-8",
+                        body.into_bytes(),
+                    )?;
+                }
+            }
             return Ok(true);
         }
         if !artifact_publication_enabled(&context.state) {
