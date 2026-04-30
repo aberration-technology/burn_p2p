@@ -20,18 +20,18 @@ use burn_p2p::{
     WorkloadTrainingContribution, WorkloadTrainingLease,
 };
 use burn_p2p_core::{
-    ArtifactProfile, BackendClass, BrowserArtifactSource, BrowserDirectorySnapshot,
-    BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot, BrowserLeaderboardEntry,
-    BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot, BrowserLoginProvider,
-    BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement, BrowserSeedBootstrapSource,
-    BrowserSeedRecord, BrowserSeedTransportKind, BrowserSeedTransportPolicy, BrowserSwarmPhase,
-    BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource,
-    BrowserTransportSurface, ChunkDescriptor, DownloadDeliveryMode, DownloadTicket,
-    DownloadTicketId, HeadEvalReport, LeaseId, MetricValue, MetricsLiveEvent, MetricsLiveEventKind,
-    MetricsSnapshotManifest, MetricsSyncCursor, PeerWindowMetrics, Precision, PublicationTargetId,
-    PublishedArtifactId, PublishedArtifactRecord, PublishedArtifactStatus, ReenrollmentStatus,
-    RevocationEpoch, RunId, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
-    TrustBundleExport,
+    ArtifactProfile, BackendClass, BrowserArtifactRouteKind, BrowserArtifactSource,
+    BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserEdgeSnapshot,
+    BrowserLeaderboardEntry, BrowserLeaderboardIdentity, BrowserLeaderboardSnapshot,
+    BrowserLoginProvider, BrowserResolvedSeedBootstrap, BrowserSeedAdvertisement,
+    BrowserSeedBootstrapSource, BrowserSeedRecord, BrowserSeedTransportKind,
+    BrowserSeedTransportPolicy, BrowserSwarmPhase, BrowserSwarmStatus, BrowserTransportFamily,
+    BrowserTransportObservationSource, BrowserTransportSurface, ChunkDescriptor,
+    DownloadDeliveryMode, DownloadTicket, DownloadTicketId, HeadEvalReport, LeaseId, MetricValue,
+    MetricsLiveEvent, MetricsLiveEventKind, MetricsSnapshotManifest, MetricsSyncCursor,
+    PeerWindowMetrics, Precision, PublicationTargetId, PublishedArtifactId,
+    PublishedArtifactRecord, PublishedArtifactStatus, ReenrollmentStatus, RevocationEpoch, RunId,
+    SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{MetricsCatchupBundle, MetricsSnapshot, derive_network_performance_summary};
 use burn_p2p_swarm::BrowserSwarmBootstrap;
@@ -2576,6 +2576,7 @@ fn worker_runtime_waits_for_transport_after_head_sync_until_edge_transport_is_av
             assignment_bound: true,
             head_synced: true,
             artifact_source: BrowserArtifactSource::Unavailable,
+            artifact_sync: None,
             last_error: None,
         })),
         None,
@@ -4443,6 +4444,7 @@ fn worker_runtime_apply_swarm_status_updates_truthful_peer_state() {
             assignment_bound: false,
             head_synced: false,
             artifact_source: BrowserArtifactSource::Unavailable,
+            artifact_sync: None,
             last_error: None,
         })),
         None,
@@ -4620,6 +4622,7 @@ fn worker_runtime_promotes_head_sync_once_direct_transport_arrives() {
             assignment_bound: true,
             head_synced: true,
             artifact_source: BrowserArtifactSource::Unavailable,
+            artifact_sync: None,
             last_error: None,
         })),
         None,
@@ -5505,6 +5508,7 @@ fn browser_app_model_applies_worker_events_to_local_state() {
             assignment_bound: true,
             head_synced: true,
             artifact_source: BrowserArtifactSource::PeerSwarm,
+            artifact_sync: None,
             last_error: None,
         },
     )));
@@ -5956,15 +5960,34 @@ fn browser_portal_client_syncs_active_head_artifact_into_worker_cache_once() {
         });
 
     handle.join().expect("join artifact thread");
-    assert!(first_events.iter().any(|event| matches!(
-        event,
-        BrowserWorkerEvent::StorageUpdated(storage)
-            if storage
-                .cached_chunk_artifacts
-                .contains(&ArtifactId::new("artifact-browser"))
-                && storage.last_head_artifact_transport.as_deref()
-                    == Some("edge-download-ticket")
-    )));
+    let first_storage = first_events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert!(
+        first_storage
+            .cached_chunk_artifacts
+            .contains(&ArtifactId::new("artifact-browser"))
+    );
+    assert_eq!(
+        first_storage.last_head_artifact_transport.as_deref(),
+        Some("edge-download-ticket")
+    );
+    let diagnostic = first_storage
+        .last_head_artifact_sync
+        .as_ref()
+        .expect("active head artifact sync diagnostic");
+    assert_eq!(
+        diagnostic.route_label.as_deref(),
+        Some("edge-download-ticket")
+    );
+    assert_eq!(diagnostic.route_kind, BrowserArtifactRouteKind::EdgeHttp);
+    assert_eq!(diagnostic.completed_bytes, Some(4));
+    assert_eq!(diagnostic.last_error, None);
     assert!(second_events.is_empty());
 }
 
@@ -6092,6 +6115,19 @@ fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() 
     assert!(storage.cached_head_artifact_heads.is_empty());
     assert_eq!(storage.last_head_artifact_transport, None);
     assert!(storage.artifact_replay_checkpoint.is_some());
+}
+
+#[test]
+fn browser_artifact_route_kind_classifies_relay_circuit_failures() {
+    let error = BrowserAuthClientError::ArtifactTransport(
+        "Failed to negotiate transport protocol(s): [(/dns4/edge.example/udp/443/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/p2p/12D3KooWEdge/p2p-circuit/p2p/12D3KooWProvider: Timeout has been reached)]"
+            .into(),
+    );
+
+    assert_eq!(
+        crate::auth::artifact_route_kind_for_error(&error),
+        BrowserArtifactRouteKind::RelayCircuit
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6466,6 +6502,17 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
+    let diagnostic = storage
+        .last_head_artifact_sync
+        .as_ref()
+        .expect("active head artifact sync diagnostic");
+    assert_eq!(diagnostic.route_label.as_deref(), Some("peer-native"));
+    assert_eq!(diagnostic.route_kind, BrowserArtifactRouteKind::PeerSwarm);
+    assert_eq!(
+        diagnostic.completed_bytes,
+        Some(b"peer-artifact".len() as u64)
+    );
+    assert_eq!(diagnostic.last_error, None);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

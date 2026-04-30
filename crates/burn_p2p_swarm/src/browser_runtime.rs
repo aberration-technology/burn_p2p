@@ -220,6 +220,7 @@ impl PlannedBrowserSwarmRuntime {
             assignment_bound: false,
             head_synced: false,
             artifact_source: burn_p2p_core::BrowserArtifactSource::Unavailable,
+            artifact_sync: None,
             last_error,
         };
         self.dial_plan = Some(dial_plan.clone());
@@ -896,6 +897,7 @@ async fn run_wasm_browser_swarm_task(
                                 assignment_bound: false,
                                 head_synced: false,
                                 artifact_source: burn_p2p_core::BrowserArtifactSource::Unavailable,
+                                artifact_sync: None,
                                 last_error: last_error
                                     .clone()
                                     .or_else(|| dial_plan.warnings.first().cloned()),
@@ -2664,6 +2666,9 @@ fn browser_peer_directory_candidate_allowed(
     seed_url: &str,
     bootstrap: Option<&BrowserSwarmBootstrap>,
 ) -> bool {
+    if seed_url.contains("/p2p-circuit") {
+        return false;
+    }
     let Some(family) = browser_transport_family_for_seed_url(seed_url) else {
         return false;
     };

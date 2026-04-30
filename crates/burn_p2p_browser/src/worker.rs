@@ -101,6 +101,7 @@ impl BrowserWorkerRuntime {
             assignment_bound,
             head_synced,
             artifact_source,
+            artifact_sync: self.storage.last_head_artifact_sync.clone(),
             last_error: operator_visible_last_error_with_active_transport(
                 self.transport
                     .last_error

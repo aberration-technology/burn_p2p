@@ -30,6 +30,7 @@ pub use crate::views::{
     ArtifactAliasStatus, ArtifactBackfillRequest, ArtifactBackfillResult, ArtifactPruneRequest,
     ArtifactPruneResult, ArtifactPublicationFilter, ArtifactRunSummary, ArtifactRunView,
     DownloadTicketRequest, DownloadTicketResponse, ExportRequest, HeadArtifactView,
+    PeerArtifactMirrorRequest, PeerArtifactMirrorResponse,
 };
 
 use crate::{

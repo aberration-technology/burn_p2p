@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc, time::Instant};
 
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::ArtifactDescriptor;
@@ -12,11 +12,11 @@ use burn_p2p::{
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_core::ChunkDescriptor;
 use burn_p2p_core::{
-    ArtifactLiveEvent, ArtifactProfile, BrowserDirectorySnapshot, BrowserEdgeSnapshot,
-    BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse, BrowserSeedAdvertisement,
-    BrowserTransportFamily, ClientReleaseManifest, MetricsLiveEvent, NetworkCompatibilityError,
-    PublicationTargetId, PublishedArtifactRecord, PublishedArtifactStatus, RunId, SchemaEnvelope,
-    SignedPayload, TrustBundleExport,
+    ArtifactLiveEvent, ArtifactProfile, BrowserArtifactRouteKind, BrowserDirectorySnapshot,
+    BrowserEdgeSnapshot, BrowserLeaderboardSnapshot, BrowserReceiptSubmissionResponse,
+    BrowserSeedAdvertisement, BrowserTransportFamily, ClientReleaseManifest, MetricsLiveEvent,
+    NetworkCompatibilityError, PublicationTargetId, PublishedArtifactRecord,
+    PublishedArtifactStatus, RunId, SchemaEnvelope, SignedPayload, TrustBundleExport,
 };
 use burn_p2p_metrics::{
     CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
@@ -443,6 +443,21 @@ impl BrowserPeerArtifactTransportKind {
     }
 }
 
+fn elapsed_millis(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+pub(crate) fn artifact_route_kind_for_error(
+    error: &BrowserAuthClientError,
+) -> BrowserArtifactRouteKind {
+    let message = error.to_string();
+    if message.contains("/p2p-circuit") || message.contains("p2p-circuit") {
+        BrowserArtifactRouteKind::RelayCircuit
+    } else {
+        BrowserArtifactRouteKind::PeerSwarm
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BrowserPeerArtifactTransportResult {
     bytes: Vec<u8>,
@@ -809,21 +824,48 @@ impl BrowserEdgeClient {
         if !replay_request.provider_peer_ids.is_empty()
             || Self::can_attempt_peer_transport_without_provider_hints(runtime)
         {
+            let started_at = Instant::now();
+            runtime.storage.remember_active_head_artifact_sync_attempt(
+                plan.head.head_id.clone(),
+                replay_request.artifact_id.clone(),
+                replay_request.provider_peer_ids.clone(),
+                BrowserPeerArtifactTransportKind::PeerSwarm.label(),
+                BrowserArtifactRouteKind::PeerSwarm,
+            );
             match self
                 .try_download_artifact_via_peer_transport(&replay_request, runtime)
                 .await
             {
                 Ok(Some(result)) => {
                     if result.bytes.is_empty() {
-                        peer_transport_error = Some(BrowserAuthClientError::ArtifactTransport(
+                        let error = BrowserAuthClientError::ArtifactTransport(
                             "peer transport returned an empty artifact payload".into(),
-                        ));
+                        );
+                        runtime.storage.remember_active_head_artifact_sync_failure(
+                            result.kind.label(),
+                            BrowserArtifactRouteKind::PeerSwarm,
+                            elapsed_millis(started_at),
+                            error.to_string(),
+                        );
+                        peer_transport_error = Some(error);
                     } else {
+                        runtime.storage.remember_active_head_artifact_sync_success(
+                            result.kind.label(),
+                            BrowserArtifactRouteKind::PeerSwarm,
+                            elapsed_millis(started_at),
+                            result.bytes.len() as u64,
+                        );
                         transport = Some(result.kind.label().to_owned());
                     }
                 }
                 Ok(None) => {}
                 Err(error) => {
+                    runtime.storage.remember_active_head_artifact_sync_failure(
+                        BrowserPeerArtifactTransportKind::PeerSwarm.label(),
+                        artifact_route_kind_for_error(&error),
+                        elapsed_millis(started_at),
+                        error.to_string(),
+                    );
                     peer_transport_error = Some(error);
                 }
             }
@@ -842,6 +884,14 @@ impl BrowserEdgeClient {
                 let Some(session_id) = session.session_id() else {
                     return Ok(Self::storage_update_if_changed(runtime, previous_storage));
                 };
+                let started_at = Instant::now();
+                runtime.storage.remember_active_head_artifact_sync_attempt(
+                    plan.head.head_id.clone(),
+                    replay_request.artifact_id.clone(),
+                    replay_request.provider_peer_ids.clone(),
+                    "edge-download-ticket",
+                    BrowserArtifactRouteKind::EdgeHttp,
+                );
                 match self
                     .request_and_download_artifact_resumable(
                         &DownloadTicketRequest {
@@ -861,8 +911,28 @@ impl BrowserEdgeClient {
                     )
                     .await
                 {
-                    Ok(_) => transport = Some("edge-download-ticket".to_owned()),
+                    Ok(_) => {
+                        let completed_bytes = runtime
+                            .storage
+                            .artifact_replay_checkpoint
+                            .as_ref()
+                            .map(|checkpoint| checkpoint.completed_bytes)
+                            .unwrap_or_default();
+                        runtime.storage.remember_active_head_artifact_sync_success(
+                            "edge-download-ticket",
+                            BrowserArtifactRouteKind::EdgeHttp,
+                            elapsed_millis(started_at),
+                            completed_bytes,
+                        );
+                        transport = Some("edge-download-ticket".to_owned());
+                    }
                     Err(edge_error) => {
+                        runtime.storage.remember_active_head_artifact_sync_failure(
+                            "edge-download-ticket",
+                            BrowserArtifactRouteKind::EdgeHttp,
+                            elapsed_millis(started_at),
+                            edge_error.to_string(),
+                        );
                         if let Some(peer_error) = peer_transport_error {
                             return Err(BrowserAuthClientError::ArtifactTransport(format!(
                                 "peer transport failed: {peer_error}; edge fallback failed: {edge_error}"

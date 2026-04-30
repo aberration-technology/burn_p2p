@@ -535,6 +535,50 @@ fn browser_peer_directory_candidates_skip_bootstrap_host_direct_ports_not_in_sig
 }
 
 #[test]
+fn browser_peer_directory_candidates_skip_relay_circuit_routes() {
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "peer-relayed",
+                &[
+                    "/dns4/edge.example/udp/443/webrtc-direct/certhash/uEiBIQQvRGIR6ld6a-VTmYxgsVlaOOMfJtcsf5LvtFwh7mQ/p2p/12D3KooWCkxZ42qCD3mSzPeAazTE9cCrFtidxAQKisQgMiXtVFxB/p2p-circuit/p2p/12D3KooWHy3XaDbKQqJ3aphNAENiP1LuLGqjauvkaMaqX7aguR1M",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "peer-direct",
+                &[
+                    "/dns4/peer-direct.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let candidates = browser_peer_directory_dial_candidates(
+        &snapshot,
+        None,
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[],
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("peer-direct"))
+    );
+    assert_eq!(
+        candidates[0].seed_url,
+        "/dns4/peer-direct.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
+}
+
+#[test]
 fn browser_peer_directory_candidates_skip_local_direct_mesh_peers() {
     let snapshot = ControlPlaneSnapshot {
         peer_directory_announcements: vec![

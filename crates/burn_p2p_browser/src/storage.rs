@@ -6,7 +6,8 @@ use burn_p2p::{
     WorkloadTrainingLease,
 };
 use burn_p2p_core::{
-    ArtifactProfile, MetricsLiveEvent, PublicationTargetId, RunId, SchemaEnvelope, SignedPayload,
+    ArtifactProfile, BrowserArtifactRouteKind, BrowserArtifactSyncDiagnostics, MetricsLiveEvent,
+    PublicationTargetId, RunId, SchemaEnvelope, SignedPayload,
 };
 use burn_p2p_metrics::MetricsCatchupBundle;
 use chrono::{DateTime, Utc};
@@ -309,6 +310,9 @@ pub struct BrowserStorageSnapshot {
     #[serde(default)]
     /// Transport that most recently delivered the active head artifact into the browser cache.
     pub last_head_artifact_transport: Option<String>,
+    /// Most recent active-head artifact sync diagnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_head_artifact_sync: Option<BrowserArtifactSyncDiagnostics>,
     /// The cached microshards.
     pub cached_microshards: BTreeSet<MicroShardId>,
     /// The stored receipts.
@@ -368,6 +372,7 @@ impl Default for BrowserStorageSnapshot {
             cached_chunk_artifacts: BTreeSet::new(),
             cached_head_artifact_heads: BTreeSet::new(),
             last_head_artifact_transport: None,
+            last_head_artifact_sync: None,
             cached_microshards: BTreeSet::new(),
             stored_receipts: BTreeSet::new(),
             pending_receipts: BrowserReceiptOutbox::default(),
@@ -472,6 +477,7 @@ impl BrowserStorageSnapshot {
         if self.artifact_replay_checkpoint.is_none()
             && self.last_head_id.is_none()
             && self.last_head_artifact_transport.is_none()
+            && self.last_head_artifact_sync.is_none()
             && self.active_training_lease.is_none()
         {
             return false;
@@ -480,6 +486,7 @@ impl BrowserStorageSnapshot {
         self.active_head_artifact_cache = None;
         self.last_head_id = None;
         self.last_head_artifact_transport = None;
+        self.last_head_artifact_sync = None;
         self.active_training_lease = None;
         self.updated_at = Utc::now();
         true
@@ -544,6 +551,7 @@ impl BrowserStorageSnapshot {
         if assignment_changed {
             self.clear_artifact_replay_checkpoint();
             self.last_head_id = None;
+            self.last_head_artifact_sync = None;
             self.active_training_lease = None;
         }
         self.active_assignment = Some(assignment);
@@ -581,7 +589,75 @@ impl BrowserStorageSnapshot {
 
     /// Performs the remember head operation.
     pub fn remember_head(&mut self, head_id: HeadId) {
+        if self.last_head_id.as_ref() != Some(&head_id) {
+            self.last_head_artifact_sync = None;
+        }
         self.last_head_id = Some(head_id);
+        self.updated_at = Utc::now();
+    }
+
+    /// Records the route selected for the active-head artifact sync attempt.
+    pub fn remember_active_head_artifact_sync_attempt(
+        &mut self,
+        head_id: HeadId,
+        artifact_id: ArtifactId,
+        provider_peer_ids: Vec<PeerId>,
+        route_label: impl Into<String>,
+        route_kind: BrowserArtifactRouteKind,
+    ) {
+        self.last_head_artifact_sync = Some(BrowserArtifactSyncDiagnostics {
+            head_id: Some(head_id),
+            artifact_id: Some(artifact_id),
+            provider_peer_ids,
+            selected_peer_id: None,
+            route_label: Some(route_label.into()),
+            route_kind,
+            completed_bytes: None,
+            duration_ms: None,
+            last_error: None,
+        });
+        self.updated_at = Utc::now();
+    }
+
+    /// Records the latest active-head artifact sync failure.
+    pub fn remember_active_head_artifact_sync_failure(
+        &mut self,
+        route_label: impl Into<String>,
+        route_kind: BrowserArtifactRouteKind,
+        duration_ms: u64,
+        error: impl Into<String>,
+    ) {
+        let completed_bytes = self
+            .artifact_replay_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.completed_bytes);
+        let diagnostic = self
+            .last_head_artifact_sync
+            .get_or_insert_with(Default::default);
+        diagnostic.route_label = Some(route_label.into());
+        diagnostic.route_kind = route_kind;
+        diagnostic.completed_bytes = completed_bytes;
+        diagnostic.duration_ms = Some(duration_ms);
+        diagnostic.last_error = Some(error.into());
+        self.updated_at = Utc::now();
+    }
+
+    /// Records the latest active-head artifact sync success.
+    pub fn remember_active_head_artifact_sync_success(
+        &mut self,
+        route_label: impl Into<String>,
+        route_kind: BrowserArtifactRouteKind,
+        duration_ms: u64,
+        completed_bytes: u64,
+    ) {
+        let diagnostic = self
+            .last_head_artifact_sync
+            .get_or_insert_with(Default::default);
+        diagnostic.route_label = Some(route_label.into());
+        diagnostic.route_kind = route_kind;
+        diagnostic.completed_bytes = Some(completed_bytes);
+        diagnostic.duration_ms = Some(duration_ms);
+        diagnostic.last_error = None;
         self.updated_at = Utc::now();
     }
 
@@ -840,6 +916,7 @@ impl BrowserStorageSnapshot {
     pub fn clear_artifact_replay_checkpoint(&mut self) {
         self.artifact_replay_checkpoint = None;
         self.active_head_artifact_cache = None;
+        self.last_head_artifact_sync = None;
         self.updated_at = Utc::now();
     }
 
@@ -856,11 +933,34 @@ impl BrowserStorageSnapshot {
         artifact_id: ArtifactId,
         transport: impl Into<String>,
     ) {
+        let transport = transport.into();
+        let completed_bytes = self
+            .active_head_artifact_bytes()
+            .map(|(_, _, bytes)| bytes.len() as u64)
+            .or_else(|| {
+                self.artifact_replay_checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.completed_bytes)
+            })
+            .filter(|completed_bytes| *completed_bytes > 0);
         self.remember_active_head_artifact_cache(&head_id, &artifact_id);
         self.artifact_replay_checkpoint = None;
         self.cached_head_artifact_heads.insert(head_id);
         self.cached_chunk_artifacts.insert(artifact_id);
-        self.last_head_artifact_transport = Some(transport.into());
+        self.last_head_artifact_transport = Some(transport.clone());
+        if let Some(diagnostic) = self.last_head_artifact_sync.as_mut() {
+            diagnostic.route_label = Some(transport.clone());
+            diagnostic.route_kind = if transport.starts_with("edge-") {
+                BrowserArtifactRouteKind::EdgeHttp
+            } else {
+                BrowserArtifactRouteKind::PeerSwarm
+            };
+            if let Some(completed_bytes) = completed_bytes.or(diagnostic.completed_bytes) {
+                diagnostic.completed_bytes = Some(completed_bytes);
+            }
+            diagnostic.duration_ms.get_or_insert(0);
+            diagnostic.last_error = None;
+        }
         self.updated_at = Utc::now();
     }
 
@@ -956,6 +1056,7 @@ impl BrowserStorageSnapshot {
         self.cached_chunk_artifacts.clear();
         self.cached_head_artifact_heads.clear();
         self.last_head_artifact_transport = None;
+        self.last_head_artifact_sync = None;
         self.artifact_replay_checkpoint = None;
         self.active_head_artifact_cache = None;
         self.cached_microshards.clear();

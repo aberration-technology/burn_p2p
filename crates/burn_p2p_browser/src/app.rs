@@ -367,8 +367,11 @@ impl BrowserAppModel {
         let active_head_artifact_error = (!active_head_artifact_ready
             && storage.last_head_id.is_some())
         .then(|| {
-            self.last_error
-                .clone()
+            swarm_status
+                .artifact_sync
+                .as_ref()
+                .and_then(|diagnostic| diagnostic.last_error.clone())
+                .or_else(|| self.last_error.clone())
                 .or_else(|| self.runtime.transport.last_error.clone())
         })
         .flatten();

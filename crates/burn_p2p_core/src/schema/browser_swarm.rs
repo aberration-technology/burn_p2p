@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::id::PeerId;
+use crate::id::{ArtifactId, HeadId, PeerId};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Describes where the browser got its current seed list.
@@ -66,6 +66,52 @@ pub enum BrowserArtifactSource {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Classifies the route used by the most recent active-head artifact sync attempt.
+pub enum BrowserArtifactRouteKind {
+    /// No active-head artifact sync route has been selected yet.
+    #[default]
+    Unknown,
+    /// Artifact bytes were requested over the browser peer swarm.
+    PeerSwarm,
+    /// Artifact bytes were requested through a relayed circuit path.
+    RelayCircuit,
+    /// Artifact bytes were requested through the edge HTTP download-ticket fallback.
+    EdgeHttp,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Diagnostic record for the most recent active-head artifact sync attempt.
+pub struct BrowserArtifactSyncDiagnostics {
+    /// Head whose artifact is being synchronized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_id: Option<HeadId>,
+    /// Artifact currently being synchronized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<ArtifactId>,
+    /// Provider peers advertised for the active head.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_peer_ids: Vec<PeerId>,
+    /// Peer selected for the last request when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_peer_id: Option<PeerId>,
+    /// Human-readable route label, such as peer-native-swarm or edge-download-ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_label: Option<String>,
+    /// Route family used or inferred for the last sync attempt.
+    #[serde(default)]
+    pub route_kind: BrowserArtifactRouteKind,
+    /// Verified bytes available after the latest attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_bytes: Option<u64>,
+    /// Duration of the latest attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Latest route or transfer error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// High-level browser swarm lifecycle phases used by diagnostics and UI.
 pub enum BrowserSwarmPhase {
     /// Browser auth/bootstrap has not resolved usable seed material yet.
@@ -119,6 +165,9 @@ pub struct BrowserSwarmStatus {
     pub head_synced: bool,
     /// Where the active head artifact came from.
     pub artifact_source: BrowserArtifactSource,
+    /// Most recent active-head artifact sync diagnostic, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sync: Option<BrowserArtifactSyncDiagnostics>,
     /// Last surfaced transport/runtime error, when available.
     #[serde(default)]
     pub last_error: Option<String>,

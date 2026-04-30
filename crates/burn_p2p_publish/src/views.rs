@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use burn_p2p_core::{
-    ArtifactAlias, ArtifactAliasId, ArtifactProfile, ExperimentId, ExportJob, HeadDescriptor,
-    HeadEvalReport, HeadId, PeerId, PrincipalId, PublicationTargetId, PublishedArtifactRecord,
-    RunId,
+    ArtifactAlias, ArtifactAliasId, ArtifactId, ArtifactProfile, ExperimentId, ExportJob,
+    HeadDescriptor, HeadEvalReport, HeadId, PeerId, PrincipalId, PublicationTargetId,
+    PublishedArtifactRecord, RunId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,31 @@ pub struct DownloadTicketResponse {
     pub published_artifact: PublishedArtifactRecord,
     /// Download route that should be called by the client.
     pub download_path: String,
+}
+
+/// Request to mirror one peer-advertised artifact into the receiver's P2P artifact service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerArtifactMirrorRequest {
+    /// Artifact to mirror.
+    pub artifact_id: ArtifactId,
+    /// Provider peers to try in order.
+    pub provider_peer_ids: Vec<PeerId>,
+    /// Optional total timeout for the mirror operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Result returned after mirroring a peer artifact locally.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerArtifactMirrorResponse {
+    /// Mirrored artifact.
+    pub artifact_id: ArtifactId,
+    /// Provider that served the artifact.
+    pub mirrored_from: PeerId,
+    /// Number of bytes described by the mirrored artifact manifest.
+    pub bytes_len: u64,
+    /// Number of chunks published into the receiver's P2P artifact service.
+    pub chunk_count: usize,
 }
 
 /// Lightweight status row for one alias together with publication state.
