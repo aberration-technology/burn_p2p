@@ -895,6 +895,36 @@ impl BrowserStorageSnapshot {
         })
     }
 
+    /// Returns whether the latest active head artifact finished syncing into browser storage.
+    ///
+    /// This is intentionally weaker than [`Self::active_head_artifact_ready`]. The ready
+    /// predicate requires bytes to be available in the current storage instance for training,
+    /// while browser UI snapshots may cross a worker boundary where the in-memory byte cache is
+    /// not serialized.
+    pub fn active_head_artifact_synced(&self) -> bool {
+        if self.active_head_artifact_ready() {
+            return true;
+        }
+
+        let Some(head_id) = self.last_head_id.as_ref() else {
+            return false;
+        };
+        if !self.cached_head_artifact_heads.contains(head_id) {
+            return false;
+        }
+
+        let Some(diagnostic) = self.last_head_artifact_sync.as_ref() else {
+            return false;
+        };
+        if diagnostic.head_id.as_ref() != Some(head_id) {
+            return false;
+        }
+        if diagnostic.last_error.is_some() {
+            return false;
+        }
+        diagnostic.completed_bytes.is_some_and(|bytes| bytes > 0)
+    }
+
     /// Returns a clone suitable for durable persistence with large replay chunk payloads
     /// externalized to IndexedDB metadata records.
     pub fn durable_replay_snapshot(&self) -> Self {

@@ -893,6 +893,38 @@ fn browser_storage_returns_active_head_artifact_bytes_after_sync() {
 }
 
 #[test]
+fn browser_storage_reports_completed_active_head_sync_without_local_bytes() {
+    let mut storage = BrowserStorageSnapshot::default();
+    let head_id = HeadId::new("head-browser");
+    let artifact_id = ArtifactId::new("artifact-browser");
+
+    storage.remember_head(head_id.clone());
+    storage.remember_active_head_artifact_sync_attempt(
+        head_id.clone(),
+        artifact_id.clone(),
+        vec![PeerId::new("peer-browser-provider")],
+        "peer-native",
+        BrowserArtifactRouteKind::PeerSwarm,
+    );
+    storage.remember_active_head_artifact_sync_success(
+        "peer-native",
+        BrowserArtifactRouteKind::PeerSwarm,
+        123,
+        4096,
+    );
+    storage.remember_synced_head_artifact(head_id, artifact_id, "peer-native");
+
+    assert!(!storage.active_head_artifact_ready());
+    assert!(storage.active_head_artifact_synced());
+
+    let serialized = serde_json::to_string(&storage).expect("serialize storage");
+    let restored: BrowserStorageSnapshot =
+        serde_json::from_str(&serialized).expect("deserialize storage");
+    assert!(!restored.active_head_artifact_ready());
+    assert!(restored.active_head_artifact_synced());
+}
+
+#[test]
 fn browser_storage_externalizes_replay_chunks_for_durable_snapshot() {
     let mut storage = BrowserStorageSnapshot::default();
     storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
@@ -6584,6 +6616,7 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
         Some(b"peer-artifact".len() as u64)
     );
     assert_eq!(diagnostic.last_error, None);
+    assert!(storage.active_head_artifact_synced());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6706,6 +6739,7 @@ fn browser_portal_client_syncs_live_head_via_peer_transport_without_publication_
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
+    assert!(storage.active_head_artifact_synced());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
