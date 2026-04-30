@@ -10,6 +10,7 @@ exclude = ["xtask", "burn_p2p_app", "burn_p2p_testkit"]
 feature-depth = 1
 
 [advisories]
+db-path = "target/cargo-deny-advisory-dbs"
 ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is pulled in transitively by libp2p-webrtc via webrtc-dtls; publish gate documents the risk until upstream replaces it" },
     { id = "RUSTSEC-2024-0436", reason = "paste is pulled in transitively by burn/cubecl dependencies; publish gate documents the risk until upstream removes it" },

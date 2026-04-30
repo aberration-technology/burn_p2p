@@ -159,8 +159,7 @@ impl PublicationStore {
                     }
                     state
                 }
-                Err(error) if !prune_expired_records => recover_read_only_state(&root_dir, error)?,
-                Err(error) => return Err(error.into()),
+                Err(error) => recover_state_from_history(&root_dir, error)?,
             }
         } else {
             PublicationRegistryState::new(&root_dir)
@@ -325,9 +324,25 @@ impl PublicationStore {
         let mut state = self.state.clone();
         state.clamp_previews();
         let bytes = serde_json::to_vec_pretty(&state)?;
-        let mut file = fs::File::create(state_path(&self.root_dir))?;
-        file.write_all(&bytes)?;
-        file.flush()?;
+        let state_path = state_path(&self.root_dir);
+        let tmp_path = self.root_dir.join(format!(
+            ".{}.{}.tmp",
+            state_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("registry.json"),
+            std::process::id()
+        ));
+        {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.flush()?;
+            file.sync_all()?;
+        }
+        if let Err(error) = fs::rename(&tmp_path, &state_path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -439,7 +454,7 @@ impl PublicationStore {
     }
 }
 
-fn recover_read_only_state(
+fn recover_state_from_history(
     root_dir: &Path,
     _error: serde_json::Error,
 ) -> Result<PublicationRegistryState, PublishError> {
