@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc, time::Instant};
+use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::ArtifactDescriptor;
@@ -17,6 +17,7 @@ use burn_p2p_core::{
     BrowserSeedAdvertisement, BrowserTransportFamily, ClientReleaseManifest, MetricsLiveEvent,
     NetworkCompatibilityError, PublicationTargetId, PublishedArtifactRecord,
     PublishedArtifactStatus, RunId, SchemaEnvelope, SignedPayload, TrustBundleExport,
+    time::Instant,
 };
 use burn_p2p_metrics::{
     CanonicalHeadAdoptionCurve, MetricsCatchupBundle, MetricsSnapshot,
