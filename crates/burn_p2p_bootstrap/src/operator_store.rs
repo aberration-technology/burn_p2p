@@ -2681,7 +2681,7 @@ mod tests {
                 .spawn()
                 .expect("spawn redis-server");
 
-            let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+            let deadline = std::time::Instant::now() + StdDuration::from_secs(15);
             loop {
                 if let Ok(client) = redis::Client::open(self.url.as_str())
                     && let Ok(mut connection) = client.get_connection()
