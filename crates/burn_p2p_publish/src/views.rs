@@ -75,6 +75,9 @@ pub struct PeerArtifactMirrorResponse {
     pub artifact_id: ArtifactId,
     /// Provider that served the artifact.
     pub mirrored_from: PeerId,
+    /// Receiver peer that can serve the mirrored artifact through the P2P artifact service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirrored_provider_peer_id: Option<PeerId>,
     /// Number of bytes described by the mirrored artifact manifest.
     pub bytes_len: u64,
     /// Number of chunks published into the receiver's P2P artifact service.

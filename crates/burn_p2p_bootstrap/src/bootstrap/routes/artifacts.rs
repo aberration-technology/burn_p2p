@@ -131,6 +131,7 @@ fn mirror_peer_artifact_for_browser(
         return Ok(PeerArtifactMirrorResponse {
             artifact_id: descriptor.artifact_id,
             mirrored_from: provider.clone(),
+            mirrored_provider_peer_id: control.local_peer_id(),
             bytes_len: descriptor.bytes_len,
             chunk_count: descriptor.chunks.len(),
         });

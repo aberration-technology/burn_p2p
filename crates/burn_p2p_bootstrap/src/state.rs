@@ -845,6 +845,15 @@ impl BootstrapAdminState {
         }
         peer_ids.sort();
         peer_ids.dedup();
+        if let Some(local_peer_id) = self
+            .runtime_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.local_peer_id.as_ref())
+            && let Some(index) = peer_ids.iter().position(|peer_id| peer_id == local_peer_id)
+        {
+            let local_peer_id = peer_ids.remove(index);
+            peer_ids.insert(0, local_peer_id);
+        }
         peer_ids
     }
 
@@ -1221,6 +1230,49 @@ mod tests {
     use chrono::Utc;
     use semver::Version;
 
+    fn test_runtime_snapshot(
+        now: chrono::DateTime<Utc>,
+        local_peer_id: PeerId,
+        control_plane: ControlPlaneSnapshot,
+    ) -> NodeTelemetrySnapshot {
+        NodeTelemetrySnapshot {
+            status: RuntimeStatus::Running,
+            node_state: NodeRuntimeState::IdleReady,
+            slot_states: Vec::new(),
+            lag_state: LagState::Current,
+            head_lag_steps: 0,
+            lag_policy: LagPolicy::default(),
+            network_id: Some(NetworkId::new("demo")),
+            local_peer_id: Some(local_peer_id),
+            configured_roles: burn_p2p::PeerRoleSet::default_trainer(),
+            connected_peers: 1,
+            connected_peer_ids: BTreeSet::new(),
+            observed_peer_ids: BTreeSet::new(),
+            known_peer_addresses: BTreeSet::new(),
+            runtime_boundary: None,
+            listen_addresses: Vec::new(),
+            control_plane,
+            recent_events: Vec::new(),
+            last_snapshot_peer_id: None,
+            last_snapshot: None,
+            admitted_peers: BTreeMap::new(),
+            rejected_peers: BTreeMap::new(),
+            peer_reputation: BTreeMap::new(),
+            minimum_revocation_epoch: None,
+            trust_bundle: None,
+            in_flight_transfers: BTreeMap::new(),
+            robustness_policy: None,
+            latest_cohort_robustness: None,
+            trust_scores: Vec::new(),
+            canary_reports: Vec::new(),
+            applied_control_cert_ids: BTreeSet::new(),
+            effective_limit_profile: None,
+            last_error: None,
+            started_at: now,
+            updated_at: now,
+        }
+    }
+
     #[test]
     fn export_heads_includes_live_runtime_head_announcements() {
         let now = Utc::now();
@@ -1236,23 +1288,10 @@ mod tests {
             metrics: BTreeMap::new(),
         };
         let state = BootstrapAdminState {
-            runtime_snapshot: Some(NodeTelemetrySnapshot {
-                status: RuntimeStatus::Running,
-                node_state: NodeRuntimeState::IdleReady,
-                slot_states: Vec::new(),
-                lag_state: LagState::Current,
-                head_lag_steps: 0,
-                lag_policy: LagPolicy::default(),
-                network_id: Some(NetworkId::new("demo")),
-                local_peer_id: Some(PeerId::new("bootstrap")),
-                configured_roles: burn_p2p::PeerRoleSet::default_trainer(),
-                connected_peers: 1,
-                connected_peer_ids: BTreeSet::new(),
-                observed_peer_ids: BTreeSet::new(),
-                known_peer_addresses: BTreeSet::new(),
-                runtime_boundary: None,
-                listen_addresses: Vec::new(),
-                control_plane: ControlPlaneSnapshot {
+            runtime_snapshot: Some(test_runtime_snapshot(
+                now,
+                PeerId::new("bootstrap"),
+                ControlPlaneSnapshot {
                     head_announcements: vec![HeadAnnouncement {
                         overlay: burn_p2p::OverlayTopic::experiment(
                             NetworkId::new("demo"),
@@ -1267,25 +1306,7 @@ mod tests {
                     }],
                     ..ControlPlaneSnapshot::default()
                 },
-                recent_events: Vec::new(),
-                last_snapshot_peer_id: None,
-                last_snapshot: None,
-                admitted_peers: BTreeMap::new(),
-                rejected_peers: BTreeMap::new(),
-                peer_reputation: BTreeMap::new(),
-                minimum_revocation_epoch: None,
-                trust_bundle: None,
-                in_flight_transfers: BTreeMap::new(),
-                robustness_policy: None,
-                latest_cohort_robustness: None,
-                trust_scores: Vec::new(),
-                canary_reports: Vec::new(),
-                applied_control_cert_ids: BTreeSet::new(),
-                effective_limit_profile: None,
-                last_error: None,
-                started_at: now,
-                updated_at: now,
-            }),
+            )),
             ..BootstrapAdminState::default()
         };
 
@@ -1324,6 +1345,56 @@ mod tests {
         assert_eq!(provider_peer_ids, vec![PeerId::new("mirror")]);
         let heads = state.export_heads(&HeadQuery::default());
         assert_eq!(heads, vec![runtime_head]);
+    }
+
+    #[test]
+    fn provider_peer_ids_for_head_prefers_local_mirrored_provider() {
+        let now = Utc::now();
+        let runtime_head = HeadDescriptor {
+            head_id: HeadId::new("runtime-head"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            artifact_id: burn_p2p::ArtifactId::new("artifact"),
+            parent_head_id: None,
+            global_step: 0,
+            created_at: now,
+            metrics: BTreeMap::new(),
+        };
+        let head_overlay = burn_p2p::OverlayTopic::experiment(
+            NetworkId::new("demo"),
+            StudyId::new("study"),
+            ExperimentId::new("exp"),
+            burn_p2p::OverlayChannel::Heads,
+        )
+        .expect("heads overlay");
+        let mut state = BootstrapAdminState {
+            runtime_snapshot: Some(test_runtime_snapshot(
+                now,
+                PeerId::new("edge"),
+                ControlPlaneSnapshot {
+                    head_announcements: vec![HeadAnnouncement {
+                        overlay: head_overlay.clone(),
+                        provider_peer_id: Some(PeerId::new("mirror")),
+                        head: runtime_head.clone(),
+                        announced_at: now,
+                    }],
+                    ..ControlPlaneSnapshot::default()
+                },
+            )),
+            ..BootstrapAdminState::default()
+        };
+        state.register_live_head_announcement(HeadAnnouncement {
+            overlay: head_overlay,
+            provider_peer_id: Some(PeerId::new("edge")),
+            head: runtime_head.clone(),
+            announced_at: now,
+        });
+
+        assert_eq!(
+            state.provider_peer_ids_for_head(&runtime_head.head_id),
+            vec![PeerId::new("edge"), PeerId::new("mirror")]
+        );
     }
 
     #[test]

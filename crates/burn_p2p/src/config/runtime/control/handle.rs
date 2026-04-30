@@ -16,6 +16,11 @@ impl fmt::Debug for ControlHandle {
 }
 
 impl ControlHandle {
+    /// Returns the runtime local peer id observed by telemetry.
+    pub fn local_peer_id(&self) -> Option<PeerId> {
+        self.telemetry.snapshot().local_peer_id
+    }
+
     fn retry_runtime_request<T>(
         &self,
         timeout: Duration,
