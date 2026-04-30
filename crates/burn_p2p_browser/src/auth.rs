@@ -2069,11 +2069,7 @@ impl BrowserEdgeClient {
         let Some(active_head_id) = runtime.storage.last_head_id.as_ref() else {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };
-        if runtime
-            .storage
-            .cached_head_artifact_heads
-            .contains(active_head_id)
-        {
+        if runtime.storage.active_head_artifact_ready() {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
         let view = self.fetch_head_artifact_view(active_head_id).await?;

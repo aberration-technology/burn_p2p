@@ -1171,11 +1171,21 @@ pub(crate) fn should_fetch_direct_swarm_snapshot(runtime: &BrowserWorkerRuntime)
     if runtime.storage.directory_snapshot().is_none() || runtime.storage.last_head_id.is_none() {
         return true;
     }
+    should_sync_active_head_artifact(runtime, runtime.storage.last_head_id.as_ref())
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn should_sync_active_head_artifact(
+    runtime: &BrowserWorkerRuntime,
+    previous_head_id: Option<&burn_p2p::HeadId>,
+) -> bool {
     runtime
         .storage
         .last_head_id
         .as_ref()
-        .is_some_and(|_| !runtime.storage.active_head_artifact_ready())
+        .is_some_and(|head_id| {
+            previous_head_id != Some(head_id) || !runtime.storage.active_head_artifact_ready()
+        })
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -1232,14 +1242,7 @@ fn apply_control_snapshot_to_browser_runtime(
             session,
         ));
     }
-    runtime
-        .storage
-        .last_head_id
-        .as_ref()
-        .is_some_and(|head_id| {
-            previous_head_id.as_ref() != Some(head_id)
-                || !runtime.storage.cached_head_artifact_heads.contains(head_id)
-        })
+    should_sync_active_head_artifact(runtime, previous_head_id.as_ref())
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::{
     should_fallback_to_edge_control_sync, should_fetch_direct_swarm_snapshot,
-    should_wait_for_direct_swarm_bootstrap,
+    should_sync_active_head_artifact, should_wait_for_direct_swarm_bootstrap,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -5609,7 +5609,21 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
         .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
     runtime.storage.remember_head(HeadId::new("head-browser"));
     assert!(should_fetch_direct_swarm_snapshot(&runtime));
+    assert!(should_sync_active_head_artifact(
+        &runtime,
+        Some(&HeadId::new("head-browser"))
+    ));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
+
+    runtime
+        .storage
+        .cached_head_artifact_heads
+        .insert(HeadId::new("head-browser"));
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
+    assert!(should_sync_active_head_artifact(
+        &runtime,
+        Some(&HeadId::new("head-browser"))
+    ));
 
     runtime.transport.connected = Some(BrowserTransportKind::WssFallback);
     runtime.transport.connected_peer_ids = vec![PeerId::new("peer-browser-bootstrap")];
