@@ -5963,6 +5963,47 @@ fn browser_portal_client_syncs_active_head_artifact_into_worker_cache_once() {
             revision_id: RevisionId::new("rev-browser"),
         });
     runtime.storage.remember_head(HeadId::new("head-browser"));
+    runtime
+        .storage
+        .remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            run_id: RunId::new("run-browser"),
+            head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            artifact_profile: ArtifactProfile::BrowserSnapshot,
+            publication_target_id: PublicationTargetId::new("browser-target"),
+            publication_content_hash: Some(ContentId::new("content-browser")),
+            publication_content_length: Some(4),
+            provider_peer_ids: Vec::new(),
+            artifact_descriptor: Some(burn_p2p::ArtifactDescriptor {
+                artifact_id: ArtifactId::new("artifact-browser"),
+                kind: burn_p2p::ArtifactKind::FullHead,
+                head_id: Some(HeadId::new("head-browser")),
+                base_head_id: Some(HeadId::new("head-parent")),
+                precision: Precision::Fp16,
+                model_schema_hash: ContentId::new("schema-browser"),
+                record_format: "burn-record:bytes-mpk".into(),
+                bytes_len: 4,
+                chunks: vec![ChunkDescriptor {
+                    chunk_id: burn_p2p::ChunkId::new("chunk-browser"),
+                    offset_bytes: 0,
+                    length_bytes: 4,
+                    chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
+                        b"demo",
+                    )),
+                }],
+                root_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
+                    b"demo",
+                )),
+            }),
+            completed_chunks: Vec::new(),
+            edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
+            completed_bytes: 0,
+            last_attempted_at: Utc::now(),
+            attempt_count: 0,
+        });
     let session = sample_browser_session_state("principal-browser");
 
     let (first_events, second_events) = tokio::runtime::Builder::new_current_thread()
@@ -6722,6 +6763,10 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view(
             revision_id: RevisionId::new("rev-browser"),
         });
     runtime.storage.remember_head(HeadId::new("head-browser"));
+    runtime
+        .storage
+        .cached_head_artifact_heads
+        .insert(HeadId::new("head-browser"));
     let snapshot = burn_p2p::ControlPlaneSnapshot {
         head_announcements: vec![burn_p2p::HeadAnnouncement {
             overlay: burn_p2p::OverlayTopic::control(NetworkId::new("net-browser")),

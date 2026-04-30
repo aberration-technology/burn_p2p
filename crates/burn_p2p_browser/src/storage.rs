@@ -759,23 +759,17 @@ impl BrowserStorageSnapshot {
                 total_bytes,
                 bytes,
             });
-            checkpoint.completed_bytes = checkpoint
-                .artifact_descriptor
+            let chunk_completed_bytes: u64 = checkpoint
+                .completed_chunks
+                .iter()
+                .map(browser_artifact_replay_chunk_len)
+                .sum();
+            let edge_completed_bytes = checkpoint
+                .edge_download_prefix
                 .as_ref()
-                .map(|_| {
-                    checkpoint
-                        .completed_chunks
-                        .iter()
-                        .map(browser_artifact_replay_chunk_len)
-                        .sum()
-                })
-                .unwrap_or_else(|| {
-                    checkpoint
-                        .edge_download_prefix
-                        .as_ref()
-                        .map(browser_artifact_replay_prefix_len)
-                        .unwrap_or(0)
-                });
+                .map(browser_artifact_replay_prefix_len)
+                .unwrap_or(0);
+            checkpoint.completed_bytes = chunk_completed_bytes.max(edge_completed_bytes);
             checkpoint.last_attempted_at = Utc::now();
             self.updated_at = Utc::now();
         }

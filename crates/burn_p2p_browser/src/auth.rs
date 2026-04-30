@@ -689,11 +689,7 @@ impl BrowserEdgeClient {
     ) -> Option<ActiveHeadArtifactSyncPlan> {
         let active_assignment = runtime.storage.active_assignment.as_ref()?;
         let active_head_id = runtime.storage.last_head_id.as_ref()?;
-        if runtime
-            .storage
-            .cached_head_artifact_heads
-            .contains(active_head_id)
-        {
+        if runtime.storage.active_head_artifact_ready() {
             return None;
         }
         if &view.head.head_id != active_head_id
@@ -753,11 +749,7 @@ impl BrowserEdgeClient {
     ) -> Option<ActiveHeadArtifactSyncPlan> {
         let active_assignment = runtime.storage.active_assignment.as_ref()?;
         let active_head_id = runtime.storage.last_head_id.as_ref()?;
-        if runtime
-            .storage
-            .cached_head_artifact_heads
-            .contains(active_head_id)
-        {
+        if runtime.storage.active_head_artifact_ready() {
             return None;
         }
         let head = snapshot
