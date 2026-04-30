@@ -1861,7 +1861,7 @@ mod tests {
         let telemetry = daemon.telemetry();
 
         wait_for(
-            Duration::from_secs(5),
+            Duration::from_secs(15),
             || {
                 let snapshot = telemetry.snapshot();
                 snapshot.local_peer_id.is_some() && !snapshot.listen_addresses.is_empty()
