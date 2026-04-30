@@ -1,5 +1,8 @@
 use super::*;
-use crate::app::{should_fallback_to_edge_control_sync, should_wait_for_direct_swarm_bootstrap};
+use crate::app::{
+    should_fallback_to_edge_control_sync, should_fetch_direct_swarm_snapshot,
+    should_wait_for_direct_swarm_bootstrap,
+};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -5594,23 +5597,28 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
         BrowserCapabilityReport::default(),
         BrowserTransportStatus::default(),
     );
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(should_fallback_to_edge_control_sync(&runtime));
 
     runtime.transport.selected = Some(BrowserTransportKind::WebRtcDirect);
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(should_fallback_to_edge_control_sync(&runtime));
 
     runtime
         .storage
         .remember_swarm_directory_snapshot(browser_directory_snapshot(Vec::new()));
     runtime.storage.remember_head(HeadId::new("head-browser"));
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
 
     runtime.transport.connected = Some(BrowserTransportKind::WssFallback);
     runtime.transport.connected_peer_ids = vec![PeerId::new("peer-browser-bootstrap")];
     runtime.transport.last_error = Some("direct dial timeout".into());
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
 
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
+    assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
 }
 

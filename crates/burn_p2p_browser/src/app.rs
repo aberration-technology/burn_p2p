@@ -1130,10 +1130,7 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
         None,
     );
     let mut updates = direct_runtime.drain_updates();
-    if updates.is_empty()
-        && (runtime.storage.directory_snapshot().is_none()
-            || runtime.storage.last_head_id.is_none())
-    {
+    if updates.is_empty() && should_fetch_direct_swarm_snapshot(runtime) {
         let snapshot = direct_runtime
             .fetch_snapshot()
             .await
@@ -1167,6 +1164,18 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
         }
     }
     Ok(events)
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn should_fetch_direct_swarm_snapshot(runtime: &BrowserWorkerRuntime) -> bool {
+    if runtime.storage.directory_snapshot().is_none() || runtime.storage.last_head_id.is_none() {
+        return true;
+    }
+    runtime
+        .storage
+        .last_head_id
+        .as_ref()
+        .is_some_and(|_| !runtime.storage.active_head_artifact_ready())
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
