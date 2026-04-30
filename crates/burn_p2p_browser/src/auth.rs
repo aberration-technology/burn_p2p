@@ -35,6 +35,8 @@ use reqwest::StatusCode;
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+#[cfg(any(test, target_arch = "wasm32"))]
+use crate::BrowserStoredAssignment;
 use crate::{
     BrowserArtifactReplayCheckpoint, BrowserMetricsSyncState, BrowserTransportKind,
     BrowserTransportStatus, BrowserUiBindings, BrowserWorkerCommand, BrowserWorkerEvent,
@@ -656,6 +658,50 @@ impl BrowserEdgeClient {
         provider_peer_ids
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn active_head_from_control_snapshot(
+        runtime: &BrowserWorkerRuntime,
+        snapshot: &ControlPlaneSnapshot,
+    ) -> Option<HeadDescriptor> {
+        let active_assignment = runtime.storage.active_assignment.as_ref()?;
+        let active_head_id = runtime.storage.last_head_id.as_ref()?;
+        snapshot
+            .head_announcements
+            .iter()
+            .rev()
+            .map(|announcement| &announcement.head)
+            .find(|head| {
+                Self::head_matches_active_assignment(head, active_assignment, active_head_id)
+            })
+            .cloned()
+            .or_else(|| {
+                runtime
+                    .storage
+                    .last_head_descriptor
+                    .as_ref()
+                    .filter(|head| {
+                        Self::head_matches_active_assignment(
+                            head,
+                            active_assignment,
+                            active_head_id,
+                        )
+                    })
+                    .cloned()
+            })
+    }
+
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn head_matches_active_assignment(
+        head: &HeadDescriptor,
+        assignment: &BrowserStoredAssignment,
+        head_id: &HeadId,
+    ) -> bool {
+        &head.head_id == head_id
+            && head.study_id == assignment.study_id
+            && head.experiment_id == assignment.experiment_id
+            && head.revision_id == assignment.revision_id
+    }
+
     fn can_attempt_peer_transport_without_provider_hints(runtime: &BrowserWorkerRuntime) -> bool {
         runtime.transport.connected.is_some()
     }
@@ -747,23 +793,10 @@ impl BrowserEdgeClient {
         runtime: &BrowserWorkerRuntime,
         snapshot: &ControlPlaneSnapshot,
     ) -> Option<ActiveHeadArtifactSyncPlan> {
-        let active_assignment = runtime.storage.active_assignment.as_ref()?;
-        let active_head_id = runtime.storage.last_head_id.as_ref()?;
         if runtime.storage.active_head_artifact_ready() {
             return None;
         }
-        let head = snapshot
-            .head_announcements
-            .iter()
-            .rev()
-            .map(|announcement| &announcement.head)
-            .find(|head| {
-                &head.head_id == active_head_id
-                    && head.study_id == active_assignment.study_id
-                    && head.experiment_id == active_assignment.experiment_id
-                    && head.revision_id == active_assignment.revision_id
-            })?
-            .clone();
+        let head = Self::active_head_from_control_snapshot(runtime, snapshot)?;
         let existing_checkpoint = runtime.storage.artifact_replay_checkpoint.as_ref();
         let DirectPeerArtifactRequestSeed {
             run_id,

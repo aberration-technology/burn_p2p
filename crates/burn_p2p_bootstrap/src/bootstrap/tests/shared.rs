@@ -298,11 +298,7 @@ pub(super) fn spawn_provider_mock_server(
             stream
                 .set_read_timeout(Some(StdDuration::from_secs(2)))
                 .expect("set provider exchange read timeout");
-            let mut buffer = [0_u8; 8192];
-            let bytes_read = stream
-                .read(&mut buffer)
-                .expect("read provider exchange request");
-            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let request = read_http_request(&mut stream);
             let (response_status, response_body) = handle_request(&request);
             let response = format!(
                 "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -316,6 +312,54 @@ pub(super) fn spawn_provider_mock_server(
         }
     });
     (format!("http://{addr}"), handle)
+}
+
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
+fn read_http_request(stream: &mut TcpStream) -> String {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 2048];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(bytes_read) => {
+                buffer.extend_from_slice(&chunk[..bytes_read]);
+                if let Some(headers_end) = http_header_end(&buffer) {
+                    let header_text = String::from_utf8_lossy(&buffer[..headers_end]);
+                    let body_len = http_content_length(&header_text).unwrap_or(0);
+                    if buffer.len() >= headers_end + 4 + body_len {
+                        break;
+                    }
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if !buffer.is_empty() {
+                    break;
+                }
+            }
+            Err(error) => panic!("read provider exchange request: {error}"),
+        }
+    }
+    String::from_utf8_lossy(&buffer).to_string()
+}
+
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
+fn http_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+#[cfg(all(feature = "browser-edge", feature = "auth-github"))]
+fn http_content_length(headers: &str) -> Option<usize> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
 }
 
 #[cfg(feature = "artifact-s3")]

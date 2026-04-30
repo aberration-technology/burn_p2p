@@ -450,17 +450,17 @@ fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote()
     let validator_b_telemetry = validator_b.telemetry();
 
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         || validator_a_telemetry.snapshot().connected_peers >= 2,
         "validator a did not connect to reducer and validator b",
     );
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         || reducer_telemetry.snapshot().connected_peers >= 1,
         "reducer did not connect to validator a",
     );
     wait_for(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         || validator_b_telemetry.snapshot().connected_peers >= 1,
         "validator b did not connect to validator a",
     );

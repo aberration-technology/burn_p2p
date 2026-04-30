@@ -844,11 +844,10 @@ impl BrowserWorkerRuntime {
 
     /// Performs the apply head snapshot operation.
     pub fn apply_head_snapshot(&mut self, heads: &[HeadDescriptor]) -> Option<HeadId> {
-        let matched_head_id = self
-            .current_assignment_head(heads)
-            .map(|head| head.head_id.clone());
-        if let Some(head_id) = matched_head_id.clone() {
-            self.storage.remember_head(head_id);
+        let matched_head = self.current_assignment_head(heads).cloned();
+        let matched_head_id = matched_head.as_ref().map(|head| head.head_id.clone());
+        if let Some(head) = matched_head {
+            self.storage.remember_head_descriptor(head);
         }
         self.refresh_transport_selection();
         if matched_head_id.is_some() {

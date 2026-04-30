@@ -1753,6 +1753,14 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
         runtime.storage.last_head_id,
         Some(burn_p2p::HeadId::new("head-browser"))
     );
+    assert_eq!(
+        runtime
+            .storage
+            .last_head_descriptor
+            .as_ref()
+            .map(|head| head.artifact_id.as_str()),
+        Some("artifact-browser")
+    );
 }
 
 #[test]
@@ -6827,7 +6835,8 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_hints() {
+fn browser_portal_client_syncs_stored_live_head_from_sparse_direct_snapshot_without_provider_hints()
+{
     #[derive(Clone)]
     struct StaticPeerArtifactFetcher {
         requests: Arc<Mutex<Vec<BrowserPeerArtifactRequest>>>,
@@ -6887,26 +6896,20 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
             experiment_id: ExperimentId::new("exp-browser"),
             revision_id: RevisionId::new("rev-browser"),
         });
-    runtime.storage.remember_head(HeadId::new("head-browser"));
-    let snapshot = burn_p2p::ControlPlaneSnapshot {
-        head_announcements: vec![burn_p2p::HeadAnnouncement {
-            overlay: burn_p2p::OverlayTopic::control(NetworkId::new("net-browser")),
-            provider_peer_id: None,
-            head: burn_p2p::HeadDescriptor {
-                head_id: HeadId::new("head-browser"),
-                study_id: StudyId::new("study-browser"),
-                experiment_id: ExperimentId::new("exp-browser"),
-                revision_id: RevisionId::new("rev-browser"),
-                artifact_id: ArtifactId::new("artifact-browser"),
-                parent_head_id: Some(HeadId::new("head-parent")),
-                global_step: 3,
-                created_at: Utc::now(),
-                metrics: BTreeMap::new(),
-            },
-            announced_at: Utc::now(),
-        }],
-        ..burn_p2p::ControlPlaneSnapshot::default()
-    };
+    runtime
+        .storage
+        .remember_head_descriptor(burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        });
+    let snapshot = burn_p2p::ControlPlaneSnapshot::default();
 
     let events = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -6919,7 +6922,7 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
                     &snapshot,
                 )
                 .await
-                .expect("direct snapshot head artifact sync without provider hints")
+                .expect("sparse direct snapshot head artifact sync without provider hints")
         });
 
     let requests = requests

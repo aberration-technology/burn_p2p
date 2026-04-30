@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use burn_p2p::{
     ArtifactDescriptor, ArtifactId, ChunkId, ContributionReceipt, ContributionReceiptId,
-    ExperimentDirectoryEntry, ExperimentId, HeadId, MicroShardId, PeerId, RevisionId, StudyId,
-    WorkloadTrainingLease,
+    ExperimentDirectoryEntry, ExperimentId, HeadDescriptor, HeadId, MicroShardId, PeerId,
+    RevisionId, StudyId, WorkloadTrainingLease,
 };
 use burn_p2p_core::{
     ArtifactProfile, BrowserArtifactRouteKind, BrowserArtifactSyncDiagnostics, MetricsLiveEvent,
@@ -347,6 +347,9 @@ pub struct BrowserStorageSnapshot {
     pub last_metrics_sync_at: Option<DateTime<Utc>>,
     /// The last head ID.
     pub last_head_id: Option<HeadId>,
+    /// The last active head descriptor learned from edge or swarm control state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_head_descriptor: Option<HeadDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Durable checkpoint for resuming active-head artifact replay after offline failure.
     pub artifact_replay_checkpoint: Option<BrowserArtifactReplayCheckpoint>,
@@ -387,6 +390,7 @@ impl Default for BrowserStorageSnapshot {
             last_metrics_live_event: None,
             last_metrics_sync_at: None,
             last_head_id: None,
+            last_head_descriptor: None,
             artifact_replay_checkpoint: None,
             active_head_artifact_cache: None,
             stored_certificate_peer_id: None,
@@ -476,6 +480,7 @@ impl BrowserStorageSnapshot {
         }
         if self.artifact_replay_checkpoint.is_none()
             && self.last_head_id.is_none()
+            && self.last_head_descriptor.is_none()
             && self.last_head_artifact_transport.is_none()
             && self.last_head_artifact_sync.is_none()
             && self.active_training_lease.is_none()
@@ -485,6 +490,7 @@ impl BrowserStorageSnapshot {
         self.artifact_replay_checkpoint = None;
         self.active_head_artifact_cache = None;
         self.last_head_id = None;
+        self.last_head_descriptor = None;
         self.last_head_artifact_transport = None;
         self.last_head_artifact_sync = None;
         self.active_training_lease = None;
@@ -551,6 +557,7 @@ impl BrowserStorageSnapshot {
         if assignment_changed {
             self.clear_artifact_replay_checkpoint();
             self.last_head_id = None;
+            self.last_head_descriptor = None;
             self.last_head_artifact_sync = None;
             self.active_training_lease = None;
         }
@@ -591,8 +598,20 @@ impl BrowserStorageSnapshot {
     pub fn remember_head(&mut self, head_id: HeadId) {
         if self.last_head_id.as_ref() != Some(&head_id) {
             self.last_head_artifact_sync = None;
+            self.last_head_descriptor = None;
         }
         self.last_head_id = Some(head_id);
+        self.updated_at = Utc::now();
+    }
+
+    /// Performs the remember head descriptor operation.
+    pub fn remember_head_descriptor(&mut self, head: HeadDescriptor) {
+        let head_id = head.head_id.clone();
+        if self.last_head_id.as_ref() != Some(&head_id) {
+            self.last_head_artifact_sync = None;
+        }
+        self.last_head_id = Some(head_id);
+        self.last_head_descriptor = Some(head);
         self.updated_at = Utc::now();
     }
 
