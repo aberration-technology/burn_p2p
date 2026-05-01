@@ -348,6 +348,18 @@ fn adopt_known_head_if_present_promotes_materialized_head() {
         },
         "follower did not sync genesis head",
     );
+    let synced_genesis = follower
+        .sync_experiment_head(&experiment)
+        .expect("follower sync genesis")
+        .expect("synced genesis head");
+    assert!(
+        follower
+            .artifact_store()
+            .expect("follower artifact store")
+            .has_complete_artifact(&synced_genesis.artifact_id)
+            .expect("check synced genesis artifact"),
+        "follower should fetch genesis artifact before adopting the head",
+    );
 
     let promoted = leader
         .train_window_once(&experiment)
