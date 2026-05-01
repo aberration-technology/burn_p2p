@@ -53,14 +53,20 @@ impl ControlHandle {
     }
 
     fn recv_runtime_reply<T>(
-        &self,
         reply_rx: mpsc::Receiver<Result<T, String>>,
         context: &str,
+        timeout: Duration,
     ) -> anyhow::Result<T> {
-        reply_rx
-            .recv()
-            .map_err(|error| anyhow::anyhow!("{context} reply channel closed: {error}"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
+        match reply_rx.recv_timeout(timeout.max(Duration::from_millis(1))) {
+            Ok(result) => result.map_err(|error| anyhow::anyhow!("{error}")),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+                "{context} runtime reply timed out after {} ms",
+                timeout.as_millis()
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(anyhow::anyhow!("{context} reply channel closed"))
+            }
+        }
     }
 
     /// Performs the subscribe topic operation.
@@ -305,7 +311,7 @@ impl ControlHandle {
                     reply: reply_tx,
                 })
                 .map_err(|error| anyhow::anyhow!("failed to request snapshot: {error}"))?;
-            self.recv_runtime_reply(reply_rx, "snapshot")
+            Self::recv_runtime_reply(reply_rx, "snapshot", attempt_timeout)
         });
 
         match runtime_result {
@@ -336,10 +342,17 @@ impl ControlHandle {
             })
             .map_err(|error| anyhow::anyhow!("failed to publish artifact: {error}"))?;
 
-        reply_rx
-            .recv()
-            .map_err(|error| anyhow::anyhow!("artifact publish reply channel closed: {error}"))?
-            .map_err(|error| anyhow::anyhow!("{error}"))
+        const ARTIFACT_PUBLISH_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+        match reply_rx.recv_timeout(ARTIFACT_PUBLISH_REPLY_TIMEOUT) {
+            Ok(result) => result.map_err(|error| anyhow::anyhow!("{error}")),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+                "artifact publish runtime reply timed out after {} ms",
+                ARTIFACT_PUBLISH_REPLY_TIMEOUT.as_millis()
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(anyhow::anyhow!("artifact publish reply channel closed"))
+            }
+        }
     }
 
     /// Fetches the artifact manifest.
@@ -364,7 +377,7 @@ impl ControlHandle {
                     reply: reply_tx,
                 })
                 .map_err(|error| anyhow::anyhow!("failed to request artifact manifest: {error}"))?;
-            self.recv_runtime_reply(reply_rx, "artifact manifest")
+            Self::recv_runtime_reply(reply_rx, "artifact manifest", attempt_timeout)
         });
 
         match runtime_result {
@@ -404,7 +417,7 @@ impl ControlHandle {
                     reply: reply_tx,
                 })
                 .map_err(|error| anyhow::anyhow!("failed to request artifact chunk: {error}"))?;
-            self.recv_runtime_reply(reply_rx, "artifact chunk")
+            Self::recv_runtime_reply(reply_rx, "artifact chunk", attempt_timeout)
         });
 
         match runtime_result {
@@ -448,7 +461,7 @@ impl ControlHandle {
                     reply: reply_tx,
                 })
                 .map_err(|error| anyhow::anyhow!("failed to request DiLoCo payload: {error}"))?;
-            self.recv_runtime_reply(reply_rx, "diloco")
+            Self::recv_runtime_reply(reply_rx, "diloco", attempt_timeout)
         });
 
         match runtime_result {
@@ -719,6 +732,25 @@ mod tests {
         assert_eq!(
             runtime_fetch_attempt_timeout(Duration::from_secs(45)),
             Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn runtime_reply_wait_is_bounded() {
+        let (_reply_tx, reply_rx) = mpsc::channel::<Result<(), String>>();
+        let started = Instant::now();
+        let error =
+            ControlHandle::recv_runtime_reply(reply_rx, "snapshot", Duration::from_millis(10))
+                .expect_err("reply wait should time out");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "reply wait was not bounded"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("snapshot runtime reply timed out")
         );
     }
 }
