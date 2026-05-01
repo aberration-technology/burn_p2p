@@ -2578,7 +2578,7 @@ fn wait_for_stable_process_report(
     }
 
     if let Some(report) = latest_match.as_ref()
-        && predicate(&report)
+        && predicate(report)
     {
         return Ok(report.clone());
     }
