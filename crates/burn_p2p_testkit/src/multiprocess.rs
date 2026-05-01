@@ -1375,6 +1375,7 @@ where
     let merge_timeout = Duration::from_secs(config.merge_wait_timeout_secs);
     let canonical_advance_timeout = trainer_canonical_advance_timeout(config, merge_timeout);
     let mut next_base_head = None;
+    let mut previous_base_head = None;
     let mut start_barrier_pending = true;
 
     for window_index in 0..config.window_count.max(1) {
@@ -1384,9 +1385,33 @@ where
         });
         let synced_head = if let Some(head) = next_base_head.take() {
             head
+        } else if let Some(base_head) = previous_base_head.as_ref() {
+            let advanced_head = wait_for_inter_window_canonical_advance(
+                node,
+                experiment,
+                base_head,
+                merge_timeout,
+                poll_interval,
+                report,
+                ReportPaths {
+                    report_path: &config.report_path,
+                    storage_root: &config.storage_root,
+                },
+            )?;
+            if let Some(timeline) = report
+                .window_timelines
+                .iter_mut()
+                .rev()
+                .find(|timeline| timeline.window_index + 1 == window_index)
+                && timeline.canonical_advanced_at.is_none()
+            {
+                timeline.canonical_advanced_at = Some(Utc::now());
+            }
+            advanced_head
         } else {
             wait_for_synced_head(node, experiment, sync_timeout, poll_interval)?
         };
+        previous_base_head = Some(synced_head.clone());
         report.synced_head_id = Some(synced_head.head_id.to_string());
         if let Some(timeline) = report.window_timelines.last_mut() {
             timeline.synced_at = Some(Utc::now());
@@ -1850,6 +1875,56 @@ where
         "timed out waiting for canonical head to advance from {}",
         base_head_id.as_str()
     ))
+}
+
+fn wait_for_inter_window_canonical_advance<W>(
+    node: &burn_p2p::RunningNode<W>,
+    experiment: &burn_p2p::ExperimentHandle,
+    base_head: &HeadDescriptor,
+    timeout: Duration,
+    poll_interval: Duration,
+    report: &mut SyntheticProcessReport,
+    paths: ReportPaths<'_>,
+) -> anyhow::Result<burn_p2p::HeadDescriptor>
+where
+    W: P2pWorkload<WindowStats = BTreeMap<String, MetricValue>>,
+    W::Model: Send + 'static,
+{
+    let deadline = Instant::now() + test_timeout(timeout);
+    let mut last_transient_error = None;
+    while Instant::now() < deadline {
+        match node.sync_experiment_head(experiment) {
+            Ok(Some(head)) => {
+                report.observed_canonical_head_id = Some(head.head_id.to_string());
+                report.error = None;
+                refresh_report_counts(report, paths.storage_root)?;
+                write_report(paths.report_path, report)?;
+                if head.global_step > base_head.global_step && head.head_id != base_head.head_id {
+                    return Ok(head);
+                }
+            }
+            Ok(None) => {}
+            Err(error) if is_transient_runtime_error(&error) => {
+                last_transient_error = Some(error.to_string());
+            }
+            Err(error) => return Err(error),
+        }
+        thread::sleep(poll_interval);
+    }
+
+    refresh_report_counts(report, paths.storage_root)?;
+    write_report(paths.report_path, report)?;
+    if let Some(message) = last_transient_error {
+        Err(anyhow::anyhow!(
+            "timed out waiting for inter-window canonical head to advance from {} after transient error: {message}",
+            base_head.head_id.as_str()
+        ))
+    } else {
+        Err(anyhow::anyhow!(
+            "timed out waiting for inter-window canonical head to advance from {}; refusing to train the next synthetic window on a stale base",
+            base_head.head_id.as_str()
+        ))
+    }
 }
 
 fn wait_for(
@@ -2443,20 +2518,24 @@ fn wait_for_process_report(
     predicate: impl Fn(&SyntheticProcessReport) -> bool,
 ) -> anyhow::Result<SyntheticProcessReport> {
     let deadline = Instant::now() + timeout;
+    let mut latest_report = None;
+    let mut last_read_error = None;
     while Instant::now() < deadline {
         if path.exists() {
             match read_process_report(path) {
                 Ok(report) if predicate(&report) => return Ok(report),
-                Ok(_) => {}
-                Err(_) => {}
+                Ok(report) => latest_report = Some(report),
+                Err(error) => last_read_error = Some(error.to_string()),
             }
         }
         thread::sleep(Duration::from_millis(25));
     }
 
-    Err(anyhow::anyhow!(
-        "timed out waiting for process report {}",
-        path.display()
+    Err(process_report_timeout_error(
+        "timed out waiting for process report",
+        path,
+        latest_report.as_ref(),
+        last_read_error.as_deref(),
     ))
 }
 
@@ -2469,42 +2548,142 @@ fn wait_for_stable_process_report(
     let deadline = Instant::now() + timeout;
     let mut latest_match = None::<SyntheticProcessReport>;
     let mut last_progress_at = None::<Instant>;
+    let mut last_read_error = None;
     while Instant::now() < deadline {
-        if path.exists()
-            && let Ok(report) = read_process_report(path)
-        {
-            let progressed = latest_match.as_ref().is_none_or(|previous| {
-                previous.receipt_count != report.receipt_count
-                    || previous.merge_count != report.merge_count
-                    || previous.merged_head_id != report.merged_head_id
-            });
-            if progressed {
-                last_progress_at = Some(Instant::now());
-                latest_match = Some(report.clone());
-            } else if latest_match.is_none() {
-                latest_match = Some(report.clone());
-            }
-            if predicate(&report)
-                && last_progress_at.is_some_and(|progress| progress.elapsed() >= quiet_period)
-            {
-                return Ok(report);
+        if path.exists() {
+            match read_process_report(path) {
+                Ok(report) => {
+                    let progressed = latest_match.as_ref().is_none_or(|previous| {
+                        previous.receipt_count != report.receipt_count
+                            || previous.merge_count != report.merge_count
+                            || previous.merged_head_id != report.merged_head_id
+                    });
+                    if progressed {
+                        last_progress_at = Some(Instant::now());
+                        latest_match = Some(report.clone());
+                    } else if latest_match.is_none() {
+                        latest_match = Some(report.clone());
+                    }
+                    if predicate(&report)
+                        && last_progress_at
+                            .is_some_and(|progress| progress.elapsed() >= quiet_period)
+                    {
+                        return Ok(report);
+                    }
+                }
+                Err(error) => last_read_error = Some(error.to_string()),
             }
         }
         thread::sleep(Duration::from_millis(25));
     }
 
-    if let Some(report) = latest_match
+    if let Some(report) = latest_match.as_ref()
         && predicate(&report)
     {
-        return Ok(report);
+        return Ok(report.clone());
     }
 
-    Err(anyhow::anyhow!(
-        "timed out waiting for stable process report {}",
-        path.display()
+    Err(process_report_timeout_error(
+        "timed out waiting for stable process report",
+        path,
+        latest_match.as_ref(),
+        last_read_error.as_deref(),
     ))
 }
 
 fn read_process_report(path: &Path) -> anyhow::Result<SyntheticProcessReport> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn process_report_timeout_error(
+    prefix: &str,
+    path: &Path,
+    latest_report: Option<&SyntheticProcessReport>,
+    last_read_error: Option<&str>,
+) -> anyhow::Error {
+    let mut message = format!("{prefix} {}", path.display());
+    if let Some(report) = latest_report {
+        message.push_str("; last observed report: ");
+        message.push_str(&format_process_report_progress(report));
+    } else {
+        message.push_str("; no complete report was observed");
+    }
+    if let Some(error) = last_read_error {
+        message.push_str("; last read error: ");
+        message.push_str(error);
+    }
+    anyhow::anyhow!(message)
+}
+
+fn format_process_report_progress(report: &SyntheticProcessReport) -> String {
+    let timelines = report
+        .window_timelines
+        .iter()
+        .map(|timeline| {
+            format!(
+                "#{}:sync={} train={} advanced={} timed_out={}",
+                timeline.window_index,
+                timeline.synced_at.is_some(),
+                timeline.trained_at.is_some(),
+                timeline.canonical_advanced_at.is_some(),
+                timeline.canonical_observation_timed_out
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "status={} synced={} trained={} parent={} observed={} merged={} receipts={} merges={} completed={} connected_peers={} visible_heads={} visible_updates={} error={} timelines=[{}]",
+        report.status,
+        report.synced_head_id.as_deref().unwrap_or("-"),
+        report.trained_head_id.as_deref().unwrap_or("-"),
+        report.trained_parent_head_id.as_deref().unwrap_or("-"),
+        report.observed_canonical_head_id.as_deref().unwrap_or("-"),
+        report.merged_head_id.as_deref().unwrap_or("-"),
+        report.receipt_count,
+        report.merge_count,
+        report.completed_at.is_some(),
+        report.connected_peer_count,
+        report.visible_experiment_head_count,
+        report.visible_experiment_update_count,
+        report.error.as_deref().unwrap_or("-"),
+        timelines,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_report_timeout_summary_includes_progress_fields() {
+        let report = SyntheticProcessReport {
+            status: "running".into(),
+            synced_head_id: Some("head-0".into()),
+            trained_head_id: Some("trainer-window-2".into()),
+            trained_parent_head_id: Some("head-0".into()),
+            observed_canonical_head_id: Some("merged-window-1".into()),
+            receipt_count: 2,
+            merge_count: 1,
+            connected_peer_count: 3,
+            visible_experiment_head_count: 4,
+            visible_experiment_update_count: 5,
+            window_timelines: vec![SyntheticWindowTimeline {
+                window_index: 0,
+                synced_at: Some(Utc::now()),
+                trained_at: Some(Utc::now()),
+                canonical_advanced_at: None,
+                canonical_observation_timed_out: true,
+            }],
+            ..SyntheticProcessReport::default()
+        };
+
+        let summary = format_process_report_progress(&report);
+        assert!(summary.contains("status=running"));
+        assert!(summary.contains("trained=trainer-window-2"));
+        assert!(summary.contains("parent=head-0"));
+        assert!(summary.contains("observed=merged-window-1"));
+        assert!(summary.contains("receipts=2"));
+        assert!(summary.contains("merges=1"));
+        assert!(summary.contains("#0:sync=true train=true advanced=false timed_out=true"));
+    }
 }
