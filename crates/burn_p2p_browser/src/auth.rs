@@ -1,13 +1,11 @@
 use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
-#[cfg(target_arch = "wasm32")]
-use burn_p2p::ArtifactDescriptor;
 #[cfg(any(test, target_arch = "wasm32"))]
 use burn_p2p::ControlPlaneSnapshot;
 use burn_p2p::{
-    ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt, ExperimentId,
-    ExperimentScope, HeadDescriptor, HeadId, LoginRequest, LoginStart, NetworkId, NodeCertificate,
-    PeerId, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
+    ArtifactDescriptor, ArtifactId, CallbackPayload, ChunkId, ContentId, ContributionReceipt,
+    ExperimentId, ExperimentScope, HeadDescriptor, HeadId, LoginRequest, LoginStart, NetworkId,
+    NodeCertificate, PeerId, PrincipalId, PrincipalSession, ProjectFamilyId, RevisionId,
 };
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_core::ChunkDescriptor;
@@ -461,19 +459,29 @@ pub(crate) fn artifact_route_kind_for_error(
     }
 }
 
+/// Complete artifact payload returned by a browser-native peer transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserPeerArtifactPayload {
+    /// Descriptor fetched from the peer swarm for the payload bytes.
+    pub descriptor: ArtifactDescriptor,
+    /// Complete artifact bytes reconstructed from the descriptor chunks.
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BrowserPeerArtifactTransportResult {
-    bytes: Vec<u8>,
+    payload: BrowserPeerArtifactPayload,
     kind: BrowserPeerArtifactTransportKind,
 }
 
 /// Future returned by browser-native peer artifact fetchers.
-pub type BrowserPeerArtifactFetchFuture =
-    Pin<Box<dyn Future<Output = Result<Vec<u8>, BrowserAuthClientError>> + 'static>>;
+pub type BrowserPeerArtifactFetchFuture = Pin<
+    Box<dyn Future<Output = Result<BrowserPeerArtifactPayload, BrowserAuthClientError>> + 'static>,
+>;
 
 /// Pluggable browser-native artifact fetcher used ahead of edge download routes.
 pub trait BrowserPeerArtifactFetcher {
-    /// Fetches bytes for one active head artifact request.
+    /// Fetches one complete active head artifact payload.
     fn fetch(&self, request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture;
 }
 
@@ -863,10 +871,32 @@ impl BrowserEdgeClient {
                 .await
             {
                 Ok(Some(result)) => {
-                    if result.bytes.is_empty() {
+                    if result.payload.bytes.is_empty() {
                         let error = BrowserAuthClientError::ArtifactTransport(
                             "peer transport returned an empty artifact payload".into(),
                         );
+                        runtime.storage.remember_active_head_artifact_sync_failure(
+                            result.kind.label(),
+                            BrowserArtifactRouteKind::PeerSwarm,
+                            elapsed_millis(started_at),
+                            error.to_string(),
+                        );
+                        peer_transport_error = Some(error);
+                    } else if result.payload.descriptor.artifact_id != replay_request.artifact_id {
+                        let error = BrowserAuthClientError::ArtifactTransport(format!(
+                            "peer transport returned descriptor for unexpected artifact {}",
+                            result.payload.descriptor.artifact_id.as_str()
+                        ));
+                        runtime.storage.remember_active_head_artifact_sync_failure(
+                            result.kind.label(),
+                            BrowserArtifactRouteKind::PeerSwarm,
+                            elapsed_millis(started_at),
+                            error.to_string(),
+                        );
+                        peer_transport_error = Some(error);
+                    } else if let Err(error) =
+                        Self::remember_peer_artifact_payload(runtime, &result.payload)
+                    {
                         runtime.storage.remember_active_head_artifact_sync_failure(
                             result.kind.label(),
                             BrowserArtifactRouteKind::PeerSwarm,
@@ -879,7 +909,7 @@ impl BrowserEdgeClient {
                             result.kind.label(),
                             BrowserArtifactRouteKind::PeerSwarm,
                             elapsed_millis(started_at),
-                            result.bytes.len() as u64,
+                            result.payload.bytes.len() as u64,
                         );
                         transport = Some(result.kind.label().to_owned());
                     }
@@ -980,6 +1010,80 @@ impl BrowserEdgeClient {
             transport.unwrap_or_else(|| "unknown".into()),
         );
         Ok(Self::storage_update_if_changed(runtime, previous_storage))
+    }
+
+    fn remember_peer_artifact_payload(
+        runtime: &mut BrowserWorkerRuntime,
+        payload: &BrowserPeerArtifactPayload,
+    ) -> Result<(), BrowserAuthClientError> {
+        let descriptor = &payload.descriptor;
+        let bytes = &payload.bytes;
+        if bytes.len() as u64 != descriptor.bytes_len {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "peer artifact payload length {} does not match descriptor length {}",
+                bytes.len(),
+                descriptor.bytes_len
+            )));
+        }
+        let root_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(bytes));
+        if root_hash != descriptor.root_hash {
+            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                "peer artifact payload root hash {} does not match descriptor root hash {}",
+                root_hash.as_str(),
+                descriptor.root_hash.as_str()
+            )));
+        }
+
+        runtime
+            .storage
+            .remember_artifact_replay_descriptor(descriptor.clone());
+        let capacity = bytes.len();
+        for chunk in &descriptor.chunks {
+            let start = usize::try_from(chunk.offset_bytes).map_err(|_| {
+                BrowserAuthClientError::ArtifactTransport(format!(
+                    "peer artifact chunk {} offset {} does not fit in browser memory",
+                    chunk.chunk_id.as_str(),
+                    chunk.offset_bytes
+                ))
+            })?;
+            let length = usize::try_from(chunk.length_bytes).map_err(|_| {
+                BrowserAuthClientError::ArtifactTransport(format!(
+                    "peer artifact chunk {} length {} does not fit in browser memory",
+                    chunk.chunk_id.as_str(),
+                    chunk.length_bytes
+                ))
+            })?;
+            let end = start.checked_add(length).ok_or_else(|| {
+                BrowserAuthClientError::ArtifactTransport(format!(
+                    "peer artifact chunk {} range overflows",
+                    chunk.chunk_id.as_str()
+                ))
+            })?;
+            if end > capacity {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "peer artifact chunk {} range {}..{} exceeds payload length {}",
+                    chunk.chunk_id.as_str(),
+                    start,
+                    end,
+                    capacity
+                )));
+            }
+            let chunk_bytes = bytes[start..end].to_vec();
+            let chunk_hash =
+                ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+            if chunk_hash != chunk.chunk_hash {
+                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                    "peer artifact chunk {} hash {} does not match descriptor hash {}",
+                    chunk.chunk_id.as_str(),
+                    chunk_hash.as_str(),
+                    chunk.chunk_hash.as_str()
+                )));
+            }
+            runtime
+                .storage
+                .remember_artifact_replay_chunk(chunk.chunk_id.clone(), chunk_bytes);
+        }
+        Ok(())
     }
 
     /// Creates a new value.
@@ -2059,9 +2163,9 @@ impl BrowserEdgeClient {
         runtime: &mut BrowserWorkerRuntime,
     ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
         if let Some(fetcher) = self.peer_artifact_fetcher.as_ref() {
-            return fetcher.fetch(request.clone()).await.map(|bytes| {
+            return fetcher.fetch(request.clone()).await.map(|payload| {
                 Some(BrowserPeerArtifactTransportResult {
-                    bytes,
+                    payload,
                     kind: BrowserPeerArtifactTransportKind::CustomFetcher,
                 })
             });
@@ -2584,9 +2688,9 @@ async fn try_download_artifact_via_browser_peer_transport(
     request: &BrowserPeerArtifactRequest,
     runtime: &mut BrowserWorkerRuntime,
 ) -> Result<Option<BrowserPeerArtifactTransportResult>, BrowserAuthClientError> {
-    if let Some(bytes) = try_download_artifact_via_browser_peer_swarm(request, runtime).await? {
+    if let Some(payload) = try_download_artifact_via_browser_peer_swarm(request, runtime).await? {
         return Ok(Some(BrowserPeerArtifactTransportResult {
-            bytes,
+            payload,
             kind: BrowserPeerArtifactTransportKind::PeerSwarm,
         }));
     }
@@ -2597,7 +2701,7 @@ async fn try_download_artifact_via_browser_peer_transport(
 async fn try_download_artifact_via_browser_peer_swarm(
     request: &BrowserPeerArtifactRequest,
     runtime: &mut BrowserWorkerRuntime,
-) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
+) -> Result<Option<BrowserPeerArtifactPayload>, BrowserAuthClientError> {
     use js_sys::{Function, Promise, Reflect, Uint8Array};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
@@ -2823,7 +2927,7 @@ async fn try_download_artifact_via_browser_peer_swarm(
         )));
     }
 
-    Ok(Some(bytes))
+    Ok(Some(BrowserPeerArtifactPayload { descriptor, bytes }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2840,7 +2944,7 @@ async fn try_download_artifact_via_browser_peer_transport(
 async fn try_download_artifact_via_browser_peer_swarm(
     _request: &BrowserPeerArtifactRequest,
     _runtime: &mut BrowserWorkerRuntime,
-) -> Result<Option<Vec<u8>>, BrowserAuthClientError> {
+) -> Result<Option<BrowserPeerArtifactPayload>, BrowserAuthClientError> {
     Ok(None)
 }
 

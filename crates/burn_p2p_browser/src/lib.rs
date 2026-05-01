@@ -36,8 +36,8 @@ pub use app::{BrowserAppConnectConfig, BrowserAppController, BrowserAppModel, Br
 pub use auth::{
     BrowserAuthClientError, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserEnrollmentResult,
     BrowserLogoutResponse, BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher,
-    BrowserPeerArtifactRequest, BrowserPeerEnrollmentRequest, BrowserSessionState,
-    BrowserWorkerIdentity,
+    BrowserPeerArtifactPayload, BrowserPeerArtifactRequest, BrowserPeerEnrollmentRequest,
+    BrowserSessionState, BrowserWorkerIdentity,
 };
 pub use bridge::{BrowserWorkerCommand, BrowserWorkerEvent};
 pub use burn_p2p::WorkloadTrainingLease;

@@ -45,6 +45,44 @@ const TEST_EDGE_WEBRTC_DIRECT_SEED: &str = "/dns4/edge.example/udp/4001/webrtc-d
 const TEST_BOOTSTRAP_WEBRTC_DIRECT_SEED: &str = "/dns4/bootstrap.example/udp/4001/webrtc-direct/certhash/uEiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_EDGE_WEBTRANSPORT_SEED: &str = "/dns4/edge.example/udp/443/quic-v1/webtransport/certhash/uEiBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
+fn sample_peer_artifact_payload(
+    head_id: &str,
+    artifact_id: &str,
+    bytes: &[u8],
+) -> BrowserPeerArtifactPayload {
+    let chunk_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(bytes));
+    BrowserPeerArtifactPayload {
+        descriptor: burn_p2p::ArtifactDescriptor {
+            artifact_id: ArtifactId::new(artifact_id),
+            kind: burn_p2p::ArtifactKind::FullHead,
+            head_id: Some(HeadId::new(head_id)),
+            base_head_id: Some(HeadId::new("head-parent")),
+            precision: Precision::Fp16,
+            model_schema_hash: ContentId::new("schema-browser"),
+            record_format: "burn-record:bytes-mpk".into(),
+            bytes_len: bytes.len() as u64,
+            chunks: vec![ChunkDescriptor {
+                chunk_id: burn_p2p::ChunkId::new(format!("{artifact_id}-chunk-0")),
+                offset_bytes: 0,
+                length_bytes: bytes.len() as u64,
+                chunk_hash: chunk_hash.clone(),
+            }],
+            root_hash: chunk_hash,
+        },
+        bytes: bytes.to_vec(),
+    }
+}
+
+fn assert_peer_head_artifact_ready(storage: &BrowserStorageSnapshot) {
+    assert!(storage.active_head_artifact_synced());
+    assert!(storage.active_head_artifact_ready());
+    let (_, descriptor, bytes) = storage
+        .active_head_artifact_bytes()
+        .expect("peer artifact bytes should be retained for training");
+    assert_eq!(descriptor.artifact_id.as_str(), "artifact-browser");
+    assert_eq!(bytes.as_slice(), b"peer-artifact");
+}
+
 fn browser_train_command(plan: BrowserTrainingPlan) -> BrowserWorkerCommand {
     BrowserWorkerCommand::Train(Box::new(plan))
 }
@@ -6488,7 +6526,13 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -6616,7 +6660,7 @@ fn browser_portal_client_prefers_peer_native_head_artifact_fetcher_when_provider
         Some(b"peer-artifact".len() as u64)
     );
     assert_eq!(diagnostic.last_error, None);
-    assert!(storage.active_head_artifact_synced());
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6633,7 +6677,13 @@ fn browser_portal_client_syncs_live_head_via_peer_transport_without_publication_
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -6739,7 +6789,7 @@ fn browser_portal_client_syncs_live_head_via_peer_transport_without_publication_
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
-    assert!(storage.active_head_artifact_synced());
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6756,7 +6806,13 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view(
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -6865,6 +6921,7 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_edge_view(
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6882,7 +6939,13 @@ fn browser_portal_client_syncs_stored_live_head_from_sparse_direct_snapshot_with
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -6977,6 +7040,7 @@ fn browser_portal_client_syncs_stored_live_head_from_sparse_direct_snapshot_with
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6993,7 +7057,13 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -7094,6 +7164,7 @@ fn browser_portal_client_syncs_live_head_from_direct_snapshot_without_provider_h
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7213,7 +7284,13 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -7353,6 +7430,7 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
         })
         .expect("storage update");
     assert!(storage.artifact_replay_checkpoint.is_none());
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7369,7 +7447,13 @@ fn browser_portal_client_does_not_reuse_checkpoint_when_publication_metadata_cha
                 .lock()
                 .expect("peer artifact requests should not be poisoned")
                 .push(request);
-            Box::pin(async { Ok(b"peer-artifact".to_vec()) })
+            Box::pin(async {
+                Ok(sample_peer_artifact_payload(
+                    "head-browser",
+                    "artifact-browser",
+                    b"peer-artifact",
+                ))
+            })
         }
     }
 
@@ -7518,6 +7602,7 @@ fn browser_portal_client_does_not_reuse_checkpoint_when_publication_metadata_cha
         Some("peer-native")
     );
     assert!(storage.artifact_replay_checkpoint.is_none());
+    assert_peer_head_artifact_ready(storage);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -35,7 +35,8 @@ use crate::{
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactRequest,
+    BrowserPeerArtifactFetchFuture, BrowserPeerArtifactFetcher, BrowserPeerArtifactPayload,
+    BrowserPeerArtifactRequest,
 };
 use burn_p2p_core::{
     BrowserArtifactSource, BrowserSeedAdvertisement, SchemaEnvelope, SignedPayload,
@@ -363,7 +364,7 @@ impl BrowserAppModel {
         let train_available = selected_experiment
             .as_ref()
             .is_some_and(|experiment| experiment.train_available);
-        let active_head_artifact_ready = storage.active_head_artifact_synced();
+        let active_head_artifact_ready = storage.active_head_artifact_ready();
         let active_head_artifact_error = (!active_head_artifact_ready
             && storage.last_head_id.is_some())
         .then(|| {
@@ -1112,7 +1113,7 @@ impl BrowserPeerArtifactFetcher for DirectSwarmPeerArtifactFetcher {
                     root_hash.as_str()
                 )));
             }
-            Ok(bytes)
+            Ok(BrowserPeerArtifactPayload { descriptor, bytes })
         })
     }
 }
