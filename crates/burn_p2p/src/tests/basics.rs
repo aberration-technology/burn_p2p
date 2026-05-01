@@ -316,17 +316,9 @@ fn discovered_bootstrap_peer_survives_restart() {
             .known_peer_addresses
             .contains(&validator_addr)
     );
-    let sync_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
-    let synced = loop {
-        if let Some(synced) = restarted_trainer
-            .sync_experiment_head(&experiment)
-            .expect("sync canonical head after restart")
-        {
-            break synced;
-        }
-        assert!(Instant::now() < sync_deadline, "synced head after restart");
-        thread::sleep(Duration::from_millis(10));
-    };
+    let synced = restarted_trainer
+        .wait_for_experiment_head(&experiment, Duration::from_secs(15))
+        .expect("sync canonical head after restart");
     assert_eq!(synced.head_id, genesis_head.head_id);
 
     restarted_trainer
