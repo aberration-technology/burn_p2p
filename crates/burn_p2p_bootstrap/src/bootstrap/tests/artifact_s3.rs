@@ -44,7 +44,9 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
         ),
     )
     .expect("eval protocol");
-    let (s3_endpoint, uploaded, handle) = spawn_artifact_s3_server();
+    let s3_server = spawn_artifact_s3_server();
+    let s3_endpoint = s3_server.endpoint().to_owned();
+    let uploaded = s3_server.objects();
     let state = Arc::new(Mutex::new(BootstrapAdminState {
         head_descriptors: vec![HeadDescriptor {
             study_id: burn_p2p::StudyId::new("study-s3"),
@@ -259,7 +261,7 @@ fn artifact_download_redirects_to_signed_s3_url_when_target_supports_redirect() 
             assert!(location.contains("X-Amz-Signature="));
         });
 
-    handle.join().expect("join s3 test server");
+    s3_server.join();
 }
 
 #[cfg(feature = "artifact-s3")]
@@ -306,7 +308,9 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
         ),
     )
     .expect("eval protocol");
-    let (s3_endpoint, uploaded, handle) = spawn_artifact_s3_server();
+    let s3_server = spawn_artifact_s3_server();
+    let s3_endpoint = s3_server.endpoint().to_owned();
+    let uploaded = s3_server.objects();
     let state = Arc::new(Mutex::new(BootstrapAdminState {
         head_descriptors: vec![HeadDescriptor {
             study_id: burn_p2p::StudyId::new("study-s3-proxy"),
@@ -505,5 +509,5 @@ fn artifact_download_streams_large_s3_proxy_payload_when_target_requires_portal_
             assert_eq!(body.as_slice(), artifact_payload.as_slice());
         });
 
-    handle.join().expect("join s3 test server");
+    s3_server.join();
 }

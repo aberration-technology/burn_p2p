@@ -101,6 +101,14 @@ pub(super) struct RedisTestServer {
 #[cfg(feature = "artifact-s3")]
 pub(super) type ArtifactS3ObjectMap = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
 
+#[cfg(feature = "artifact-s3")]
+pub(super) struct ArtifactS3TestServer {
+    endpoint: String,
+    objects: ArtifactS3ObjectMap,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
 impl HttpTestServer {
     pub(super) fn spawn(context: HttpServerContext) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
@@ -363,7 +371,37 @@ fn http_content_length(headers: &str) -> Option<usize> {
 }
 
 #[cfg(feature = "artifact-s3")]
-pub(super) fn spawn_artifact_s3_server() -> (String, ArtifactS3ObjectMap, thread::JoinHandle<()>) {
+impl ArtifactS3TestServer {
+    pub(super) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub(super) fn objects(&self) -> ArtifactS3ObjectMap {
+        Arc::clone(&self.objects)
+    }
+
+    pub(super) fn join(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(self.endpoint.trim_start_matches("http://"));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(feature = "artifact-s3")]
+impl Drop for ArtifactS3TestServer {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(feature = "artifact-s3")]
+pub(super) fn spawn_artifact_s3_server() -> ArtifactS3TestServer {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind s3 listener");
     listener
         .set_nonblocking(true)
@@ -371,26 +409,21 @@ pub(super) fn spawn_artifact_s3_server() -> (String, ArtifactS3ObjectMap, thread
     let addr = listener.local_addr().expect("local addr");
     let objects = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
     let shared_objects = Arc::clone(&objects);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop);
     let handle = thread::spawn(move || {
-        let mut handled_requests = 0usize;
-        let mut idle_rounds = 0usize;
-        loop {
+        while !stop_flag.load(Ordering::Relaxed) {
             let (mut stream, _) = match listener.accept() {
-                Ok(pair) => {
-                    handled_requests += 1;
-                    idle_rounds = 0;
-                    pair
-                }
+                Ok(pair) => pair,
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if handled_requests > 0 && idle_rounds >= 20 {
-                        break;
-                    }
-                    idle_rounds += 1;
                     thread::sleep(StdDuration::from_millis(10));
                     continue;
                 }
                 Err(error) => panic!("accept s3 connection: {error}"),
             };
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
             let mut buffer = Vec::new();
             let mut chunk = [0_u8; 8192];
             loop {
@@ -472,7 +505,12 @@ pub(super) fn spawn_artifact_s3_server() -> (String, ArtifactS3ObjectMap, thread
             }
         }
     });
-    (format!("http://{addr}"), objects, handle)
+    ArtifactS3TestServer {
+        endpoint: format!("http://{addr}"),
+        objects,
+        stop,
+        thread: Some(handle),
+    }
 }
 
 pub(super) fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig {
