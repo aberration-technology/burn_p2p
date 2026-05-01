@@ -14,6 +14,8 @@ db-path = "target/cargo-deny-advisory-dbs"
 ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is pulled in transitively by libp2p-webrtc via webrtc-dtls; publish gate documents the risk until upstream replaces it" },
     { id = "RUSTSEC-2024-0436", reason = "paste is pulled in transitively by burn/cubecl dependencies; publish gate documents the risk until upstream removes it" },
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25.x is pulled in transitively by libp2p DNS/mDNS; burn_p2p does not enable DNSSEC validation, and publish gate documents the risk until libp2p moves to hickory-net 0.26.1 or newer" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25.x is pulled in transitively by libp2p DNS/mDNS; no compatible libp2p upgrade is available in this workspace yet, so this is tracked until libp2p can adopt hickory-proto/hickory-net 0.26.1 or newer" },
 ]
 
 [licenses]
