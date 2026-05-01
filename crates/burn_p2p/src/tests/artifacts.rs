@@ -345,6 +345,111 @@ fn native_bootstrap_relay_serves_heads_learned_from_peer_snapshots() {
 }
 
 #[test]
+fn native_directory_seed_relays_late_head_pubsub() {
+    let _guard = native_swarm_test_guard();
+    let seed_experiment = mainnet().experiment(
+        crate::StudyId::new("study-1"),
+        crate::ExperimentId::new("exp-1"),
+        crate::RevisionId::new("rev-1"),
+    );
+    let seed = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_auth(
+            crate::AuthConfig::new()
+                .with_experiment_directory(vec![runtime_directory_entry(&seed_experiment)]),
+        )
+        .spawn()
+        .expect("seed spawn");
+    let seed_telemetry = seed.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = seed_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "seed runtime did not start",
+    );
+
+    let seed_addr = seed_telemetry.snapshot().listen_addresses[0].clone();
+    let provider = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_bootstrap_peer(seed_addr)
+        .spawn()
+        .expect("provider spawn");
+    let provider_telemetry = provider.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = provider_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.connected_peers >= 1
+                && snapshot.local_peer_id.is_some()
+        },
+        "provider runtime did not connect to seed",
+    );
+    let provider_peer_id = provider_telemetry
+        .snapshot()
+        .local_peer_id
+        .clone()
+        .expect("provider peer id");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            seed_telemetry
+                .snapshot()
+                .last_snapshot_peer_id
+                .as_ref()
+                .is_some_and(|peer_id| peer_id == &provider_peer_id)
+        },
+        "seed did not complete the initial provider snapshot before late head publish",
+    );
+
+    let head = HeadDescriptor {
+        head_id: crate::HeadId::new("late-head-from-provider"),
+        study_id: seed_experiment.study_id.clone(),
+        experiment_id: seed_experiment.experiment_id.clone(),
+        revision_id: seed_experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("late-artifact-from-provider"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    provider
+        .control_handle()
+        .publish_head(HeadAnnouncement {
+            overlay: seed_experiment.overlay_set().expect("overlays").heads,
+            provider_peer_id: Some(provider_peer_id.clone()),
+            head: head.clone(),
+            announced_at: Utc::now(),
+        })
+        .expect("publish provider head");
+
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            seed_telemetry
+                .snapshot()
+                .control_plane
+                .head_announcements
+                .iter()
+                .any(|announcement| {
+                    announcement.provider_peer_id.as_ref() == Some(&provider_peer_id)
+                        && announcement.head.head_id == head.head_id
+                })
+        },
+        "seed did not relay late provider head pubsub",
+    );
+
+    provider.shutdown().expect("provider shutdown");
+    let _ = provider.await_termination().expect("provider termination");
+    seed.shutdown().expect("seed shutdown");
+    let _ = seed.await_termination().expect("seed termination");
+}
+
+#[test]
 fn native_running_nodes_sync_artifacts_over_tcp() {
     let _guard = native_swarm_test_guard();
     let listener_storage = std::env::temp_dir().join(format!(

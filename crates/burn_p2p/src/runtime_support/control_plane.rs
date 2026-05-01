@@ -80,6 +80,16 @@ pub(crate) fn run_control_plane(
         snapshot.set_error(error.to_string());
         return;
     }
+    if let Some(auth_config) = auth.as_ref()
+        && let Err(error) =
+            subscribe_experiment_directory_topics(&mut shell, &auth_config.experiment_directory)
+    {
+        let mut snapshot = lock_telemetry_state(&state);
+        snapshot.set_error(format!(
+            "failed to subscribe experiment directory topics: {error}"
+        ));
+        return;
+    }
 
     {
         let mut snapshot = lock_telemetry_state(&state);
@@ -433,6 +443,13 @@ pub(crate) fn run_control_plane(
                     }
                 }
                 Ok(RuntimeCommand::PublishDirectory(announcement)) => {
+                    if let Err(error) =
+                        subscribe_experiment_directory_topics(&mut shell, &announcement.entries)
+                    {
+                        let mut snapshot = lock_telemetry_state(&state);
+                        snapshot.last_error =
+                            Some(format!("failed to subscribe directory topics: {error}"));
+                    }
                     shell.publish_directory(announcement.clone());
                     if let Err(error) = shell.publish_pubsub(
                         boundary.control_overlay.clone(),
@@ -906,6 +923,18 @@ fn handle_control_plane_event(
                 .cloned()
                 .collect::<Vec<_>>();
             shell.merge_snapshot(remote_snapshot);
+            let remote_directory_entries = remote_snapshot
+                .directory_announcements
+                .iter()
+                .flat_map(|announcement| announcement.entries.iter().cloned())
+                .collect::<Vec<_>>();
+            if let Err(error) =
+                subscribe_experiment_directory_topics(shell, &remote_directory_entries)
+            {
+                snapshot.last_error = Some(format!(
+                    "failed to subscribe remote directory topics: {error}"
+                ));
+            }
             snapshot.control_plane = shell.snapshot().clone();
             for announcement in &new_peer_directory_announcements {
                 shell.publish_peer_directory(announcement.clone());
@@ -1004,6 +1033,22 @@ fn handle_control_plane_event(
         event,
         LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
     ) {
+        if matches!(
+            &event,
+            LiveControlPlaneEvent::PubsubMessage { kind, .. } if kind == "directory"
+        ) {
+            let entries = snapshot
+                .control_plane
+                .directory_announcements
+                .iter()
+                .flat_map(|announcement| announcement.entries.iter().cloned())
+                .collect::<Vec<_>>();
+            if let Err(error) = subscribe_experiment_directory_topics(shell, &entries) {
+                snapshot.last_error = Some(format!(
+                    "failed to subscribe live directory topics: {error}"
+                ));
+            }
+        }
         let peer_directory_announcements =
             snapshot.control_plane.peer_directory_announcements.clone();
         remember_peer_directory_addresses(&mut snapshot, storage, &peer_directory_announcements);
@@ -1020,6 +1065,28 @@ fn handle_control_plane_event(
     {
         snapshot.last_error = Some(format!("failed to persist security state: {error}"));
     }
+}
+
+fn subscribe_experiment_directory_topics(
+    shell: &mut ControlPlaneShell,
+    entries: &[ExperimentDirectoryEntry],
+) -> anyhow::Result<()> {
+    let mut topics = BTreeSet::new();
+    for entry in entries {
+        let experiment = ExperimentHandle {
+            network_id: entry.network_id.clone(),
+            study_id: entry.study_id.clone(),
+            experiment_id: entry.experiment_id.clone(),
+            revision_id: entry.current_revision_id.clone(),
+        };
+        let overlays = experiment.overlay_set()?;
+        topics.insert(overlays.control.clone());
+        topics.extend(overlays.experiment_topics());
+    }
+    for topic in topics {
+        shell.subscribe_topic(topic)?;
+    }
+    Ok(())
 }
 
 fn connectivity_repair_targets(
