@@ -758,6 +758,12 @@ impl NativeControlPlaneShell {
         &self.snapshot
     }
 
+    /// Merges a remote snapshot into the local control-plane state.
+    pub fn merge_snapshot(&mut self, snapshot: &ControlPlaneSnapshot) {
+        self.snapshot.merge_from_semantic(snapshot);
+        rebuild_hot_index(&self.snapshot, &mut self.hot_index);
+    }
+
     /// Performs the subscribe topic operation.
     pub fn subscribe_topic(&mut self, topic: OverlayTopic) -> Result<(), SwarmError> {
         if self.subscribed_topics.insert(topic.path.clone()) {
@@ -2035,6 +2041,10 @@ impl NativeControlPlaneShell {
 
     pub fn snapshot(&self) -> &ControlPlaneSnapshot {
         self.inner.snapshot()
+    }
+
+    pub fn merge_snapshot(&mut self, snapshot: &ControlPlaneSnapshot) {
+        self.inner.merge_snapshot(snapshot);
     }
 
     /// Performs the subscribe topic operation.

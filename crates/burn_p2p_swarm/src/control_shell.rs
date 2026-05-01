@@ -300,6 +300,14 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Merges a remote snapshot into the local control-plane state.
+    pub fn merge_snapshot(&mut self, snapshot: &ControlPlaneSnapshot) {
+        match self {
+            Self::Memory(shell) => shell.merge_snapshot(snapshot),
+            Self::Native(shell) => shell.merge_snapshot(snapshot),
+        }
+    }
+
     /// Performs the subscribe topic operation.
     pub fn subscribe_topic(&mut self, topic: OverlayTopic) -> Result<(), SwarmError> {
         match self {

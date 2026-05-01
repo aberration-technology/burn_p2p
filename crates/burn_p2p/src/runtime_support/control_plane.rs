@@ -248,8 +248,7 @@ pub(crate) fn run_control_plane(
                         snapshot.last_error = Some(error.to_string());
                     }
                     let mut snapshot = lock_telemetry_state(&state);
-                    snapshot.control_plane = shell.snapshot().clone();
-                    snapshot.updated_at = Utc::now();
+                    sync_control_plane_snapshot(&mut snapshot, &shell, storage.as_ref());
                 }
                 Ok(RuntimeCommand::PublishLease(announcement)) => {
                     let overlay = announcement.overlay.clone();
@@ -906,7 +905,8 @@ fn handle_control_plane_event(
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            merge_control_plane_snapshot(&mut snapshot.control_plane, remote_snapshot);
+            shell.merge_snapshot(remote_snapshot);
+            snapshot.control_plane = shell.snapshot().clone();
             for announcement in &new_peer_directory_announcements {
                 shell.publish_peer_directory(announcement.clone());
                 if let Err(error) = shell.publish_pubsub(

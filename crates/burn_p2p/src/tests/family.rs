@@ -1507,12 +1507,36 @@ fn family_runtime_restores_persisted_control_plane_state_after_restart() {
             },
         ))
         .expect("publish pause control");
+    let head = crate::HeadDescriptor {
+        head_id: crate::HeadId::new("head-restored-after-restart"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: crate::ArtifactId::new("artifact-restored-after-restart"),
+        parent_head_id: None,
+        global_step: 3,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    control
+        .publish_head(crate::HeadAnnouncement {
+            overlay: experiment.overlay_set().expect("overlays").heads,
+            provider_peer_id: telemetry.snapshot().local_peer_id.clone(),
+            head: head.clone(),
+            announced_at: Utc::now(),
+        })
+        .expect("publish head control");
     wait_for(
         Duration::from_secs(5),
         || {
             let snapshot = telemetry.snapshot();
             snapshot.control_plane.directory_announcements.len() >= 2
                 && !snapshot.control_plane.control_announcements.is_empty()
+                && snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| announcement.head.head_id == head.head_id)
         },
         "updated control plane state was not reflected in telemetry",
     );
@@ -1563,6 +1587,11 @@ fn family_runtime_restores_persisted_control_plane_state_after_restart() {
                             burn_p2p_experiment::ExperimentControlCommand::PauseExperiment { .. }
                         )
                     })
+                && snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| announcement.head.head_id == head.head_id)
         },
         "persisted control plane state was not restored after restart",
     );

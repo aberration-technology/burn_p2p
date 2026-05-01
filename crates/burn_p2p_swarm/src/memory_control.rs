@@ -247,6 +247,12 @@ impl MemoryControlPlaneShell {
         &self.snapshot
     }
 
+    /// Merges a remote snapshot into the local control-plane state.
+    pub fn merge_snapshot(&mut self, snapshot: &ControlPlaneSnapshot) {
+        self.snapshot.merge_from_semantic(snapshot);
+        rebuild_hot_index(&self.snapshot, &mut self.hot_index);
+    }
+
     /// Performs the subscribe topic operation.
     pub fn subscribe_topic(&mut self, topic: OverlayTopic) -> Result<(), SwarmError> {
         self.subscribed_topics.insert(topic.path);
@@ -932,6 +938,12 @@ impl MemoryControlPlaneShell {
     /// Performs the snapshot operation.
     pub fn snapshot(&self) -> &ControlPlaneSnapshot {
         &self.snapshot
+    }
+
+    /// Merges a remote snapshot into the local control-plane state.
+    pub fn merge_snapshot(&mut self, snapshot: &ControlPlaneSnapshot) {
+        self.snapshot.merge_from_semantic(snapshot);
+        rebuild_hot_index(&self.snapshot, &mut self.hot_index);
     }
 
     /// Performs the subscribe topic operation.

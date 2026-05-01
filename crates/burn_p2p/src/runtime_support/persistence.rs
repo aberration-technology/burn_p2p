@@ -9,6 +9,8 @@ pub(crate) struct PersistedControlPlaneState {
     pub lifecycle_announcements: Vec<ExperimentLifecycleAnnouncement>,
     #[serde(default)]
     pub schedule_announcements: Vec<FleetScheduleAnnouncement>,
+    #[serde(default)]
+    pub head_announcements: Vec<HeadAnnouncement>,
     pub lease_announcements: Vec<LeaseAnnouncement>,
     pub auth_announcements: Vec<PeerAuthAnnouncement>,
     pub directory_announcements: Vec<ExperimentDirectoryAnnouncement>,
@@ -26,6 +28,7 @@ impl PersistedControlPlaneState {
             control_announcements: bounded_snapshot.control_announcements,
             lifecycle_announcements: bounded_snapshot.lifecycle_announcements,
             schedule_announcements: bounded_snapshot.schedule_announcements,
+            head_announcements: bounded_snapshot.head_announcements,
             lease_announcements: bounded_snapshot.lease_announcements,
             auth_announcements: bounded_snapshot.auth_announcements,
             directory_announcements: bounded_snapshot.directory_announcements,
@@ -38,6 +41,7 @@ impl PersistedControlPlaneState {
         snapshot.control_announcements = self.control_announcements;
         snapshot.lifecycle_announcements = self.lifecycle_announcements;
         snapshot.schedule_announcements = self.schedule_announcements;
+        snapshot.head_announcements = self.head_announcements;
         snapshot.lease_announcements = self.lease_announcements;
         snapshot.auth_announcements = self.auth_announcements;
         snapshot.directory_announcements = self.directory_announcements;
@@ -55,6 +59,9 @@ impl PersistedControlPlaneState {
         }
         for announcement in self.schedule_announcements {
             shell.publish_schedule(announcement);
+        }
+        for announcement in self.head_announcements {
+            shell.publish_head(announcement);
         }
         for announcement in self.lease_announcements {
             shell.publish_lease(announcement);
@@ -77,6 +84,7 @@ impl PersistedControlPlaneState {
         self.control_announcements.is_empty()
             && self.lifecycle_announcements.is_empty()
             && self.schedule_announcements.is_empty()
+            && self.head_announcements.is_empty()
             && self.lease_announcements.is_empty()
             && self.auth_announcements.is_empty()
             && self.directory_announcements.is_empty()

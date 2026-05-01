@@ -211,6 +211,140 @@ fn native_running_nodes_exchange_snapshots_over_tcp() {
 }
 
 #[test]
+fn native_bootstrap_relay_serves_heads_learned_from_peer_snapshots() {
+    let _guard = native_swarm_test_guard();
+    let provider = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .spawn()
+        .expect("provider spawn");
+    let provider_telemetry = provider.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = provider_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "provider runtime did not start",
+    );
+
+    let provider_snapshot = provider_telemetry.snapshot();
+    let provider_peer_id = provider_snapshot
+        .local_peer_id
+        .clone()
+        .expect("provider peer id");
+    let provider_addr = provider_snapshot.listen_addresses[0].clone();
+    let experiment = provider.experiment(
+        crate::StudyId::new("study-1"),
+        crate::ExperimentId::new("exp-1"),
+        crate::RevisionId::new("rev-1"),
+    );
+    let head = HeadDescriptor {
+        head_id: crate::HeadId::new("head-from-provider"),
+        study_id: crate::StudyId::new("study-1"),
+        experiment_id: crate::ExperimentId::new("exp-1"),
+        revision_id: crate::RevisionId::new("rev-1"),
+        artifact_id: crate::ArtifactId::new("artifact-from-provider"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    provider
+        .control_handle()
+        .publish_head(HeadAnnouncement {
+            overlay: experiment.overlay_set().expect("overlays").heads,
+            provider_peer_id: Some(provider_peer_id),
+            head: head.clone(),
+            announced_at: Utc::now(),
+        })
+        .expect("publish provider head");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            provider_telemetry
+                .snapshot()
+                .control_plane
+                .head_announcements
+                .iter()
+                .any(|announcement| announcement.head.head_id == head.head_id)
+        },
+        "provider head announcement was not reflected locally",
+    );
+
+    let relay = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_bootstrap_peer(provider_addr)
+        .spawn()
+        .expect("relay spawn");
+    let relay_telemetry = relay.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = relay_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.connected_peers >= 1
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "relay runtime did not connect to provider",
+    );
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            relay_telemetry
+                .snapshot()
+                .last_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot
+                        .head_announcements
+                        .iter()
+                        .any(|announcement| announcement.head.head_id == head.head_id)
+                })
+        },
+        "relay did not ingest provider head snapshot",
+    );
+
+    let relay_snapshot = relay_telemetry.snapshot();
+    let relay_peer_id = relay_snapshot.local_peer_id.clone().expect("relay peer id");
+    let relay_addr = relay_snapshot.listen_addresses[0].clone();
+    let late_joiner = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_bootstrap_peer(relay_addr)
+        .spawn()
+        .expect("late joiner spawn");
+    let late_joiner_telemetry = late_joiner.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || late_joiner_telemetry.snapshot().connected_peers >= 1,
+        "late joiner did not connect to relay",
+    );
+
+    let relay_snapshot_from_late_joiner = late_joiner
+        .control_handle()
+        .fetch_snapshot(relay_peer_id.as_str(), Duration::from_secs(5))
+        .expect("fetch relay snapshot");
+    assert!(
+        relay_snapshot_from_late_joiner
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == head.head_id),
+        "relay snapshot should serve heads learned from provider snapshots"
+    );
+
+    late_joiner.shutdown().expect("late joiner shutdown");
+    let _ = late_joiner
+        .await_termination()
+        .expect("late joiner termination");
+    relay.shutdown().expect("relay shutdown");
+    let _ = relay.await_termination().expect("relay termination");
+    provider.shutdown().expect("provider shutdown");
+    let _ = provider.await_termination().expect("provider termination");
+}
+
+#[test]
 fn native_running_nodes_sync_artifacts_over_tcp() {
     let _guard = native_swarm_test_guard();
     let listener_storage = std::env::temp_dir().join(format!(
