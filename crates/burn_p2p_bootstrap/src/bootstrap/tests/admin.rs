@@ -362,6 +362,131 @@ fn admin_route_publishes_lifecycle_certificate_to_runtime_control_plane() {
 }
 
 #[test]
+fn admin_route_publishes_registered_live_head_to_runtime_control_plane() {
+    let temp = tempdir().expect("temp dir");
+    let genesis = burn_p2p::GenesisSpec {
+        network_id: NetworkId::new("secure-demo"),
+        protocol_version: Version::new(0, 1, 0),
+        display_name: "Secure Demo".into(),
+        created_at: Utc::now(),
+        metadata: BTreeMap::new(),
+    };
+    let running = burn_p2p::NodeBuilder::new(())
+        .with_mainnet(genesis)
+        .with_listen_address(burn_p2p::SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn runtime");
+    let telemetry = running.telemetry();
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while telemetry.snapshot().status != burn_p2p::RuntimeStatus::Running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "runtime did not start"
+        );
+        thread::sleep(StdDuration::from_millis(25));
+    }
+
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState::default())),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: Some("secret-token".into()),
+            allow_dev_admin_token: true,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("admin-live-head.json")),
+        admin_token: Some("secret-token".into()),
+        allow_dev_admin_token: true,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: None,
+        control_handle: Some(running.control_handle()),
+    };
+    let study_id = burn_p2p::StudyId::new("study");
+    let experiment_id = burn_p2p::ExperimentId::new("exp");
+    let head = HeadDescriptor {
+        head_id: burn_p2p::HeadId::new("head-live"),
+        study_id: study_id.clone(),
+        experiment_id: experiment_id.clone(),
+        revision_id: burn_p2p::RevisionId::new("rev-a"),
+        artifact_id: burn_p2p::ArtifactId::new("artifact-live"),
+        parent_head_id: None,
+        global_step: 3,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    let provider_peer_id = PeerId::new("edge-mirror-provider");
+    let announcement = burn_p2p::HeadAnnouncement {
+        overlay: burn_p2p::OverlayTopic::experiment(
+            NetworkId::new("secure-demo"),
+            study_id,
+            experiment_id,
+            burn_p2p::OverlayChannel::Heads,
+        )
+        .expect("heads overlay"),
+        provider_peer_id: Some(provider_peer_id.clone()),
+        head: head.clone(),
+        announced_at: Utc::now(),
+    };
+
+    let response = issue_request(
+        context,
+        IssueRequestSpec {
+            method: "POST",
+            path: "/admin",
+            body: Some(
+                serde_json::to_value(burn_p2p_bootstrap::AdminAction::RegisterLiveHead(
+                    announcement,
+                ))
+                .expect("serialize live head action"),
+            ),
+            headers: &[],
+        },
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+
+    let head_deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while telemetry
+        .snapshot()
+        .control_plane
+        .head_announcements
+        .iter()
+        .all(|candidate| candidate.head.head_id != head.head_id)
+    {
+        assert!(
+            std::time::Instant::now() < head_deadline,
+            "registered live head was not published to the runtime control plane"
+        );
+        thread::sleep(StdDuration::from_millis(25));
+    }
+
+    let snapshot = telemetry.snapshot();
+    let runtime_head = snapshot
+        .control_plane
+        .head_announcements
+        .iter()
+        .find(|candidate| candidate.head.head_id == head.head_id)
+        .expect("runtime head announcement");
+    assert_eq!(
+        runtime_head.provider_peer_id.as_ref(),
+        Some(&provider_peer_id)
+    );
+    assert_eq!(runtime_head.head.artifact_id, head.artifact_id);
+
+    running.shutdown().expect("shutdown runtime");
+    let _ = running.await_termination().expect("await runtime");
+}
+
+#[test]
 fn admin_route_publishes_cross_experiment_lifecycle_reassignment_certificate() {
     let temp = tempdir().expect("temp dir");
     let genesis = burn_p2p::GenesisSpec {

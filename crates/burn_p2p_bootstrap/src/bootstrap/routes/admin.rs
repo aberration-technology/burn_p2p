@@ -204,6 +204,7 @@ pub(crate) fn retire_trusted_issuers(
 pub(crate) fn publish_admin_result(
     plan: &BootstrapPlan,
     control_handle: Option<&ControlHandle>,
+    action: &burn_p2p_bootstrap::AdminAction,
     result: &burn_p2p_bootstrap::AdminResult,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let (Some(control_handle), burn_p2p_bootstrap::AdminResult::Control(certificate)) =
@@ -230,6 +231,13 @@ pub(crate) fn publish_admin_result(
             certificate: certificate.as_ref().clone(),
             announced_at: Utc::now(),
         })?;
+    } else if let (
+        Some(control_handle),
+        burn_p2p_bootstrap::AdminAction::RegisterLiveHead(announcement),
+        burn_p2p_bootstrap::AdminResult::LiveHeadRegistered { .. },
+    ) = (control_handle, action, result)
+    {
+        control_handle.publish_head(announcement.clone())?;
     }
 
     Ok(())

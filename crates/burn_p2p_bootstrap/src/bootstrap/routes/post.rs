@@ -550,6 +550,7 @@ pub(crate) fn execute_admin_action(
                 signed_at: Utc::now(),
                 signature_hex: "bootstrap-local-admin".into(),
             });
+            let action_for_publish = action.clone();
             let mut state = lock_shared(&context.state, "bootstrap admin state")?;
             let result = context.plan.execute_admin_action(
                 action,
@@ -558,7 +559,12 @@ pub(crate) fn execute_admin_action(
                 Utc::now(),
                 context.remaining_work_units,
             )?;
-            publish_admin_result(&context.plan, context.control_handle.as_ref(), &result)?;
+            publish_admin_result(
+                &context.plan,
+                context.control_handle.as_ref(),
+                &action_for_publish,
+                &result,
+            )?;
             Ok(result)
         }
     }
