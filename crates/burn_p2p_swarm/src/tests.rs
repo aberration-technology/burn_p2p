@@ -796,6 +796,24 @@ fn preferred_wasm_browser_request_peer_id_promotes_direct_peer_over_oldest_wss_p
 }
 
 #[test]
+fn preferred_wasm_browser_request_peer_id_does_not_use_non_provider_peer_for_artifact_requests() {
+    let connected_peer_ids = vec![PeerId::new("peer-bootstrap")];
+    let connected = BTreeMap::from([(
+        PeerId::new("peer-bootstrap"),
+        BrowserTransportFamily::WebRtcDirect,
+    )]);
+
+    assert_eq!(
+        preferred_wasm_browser_request_peer_id(
+            &connected_peer_ids,
+            &connected,
+            &[PeerId::new("peer-artifact-provider")],
+        ),
+        None
+    );
+}
+
+#[test]
 fn browser_direct_seed_retry_candidates_reappear_after_retry_cooldown() {
     let bootstrap = BrowserSwarmBootstrap {
         network_id: NetworkId::new("browser-handoff"),

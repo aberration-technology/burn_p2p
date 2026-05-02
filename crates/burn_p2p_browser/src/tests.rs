@@ -1834,6 +1834,108 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
 }
 
 #[test]
+fn worker_runtime_prefers_directory_current_head_over_newer_candidate() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let mut entry =
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "view-browser");
+    entry.current_head_id = Some(HeadId::new("head-canonical"));
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![entry]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+
+    runtime.apply_head_snapshot(&[
+        browser_head_descriptor("head-candidate", "artifact-candidate", 1),
+        browser_head_descriptor("head-canonical", "artifact-canonical", 0),
+    ]);
+
+    assert_eq!(
+        runtime.storage.last_head_id,
+        Some(HeadId::new("head-canonical"))
+    );
+    assert_eq!(
+        runtime
+            .storage
+            .last_head_descriptor
+            .as_ref()
+            .map(|head| head.artifact_id.as_str()),
+        Some("artifact-canonical")
+    );
+}
+
+#[test]
+fn worker_metrics_sync_does_not_promote_uncanonical_candidate_head() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let mut entry =
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "view-browser");
+    entry.current_head_id = Some(HeadId::new("head-canonical"));
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![entry]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+
+    runtime.apply_metrics_sync_state(BrowserMetricsSyncState {
+        catchup_bundles: Vec::new(),
+        live_event: Some(MetricsLiveEvent {
+            network_id: NetworkId::new("net-browser"),
+            kind: MetricsLiveEventKind::CatchupRefresh,
+            cursors: vec![MetricsSyncCursor {
+                experiment_id: ExperimentId::new("exp-browser"),
+                revision_id: RevisionId::new("rev-browser"),
+                latest_snapshot_seq: Some(2),
+                latest_ledger_segment_seq: Some(1),
+                latest_head_id: Some(HeadId::new("head-candidate")),
+                latest_merge_window_id: None,
+            }],
+            generated_at: Utc::now(),
+        }),
+    });
+
+    assert_eq!(
+        runtime.storage.last_head_id,
+        Some(HeadId::new("head-canonical"))
+    );
+}
+
+#[test]
 fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selection() {
     let mut entry = ExperimentDirectoryEntry {
         network_id: NetworkId::new("net-browser"),
@@ -4832,6 +4934,24 @@ fn browser_directory_entry_for_assignment(
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
         metadata: Default::default(),
+    }
+}
+
+fn browser_head_descriptor(
+    head_id: &str,
+    artifact_id: &str,
+    global_step: u64,
+) -> burn_p2p::HeadDescriptor {
+    burn_p2p::HeadDescriptor {
+        head_id: HeadId::new(head_id),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        artifact_id: ArtifactId::new(artifact_id),
+        parent_head_id: None,
+        global_step,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
     }
 }
 

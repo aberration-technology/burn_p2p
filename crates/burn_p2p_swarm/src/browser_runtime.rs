@@ -1929,18 +1929,18 @@ pub(crate) fn preferred_wasm_browser_request_peer_id(
     connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
     requested_provider_peer_ids: &[PeerId],
 ) -> Option<PeerId> {
-    let connected_provider_peer_ids = requested_provider_peer_ids
-        .iter()
-        .find(|peer_id| connected_peer_ids.contains(peer_id))
-        .is_some();
-    let candidate_peer_ids = if connected_provider_peer_ids {
-        requested_provider_peer_ids
+    let candidate_peer_ids = if requested_provider_peer_ids.is_empty() {
+        connected_peer_ids.to_vec()
+    } else {
+        let connected_provider_peer_ids = requested_provider_peer_ids
             .iter()
             .filter(|peer_id| connected_peer_ids.contains(peer_id))
             .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        connected_peer_ids.to_vec()
+            .collect::<Vec<_>>();
+        if connected_provider_peer_ids.is_empty() {
+            return None;
+        }
+        connected_provider_peer_ids
     };
     [
         BrowserTransportFamily::WebRtcDirect,

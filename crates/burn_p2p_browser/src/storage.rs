@@ -457,6 +457,14 @@ impl BrowserStorageSnapshot {
         })
     }
 
+    /// Returns the canonical current head for the active assignment when the directory has one.
+    pub fn active_assignment_current_head_id(&self) -> Option<&HeadId> {
+        let assignment = self.active_assignment.as_ref()?;
+        self.directory_entry_for_assignment(assignment)
+            .filter(|entry| entry.current_revision_id == assignment.revision_id)
+            .and_then(|entry| entry.current_head_id.as_ref())
+    }
+
     /// Returns the current directory revision when the active assignment is still visible.
     pub fn active_assignment_directory_revision(&self) -> Option<RevisionId> {
         let assignment = self.active_assignment.as_ref()?;

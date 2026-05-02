@@ -168,14 +168,14 @@ impl BrowserWorkerRuntime {
 
     fn assignment_metrics_head(&self, event: &MetricsLiveEvent) -> Option<HeadId> {
         let assignment = self.storage.active_assignment.as_ref()?;
-        event
-            .cursors
-            .iter()
-            .find(|cursor| {
-                cursor.experiment_id == assignment.experiment_id
-                    && cursor.revision_id == assignment.revision_id
-            })
-            .and_then(|cursor| cursor.latest_head_id.clone())
+        let cursor = event.cursors.iter().find(|cursor| {
+            cursor.experiment_id == assignment.experiment_id
+                && cursor.revision_id == assignment.revision_id
+        })?;
+        self.storage
+            .active_assignment_current_head_id()
+            .cloned()
+            .or_else(|| cursor.latest_head_id.clone())
     }
 
     fn delta_checkpoint(&self) -> BrowserWorkerDeltaCheckpoint {
@@ -334,6 +334,17 @@ impl BrowserWorkerRuntime {
         heads: &'a [HeadDescriptor],
     ) -> Option<&'a HeadDescriptor> {
         let assignment = self.storage.active_assignment.as_ref()?;
+        let canonical_head_id = self.storage.active_assignment_current_head_id();
+        if let Some(head) = canonical_head_id.and_then(|head_id| {
+            heads.iter().find(|head| {
+                &head.head_id == head_id
+                    && head.study_id == assignment.study_id
+                    && head.experiment_id == assignment.experiment_id
+                    && head.revision_id == assignment.revision_id
+            })
+        }) {
+            return Some(head);
+        }
         heads
             .iter()
             .filter(|head| {
@@ -811,6 +822,9 @@ impl BrowserWorkerRuntime {
                 experiment_id: candidate.policy.experiment_id.clone(),
                 revision_id: candidate.policy.revision_id.clone(),
             });
+            if let Some(head_id) = self.storage.active_assignment_current_head_id().cloned() {
+                self.storage.remember_head(head_id);
+            }
         } else {
             self.storage.clear_assignment();
         }
