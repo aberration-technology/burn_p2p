@@ -190,6 +190,55 @@ impl<P> RunningNode<P> {
         Ok(snapshots.into_iter().collect())
     }
 
+    fn fetch_bootstrap_snapshots(
+        &self,
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<(PeerId, ControlPlaneSnapshot)>> {
+        let telemetry_snapshot = self.telemetry().snapshot();
+        let addresses = self
+            .control
+            .runtime_boundary
+            .bootstrap_addresses
+            .iter()
+            .filter(|address| !telemetry_snapshot.listen_addresses.contains(address))
+            .cloned()
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let admission_policy = self.effective_admission_policy();
+        let deadline = Instant::now() + timeout;
+        let mut snapshots = BTreeMap::new();
+        let address_count = addresses.len();
+        for (index, address) in addresses.into_iter().enumerate() {
+            let remaining_candidates = address_count.saturating_sub(index).max(1);
+            let Some(attempt_timeout) =
+                fair_request_timeout(deadline, timeout, remaining_candidates)
+            else {
+                break;
+            };
+            match self
+                .control
+                .fetch_snapshot_from_address(address, attempt_timeout)
+            {
+                Ok((peer_id, snapshot)) => {
+                    if let Some(policy) = admission_policy.as_ref() {
+                        let report = verify_snapshot_admission(policy, &peer_id, &snapshot)?;
+                        if !matches!(report.decision(), AdmissionDecision::Allow) {
+                            continue;
+                        }
+                    }
+                    self.ingest_control_plane_snapshot(&snapshot)?;
+                    snapshots.insert(peer_id, snapshot);
+                }
+                Err(_) => continue,
+            }
+        }
+
+        Ok(snapshots.into_iter().collect())
+    }
+
     /// Performs the initialize local head operation.
     pub fn initialize_local_head(
         &mut self,
@@ -312,6 +361,24 @@ impl<P> RunningNode<P> {
                 &telemetry_snapshot.control_plane,
             );
             resolved_head = resolve_canonical_head(&storage, experiment, &canonical_snapshots)?;
+        }
+        if resolved_head.is_none() {
+            let bootstrap_snapshots = self.fetch_bootstrap_snapshots(ci_scaled_timeout(
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+            ))?;
+            if !bootstrap_snapshots.is_empty() {
+                let mut snapshots_by_peer = snapshots.into_iter().collect::<BTreeMap<_, _>>();
+                snapshots_by_peer.extend(bootstrap_snapshots);
+                snapshots = snapshots_by_peer.into_iter().collect();
+                let refreshed_telemetry_snapshot = self.telemetry().snapshot();
+                let canonical_snapshots = snapshots_with_local_control_plane(
+                    &snapshots,
+                    refreshed_telemetry_snapshot.local_peer_id.as_ref(),
+                    &refreshed_telemetry_snapshot.control_plane,
+                );
+                resolved_head = resolve_canonical_head(&storage, experiment, &canonical_snapshots)?;
+            }
         }
         let _ = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
         let Some((source_peer_id, head)) = resolved_head else {
@@ -588,6 +655,80 @@ impl<P> RunningNode<P> {
         Ok(())
     }
 
+    /// Merges an already fetched control-plane snapshot into the local runtime
+    /// view and republishes active records through the runtime command channel.
+    pub fn ingest_control_plane_snapshot(
+        &self,
+        remote_snapshot: &ControlPlaneSnapshot,
+    ) -> anyhow::Result<()> {
+        for announcement in &remote_snapshot.control_announcements {
+            let _ = self.control.publish_control(announcement.clone());
+        }
+        for announcement in &remote_snapshot.head_announcements {
+            let _ = self.control.publish_head(announcement.clone());
+        }
+        for announcement in &remote_snapshot.lease_announcements {
+            let _ = self.control.publish_lease(announcement.clone());
+        }
+        for announcement in &remote_snapshot.merge_announcements {
+            let _ = self.control.publish_merge(announcement.clone());
+        }
+        for announcement in &remote_snapshot.merge_window_announcements {
+            let _ = self.control.publish_merge_window(announcement.clone());
+        }
+        for announcement in &remote_snapshot.reducer_assignment_announcements {
+            let _ = self
+                .control
+                .publish_reducer_assignment(announcement.clone());
+        }
+        for announcement in &remote_snapshot.update_announcements {
+            let _ = self.control.publish_update(announcement.clone());
+        }
+        for announcement in &remote_snapshot.trainer_promotion_attestation_announcements {
+            let _ = self
+                .control
+                .publish_trainer_promotion_attestation(announcement.clone());
+        }
+        for announcement in &remote_snapshot.diffusion_promotion_certificate_announcements {
+            let _ = self
+                .control
+                .publish_diffusion_promotion_certificate(announcement.clone());
+        }
+        for announcement in &remote_snapshot.aggregate_proposal_announcements {
+            let _ = self
+                .control
+                .publish_aggregate_proposal(announcement.clone());
+        }
+        for announcement in &remote_snapshot.reduction_certificate_announcements {
+            let _ = self
+                .control
+                .publish_reduction_certificate(announcement.clone());
+        }
+        for announcement in &remote_snapshot.validation_quorum_announcements {
+            let _ = self.control.publish_validation_quorum(announcement.clone());
+        }
+        for announcement in &remote_snapshot.reducer_load_announcements {
+            let _ = self.control.publish_reducer_load(announcement.clone());
+        }
+        for announcement in &remote_snapshot.auth_announcements {
+            let _ = self.control.publish_auth(announcement.clone());
+        }
+        for announcement in &remote_snapshot.directory_announcements {
+            let _ = self.control.publish_directory(announcement.clone());
+        }
+        for announcement in &remote_snapshot.metrics_announcements {
+            let _ = self.control.publish_metrics(announcement.clone());
+        }
+
+        let mut telemetry_snapshot = lock_telemetry_state(&self.telemetry.state);
+        merge_control_plane_snapshot(&mut telemetry_snapshot.control_plane, remote_snapshot);
+        if let Some(storage) = self.config().storage.as_ref() {
+            persist_control_plane_state(storage, &telemetry_snapshot.control_plane)?;
+        }
+        telemetry_snapshot.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Fetches a peer snapshot on demand and merges it into the local control-plane
     /// view. This is useful when the caller already knows a peer should have
     /// relevant experiment state and wants to avoid waiting for passive gossip.
@@ -611,77 +752,7 @@ impl<P> RunningNode<P> {
                 attempt_timeout.min(Duration::from_secs(1)),
             ) {
                 Ok(remote_snapshot) => {
-                    for announcement in &remote_snapshot.control_announcements {
-                        let _ = self.control.publish_control(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.head_announcements {
-                        let _ = self.control.publish_head(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.lease_announcements {
-                        let _ = self.control.publish_lease(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.merge_announcements {
-                        let _ = self.control.publish_merge(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.merge_window_announcements {
-                        let _ = self.control.publish_merge_window(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.reducer_assignment_announcements {
-                        let _ = self
-                            .control
-                            .publish_reducer_assignment(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.update_announcements {
-                        let _ = self.control.publish_update(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.trainer_promotion_attestation_announcements
-                    {
-                        let _ = self
-                            .control
-                            .publish_trainer_promotion_attestation(announcement.clone());
-                    }
-                    for announcement in
-                        &remote_snapshot.diffusion_promotion_certificate_announcements
-                    {
-                        let _ = self
-                            .control
-                            .publish_diffusion_promotion_certificate(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.aggregate_proposal_announcements {
-                        let _ = self
-                            .control
-                            .publish_aggregate_proposal(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.reduction_certificate_announcements {
-                        let _ = self
-                            .control
-                            .publish_reduction_certificate(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.validation_quorum_announcements {
-                        let _ = self.control.publish_validation_quorum(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.reducer_load_announcements {
-                        let _ = self.control.publish_reducer_load(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.auth_announcements {
-                        let _ = self.control.publish_auth(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.directory_announcements {
-                        let _ = self.control.publish_directory(announcement.clone());
-                    }
-                    for announcement in &remote_snapshot.metrics_announcements {
-                        let _ = self.control.publish_metrics(announcement.clone());
-                    }
-
-                    let mut telemetry_snapshot = lock_telemetry_state(&self.telemetry.state);
-                    merge_control_plane_snapshot(
-                        &mut telemetry_snapshot.control_plane,
-                        &remote_snapshot,
-                    );
-                    if let Some(storage) = self.config().storage.as_ref() {
-                        persist_control_plane_state(storage, &telemetry_snapshot.control_plane)?;
-                    }
-                    telemetry_snapshot.updated_at = Utc::now();
+                    self.ingest_control_plane_snapshot(&remote_snapshot)?;
                     return Ok(remote_snapshot);
                 }
                 Err(error) => {

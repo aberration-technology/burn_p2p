@@ -651,6 +651,77 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
+    /// Fetches a control-plane snapshot by dialing a concrete swarm address with
+    /// a short-lived sidecar. This prewarms from configured bootstrap seeds when
+    /// the main runtime has not yet gossiped enough state to know which peer IDs
+    /// should be queried.
+    pub fn fetch_snapshot_from_address(
+        &self,
+        address: SwarmAddress,
+        timeout: Duration,
+    ) -> anyhow::Result<(PeerId, ControlPlaneSnapshot)> {
+        let mut shell = ControlPlaneShell::new(
+            self.runtime_boundary.protocols.control.clone(),
+            Keypair::generate_ed25519(),
+            [address.clone()],
+            self.runtime_boundary.transport_policy.clone(),
+            None,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        shell
+            .dial(address.clone())
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let deadline = Instant::now() + timeout;
+        let mut connected_peer_id = None;
+        let mut last_error = None;
+        while Instant::now() < deadline {
+            let wait_for = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(100));
+            let Some(event) = shell.wait_event(wait_for) else {
+                continue;
+            };
+            match event {
+                LiveControlPlaneEvent::ConnectionEstablished { peer_id } => {
+                    connected_peer_id = Some(PeerId::new(peer_id));
+                    break;
+                }
+                LiveControlPlaneEvent::OutgoingConnectionError { message, .. }
+                | LiveControlPlaneEvent::IncomingConnectionError { message }
+                | LiveControlPlaneEvent::InboundFailure { message, .. }
+                | LiveControlPlaneEvent::ResponseSendFailure { message, .. }
+                | LiveControlPlaneEvent::RequestFailure { message, .. } => {
+                    last_error = Some(message);
+                }
+                _ => {}
+            }
+        }
+
+        let connected_peer_id = connected_peer_id.ok_or_else(|| {
+            let detail = last_error
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default();
+            anyhow::anyhow!(
+                "timed out connecting bootstrap snapshot sidecar to {}{}",
+                address.as_str(),
+                detail
+            )
+        })?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!(
+                "bootstrap snapshot sidecar connected to {} but no time remained for snapshot fetch",
+                connected_peer_id.as_str()
+            );
+        }
+
+        let snapshot = shell
+            .fetch_snapshot(connected_peer_id.as_str(), remaining)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok((connected_peer_id, snapshot))
+    }
+
     fn fetch_artifact_chunk_via_sidecar(
         &self,
         peer_id: &str,

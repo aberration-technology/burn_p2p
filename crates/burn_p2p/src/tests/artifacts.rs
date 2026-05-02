@@ -211,6 +211,115 @@ fn native_running_nodes_exchange_snapshots_over_tcp() {
 }
 
 #[test]
+fn native_sidecar_fetches_bootstrap_snapshot_by_address() {
+    let _guard = native_swarm_test_guard();
+    let listener = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .spawn()
+        .expect("listener spawn");
+    let listener_telemetry = listener.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            let snapshot = listener_telemetry.snapshot();
+            snapshot.status == crate::RuntimeStatus::Running
+                && snapshot.local_peer_id.is_some()
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "listener runtime did not start",
+    );
+
+    let listener_snapshot = listener_telemetry.snapshot();
+    let listener_peer_id = listener_snapshot
+        .local_peer_id
+        .clone()
+        .expect("listener peer id");
+    let listener_addr = listener_snapshot.listen_addresses[0].clone();
+    let experiment = listener.experiment(
+        crate::StudyId::new("study-1"),
+        crate::ExperimentId::new("exp-1"),
+        crate::RevisionId::new("rev-1"),
+    );
+    let head = HeadDescriptor {
+        head_id: crate::HeadId::new("head-sidecar"),
+        study_id: crate::StudyId::new("study-1"),
+        experiment_id: crate::ExperimentId::new("exp-1"),
+        revision_id: crate::RevisionId::new("rev-1"),
+        artifact_id: crate::ArtifactId::new("artifact-sidecar"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    listener
+        .control_handle()
+        .publish_head(HeadAnnouncement {
+            overlay: experiment.overlay_set().expect("overlays").heads,
+            provider_peer_id: Some(listener_peer_id.clone()),
+            head: head.clone(),
+            announced_at: Utc::now(),
+        })
+        .expect("publish listener head");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            listener_telemetry
+                .snapshot()
+                .control_plane
+                .head_announcements
+                .iter()
+                .any(|announcement| announcement.head.head_id == head.head_id)
+        },
+        "listener head announcement was not reflected locally",
+    );
+
+    let scout = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .spawn()
+        .expect("scout spawn");
+    let scout_telemetry = scout.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || scout_telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "scout runtime did not start",
+    );
+
+    let (connected_peer_id, snapshot) = scout
+        .control_handle()
+        .fetch_snapshot_from_address(listener_addr, Duration::from_secs(5))
+        .expect("fetch listener snapshot by address");
+    assert_eq!(connected_peer_id, listener_peer_id);
+    assert!(
+        snapshot
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == head.head_id),
+        "sidecar snapshot should include listener head"
+    );
+
+    scout
+        .ingest_control_plane_snapshot(&snapshot)
+        .expect("ingest sidecar snapshot");
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            scout_telemetry
+                .snapshot()
+                .control_plane
+                .head_announcements
+                .iter()
+                .any(|announcement| announcement.head.head_id == head.head_id)
+        },
+        "scout did not merge sidecar snapshot into local control plane",
+    );
+
+    scout.shutdown().expect("scout shutdown");
+    let _ = scout.await_termination().expect("scout termination");
+    listener.shutdown().expect("listener shutdown");
+    let _ = listener.await_termination().expect("listener termination");
+}
+
+#[test]
 fn native_bootstrap_relay_serves_heads_learned_from_peer_snapshots() {
     let _guard = native_swarm_test_guard();
     let provider = NodeBuilder::new(())
