@@ -250,6 +250,46 @@ pub(crate) fn build_validation_canary_report(
         .as_ref()
         .and_then(|(_, head)| (!head.metrics.is_empty()).then(|| metric_quality(&head.metrics)))
         .unwrap_or_else(|| metric_quality(&evaluation.metrics));
+    build_validation_canary_report_with_base_quality(
+        experiment,
+        current_head,
+        base_quality,
+        candidate_head,
+        evaluation,
+        maximum_regression_delta,
+        evaluator_quorum,
+    )
+}
+
+pub(crate) fn build_validation_canary_report_against_baseline(
+    experiment: &ExperimentHandle,
+    current_head: &Option<(PeerId, HeadDescriptor)>,
+    baseline_metrics: &BTreeMap<String, MetricValue>,
+    candidate_head: &HeadDescriptor,
+    evaluation: &MetricReport,
+    maximum_regression_delta: f64,
+    evaluator_quorum: u16,
+) -> anyhow::Result<CanaryEvalReport> {
+    build_validation_canary_report_with_base_quality(
+        experiment,
+        current_head,
+        metric_quality(baseline_metrics),
+        candidate_head,
+        evaluation,
+        maximum_regression_delta,
+        evaluator_quorum,
+    )
+}
+
+fn build_validation_canary_report_with_base_quality(
+    experiment: &ExperimentHandle,
+    current_head: &Option<(PeerId, HeadDescriptor)>,
+    base_quality: f64,
+    candidate_head: &HeadDescriptor,
+    evaluation: &MetricReport,
+    maximum_regression_delta: f64,
+    evaluator_quorum: u16,
+) -> anyhow::Result<CanaryEvalReport> {
     let candidate_quality = metric_quality(&evaluation.metrics);
     let regression_margin = (candidate_quality - base_quality).max(0.0);
     let metric_deltas = evaluation

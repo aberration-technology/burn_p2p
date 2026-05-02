@@ -572,6 +572,7 @@ impl<P> RunningNode<P> {
                         store: &prepared.store,
                         device: &device,
                         current_head: &prepared.current_head,
+                        baseline_metrics: None,
                         canary_threshold: prepared
                             .robustness_policy
                             .validator_canary_policy
@@ -806,6 +807,7 @@ impl<P> RunningNode<P> {
                         .expect("validator quorum promotion requires a fallback candidate index"),
                     merge_policy.clone(),
                     &prepared.local_peer_id,
+                    false,
                 )?,
                 HeadPromotionMode::ReducerAuthority => select_reducer_authority_head(
                     project,

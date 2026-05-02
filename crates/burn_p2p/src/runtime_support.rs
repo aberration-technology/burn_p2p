@@ -43,6 +43,7 @@ pub(crate) use signing::{
 };
 #[cfg(test)]
 pub(crate) use topology::experiment_snapshot_peer_ids;
+pub use topology::latest_promoted_head_from_control_plane;
 pub(crate) use topology::{
     LagAssessment, active_experiment_directory_entry, assess_head_lag, cached_connected_snapshots,
     connected_peer_ids, effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch,
@@ -168,6 +169,22 @@ pub(crate) fn lock_telemetry_state(
     state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn env_trace_enabled(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+pub(crate) fn trace_to_stderr(name: &str, prefix: &str, args: std::fmt::Arguments<'_>) {
+    if env_trace_enabled(name) {
+        eprintln!("[{prefix}] {args}");
+    }
 }
 
 pub(crate) fn resolve_identity(

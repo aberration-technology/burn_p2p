@@ -1130,6 +1130,7 @@ impl BootstrapAdminState {
         remaining_work_units: Option<u64>,
     ) -> BootstrapDiagnostics {
         let effective_quarantined = self.effective_quarantined_peers();
+        let certified_merges = self.visible_certified_merge_count();
         BootstrapDiagnostics {
             network_id: plan.genesis.network_id.clone(),
             preset: plan.preset.clone(),
@@ -1141,9 +1142,7 @@ impl BootstrapAdminState {
             accepted_receipts: self
                 .persisted_receipt_count
                 .max(self.contribution_receipts.len()) as u64,
-            certified_merges: self
-                .persisted_merge_count
-                .max(self.merge_certificates.len()) as u64,
+            certified_merges,
             in_flight_transfers: self.in_flight_transfers.clone(),
             admitted_peers: self.admitted_peers.clone(),
             peer_diagnostics: self.peer_diagnostics(),
@@ -1158,6 +1157,25 @@ impl BootstrapAdminState {
             robustness_rollup: self.robustness_rollup(plan, captured_at),
             captured_at,
         }
+    }
+
+    fn visible_certified_merge_count(&self) -> u64 {
+        let retained_merges = self
+            .persisted_merge_count
+            .max(self.merge_certificates.len());
+        let runtime_merges = self
+            .runtime_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.control_plane.merge_announcements.len().max(
+                    snapshot
+                        .control_plane
+                        .diffusion_promotion_certificate_announcements
+                        .len(),
+                )
+            })
+            .unwrap_or_default();
+        retained_merges.max(runtime_merges) as u64
     }
 
     /// Performs the diagnostics bundle operation.
@@ -1224,7 +1242,8 @@ impl BootstrapAdminState {
 mod tests {
     use super::*;
     use burn_p2p::{
-        ClientPlatform, ControlPlaneSnapshot, HeadAnnouncement, LagPolicy, LagState,
+        ClientPlatform, ControlPlaneSnapshot, DiffusionPromotionCertificate,
+        DiffusionPromotionCertificateAnnouncement, HeadAnnouncement, LagPolicy, LagState,
         NodeRuntimeState, RuntimeStatus,
     };
     use chrono::Utc;
@@ -1395,6 +1414,74 @@ mod tests {
             state.provider_peer_ids_for_head(&runtime_head.head_id),
             vec![PeerId::new("edge"), PeerId::new("mirror")]
         );
+    }
+
+    #[test]
+    fn diagnostics_counts_runtime_diffusion_promotion_certificates() {
+        let now = Utc::now();
+        let overlay = burn_p2p::OverlayTopic::experiment(
+            NetworkId::new("demo"),
+            StudyId::new("study"),
+            ExperimentId::new("exp"),
+            burn_p2p::OverlayChannel::Heads,
+        )
+        .expect("heads overlay");
+        let state = BootstrapAdminState {
+            runtime_snapshot: Some(test_runtime_snapshot(
+                now,
+                PeerId::new("edge"),
+                ControlPlaneSnapshot {
+                    diffusion_promotion_certificate_announcements: vec![
+                        DiffusionPromotionCertificateAnnouncement {
+                            overlay,
+                            certificate: DiffusionPromotionCertificate {
+                                study_id: StudyId::new("study"),
+                                experiment_id: ExperimentId::new("exp"),
+                                revision_id: RevisionId::new("rev"),
+                                window_id: WindowId(7),
+                                base_head_id: HeadId::new("base"),
+                                merged_head_id: HeadId::new("head"),
+                                merged_artifact_id: burn_p2p::ArtifactId::new("artifact"),
+                                promotion_mode: burn_p2p::HeadPromotionMode::DiffusionSteadyState,
+                                attesting_trainers: vec![PeerId::new("trainer")],
+                                attestation_ids: vec![burn_p2p::ContentId::new("attestation")],
+                                attester_count: 1,
+                                cumulative_sample_weight: 1.0,
+                                settled_at: now,
+                                promoter_peer_id: PeerId::new("trainer"),
+                            },
+                            announced_at: now,
+                        },
+                    ],
+                    ..ControlPlaneSnapshot::default()
+                },
+            )),
+            ..BootstrapAdminState::default()
+        };
+        let diagnostics = state.diagnostics(
+            &crate::deploy::BootstrapSpec {
+                preset: crate::BootstrapPreset::BootstrapOnly,
+                genesis: burn_p2p_core::GenesisSpec {
+                    network_id: NetworkId::new("demo"),
+                    protocol_version: Version::new(0, 1, 0),
+                    display_name: "demo".into(),
+                    created_at: Utc::now(),
+                    metadata: BTreeMap::new(),
+                },
+                platform: ClientPlatform::Native,
+                bootstrap_addresses: Vec::new(),
+                listen_addresses: Vec::new(),
+                authority: None,
+                archive: crate::ArchivePlan::default(),
+                admin_api: crate::AdminApiPlan::default(),
+            }
+            .plan()
+            .expect("plan"),
+            now,
+            None,
+        );
+
+        assert_eq!(diagnostics.certified_merges, 1);
     }
 
     #[test]

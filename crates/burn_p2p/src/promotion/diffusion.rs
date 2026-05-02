@@ -6,14 +6,19 @@ use crate::candidate::{
 };
 use crate::candidate_screening::{
     CandidateRobustnessContext, PersistedRobustnessState, build_validation_canary_report,
-    evaluate_candidate_robustness,
+    build_validation_canary_report_against_baseline, evaluate_candidate_robustness,
 };
-use crate::runtime_support::{active_experiment_directory_entry, load_json};
+use crate::runtime_support::{active_experiment_directory_entry, load_json, trace_to_stderr};
 use crate::training::load_model_for_head;
 
 const DIFFUSION_WINDOW_LOOKBACK: usize = 4;
 const DIFFUSION_ARTIFACT_SYNC_TIMEOUT: Duration = Duration::from_secs(8);
 const DIFFUSION_SNAPSHOT_REFRESH_TIMEOUT: Duration = Duration::from_millis(250);
+const DIFFUSION_TRACE_ENV: &str = "BURN_P2P_DIFFUSION_TRACE";
+
+fn diffusion_trace(args: std::fmt::Arguments<'_>) {
+    trace_to_stderr(DIFFUSION_TRACE_ENV, "burn_p2p diffusion", args);
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct DiffusionObservationKey {
@@ -590,6 +595,11 @@ fn settle_visible_diffusion_support(
         Some(&local_support.attestation),
     );
     if latest_attestations.is_empty() {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=no-attestations",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0
+        ));
         return Ok(None);
     }
     let support_fingerprint = support_map_fingerprint(&latest_attestations)?;
@@ -607,10 +617,23 @@ fn settle_visible_diffusion_support(
     );
     let supports = grouped_diffusion_support(&latest_attestations)?;
     let Some(leader) = supports.first() else {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=no-supports attestations={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            latest_attestations.len()
+        ));
         return Ok(None);
     };
     let runner_up = supports.get(1);
     if runner_up.is_some_and(|runner_up| compare_diffusion_support(leader, runner_up).is_eq()) {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=tied-support leader_attesters={} stable_observations={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            leader.attester_count,
+            stable_observations
+        ));
         return Ok(None);
     }
     if runner_up.is_some_and(|runner_up| {
@@ -619,9 +642,24 @@ fn settle_visible_diffusion_support(
                 .attester_count
                 .saturating_add(diffusion_policy.support_margin.max(1))
     }) {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=insufficient-margin leader_attesters={} runner_up_attesters={} margin={} stable_observations={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            leader.attester_count,
+            runner_up.map(|support| support.attester_count).unwrap_or(0),
+            diffusion_policy.support_margin.max(1),
+            stable_observations
+        ));
         return Ok(None);
     }
     if !diffusion_policy.allow_solo_promotion && leader.attester_count <= 1 {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=solo-disabled stable_observations={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            stable_observations
+        ));
         return Ok(None);
     }
     let required_stable_observations =
@@ -631,11 +669,27 @@ fn settle_visible_diffusion_support(
             diffusion_policy.required_stable_observations.max(1)
         };
     if stable_observations < required_stable_observations {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=unstable-support stable_observations={} required={} leader_attesters={} attestations={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            stable_observations,
+            required_stable_observations,
+            leader.attester_count,
+            latest_attestations.len()
+        ));
         return Ok(None);
     }
     if leader.merged_head_id != local_support.merged_head.head_id
         || leader.merged_artifact_id != local_support.merged_head.artifact_id
     {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=local-support-not-leader leader_head={} local_head={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            leader.merged_head_id.as_str(),
+            local_support.merged_head.head_id.as_str()
+        ));
         return Ok(None);
     }
     let certificate =
@@ -647,9 +701,24 @@ fn settle_visible_diffusion_support(
         merge_window,
     ) && compare_visible_diffusion_certificate(&existing_certificate, &certificate).is_ge()
     {
+        diffusion_trace(format_args!(
+            "settlement-skip experiment={} window={} reason=existing-certificate leader_head={}",
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            leader.merged_head_id.as_str()
+        ));
         return Ok(None);
     }
 
+    diffusion_trace(format_args!(
+        "settlement-ready experiment={} window={} leader_head={} attesters={} stable_observations={} required={}",
+        experiment.experiment_id.as_str(),
+        merge_window.window_id.0,
+        leader.merged_head_id.as_str(),
+        leader.attester_count,
+        stable_observations,
+        required_stable_observations
+    ));
     let merge_certificate = build_diffusion_merge_certificate(
         experiment,
         merge_window,
@@ -783,16 +852,54 @@ where
             return Ok(());
         };
         let local_snapshot = telemetry_snapshot.control_plane.clone();
-        let cached_snapshots = self
+        let snapshot_refresh_started = Instant::now();
+        let cached_snapshots = match self
             .fetch_experiment_snapshots(experiment, DIFFUSION_SNAPSHOT_REFRESH_TIMEOUT)
-            .unwrap_or_else(|_| cached_connected_snapshots(&telemetry_snapshot));
+        {
+            Ok(snapshots) => {
+                diffusion_trace(format_args!(
+                    "snapshot-refresh ok peer={} experiment={} snapshots={} elapsed_ms={}",
+                    local_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    snapshots.len(),
+                    snapshot_refresh_started.elapsed().as_millis()
+                ));
+                snapshots
+            }
+            Err(error) => {
+                let snapshots = cached_connected_snapshots(&telemetry_snapshot);
+                diffusion_trace(format_args!(
+                    "snapshot-refresh fallback peer={} experiment={} cached_snapshots={} elapsed_ms={} error={error}",
+                    local_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    snapshots.len(),
+                    snapshot_refresh_started.elapsed().as_millis()
+                ));
+                snapshots
+            }
+        };
         let windows = diffusion_merge_windows_from_snapshot(
             &local_snapshot,
             experiment,
             target_window_id,
             target_base_head_id,
         );
+        diffusion_trace(format_args!(
+            "advance-start peer={} experiment={} target_window={:?} target_base={} local_windows={} local_updates={} local_attestations={} cached_snapshots={} selected_windows={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            target_window_id,
+            target_base_head_id.map(HeadId::as_str).unwrap_or("<any>"),
+            local_snapshot.merge_window_announcements.len(),
+            local_snapshot.update_announcements.len(),
+            local_snapshot
+                .trainer_promotion_attestation_announcements
+                .len(),
+            cached_snapshots.len(),
+            windows.len()
+        ));
         for merge_window in windows {
+            let window_started = Instant::now();
             self.advance_diffusion_window(
                 experiment,
                 &storage,
@@ -802,6 +909,14 @@ where
                 &local_peer_id,
                 &merge_window,
             )?;
+            diffusion_trace(format_args!(
+                "advance-window-complete peer={} experiment={} window={} base={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                merge_window.base_head_id.as_str(),
+                window_started.elapsed().as_millis()
+            ));
         }
         Ok(())
     }
@@ -838,14 +953,40 @@ where
             merge_window,
             local_peer_id,
         )?;
+        diffusion_trace(format_args!(
+            "window-start peer={} experiment={} window={} base={} updates={} existing_support={} cached_snapshots={} dataset_view={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            merge_window.base_head_id.as_str(),
+            updates.len(),
+            existing_local_support.is_some(),
+            cached_snapshots.len(),
+            dataset_view_id.as_str()
+        ));
         if updates.is_empty() && existing_local_support.is_none() {
+            diffusion_trace(format_args!(
+                "window-skip peer={} experiment={} window={} reason=no-updates-or-support",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(());
         }
 
-        let local_support = if updates.is_empty() {
-            existing_local_support
+        let local_support = if let Some(existing_local_support) = existing_local_support {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=existing-local-support",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
+            Some(existing_local_support)
+        } else if updates.is_empty() {
+            None
         } else {
-            self.build_local_diffusion_candidate(
+            let build_started = Instant::now();
+            let built = self.build_local_diffusion_candidate(
                 experiment,
                 storage,
                 local_snapshot,
@@ -855,15 +996,38 @@ where
                 &dataset_view_id,
                 &robustness_policy,
                 &updates,
-            )?
-            .or(existing_local_support)
+            )?;
+            diffusion_trace(format_args!(
+                "candidate-build-complete peer={} experiment={} window={} produced={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                built.is_some(),
+                build_started.elapsed().as_millis()
+            ));
+            built
         };
         let Some(local_support) = local_support else {
+            diffusion_trace(format_args!(
+                "window-skip peer={} experiment={} window={} reason=no-local-support",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(());
         };
 
         let overlays = experiment.overlay_set()?;
         if local_support.needs_publication {
+            let publish_started = Instant::now();
+            diffusion_trace(format_args!(
+                "support-publish-start peer={} experiment={} window={} head={} artifact={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                local_support.merged_head.head_id.as_str(),
+                local_support.merged_head.artifact_id.as_str()
+            ));
             persist_json(
                 storage.scoped_head_path(&local_support.merged_head.head_id),
                 &local_support.merged_head,
@@ -883,7 +1047,15 @@ where
                 self.control
                     .publish_trainer_promotion_attestation(local_support.attestation.clone())?;
             }
+            diffusion_trace(format_args!(
+                "support-publish-complete peer={} experiment={} window={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                publish_started.elapsed().as_millis()
+            ));
         }
+        let settle_started = Instant::now();
         if let Some(publication) = settle_visible_diffusion_support(
             storage,
             &mut self.diffusion_state,
@@ -906,6 +1078,21 @@ where
                 certificate: publication.merge_certificate,
                 announced_at: Utc::now(),
             })?;
+            diffusion_trace(format_args!(
+                "settlement-published peer={} experiment={} window={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                settle_started.elapsed().as_millis()
+            ));
+        } else {
+            diffusion_trace(format_args!(
+                "settlement-pending peer={} experiment={} window={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                settle_started.elapsed().as_millis()
+            ));
         }
         Ok(())
     }
@@ -927,6 +1114,18 @@ where
             diffusion_frontier_bounds(merge_window, robustness_policy);
         let bounded_updates =
             bounded_candidate_updates(updates, local_peer_id, max_visible_candidate_heads);
+        diffusion_trace(format_args!(
+            "candidate-build-start peer={} experiment={} window={} base={} visible_updates={} bounded_updates={} max_visible={} max_loaded={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            merge_window.base_head_id.as_str(),
+            updates.len(),
+            bounded_updates.len(),
+            max_visible_candidate_heads,
+            max_loaded_candidate_models
+        ));
+        let base_resolve_started = Instant::now();
         let base_head = resolve_known_head_descriptor(
             local_snapshot,
             cached_snapshots,
@@ -934,17 +1133,45 @@ where
             experiment,
             &merge_window.base_head_id,
         )?;
+        diffusion_trace(format_args!(
+            "base-resolve-complete peer={} experiment={} window={} found={} providers={} elapsed_ms={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            base_head.is_some(),
+            base_head
+                .as_ref()
+                .map(|(_, providers)| providers.len())
+                .unwrap_or(0),
+            base_resolve_started.elapsed().as_millis()
+        ));
         let store = FsArtifactStore::new(storage.root.clone());
         if let Some((head, provider_peer_ids)) = base_head.as_ref()
             && !store.has_complete_artifact(&head.artifact_id)?
             && head.global_step > 0
             && !provider_peer_ids.is_empty()
         {
+            let sync_started = Instant::now();
+            diffusion_trace(format_args!(
+                "base-artifact-sync-start peer={} experiment={} window={} artifact={} providers={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                head.artifact_id.as_str(),
+                provider_peer_ids.len()
+            ));
             self.wait_for_artifact_from_peers(
                 provider_peer_ids,
                 &head.artifact_id,
                 DIFFUSION_ARTIFACT_SYNC_TIMEOUT,
             )?;
+            diffusion_trace(format_args!(
+                "base-artifact-sync-complete peer={} experiment={} window={} elapsed_ms={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                sync_started.elapsed().as_millis()
+            ));
         }
         let current_head = base_head
             .as_ref()
@@ -982,6 +1209,12 @@ where
             candidate_heads.push(local_candidate_head);
         }
         if candidate_heads.is_empty() {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=no-candidate-heads",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(None);
         }
         candidate_heads.sort_by(|left, right| {
@@ -991,12 +1224,22 @@ where
                 .then(left.origin_peer_id.cmp(&right.origin_peer_id))
                 .then(left.head.artifact_id.cmp(&right.head.artifact_id))
         });
+        let visible_candidate_count = candidate_heads.len();
         candidate_heads.truncate(max_loaded_candidate_models.max(1));
+        diffusion_trace(format_args!(
+            "candidate-frontier peer={} experiment={} window={} visible_candidates={} selected_candidates={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            visible_candidate_count,
+            candidate_heads.len()
+        ));
 
         let canary_threshold = robustness_policy
             .validator_canary_policy
             .maximum_regression_delta;
         let mut loaded_candidates = Vec::<ValidationCandidate<P::Model>>::new();
+        let base_load_started = Instant::now();
         let base_model = {
             let node = self
                 .node
@@ -1010,19 +1253,90 @@ where
                 project.init_model(&device)
             }
         };
+        diffusion_trace(format_args!(
+            "base-model-load-complete peer={} experiment={} window={} elapsed_ms={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            base_load_started.elapsed().as_millis()
+        ));
+        let base_evaluation = if current_head.is_some() {
+            let evaluation_started = Instant::now();
+            let evaluation = {
+                let node = self
+                    .node
+                    .as_mut()
+                    .expect("running node should retain prepared node");
+                node.project.evaluate(&base_model, EvalSplit::Validation)
+            };
+            diffusion_trace(format_args!(
+                "base-evaluation-complete peer={} experiment={} window={} elapsed_ms={} evaluation_batches={} quality={:.6}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                evaluation_started.elapsed().as_millis(),
+                evaluation
+                    .metrics
+                    .get("evaluation_batches")
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "-".into()),
+                metric_quality(&evaluation.metrics)
+            ));
+            Some(evaluation)
+        } else {
+            None
+        };
         for candidate_head in candidate_heads {
             if !store.has_complete_artifact(&candidate_head.head.artifact_id)?
                 && !candidate_head.provider_peer_ids.is_empty()
             {
+                let sync_started = Instant::now();
+                diffusion_trace(format_args!(
+                    "candidate-artifact-sync-start peer={} experiment={} window={} candidate_peer={} artifact={} providers={}",
+                    local_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    merge_window.window_id.0,
+                    candidate_head.origin_peer_id.as_str(),
+                    candidate_head.head.artifact_id.as_str(),
+                    candidate_head.provider_peer_ids.len()
+                ));
                 let _ = self.wait_for_artifact_from_peers(
                     &candidate_head.provider_peer_ids,
                     &candidate_head.head.artifact_id,
                     DIFFUSION_ARTIFACT_SYNC_TIMEOUT,
                 );
+                diffusion_trace(format_args!(
+                    "candidate-artifact-sync-finished peer={} experiment={} window={} candidate_peer={} complete={} elapsed_ms={}",
+                    local_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    merge_window.window_id.0,
+                    candidate_head.origin_peer_id.as_str(),
+                    store.has_complete_artifact(&candidate_head.head.artifact_id)?,
+                    sync_started.elapsed().as_millis()
+                ));
             }
             if !store.has_complete_artifact(&candidate_head.head.artifact_id)? {
+                diffusion_trace(format_args!(
+                    "candidate-skip peer={} experiment={} window={} candidate_peer={} artifact={} reason=artifact-unavailable",
+                    local_peer_id.as_str(),
+                    experiment.experiment_id.as_str(),
+                    merge_window.window_id.0,
+                    candidate_head.origin_peer_id.as_str(),
+                    candidate_head.head.artifact_id.as_str()
+                ));
                 continue;
             }
+            let candidate_peer_id = candidate_head.origin_peer_id.clone();
+            let candidate_artifact_id = candidate_head.head.artifact_id.clone();
+            let load_started = Instant::now();
+            diffusion_trace(format_args!(
+                "candidate-model-load-start peer={} experiment={} window={} candidate_peer={} artifact={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                candidate_peer_id.as_str(),
+                candidate_artifact_id.as_str()
+            ));
             let loaded = {
                 let node = self
                     .node
@@ -1037,21 +1351,57 @@ where
                         store: &store,
                         device: &device,
                         current_head: &current_head,
+                        baseline_metrics: base_evaluation
+                            .as_ref()
+                            .map(|evaluation| &evaluation.metrics),
                         canary_threshold,
                         evaluate_candidates: true,
                     },
                     candidate_head,
                 )?
             };
+            diffusion_trace(format_args!(
+                "candidate-model-load-complete peer={} experiment={} window={} candidate_peer={} artifact={} elapsed_ms={} evaluation_batches={} quality={:.6} canary_accepted={} canary_regression_margin={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                candidate_peer_id.as_str(),
+                candidate_artifact_id.as_str(),
+                load_started.elapsed().as_millis(),
+                loaded
+                    .evaluation
+                    .metrics
+                    .get("evaluation_batches")
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "-".into()),
+                metric_quality(&loaded.evaluation.metrics),
+                loaded
+                    .canary_report
+                    .as_ref()
+                    .map(|report| report.accepted)
+                    .unwrap_or(true),
+                loaded
+                    .canary_report
+                    .as_ref()
+                    .map(|report| format!("{:.6}", report.regression_margin))
+                    .unwrap_or_else(|| "-".into())
+            ));
             loaded_candidates.push(loaded);
         }
         if loaded_candidates.is_empty() {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=no-loaded-candidates",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(None);
         }
         let candidate_views = loaded_candidates
             .iter()
             .map(ValidationCandidateView::from)
             .collect::<Vec<_>>();
+        let robustness_started = Instant::now();
         let robustness_outcome = evaluate_candidate_robustness(
             &burn_p2p_security::RobustnessEngine::new(robustness_policy.clone()),
             CandidateRobustnessContext {
@@ -1068,6 +1418,32 @@ where
             &candidate_views,
             Utc::now(),
         );
+        diffusion_trace(format_args!(
+            "robustness-complete peer={} experiment={} window={} loaded_candidates={} filtered_updates={} accepted_weights={} elapsed_ms={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            loaded_candidates.len(),
+            robustness_outcome.filtered_updates.len(),
+            robustness_outcome.accepted_weights.len(),
+            robustness_started.elapsed().as_millis()
+        ));
+        for decision in &robustness_outcome.decisions {
+            diffusion_trace(format_args!(
+                "robustness-decision peer={} experiment={} window={} candidate_peer={} accepted={} hard_rejected={} downweighted={} reason={:?} effective_weight={:.6} effective_norm={:.6} screen_score={:.6}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                decision.peer_id.as_str(),
+                decision.accepted,
+                decision.hard_rejected,
+                decision.downweighted,
+                decision.rejection_reason,
+                decision.effective_weight,
+                decision.effective_norm,
+                decision.screen_score
+            ));
+        }
         let mut filtered_updates = robustness_outcome.filtered_updates;
         let mut accepted_candidates = loaded_candidates
             .iter()
@@ -1092,6 +1468,12 @@ where
             })
             .collect::<Vec<_>>();
         if accepted_candidates.is_empty() {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=no-accepted-candidates",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(None);
         }
         accepted_candidates.sort_by(|left, right| {
@@ -1107,8 +1489,15 @@ where
                 .then(left.receipt_ids.cmp(&right.receipt_ids))
         });
         let Some(fallback_best_index) = fallback_best_candidate_index(&accepted_candidates) else {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=no-fallback-best",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0
+            ));
             return Ok(None);
         };
+        let select_started = Instant::now();
         let (merged_head, evaluation) = {
             let node = self
                 .node
@@ -1127,20 +1516,44 @@ where
                 fallback_best_index,
                 MergePolicy::QualityWeightedEma,
                 local_peer_id,
+                true,
             )?;
             let _ = source_peer_id;
             (merged_head, evaluation)
         };
-        let canary_report = build_validation_canary_report(
-            experiment,
-            &current_head,
-            &merged_head,
-            &evaluation,
-            robustness_policy
-                .validator_canary_policy
-                .maximum_regression_delta,
-            1,
-        )?;
+        diffusion_trace(format_args!(
+            "select-head-complete peer={} experiment={} window={} merged_head={} artifact={} accepted_candidates={} elapsed_ms={}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            merged_head.head_id.as_str(),
+            merged_head.artifact_id.as_str(),
+            accepted_candidates.len(),
+            select_started.elapsed().as_millis()
+        ));
+        let canary_report = match base_evaluation.as_ref() {
+            Some(base_evaluation) => build_validation_canary_report_against_baseline(
+                experiment,
+                &current_head,
+                &base_evaluation.metrics,
+                &merged_head,
+                &evaluation,
+                robustness_policy
+                    .validator_canary_policy
+                    .maximum_regression_delta,
+                1,
+            )?,
+            None => build_validation_canary_report(
+                experiment,
+                &current_head,
+                &merged_head,
+                &evaluation,
+                robustness_policy
+                    .validator_canary_policy
+                    .maximum_regression_delta,
+                1,
+            )?,
+        };
         if !canary_report.accepted
             || canary_report.detected_backdoor_trigger
             || canary_report.regression_margin
@@ -1148,6 +1561,15 @@ where
                     .validator_canary_policy
                     .maximum_regression_delta
         {
+            diffusion_trace(format_args!(
+                "candidate-build-skip peer={} experiment={} window={} reason=canary-rejected accepted={} backdoor={} regression_margin={:.6}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                canary_report.accepted,
+                canary_report.detected_backdoor_trigger,
+                canary_report.regression_margin
+            ));
             return Ok(None);
         }
         let mut contribution_receipt_ids = filtered_updates
@@ -1157,6 +1579,18 @@ where
         contribution_receipt_ids.sort();
         contribution_receipt_ids.dedup();
         let contribution_receipt_root = ContentId::derive(&contribution_receipt_ids)?;
+        diffusion_trace(format_args!(
+            "candidate-build-produced peer={} experiment={} window={} merged_head={} accepted_updates={} accepted_sample_weight={:.3}",
+            local_peer_id.as_str(),
+            experiment.experiment_id.as_str(),
+            merge_window.window_id.0,
+            merged_head.head_id.as_str(),
+            filtered_updates.len(),
+            filtered_updates
+                .iter()
+                .map(|update| update.sample_weight)
+                .sum::<f64>()
+        ));
         Ok(Some(DiffusionLocalSupport {
             merged_head: merged_head.clone(),
             attestation: TrainerPromotionAttestationAnnouncement {

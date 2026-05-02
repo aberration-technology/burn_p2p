@@ -272,6 +272,7 @@ impl BrowserSessionRuntimeHandle {
         self.refresh().await?;
         #[cfg(target_arch = "wasm32")]
         self.wait_for_direct_transport_handoff().await?;
+        self.validate_canonical_training_plan(&plan)?;
         let artifact_published = self.publish_training_artifact(&mut plan).await?;
         let executed_plan = plan.clone();
         let training_events =
@@ -342,6 +343,42 @@ impl BrowserSessionRuntimeHandle {
             runtime_state: self.runtime.state.clone(),
             transport: self.runtime.transport.active.clone(),
         })
+    }
+
+    fn validate_canonical_training_plan(
+        &self,
+        plan: &BrowserTrainingPlan,
+    ) -> Result<(), BrowserSessionRuntimeError> {
+        let Some(contribution) = plan.contribution.as_ref() else {
+            return Ok(());
+        };
+        if contribution.published_artifact.is_none() {
+            return Ok(());
+        }
+        if plan.lease.is_none() {
+            return Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training requires an active training lease before publishing an artifact".into(),
+            ));
+        }
+        if contribution
+            .base_head_id
+            .as_ref()
+            .or(self.runtime.storage.last_head_id.as_ref())
+            .is_none()
+        {
+            return Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training requires a synced base head before publishing an artifact".into(),
+            ));
+        }
+        if self.runtime.storage.stored_certificate_peer_id.is_none() {
+            return Err(BrowserSessionRuntimeError::Worker(
+                "browser canonical training requires an enrolled node certificate".into(),
+            ));
+        }
+        if self.runtime.storage.session.session.is_none() {
+            return Err(BrowserSessionRuntimeError::MissingSession);
+        }
+        Ok(())
     }
 
     async fn publish_training_artifact(

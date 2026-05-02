@@ -829,6 +829,17 @@ fn strongest_remote_promoted_head(
     }
 }
 
+pub fn latest_promoted_head_from_control_plane(
+    control_plane: &ControlPlaneSnapshot,
+    local_peer_id: Option<&PeerId>,
+    experiment: &ExperimentHandle,
+) -> Option<(PeerId, HeadDescriptor)> {
+    let snapshot_peer_id = local_peer_id
+        .cloned()
+        .unwrap_or_else(|| PeerId::new("local"));
+    strongest_remote_promoted_head(&[(snapshot_peer_id, control_plane.clone())], experiment)
+}
+
 pub(crate) fn snapshots_with_local_control_plane(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     local_peer_id: Option<&PeerId>,
@@ -878,6 +889,12 @@ pub(crate) fn metric_quality(metrics: &BTreeMap<String, MetricValue>) -> f64 {
         return *loss;
     }
     if let Some(MetricValue::Integer(loss)) = metrics.get("loss") {
+        return *loss as f64;
+    }
+    if let Some(MetricValue::Float(loss)) = metrics.get("train_loss") {
+        return *loss;
+    }
+    if let Some(MetricValue::Integer(loss)) = metrics.get("train_loss") {
         return *loss as f64;
     }
     if let Some(MetricValue::Float(score)) = metrics.get("score") {

@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use burn_p2p::{
-    ArtifactDescriptor, ArtifactId, ChunkId, ContributionReceipt, ContributionReceiptId,
-    ExperimentDirectoryEntry, ExperimentId, HeadDescriptor, HeadId, MicroShardId, PeerId,
-    RevisionId, StudyId, WorkloadTrainingLease,
+    ArtifactDescriptor, ArtifactId, ChunkId, ContentId, ContributionReceipt, ContributionReceiptId,
+    ExperimentDirectoryEntry, ExperimentId, HeadDescriptor, HeadId, LeaseId, MicroShardId,
+    NetworkId, PeerId, RevisionId, StudyId, WindowId, WorkloadTrainingLease,
 };
 use burn_p2p_core::{
     ArtifactProfile, BrowserArtifactRouteKind, BrowserArtifactSyncDiagnostics, MetricsLiveEvent,
@@ -622,6 +622,70 @@ impl BrowserStorageSnapshot {
     pub fn remember_active_training_lease(&mut self, lease: WorkloadTrainingLease) {
         self.active_training_lease = Some(lease);
         self.updated_at = Utc::now();
+    }
+
+    /// Returns a persisted training lease or a deterministic local lease derived from the active
+    /// assignment and cached microshards.
+    pub fn effective_active_training_lease(
+        &self,
+        network_id: &NetworkId,
+    ) -> Option<WorkloadTrainingLease> {
+        if let Some(lease) = self.active_training_lease.clone() {
+            return Some(lease);
+        }
+
+        let assignment = self.active_assignment.as_ref()?;
+        let dataset_view_id = self.active_assignment_dataset_view_id()?.clone();
+        let peer_id = self.stored_certificate_peer_id.as_ref()?;
+        if self.cached_microshards.is_empty() {
+            return None;
+        }
+        let microshards = self.cached_microshards.iter().cloned().collect::<Vec<_>>();
+        let window_id = WindowId(
+            self.last_head_descriptor
+                .as_ref()
+                .map(|head| head.global_step.saturating_add(1))
+                .unwrap_or(1),
+        );
+        let lease_id = LeaseId::derive(&(
+            "browser-local-lease",
+            network_id.as_str(),
+            assignment.study_id.as_str(),
+            assignment.experiment_id.as_str(),
+            assignment.revision_id.as_str(),
+            peer_id.as_str(),
+            dataset_view_id.as_str(),
+            window_id.0,
+            microshards
+                .iter()
+                .map(MicroShardId::as_str)
+                .collect::<Vec<_>>(),
+        ))
+        .ok()?;
+        let assignment_hash = ContentId::derive(&(
+            "browser-local-assignment",
+            lease_id.as_str(),
+            network_id.as_str(),
+            assignment.study_id.as_str(),
+            assignment.experiment_id.as_str(),
+            assignment.revision_id.as_str(),
+            peer_id.as_str(),
+            dataset_view_id.as_str(),
+            window_id.0,
+            microshards
+                .iter()
+                .map(MicroShardId::as_str)
+                .collect::<Vec<_>>(),
+        ))
+        .ok()?;
+
+        Some(WorkloadTrainingLease {
+            lease_id,
+            window_id,
+            dataset_view_id,
+            assignment_hash,
+            microshards,
+        })
     }
 
     /// Clears the persisted active training lease.

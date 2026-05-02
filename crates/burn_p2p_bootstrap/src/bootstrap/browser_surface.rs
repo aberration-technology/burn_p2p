@@ -332,18 +332,71 @@ pub(super) fn browser_login_providers(
 
 pub(super) fn current_browser_directory_snapshot(
     plan: &BootstrapPlan,
+    state: Option<&Arc<Mutex<BootstrapAdminState>>>,
     auth_state: Option<&Arc<AuthPortalState>>,
     request: &HttpRequest,
 ) -> Result<BrowserDirectorySnapshot, Box<dyn std::error::Error>> {
-    let entries = auth_state
+    let mut entries = auth_state
         .map(|auth| auth_directory_entries(auth, request))
         .transpose()?
         .unwrap_or_default();
+    if let Some(state) = state {
+        let state = lock_shared(state, "bootstrap admin state")?;
+        apply_live_promoted_heads_to_directory_entries(
+            &mut entries,
+            state.runtime_snapshot.as_ref(),
+        );
+    }
     Ok(BrowserDirectorySnapshot {
         network_id: plan.network_id().clone(),
         generated_at: Utc::now(),
         entries,
     })
+}
+
+fn apply_live_promoted_heads_to_directory_entries(
+    entries: &mut [ExperimentDirectoryEntry],
+    runtime_snapshot: Option<&NodeTelemetrySnapshot>,
+) {
+    let Some(runtime_snapshot) = runtime_snapshot else {
+        return;
+    };
+
+    for entry in entries {
+        let experiment = burn_p2p::ExperimentHandle {
+            network_id: entry.network_id.clone(),
+            study_id: entry.study_id.clone(),
+            experiment_id: entry.experiment_id.clone(),
+            revision_id: entry.current_revision_id.clone(),
+        };
+        let Some((_, promoted_head)) = burn_p2p::latest_promoted_head_from_control_plane(
+            &runtime_snapshot.control_plane,
+            runtime_snapshot.local_peer_id.as_ref(),
+            &experiment,
+        ) else {
+            continue;
+        };
+        let promoted_is_newer = entry
+            .current_head_id
+            .as_ref()
+            .and_then(|current_head_id| {
+                runtime_snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .find(|announcement| {
+                        announcement.head.study_id == entry.study_id
+                            && announcement.head.experiment_id == entry.experiment_id
+                            && announcement.head.revision_id == entry.current_revision_id
+                            && &announcement.head.head_id == current_head_id
+                    })
+                    .map(|announcement| promoted_head.global_step >= announcement.head.global_step)
+            })
+            .unwrap_or(true);
+        if promoted_is_newer && entry.current_head_id.as_ref() != Some(&promoted_head.head_id) {
+            entry.current_head_id = Some(promoted_head.head_id);
+        }
+    }
 }
 
 pub(super) fn current_browser_leaderboard(

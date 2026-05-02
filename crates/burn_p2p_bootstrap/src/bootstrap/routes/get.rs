@@ -486,7 +486,12 @@ pub(crate) fn handle_get_route(
                 )?;
                 return Ok(true);
             }
-            let snapshot = current_browser_directory_snapshot(plan, auth_state.as_ref(), request)?;
+            let snapshot = current_browser_directory_snapshot(
+                plan,
+                Some(state),
+                auth_state.as_ref(),
+                request,
+            )?;
             let signed = sign_browser_snapshot(
                 plan,
                 admin_signer_peer_id,
@@ -595,12 +600,13 @@ pub(crate) fn handle_get_route(
             write_json(stream, &response)?;
         }
         ("GET", "/directory") => {
-            let entries = auth_state
-                .as_ref()
-                .map(|auth| auth_directory_entries(auth, request))
-                .transpose()?
-                .unwrap_or_default();
-            write_json(stream, &entries)?;
+            let snapshot = current_browser_directory_snapshot(
+                plan,
+                Some(state),
+                auth_state.as_ref(),
+                request,
+            )?;
+            write_json(stream, &snapshot.entries)?;
         }
         ("GET", "/trust") => {
             let auth = auth_state

@@ -1,5 +1,47 @@
 use super::shared::*;
 
+fn runtime_snapshot_with_control_plane(
+    now: chrono::DateTime<Utc>,
+    control_plane: burn_p2p::ControlPlaneSnapshot,
+) -> burn_p2p::NodeTelemetrySnapshot {
+    burn_p2p::NodeTelemetrySnapshot {
+        status: burn_p2p::RuntimeStatus::Running,
+        node_state: burn_p2p::NodeRuntimeState::IdleReady,
+        slot_states: Vec::new(),
+        lag_state: burn_p2p::LagState::Current,
+        head_lag_steps: 0,
+        lag_policy: burn_p2p::LagPolicy::default(),
+        network_id: Some(NetworkId::new("secure-demo")),
+        local_peer_id: Some(PeerId::new("bootstrap-authority")),
+        configured_roles: PeerRoleSet::default_trainer(),
+        connected_peers: 1,
+        connected_peer_ids: BTreeSet::new(),
+        observed_peer_ids: BTreeSet::new(),
+        known_peer_addresses: BTreeSet::new(),
+        runtime_boundary: None,
+        listen_addresses: Vec::new(),
+        control_plane,
+        recent_events: Vec::new(),
+        last_snapshot_peer_id: None,
+        last_snapshot: None,
+        admitted_peers: BTreeMap::new(),
+        rejected_peers: BTreeMap::new(),
+        peer_reputation: BTreeMap::new(),
+        minimum_revocation_epoch: None,
+        trust_bundle: None,
+        in_flight_transfers: BTreeMap::new(),
+        robustness_policy: None,
+        latest_cohort_robustness: None,
+        trust_scores: Vec::new(),
+        canary_reports: Vec::new(),
+        applied_control_cert_ids: BTreeSet::new(),
+        effective_limit_profile: None,
+        last_error: None,
+        started_at: now,
+        updated_at: now,
+    }
+}
+
 #[test]
 fn browser_portal_client_round_trips_against_live_http_router() {
     let temp = tempdir().expect("temp dir");
@@ -473,6 +515,169 @@ fn browser_portal_snapshot_includes_live_runtime_heads() {
             .await
             .expect("decode portal snapshot");
         assert_eq!(snapshot.heads, vec![runtime_head]);
+    });
+}
+
+#[test]
+fn signed_directory_prefers_live_promoted_head_over_static_auth_head() {
+    let temp = tempdir().expect("temp dir");
+    let mut auth_config = sample_auth_config(temp.path());
+    auth_config.directory_entries[0].current_head_id = Some(burn_p2p::HeadId::new("head-genesis"));
+    let auth = Arc::new(
+        build_auth_portal(
+            &auth_config,
+            NetworkId::new("secure-demo"),
+            Version::new(0, 1, 0),
+        )
+        .expect("build auth portal"),
+    );
+    let now = Utc::now();
+    let runtime_head = HeadDescriptor {
+        head_id: burn_p2p::HeadId::new("head-promoted"),
+        study_id: burn_p2p::StudyId::new("study-auth"),
+        experiment_id: burn_p2p::ExperimentId::new("exp-auth"),
+        revision_id: burn_p2p::RevisionId::new("rev-auth"),
+        artifact_id: burn_p2p::ArtifactId::new("artifact-promoted"),
+        parent_head_id: Some(burn_p2p::HeadId::new("head-genesis")),
+        global_step: 1,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let overlay = burn_p2p::ExperimentHandle {
+        network_id: NetworkId::new("secure-demo"),
+        study_id: runtime_head.study_id.clone(),
+        experiment_id: runtime_head.experiment_id.clone(),
+        revision_id: runtime_head.revision_id.clone(),
+    }
+    .overlay_set()
+    .expect("overlay set");
+    let runtime_snapshot = runtime_snapshot_with_control_plane(
+        now,
+        burn_p2p::ControlPlaneSnapshot {
+            head_announcements: vec![burn_p2p::HeadAnnouncement {
+                overlay: overlay.heads.clone(),
+                provider_peer_id: Some(PeerId::new("trainer-a")),
+                head: runtime_head.clone(),
+                announced_at: now,
+            }],
+            diffusion_promotion_certificate_announcements: vec![
+                burn_p2p::DiffusionPromotionCertificateAnnouncement {
+                    overlay: overlay.heads.clone(),
+                    certificate: burn_p2p::DiffusionPromotionCertificate {
+                        study_id: runtime_head.study_id.clone(),
+                        experiment_id: runtime_head.experiment_id.clone(),
+                        revision_id: runtime_head.revision_id.clone(),
+                        window_id: burn_p2p::WindowId(7),
+                        base_head_id: burn_p2p::HeadId::new("head-genesis"),
+                        merged_head_id: runtime_head.head_id.clone(),
+                        merged_artifact_id: runtime_head.artifact_id.clone(),
+                        promotion_mode: burn_p2p::HeadPromotionMode::DiffusionSteadyState,
+                        attesting_trainers: vec![PeerId::new("trainer-a")],
+                        attestation_ids: vec![ContentId::new("attestation-a")],
+                        attester_count: 1,
+                        cumulative_sample_weight: 1.0,
+                        settled_at: now,
+                        promoter_peer_id: PeerId::new("trainer-a"),
+                    },
+                    announced_at: now,
+                },
+            ],
+            ..burn_p2p::ControlPlaneSnapshot::default()
+        },
+    );
+    let context = HttpServerContext {
+        plan: Arc::new(sample_spec().plan().expect("bootstrap plan")),
+        state: Arc::new(Mutex::new(BootstrapAdminState {
+            runtime_snapshot: Some(runtime_snapshot),
+            ..BootstrapAdminState::default()
+        })),
+        config: Arc::new(Mutex::new(BootstrapDaemonConfig {
+            spec: sample_spec(),
+            http_bind_addr: None,
+            admin_token: None,
+            allow_dev_admin_token: false,
+            optional_services: BootstrapOptionalServicesConfig::default(),
+            remaining_work_units: None,
+            admin_signer_peer_id: Some(PeerId::new("bootstrap-authority")),
+            bootstrap_peer: None,
+            embedded_runtime: None,
+            auth: None,
+            operator_state_backend: None,
+            artifact_publication: None,
+        })),
+        config_path: Arc::new(temp.path().join("browser-promoted-directory.json")),
+        admin_token: None,
+        allow_dev_admin_token: false,
+        remaining_work_units: None,
+        admin_signer_peer_id: PeerId::new("bootstrap-authority"),
+        auth_state: Some(auth),
+        control_handle: None,
+    };
+    let server = HttpTestServer::spawn(context);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    runtime.block_on(async move {
+        let client = reqwest::Client::new();
+        let login: serde_json::Value = client
+            .post(format!("{}/login/static", server.base_url()))
+            .json(&serde_json::json!({
+                "network_id": "secure-demo",
+                "principal_hint": "alice",
+                "requested_scopes": [
+                    "Connect",
+                    "Discover",
+                    {"Train": {"experiment_id": "exp-auth"}},
+                ],
+            }))
+            .send()
+            .await
+            .expect("begin static login")
+            .error_for_status()
+            .expect("begin static login status")
+            .json()
+            .await
+            .expect("decode static login");
+        let session: serde_json::Value = client
+            .post(format!("{}/callback/static", server.base_url()))
+            .json(&serde_json::json!({
+                "login_id": login["login_id"],
+                "state": login["state"],
+                "principal_id": "alice",
+            }))
+            .send()
+            .await
+            .expect("complete static login")
+            .error_for_status()
+            .expect("complete static login status")
+            .json()
+            .await
+            .expect("decode static session");
+        let session_id = session["session_id"].as_str().expect("session id string");
+
+        let signed_directory: burn_p2p_core::SignedPayload<
+            burn_p2p_core::SchemaEnvelope<burn_p2p_bootstrap::BrowserDirectorySnapshot>,
+        > = client
+            .get(format!("{}/directory/signed", server.base_url()))
+            .header("x-session-id", session_id)
+            .send()
+            .await
+            .expect("fetch signed directory")
+            .error_for_status()
+            .expect("signed directory status")
+            .json()
+            .await
+            .expect("decode signed directory");
+
+        assert_eq!(
+            signed_directory.payload.payload.entries[0]
+                .current_head_id
+                .as_ref()
+                .map(|head_id| head_id.as_str()),
+            Some("head-promoted")
+        );
     });
 }
 

@@ -438,6 +438,57 @@ fn diffusion_steady_state_windows_clear_reducers_and_validators() {
 }
 
 #[test]
+fn latest_promoted_head_from_control_plane_uses_diffusion_certificate() {
+    let experiment = test_experiment_handle();
+    let now = Utc::now();
+    let head = HeadDescriptor {
+        head_id: HeadId::new("head-promoted"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-promoted"),
+        parent_head_id: Some(HeadId::new("head-base")),
+        global_step: 2,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let mut snapshot = ControlPlaneSnapshot::default();
+    snapshot.head_announcements.push(HeadAnnouncement {
+        overlay: experiment.overlay_set().expect("overlay set").heads,
+        provider_peer_id: Some(PeerId::new("trainer-a")),
+        head: head.clone(),
+        announced_at: now,
+    });
+    snapshot.diffusion_promotion_certificate_announcements.push(
+        DiffusionPromotionCertificateAnnouncement {
+            overlay: experiment.overlay_set().expect("overlay set").heads,
+            certificate: DiffusionPromotionCertificate {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                window_id: WindowId(7),
+                base_head_id: HeadId::new("head-base"),
+                merged_head_id: head.head_id.clone(),
+                merged_artifact_id: head.artifact_id.clone(),
+                promotion_mode: HeadPromotionMode::DiffusionSteadyState,
+                attesting_trainers: vec![PeerId::new("trainer-a")],
+                attestation_ids: vec![ContentId::new("attestation-a")],
+                attester_count: 1,
+                cumulative_sample_weight: 1.0,
+                settled_at: now,
+                promoter_peer_id: PeerId::new("trainer-a"),
+            },
+            announced_at: now,
+        },
+    );
+
+    let promoted =
+        latest_promoted_head_from_control_plane(&snapshot, Some(&PeerId::new("edge")), &experiment);
+
+    assert_eq!(promoted, Some((PeerId::new("trainer-a"), head)));
+}
+
+#[test]
 fn diffusion_steady_state_rejects_reducer_centric_strategies() {
     let experiment = test_experiment_handle();
     let policy = MergeTopologyPolicy {

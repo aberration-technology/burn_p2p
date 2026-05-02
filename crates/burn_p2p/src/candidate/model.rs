@@ -52,14 +52,25 @@ where
     )?;
     let (evaluation, canary_report) = if args.evaluate_candidates {
         let evaluation = project.evaluate(&model, EvalSplit::Validation);
-        let canary_report = Some(build_validation_canary_report(
-            args.experiment,
-            args.current_head,
-            &head,
-            &evaluation,
-            args.canary_threshold,
-            2,
-        )?);
+        let canary_report = Some(match args.baseline_metrics {
+            Some(baseline_metrics) => build_validation_canary_report_against_baseline(
+                args.experiment,
+                args.current_head,
+                baseline_metrics,
+                &head,
+                &evaluation,
+                args.canary_threshold,
+                2,
+            )?,
+            None => build_validation_canary_report(
+                args.experiment,
+                args.current_head,
+                &head,
+                &evaluation,
+                args.canary_threshold,
+                2,
+            )?,
+        });
         (evaluation, canary_report)
     } else {
         (empty_metric_report(), None)
@@ -109,10 +120,27 @@ pub(crate) fn select_validation_head<P>(
     fallback_best_index: usize,
     merge_policy: MergePolicy,
     local_peer_id: &PeerId,
+    allow_single_candidate_direct_promotion: bool,
 ) -> anyhow::Result<(PeerId, HeadDescriptor, MetricReport)>
 where
     P: P2pWorkload,
 {
+    let expected_global_step = current_head
+        .as_ref()
+        .map(|(_, head)| head.global_step + 1)
+        .unwrap_or(0);
+    if allow_single_candidate_direct_promotion
+        && let [candidate] = candidate_models
+        && candidate.head.parent_head_id.as_ref() == Some(base_head_id)
+        && candidate.head.global_step == expected_global_step
+    {
+        return Ok((
+            candidate.peer_id.clone(),
+            candidate.head.clone(),
+            candidate.evaluation.clone(),
+        ));
+    }
+
     let merged_model = {
         let merge_candidates = candidate_models
             .iter()
@@ -156,10 +184,7 @@ where
             revision_id: experiment.revision_id.clone(),
             artifact_id: artifact.artifact_id.clone(),
             parent_head_id: Some(base_head_id.clone()),
-            global_step: current_head
-                .as_ref()
-                .map(|(_, head)| head.global_step + 1)
-                .unwrap_or(0),
+            global_step: expected_global_step,
             created_at: Utc::now(),
             metrics: evaluation.metrics.clone(),
         };
@@ -177,10 +202,6 @@ where
 
     let candidate = &candidate_models[fallback_best_index];
     let evaluation = project.evaluate(candidate.model, EvalSplit::Validation);
-    let expected_global_step = current_head
-        .as_ref()
-        .map(|(_, head)| head.global_step + 1)
-        .unwrap_or(0);
     if candidate.head.parent_head_id.as_ref() == Some(base_head_id)
         && candidate.head.global_step == expected_global_step
     {

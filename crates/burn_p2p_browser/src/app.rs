@@ -1,5 +1,6 @@
 use burn_p2p::{
-    BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, RevisionId,
+    BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, NetworkId,
+    RevisionId,
 };
 use burn_p2p_metrics::{
     MetricsCatchupBundle, derive_canonical_head_adoption_curves,
@@ -295,6 +296,28 @@ impl BrowserAppModel {
         self.runtime.storage.active_training_lease.as_ref()
     }
 
+    /// Returns the currently usable training lease, including a deterministic browser-local lease
+    /// when the active assignment and cached microshards are ready.
+    pub fn effective_active_training_lease(&self) -> Option<crate::WorkloadTrainingLease> {
+        if let Some(lease) = self.active_training_lease() {
+            return Some(lease.clone());
+        }
+        let network_id = self
+            .runtime
+            .config
+            .as_ref()
+            .map(|config| config.network_id.clone())
+            .or_else(|| {
+                self.runtime
+                    .storage
+                    .directory_snapshot()
+                    .map(|snapshot| snapshot.network_id.clone())
+            })?;
+        self.runtime
+            .storage
+            .effective_active_training_lease(&network_id)
+    }
+
     /// Builds the static-browser-app client view from local browser state.
     pub fn view(&self, bindings: &BrowserUiBindings) -> BrowserAppClientView {
         let network_id = self
@@ -378,6 +401,8 @@ impl BrowserAppModel {
         .flatten();
         let active_head_artifact_source =
             browser_artifact_source_label(&swarm_status.artifact_source);
+        let effective_training_lease =
+            storage.effective_active_training_lease(&NetworkId::new(network_id.clone()));
 
         BrowserAppClientView {
             network_id,
@@ -442,7 +467,7 @@ impl BrowserAppModel {
                         assignment.revision_id.as_str()
                     )
                 }),
-                active_training_lease: active_training_lease_summary(storage),
+                active_training_lease: active_training_lease_summary(&effective_training_lease),
                 slice_status: training_slice_status(&runtime_state, storage, latest_peer_window),
                 latest_head_id: storage
                     .last_head_id
@@ -829,6 +854,12 @@ impl BrowserAppController {
     /// Returns the currently persisted active training lease, when available.
     pub fn active_training_lease(&self) -> Option<&crate::WorkloadTrainingLease> {
         self.model.active_training_lease()
+    }
+
+    /// Returns the currently usable training lease, including a deterministic browser-local lease
+    /// when the active assignment and cached microshards are ready.
+    pub fn effective_active_training_lease(&self) -> Option<crate::WorkloadTrainingLease> {
+        self.model.effective_active_training_lease()
     }
 }
 
@@ -2145,18 +2176,15 @@ fn training_slice_status(
 }
 
 fn active_training_lease_summary(
-    storage: &BrowserStorageSnapshot,
+    lease: &Option<crate::WorkloadTrainingLease>,
 ) -> Option<BrowserAppTrainingLeaseView> {
-    storage
-        .active_training_lease
-        .as_ref()
-        .map(|lease| BrowserAppTrainingLeaseView {
-            lease_id: lease.lease_id.as_str().to_owned(),
-            window_id: lease.window_id.0,
-            dataset_view_id: lease.dataset_view_id.as_str().to_owned(),
-            assignment_hash: lease.assignment_hash.as_str().to_owned(),
-            microshard_count: lease.microshards.len(),
-        })
+    lease.as_ref().map(|lease| BrowserAppTrainingLeaseView {
+        lease_id: lease.lease_id.as_str().to_owned(),
+        window_id: lease.window_id.0,
+        dataset_view_id: lease.dataset_view_id.as_str().to_owned(),
+        assignment_hash: lease.assignment_hash.as_str().to_owned(),
+        microshard_count: lease.microshards.len(),
+    })
 }
 
 fn plural_suffix(count: usize) -> &'static str {

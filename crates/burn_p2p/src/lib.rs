@@ -180,6 +180,7 @@ pub(crate) use node::TrainingPrefetchTask;
 pub(crate) use node::prioritized_artifact_source_peers;
 pub use node::{Node, NodeBuilder, RunningNode};
 pub use project_family::{P2pProjectFamily, SelectedWorkloadProject, SingleWorkloadProjectFamily};
+pub use runtime_support::latest_promoted_head_from_control_plane;
 use runtime_support::{
     LagAssessment, assess_head_lag, cached_connected_snapshots, connected_peer_ids,
     effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch, effective_limit_profile,

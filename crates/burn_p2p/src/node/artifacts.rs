@@ -1,4 +1,11 @@
 use super::*;
+use crate::runtime_support::trace_to_stderr;
+
+const ARTIFACT_TRACE_ENV: &str = "BURN_P2P_ARTIFACT_TRACE";
+
+fn artifact_trace(args: std::fmt::Arguments<'_>) {
+    trace_to_stderr(ARTIFACT_TRACE_ENV, "burn_p2p artifact", args);
+}
 
 impl<P> RunningNode<P> {
     /// Performs the artifact store operation.
@@ -18,6 +25,12 @@ impl<P> RunningNode<P> {
             .artifact_store()
             .ok_or_else(|| anyhow::anyhow!("artifact publishing requires configured storage"))?;
         let descriptor = store.load_manifest(artifact_id)?;
+        artifact_trace(format_args!(
+            "publish-start artifact={} chunks={}",
+            descriptor.artifact_id.as_str(),
+            descriptor.chunks.len()
+        ));
+        let started = Instant::now();
         let chunks = descriptor
             .chunks
             .iter()
@@ -31,6 +44,12 @@ impl<P> RunningNode<P> {
             })
             .collect::<Result<Vec<_>, CheckpointError>>()?;
         self.control.publish_artifact(descriptor.clone(), chunks)?;
+        artifact_trace(format_args!(
+            "publish-complete artifact={} chunks={} elapsed_ms={}",
+            descriptor.artifact_id.as_str(),
+            descriptor.chunks.len(),
+            started.elapsed().as_millis()
+        ));
         Ok(descriptor)
     }
 
@@ -110,9 +129,16 @@ impl<P> RunningNode<P> {
         if store.has_complete_artifact(&artifact_id)? {
             let descriptor = store.load_manifest(&artifact_id)?;
             self.clear_transfer_state(&artifact_id);
+            artifact_trace(format_args!(
+                "sync-skip-complete peer={} artifact={} chunks={}",
+                peer_id.as_str(),
+                artifact_id.as_str(),
+                descriptor.chunks.len()
+            ));
             return Ok(descriptor);
         }
 
+        let sync_started = Instant::now();
         let telemetry_snapshot = self.telemetry().snapshot();
         let connected_peers = connected_peer_ids(&telemetry_snapshot)
             .into_iter()
@@ -130,6 +156,18 @@ impl<P> RunningNode<P> {
             &previous_source_peers,
             &connected_peers,
         );
+        artifact_trace(format_args!(
+            "sync-start peer={} artifact={} budget_ms={} source_peers={:?} connected_peers={}",
+            peer_id.as_str(),
+            artifact_id.as_str(),
+            artifact_provider_locate_timeout.as_millis(),
+            transfer_state
+                .source_peers
+                .iter()
+                .map(|peer_id| peer_id.as_str())
+                .collect::<Vec<_>>(),
+            connected_peers.len()
+        ));
         if transfer_state.descriptor.is_none() && store.has_manifest(&artifact_id) {
             transfer_state.descriptor = Some(store.load_manifest(&artifact_id)?);
             transfer_state.set_phase(ArtifactTransferPhase::FetchingChunks);
@@ -219,6 +257,13 @@ impl<P> RunningNode<P> {
                         Ok(Some(found)) => {
                             candidate_manifest_results
                                 .insert(candidate.clone(), "found".to_owned());
+                            artifact_trace(format_args!(
+                                "manifest-found artifact={} provider={} chunks={} elapsed_ms={}",
+                                artifact_id.as_str(),
+                                candidate.as_str(),
+                                found.chunks.len(),
+                                sync_started.elapsed().as_millis()
+                            ));
                             selected_provider = Some(candidate.clone());
                             descriptor = Some(found.clone());
                             transfer_state.set_provider(candidate.clone(), found);
@@ -386,6 +431,17 @@ impl<P> RunningNode<P> {
 
             if !stored {
                 let snapshot = self.telemetry().snapshot();
+                artifact_trace(format_args!(
+                    "chunk-failed artifact={} chunk={} provider_candidates={:?} attempts={:?} last_results={:?}",
+                    descriptor.artifact_id.as_str(),
+                    chunk.chunk_id.as_str(),
+                    provider_candidates
+                        .iter()
+                        .map(|peer_id| peer_id.as_str())
+                        .collect::<Vec<_>>(),
+                    candidate_attempt_counts,
+                    candidate_last_results
+                ));
                 return Err(anyhow::anyhow!(
                     "no connected peer provided chunk {} for artifact {}; provider_candidates={:?}; candidate_attempts={:?}; candidate_last_results={:?}; connected_peers={:?}; peer_directory={:?}",
                     chunk.chunk_id.as_str(),
@@ -422,6 +478,12 @@ impl<P> RunningNode<P> {
         store.store_manifest(&descriptor)?;
         self.publish_artifact_from_store(&descriptor.artifact_id)?;
         self.clear_transfer_state(&descriptor.artifact_id);
+        artifact_trace(format_args!(
+            "sync-complete artifact={} provider={} chunks={}",
+            descriptor.artifact_id.as_str(),
+            provider.as_str(),
+            descriptor.chunks.len()
+        ));
         Ok(descriptor)
     }
 

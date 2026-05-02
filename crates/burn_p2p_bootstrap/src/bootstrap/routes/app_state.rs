@@ -8,7 +8,7 @@ pub(crate) fn current_browser_portal_snapshot(
     request: &HttpRequest,
     remaining_work_units: Option<u64>,
 ) -> Result<burn_p2p_bootstrap::BrowserEdgeSnapshot, Box<dyn std::error::Error>> {
-    let directory = current_browser_directory_snapshot(plan, auth_state, request)?;
+    let directory = current_browser_directory_snapshot(plan, Some(state), auth_state, request)?;
     let (
         protocol_major,
         minimum_client_version,

@@ -5405,6 +5405,65 @@ fn browser_app_model_projects_trainer_focused_client_view() {
     assert!(!view.viewer.experiments_preview.is_empty());
     assert!(!view.viewer.leaderboard_preview.is_empty());
     assert_eq!(model.active_training_lease(), Some(&lease));
+    assert_eq!(
+        model
+            .effective_active_training_lease()
+            .as_ref()
+            .map(|lease| lease.lease_id.as_str()),
+        Some("lease-browser")
+    );
+}
+
+#[test]
+fn browser_app_model_synthesizes_active_training_lease_from_cached_assignment() {
+    let mut runtime = trainer_runtime_with_assignment("exp-browser", "rev-browser", "view-browser");
+    runtime.storage.stored_certificate_peer_id = Some(PeerId::new("peer-browser"));
+    runtime
+        .storage
+        .remember_head_descriptor(browser_head_descriptor(
+            "head-browser",
+            "artifact-browser",
+            41,
+        ));
+    runtime
+        .storage
+        .remember_microshard(burn_p2p::MicroShardId::new("micro-browser-a"));
+    runtime
+        .storage
+        .remember_microshard(burn_p2p::MicroShardId::new("micro-browser-b"));
+
+    let model = BrowserAppModel::from_runtime(runtime);
+    let lease = model
+        .effective_active_training_lease()
+        .expect("synthetic lease");
+
+    assert!(lease.lease_id.as_str().starts_with("12"));
+    assert_eq!(lease.window_id, WindowId(42));
+    assert_eq!(lease.dataset_view_id.as_str(), "view-browser");
+    assert_eq!(
+        lease
+            .microshards
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["micro-browser-a", "micro-browser-b"]
+    );
+
+    let view = model.view(&BrowserUiBindings::new("https://edge.example"));
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.window_id),
+        Some(42)
+    );
+    assert_eq!(
+        view.training
+            .active_training_lease
+            .as_ref()
+            .map(|lease| lease.microshard_count),
+        Some(2)
+    );
 }
 
 #[test]
@@ -5634,6 +5693,13 @@ fn browser_app_controller_exposes_persisted_active_training_lease() {
     assert_eq!(
         controller
             .active_training_lease()
+            .map(|lease| lease.lease_id.as_str()),
+        Some("lease-browser")
+    );
+    assert_eq!(
+        controller
+            .effective_active_training_lease()
+            .as_ref()
             .map(|lease| lease.lease_id.as_str()),
         Some("lease-browser")
     );

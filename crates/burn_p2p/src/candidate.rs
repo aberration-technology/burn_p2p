@@ -1,5 +1,7 @@
 use super::*;
-use crate::candidate_screening::build_validation_canary_report;
+use crate::candidate_screening::{
+    build_validation_canary_report, build_validation_canary_report_against_baseline,
+};
 
 mod discovery;
 mod model;
@@ -55,6 +57,7 @@ pub(crate) struct ValidationCandidateLoadArgs<'a, D> {
     pub store: &'a FsArtifactStore,
     pub device: &'a D,
     pub current_head: &'a Option<(PeerId, HeadDescriptor)>,
+    pub baseline_metrics: Option<&'a BTreeMap<String, MetricValue>>,
     pub canary_threshold: f64,
     pub evaluate_candidates: bool,
 }

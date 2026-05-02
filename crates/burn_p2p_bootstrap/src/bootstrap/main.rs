@@ -16,10 +16,11 @@ use burn_p2p::{
     DatasetRegistration, DatasetSizing, EdgeAuthProvider, EdgeFeature, EdgeServiceManifest,
     EvalSplit, ExperimentDirectory, ExperimentDirectoryAnnouncement, ExperimentDirectoryEntry,
     FsArtifactStore, IdentityConnector, LoginRequest, MetricReport, MetricValue, MetricsMode,
-    NodeCertificateAuthority, NodeConfig, NodeEnrollmentRequest, OverlayTopic, P2pWorkload,
-    PatchOutcome, PatchSupport, PrincipalClaims, PrincipalId, PrincipalSession, ProfileMode,
-    RuntimePatch, ShardFetchManifest, SocialMode, StaticIdentityConnector, StaticPrincipalRecord,
-    TrainError, TrustedIssuer, WindowCtx, WindowReport,
+    NodeCertificateAuthority, NodeConfig, NodeEnrollmentRequest, NodeTelemetrySnapshot,
+    OverlayTopic, P2pWorkload, PatchOutcome, PatchSupport, PrincipalClaims, PrincipalId,
+    PrincipalSession, ProfileMode, RuntimePatch, ShardFetchManifest, SocialMode,
+    StaticIdentityConnector, StaticPrincipalRecord, TrainError, TrustedIssuer, WindowCtx,
+    WindowReport,
 };
 #[cfg(feature = "auth-external")]
 use burn_p2p_auth_external::ExternalProxyIdentityConnector;
