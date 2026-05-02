@@ -457,12 +457,42 @@ impl BrowserStorageSnapshot {
         })
     }
 
+    fn directory_entry_current_head<'a>(
+        snapshot: Option<&'a BrowserDirectorySnapshot>,
+        assignment: &BrowserStoredAssignment,
+    ) -> Option<&'a HeadId> {
+        snapshot
+            .and_then(|snapshot| {
+                snapshot.entries.iter().find(|entry| {
+                    entry.study_id == assignment.study_id
+                        && entry.experiment_id == assignment.experiment_id
+                        && entry.current_revision_id == assignment.revision_id
+                        && entry.current_head_id.is_some()
+                })
+            })
+            .and_then(|entry| entry.current_head_id.as_ref())
+    }
+
     /// Returns the canonical current head for the active assignment when the directory has one.
     pub fn active_assignment_current_head_id(&self) -> Option<&HeadId> {
         let assignment = self.active_assignment.as_ref()?;
-        self.directory_entry_for_assignment(assignment)
-            .filter(|entry| entry.current_revision_id == assignment.revision_id)
-            .and_then(|entry| entry.current_head_id.as_ref())
+        Self::directory_entry_current_head(
+            self.last_signed_directory_snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.payload.payload),
+            assignment,
+        )
+        .or_else(|| {
+            Self::directory_entry_current_head(
+                self.last_swarm_directory_snapshot.as_ref(),
+                assignment,
+            )
+        })
+        .or_else(|| {
+            self.directory_entry_for_assignment(assignment)
+                .filter(|entry| entry.current_revision_id == assignment.revision_id)
+                .and_then(|entry| entry.current_head_id.as_ref())
+        })
     }
 
     /// Returns the current directory revision when the active assignment is still visible.

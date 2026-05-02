@@ -1883,6 +1883,62 @@ fn worker_runtime_prefers_directory_current_head_over_newer_candidate() {
 }
 
 #[test]
+fn worker_runtime_uses_swarm_directory_current_head_when_signed_directory_is_stale() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let mut signed_entry =
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "view-browser");
+    signed_entry.current_head_id = None;
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![signed_entry]));
+
+    let mut swarm_entry =
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "view-browser");
+    swarm_entry.current_head_id = Some(HeadId::new("head-canonical"));
+    runtime
+        .storage
+        .remember_swarm_directory_snapshot(browser_directory_snapshot(vec![swarm_entry]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+
+    runtime.apply_head_snapshot(&[
+        browser_head_descriptor("head-candidate", "artifact-candidate", 1),
+        browser_head_descriptor("head-canonical", "artifact-canonical", 0),
+    ]);
+
+    assert_eq!(
+        runtime.storage.last_head_id,
+        Some(HeadId::new("head-canonical"))
+    );
+    assert_eq!(
+        runtime
+            .storage
+            .last_head_descriptor
+            .as_ref()
+            .map(|head| head.artifact_id.as_str()),
+        Some("artifact-canonical")
+    );
+}
+
+#[test]
 fn worker_metrics_sync_does_not_promote_uncanonical_candidate_head() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig {

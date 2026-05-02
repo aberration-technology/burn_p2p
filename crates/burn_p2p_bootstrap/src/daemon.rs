@@ -196,15 +196,22 @@ impl BootstrapPeerDaemon {
             shutdown_requested,
             worker,
         } = self;
+        let controlled_shutdown = shutdown_requested.load(Ordering::SeqCst);
         drop(control);
         drop(telemetry);
         drop(admin_state);
         drop(shutdown_requested);
 
         if let Some(worker) = worker {
-            worker
+            let result = worker
                 .join()
-                .map_err(|_| anyhow::anyhow!("bootstrap peer daemon panicked"))??;
+                .map_err(|_| anyhow::anyhow!("bootstrap peer daemon panicked"))?;
+            if let Err(error) = result {
+                if controlled_shutdown && is_controlled_shutdown_runtime_error(&error) {
+                    return Ok(());
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -285,18 +292,30 @@ impl BootstrapEmbeddedDaemon {
             shutdown_requested,
             worker,
         } = self;
+        let controlled_shutdown = shutdown_requested.load(Ordering::SeqCst);
         drop(control);
         drop(telemetry);
         drop(admin_state);
         drop(shutdown_requested);
 
         if let Some(worker) = worker {
-            worker
+            let result = worker
                 .join()
-                .map_err(|_| anyhow::anyhow!("bootstrap embedded daemon panicked"))??;
+                .map_err(|_| anyhow::anyhow!("bootstrap embedded daemon panicked"))?;
+            if let Err(error) = result {
+                if controlled_shutdown && is_controlled_shutdown_runtime_error(&error) {
+                    return Ok(());
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
+}
+
+fn is_controlled_shutdown_runtime_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("sending on a closed channel") || message.contains("reply channel closed")
 }
 
 impl BootstrapPlan {
@@ -734,5 +753,18 @@ mod tests {
         let builder = apply_runtime_node_config(burn_p2p::NodeBuilder::new(()), &plan, &config);
 
         assert_eq!(builder.config().external_addresses, vec![external]);
+    }
+
+    #[test]
+    fn controlled_shutdown_runtime_filter_is_narrow() {
+        let closed_channel =
+            anyhow::anyhow!("failed to subscribe topic: sending on a closed channel");
+        assert!(is_controlled_shutdown_runtime_error(&closed_channel));
+
+        let closed_reply = anyhow::anyhow!("sync runtime reply channel closed");
+        assert!(is_controlled_shutdown_runtime_error(&closed_reply));
+
+        let panic = anyhow::anyhow!("runtime thread panicked");
+        assert!(!is_controlled_shutdown_runtime_error(&panic));
     }
 }
