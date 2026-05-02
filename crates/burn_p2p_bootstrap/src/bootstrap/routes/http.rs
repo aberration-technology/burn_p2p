@@ -143,6 +143,9 @@ pub(crate) fn read_request(
     let Some(request_line) = read_bounded_line(&mut reader, MAX_REQUEST_LINE_BYTES)? else {
         return Ok(None);
     };
+    if request_line.trim().is_empty() {
+        return Ok(None);
+    }
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().ok_or("missing method")?.to_owned();
@@ -338,6 +341,29 @@ pub(crate) fn write_stream_response_with_headers<R: std::io::Read>(
         content_length,
         &mut reader,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn read_request_ignores_blank_probe_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).expect("connect client");
+            stream.write_all(b"\r\n").expect("write blank request line");
+        });
+        let (stream, _) = listener.accept().expect("accept client");
+
+        let request = read_request(&stream).expect("read request");
+
+        assert!(request.is_none());
+        client.join().expect("join client");
+    }
 }
 
 #[cfg(feature = "artifact-publish")]
