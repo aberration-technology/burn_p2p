@@ -688,6 +688,15 @@ fn family_runtime_multi_node_lifecycle_rollout_prewarms_before_activation() {
     let initial_directory = vec![switching_directory_entry(
         "exp-a", "rev-a", "compiled", "schema-a", "view-a", "Switch A",
     )];
+    let target_entry = switching_directory_entry(
+        "exp-a",
+        "rev-b",
+        "alternate",
+        "schema-b",
+        "view-b",
+        "Switch A Rev B",
+    );
+    let provider_directory = vec![initial_directory[0].clone(), target_entry.clone()];
     let provider_storage = tempdir().expect("provider lifecycle storage");
     let mut provider = NodeBuilder::new(switching_test_family())
         .for_workload(crate::WorkloadId::new("compiled"))
@@ -695,7 +704,7 @@ fn family_runtime_multi_node_lifecycle_rollout_prewarms_before_activation() {
         .with_network(switching_network_manifest())
         .expect("network binding")
         .with_storage(StorageConfig::new(provider_storage.path().to_path_buf()))
-        .with_auth(crate::AuthConfig::new().with_experiment_directory(initial_directory.clone()))
+        .with_auth(crate::AuthConfig::new().with_experiment_directory(provider_directory))
         .spawn()
         .expect("spawn provider lifecycle runtime");
     let provider_telemetry = provider.telemetry();
@@ -750,6 +759,21 @@ fn family_runtime_multi_node_lifecycle_rollout_prewarms_before_activation() {
         crate::ExperimentId::new("exp-a"),
         crate::RevisionId::new("rev-b"),
     );
+    let control = provider.control_handle();
+    control
+        .publish_directory(ExperimentDirectoryAnnouncement {
+            network_id: mainnet().genesis.network_id.clone(),
+            entries: vec![target_entry.clone()],
+            announced_at: Utc::now(),
+        })
+        .expect("publish rollout directory entry");
+    provider
+        .switch_experiment(
+            crate::StudyId::new("study-switch"),
+            crate::ExperimentId::new("exp-a"),
+            crate::RevisionId::new("rev-b"),
+        )
+        .expect("provider target experiment selection");
     let target_head = provider
         .initialize_local_head(&target_experiment)
         .expect("initialize provider target head");
@@ -759,23 +783,6 @@ fn family_runtime_multi_node_lifecycle_rollout_prewarms_before_activation() {
     follower
         .ingest_peer_snapshot(&provider_peer_id, Duration::from_secs(5))
         .expect("ingest provider snapshot");
-
-    let target_entry = switching_directory_entry(
-        "exp-a",
-        "rev-b",
-        "alternate",
-        "schema-b",
-        "view-b",
-        "Switch A Rev B",
-    );
-    let control = provider.control_handle();
-    control
-        .publish_directory(ExperimentDirectoryAnnouncement {
-            network_id: mainnet().genesis.network_id.clone(),
-            entries: vec![target_entry.clone()],
-            announced_at: Utc::now(),
-        })
-        .expect("publish rollout directory entry");
 
     for (plan_epoch, phase) in [
         (1_u64, burn_p2p_experiment::ExperimentLifecyclePhase::Staged),

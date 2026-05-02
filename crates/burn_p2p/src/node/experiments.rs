@@ -322,7 +322,10 @@ impl<P> RunningNode<P> {
     pub fn sync_experiment_head(
         &self,
         experiment: &ExperimentHandle,
-    ) -> anyhow::Result<Option<HeadDescriptor>> {
+    ) -> anyhow::Result<Option<HeadDescriptor>>
+    where
+        P: P2pWorkload,
+    {
         const HEAD_SYNC_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(750);
         // Head adoption may require pulling a newly promoted artifact from the
         // network. Give larger runtime payloads enough room to materialize
@@ -441,6 +444,7 @@ impl<P> RunningNode<P> {
                 std::thread::sleep(HEAD_SYNC_POLL_INTERVAL);
             }
         }
+        self.ensure_head_artifact_matches_workload(&store, experiment, &head)?;
         persist_head_state(&storage, experiment, &head)?;
         persist_json(storage.scoped_head_path(&head.head_id), &head)?;
         store.pin_head(&head.head_id)?;
@@ -476,7 +480,10 @@ impl<P> RunningNode<P> {
         &self,
         experiment: &ExperimentHandle,
         timeout: Duration,
-    ) -> anyhow::Result<HeadDescriptor> {
+    ) -> anyhow::Result<HeadDescriptor>
+    where
+        P: P2pWorkload,
+    {
         const HEAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         let deadline = Instant::now() + timeout;
@@ -502,7 +509,10 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
         expected_head: &HeadDescriptor,
         timeout: Duration,
-    ) -> anyhow::Result<HeadDescriptor> {
+    ) -> anyhow::Result<HeadDescriptor>
+    where
+        P: P2pWorkload,
+    {
         const HEAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         if self.adopt_known_head_if_present(experiment, expected_head)? {
@@ -613,7 +623,10 @@ impl<P> RunningNode<P> {
         &self,
         experiment: &ExperimentHandle,
         head: &HeadDescriptor,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<bool>
+    where
+        P: P2pWorkload,
+    {
         let Some(storage) = self.config().storage.as_ref().cloned() else {
             return Ok(false);
         };
@@ -622,6 +635,7 @@ impl<P> RunningNode<P> {
         if !store.has_complete_artifact(&head.artifact_id)? {
             return Ok(false);
         }
+        self.ensure_head_artifact_matches_workload(&store, experiment, head)?;
 
         persist_head_state(&storage, experiment, head)?;
         persist_json(storage.scoped_head_path(&head.head_id), head)?;
@@ -959,7 +973,10 @@ impl<P> RunningNode<P> {
     pub fn restore_experiment_head(
         &self,
         experiment: &ExperimentHandle,
-    ) -> anyhow::Result<Option<HeadDescriptor>> {
+    ) -> anyhow::Result<Option<HeadDescriptor>>
+    where
+        P: P2pWorkload,
+    {
         let assignment = SlotAssignmentState::from_experiment(experiment);
         self.persist_primary_assignment(&assignment)?;
         self.update_runtime_state(
@@ -974,6 +991,13 @@ impl<P> RunningNode<P> {
             return Ok(None);
         };
 
+        let store = FsArtifactStore::new(storage.root.clone());
+        if self
+            .head_artifact_schema_mismatch(&store, experiment, &head)?
+            .is_some()
+        {
+            return Ok(None);
+        }
         self.publish_artifact_from_store(&head.artifact_id)?;
         let local_peer_id = self
             .telemetry()
@@ -998,5 +1022,77 @@ impl<P> RunningNode<P> {
         })?;
         self.set_experiment_idle_state(experiment, NodeRuntimeState::IdleReady);
         Ok(Some(head))
+    }
+
+    fn ensure_head_artifact_matches_workload(
+        &self,
+        store: &FsArtifactStore,
+        experiment: &ExperimentHandle,
+        head: &HeadDescriptor,
+    ) -> anyhow::Result<()>
+    where
+        P: P2pWorkload,
+    {
+        if let Some((actual, expected)) =
+            self.head_artifact_schema_mismatch(store, experiment, head)?
+        {
+            anyhow::bail!(
+                "head artifact {} for head {} has model schema {}, but workload expects {}; ignoring incompatible head",
+                head.artifact_id.as_str(),
+                head.head_id.as_str(),
+                actual.as_str(),
+                expected.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    fn head_artifact_schema_mismatch(
+        &self,
+        store: &FsArtifactStore,
+        experiment: &ExperimentHandle,
+        head: &HeadDescriptor,
+    ) -> anyhow::Result<Option<(ContentId, ContentId)>>
+    where
+        P: P2pWorkload,
+    {
+        let descriptor = store.load_manifest(&head.artifact_id)?;
+        let expected = self.expected_model_schema_hash_for_experiment(experiment)?;
+        if descriptor.model_schema_hash != expected {
+            return Ok(Some((descriptor.model_schema_hash, expected)));
+        }
+        Ok(None)
+    }
+
+    fn expected_model_schema_hash_for_experiment(
+        &self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<ContentId>
+    where
+        P: P2pWorkload,
+    {
+        let current = self.current_workload_model_schema_hash()?;
+        let selected_workload_id = self.config().selected_workload_id.as_ref();
+        if let Some(entry) = self.list_experiments().into_iter().rev().find(|entry| {
+            entry.study_id == experiment.study_id
+                && entry.experiment_id == experiment.experiment_id
+                && entry.current_revision_id == experiment.revision_id
+        }) && selected_workload_id.is_some_and(|workload_id| workload_id != &entry.workload_id)
+        {
+            return Ok(entry.model_schema_hash);
+        }
+        Ok(current)
+    }
+
+    fn current_workload_model_schema_hash(&self) -> anyhow::Result<ContentId>
+    where
+        P: P2pWorkload,
+    {
+        Ok(self
+            .node
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("running node is missing its prepared workload"))?
+            .project
+            .model_schema_hash())
     }
 }

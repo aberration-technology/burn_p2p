@@ -401,6 +401,150 @@ fn adopt_known_head_if_present_promotes_materialized_head() {
 }
 
 #[test]
+fn restore_rejects_head_artifact_with_mismatched_model_schema() {
+    let _guard = native_swarm_test_guard();
+    let storage_root = std::env::temp_dir().join(format!(
+        "burn-p2p-schema-restore-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let experiment = experiment();
+
+    let mut original =
+        NodeBuilder::new(switching_test_workload("compiled", "schema-a", "format-a"))
+            .with_mainnet(mainnet().genesis.clone())
+            .with_listen_address(loopback_listen_address())
+            .with_storage(StorageConfig::new(storage_root.clone()))
+            .spawn()
+            .expect("original spawn");
+    let original_telemetry = original.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || original_telemetry.snapshot().local_peer_id.is_some(),
+        "original did not start",
+    );
+    let original_head = original
+        .initialize_local_head(&experiment)
+        .expect("original genesis head");
+    original.shutdown().expect("original shutdown");
+    let _ = original.await_termination().expect("original termination");
+
+    let restored_with_new_schema =
+        NodeBuilder::new(switching_test_workload("compiled", "schema-b", "format-a"))
+            .with_mainnet(mainnet().genesis.clone())
+            .with_listen_address(loopback_listen_address())
+            .with_storage(StorageConfig::new(storage_root))
+            .spawn()
+            .expect("new schema spawn");
+    let restored_telemetry = restored_with_new_schema.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || restored_telemetry.snapshot().local_peer_id.is_some(),
+        "new schema node did not start",
+    );
+
+    let restored_head = restored_with_new_schema
+        .restore_experiment_head(&experiment)
+        .expect("stale schema restore should be recoverable");
+    assert!(
+        restored_head.is_none(),
+        "stale schema restore should be ignored so a fresh head can be initialized"
+    );
+    assert_eq!(
+        original_head.global_step, 0,
+        "test should exercise a genesis head restore"
+    );
+
+    restored_with_new_schema
+        .shutdown()
+        .expect("new schema shutdown");
+    let _ = restored_with_new_schema
+        .await_termination()
+        .expect("new schema termination");
+}
+
+#[test]
+fn sync_rejects_remote_head_artifact_with_mismatched_model_schema() {
+    let _guard = native_swarm_test_guard();
+    let leader_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-schema-sync-leader-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let follower_storage = std::env::temp_dir().join(format!(
+        "burn-p2p-schema-sync-follower-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let experiment = experiment();
+
+    let mut leader = NodeBuilder::new(switching_test_workload("compiled", "schema-a", "format-a"))
+        .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(loopback_listen_address())
+        .with_storage(StorageConfig::new(leader_storage))
+        .spawn()
+        .expect("leader spawn");
+    let leader_telemetry = leader.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || leader_telemetry.snapshot().local_peer_id.is_some(),
+        "leader did not start",
+    );
+    let _ = leader
+        .initialize_local_head(&experiment)
+        .expect("leader genesis head");
+    let leader_addr = leader
+        .config()
+        .listen_addresses
+        .first()
+        .expect("leader listen address")
+        .clone();
+
+    let follower = NodeBuilder::new(switching_test_workload("compiled", "schema-b", "format-a"))
+        .with_mainnet(mainnet().genesis.clone())
+        .with_listen_address(loopback_listen_address())
+        .with_bootstrap_peer(leader_addr)
+        .with_storage(StorageConfig::new(follower_storage))
+        .spawn()
+        .expect("follower spawn");
+    let follower_telemetry = follower.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || follower_telemetry.snapshot().connected_peers >= 1,
+        "follower did not connect",
+    );
+
+    let last_error = Arc::new(Mutex::new(None::<String>));
+    wait_for(
+        Duration::from_secs(10),
+        || match follower.sync_experiment_head(&experiment) {
+            Ok(Some(head)) => panic!("follower adopted incompatible head {}", head.head_id),
+            Ok(None) => false,
+            Err(error) => {
+                *last_error.lock().expect("last error lock") = Some(error.to_string());
+                true
+            }
+        },
+        "follower did not reject incompatible remote head",
+    );
+    let error = last_error
+        .lock()
+        .expect("last error lock")
+        .clone()
+        .expect("schema mismatch error");
+    assert!(
+        error.contains("has model schema schema-a"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("workload expects schema-b"),
+        "unexpected error: {error}"
+    );
+
+    follower.shutdown().expect("follower shutdown");
+    let _ = follower.await_termination().expect("follower termination");
+    leader.shutdown().expect("leader shutdown");
+    let _ = leader.await_termination().expect("leader termination");
+}
+
+#[test]
 fn dedicated_reducer_publishes_proposal_and_validators_only_attest_and_promote() {
     let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
