@@ -445,7 +445,7 @@ enum WasmBrowserSwarmCommand {
         response_tx: oneshot::Sender<Result<(), SwarmError>>,
     },
     PublishUpdate {
-        announcement: UpdateEnvelopeAnnouncement,
+        announcement: Box<UpdateEnvelopeAnnouncement>,
         response_tx: oneshot::Sender<Result<(), SwarmError>>,
     },
     RetryDirectHandoff,
@@ -730,7 +730,7 @@ impl BrowserSwarmRuntime for WasmBrowserSwarmRuntime {
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .unbounded_send(WasmBrowserSwarmCommand::PublishUpdate {
-                announcement,
+                announcement: Box::new(announcement),
                 response_tx,
             })
             .map_err(|_| {
@@ -1137,6 +1137,7 @@ async fn run_wasm_browser_swarm_task(
                         announcement,
                         response_tx,
                     } => {
+                        let announcement = *announcement;
                         let topic = announcement.overlay.clone();
                         if subscribed_topic_paths.insert(topic.path.clone()) {
                             let topic_handle = gossipsub::IdentTopic::new(topic.path.clone());

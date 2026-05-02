@@ -1870,6 +1870,7 @@ impl NativeControlPlaneShell {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn relay_config_for_transport_policy(transport_policy: &RuntimeTransportPolicy) -> relay::Config {
     let mut config = relay::Config::default();
     if let Some(max_incoming) = transport_policy.max_established_incoming {
