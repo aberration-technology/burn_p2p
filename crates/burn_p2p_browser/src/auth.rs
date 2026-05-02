@@ -2195,6 +2195,13 @@ impl BrowserEdgeClient {
         if session.session_id().is_none() || session.principal_id().is_none() {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         }
+        if runtime
+            .config
+            .as_ref()
+            .is_some_and(|config| !config.sync_active_head_artifact)
+        {
+            return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
+        }
         let Some(active_head_id) = runtime.storage.last_head_id.as_ref() else {
             return Ok(Self::storage_update_if_changed(runtime, &previous_storage));
         };

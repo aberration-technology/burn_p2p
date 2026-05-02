@@ -330,6 +330,12 @@ pub struct RuntimeTransportPolicy {
     /// The maximum number of established connections accepted from one peer.
     pub max_established_per_peer: Option<u32>,
     #[serde(default)]
+    /// Maximum concurrently relayed circuits accepted by native relay helpers.
+    pub max_relay_circuits: Option<u32>,
+    #[serde(default = "default_max_relay_circuit_bytes")]
+    /// Maximum bytes carried by one native relay circuit.
+    pub max_relay_circuit_bytes: u64,
+    #[serde(default)]
     /// Enables local multicast discovery for development-oriented native swarms.
     pub enable_local_discovery: bool,
     #[serde(default)]
@@ -355,6 +361,10 @@ pub struct RuntimeTransportPolicy {
     pub enable_kademlia: bool,
     /// The export openmetrics.
     pub export_openmetrics: bool,
+}
+
+fn default_max_relay_circuit_bytes() -> u64 {
+    64 * 1024 * 1024
 }
 
 impl RuntimeTransportPolicy {
@@ -396,6 +406,8 @@ impl RuntimeTransportPolicy {
                 Some(32)
             },
             max_established_per_peer: Some(1),
+            max_relay_circuits: if bootstrap { Some(128) } else { None },
+            max_relay_circuit_bytes: 64 * 1024 * 1024,
             enable_local_discovery: false,
             enable_relay_client: true,
             enable_relay_server: bootstrap,
@@ -423,6 +435,8 @@ impl RuntimeTransportPolicy {
             max_established_incoming: None,
             max_established_total: None,
             max_established_per_peer: Some(1),
+            max_relay_circuits: None,
+            max_relay_circuit_bytes: 64 * 1024 * 1024,
             enable_local_discovery: false,
             enable_relay_client: false,
             enable_relay_server: false,

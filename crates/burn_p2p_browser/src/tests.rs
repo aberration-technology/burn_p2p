@@ -5712,6 +5712,17 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
     assert!(should_fetch_direct_swarm_snapshot(&runtime));
     assert!(!should_fallback_to_edge_control_sync(&runtime));
+
+    runtime
+        .config
+        .as_mut()
+        .expect("browser runtime config")
+        .sync_active_head_artifact = false;
+    assert!(!should_fetch_direct_swarm_snapshot(&runtime));
+    assert!(!should_sync_active_head_artifact(
+        &runtime,
+        Some(&HeadId::new("head-browser"))
+    ));
 }
 
 #[test]

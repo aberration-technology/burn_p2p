@@ -197,6 +197,9 @@ pub struct BrowserRuntimeConfig {
     /// Site-config fallback seeds embedded into the browser artifact.
     #[serde(default)]
     pub site_seed_node_urls: Vec<String>,
+    /// Whether runtime refresh should keep the active head artifact cached.
+    #[serde(default = "default_sync_active_head_artifact")]
+    pub sync_active_head_artifact: bool,
     /// The selected experiment.
     pub selected_experiment: Option<ExperimentId>,
     /// The selected revision.
@@ -225,6 +228,7 @@ impl BrowserRuntimeConfig {
             )),
             seed_bootstrap: BrowserResolvedSeedBootstrap::default(),
             site_seed_node_urls: Vec::new(),
+            sync_active_head_artifact: true,
             selected_experiment: None,
             selected_revision: None,
         }
@@ -259,4 +263,8 @@ impl BrowserRuntimeConfig {
             selected_revision: self.selected_revision.clone(),
         }
     }
+}
+
+fn default_sync_active_head_artifact() -> bool {
+    true
 }

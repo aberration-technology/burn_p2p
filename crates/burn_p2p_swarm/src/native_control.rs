@@ -251,14 +251,10 @@ impl NativeControlPlaneShell {
             None
         };
         let relay_server_behaviour = if transport_policy.enable_relay_server {
-            let mut config = relay::Config::default();
-            if let Some(max_incoming) = transport_policy.max_established_incoming {
-                config.max_reservations = max_incoming as usize;
-            }
-            if let Some(max_total) = transport_policy.max_established_total {
-                config.max_circuits = (max_total as usize).max(1) / 4;
-            }
-            Some(relay::Behaviour::new(local_peer_id, config))
+            Some(relay::Behaviour::new(
+                local_peer_id,
+                relay_config_for_transport_policy(&transport_policy),
+            ))
         } else {
             None
         };
@@ -1872,6 +1868,21 @@ impl NativeControlPlaneShell {
         self.wait_live_event(duration)
             .or_else(|| self.pending_events.pop_front())
     }
+}
+
+fn relay_config_for_transport_policy(transport_policy: &RuntimeTransportPolicy) -> relay::Config {
+    let mut config = relay::Config::default();
+    if let Some(max_incoming) = transport_policy.max_established_incoming {
+        config.max_reservations = max_incoming as usize;
+    }
+    if let Some(max_total) = transport_policy.max_established_total {
+        config.max_circuits = (max_total as usize).max(config.max_circuits);
+    }
+    if let Some(max_circuits) = transport_policy.max_relay_circuits {
+        config.max_circuits = (max_circuits as usize).max(1);
+    }
+    config.max_circuit_bytes = transport_policy.max_relay_circuit_bytes.max(128 * 1024);
+    config
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -1180,6 +1180,9 @@ pub(crate) fn should_sync_active_head_artifact(
     runtime: &BrowserWorkerRuntime,
     previous_head_id: Option<&burn_p2p::HeadId>,
 ) -> bool {
+    if !runtime_syncs_active_head_artifact(runtime) {
+        return false;
+    }
     runtime
         .storage
         .last_head_id
@@ -1187,6 +1190,14 @@ pub(crate) fn should_sync_active_head_artifact(
         .is_some_and(|head_id| {
             previous_head_id != Some(head_id) || !runtime.storage.active_head_artifact_ready()
         })
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn runtime_syncs_active_head_artifact(runtime: &BrowserWorkerRuntime) -> bool {
+    runtime
+        .config
+        .as_ref()
+        .is_none_or(|config| config.sync_active_head_artifact)
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]

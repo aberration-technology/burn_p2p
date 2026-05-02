@@ -54,6 +54,8 @@ pub struct BrowserSessionRuntimeConfig {
     pub include_leaderboard: bool,
     /// Whether to establish and refresh a direct swarm runtime for this session.
     pub enable_direct_swarm: bool,
+    /// Whether this runtime should cache the active head artifact during refresh.
+    pub sync_active_head_artifact: bool,
 }
 
 impl BrowserSessionRuntimeConfig {
@@ -71,6 +73,7 @@ impl BrowserSessionRuntimeConfig {
         runtime_config.transport = self.transport.clone();
         runtime_config.selected_experiment = self.selected_experiment.clone();
         runtime_config.selected_revision = self.selected_revision.clone();
+        runtime_config.sync_active_head_artifact = self.sync_active_head_artifact;
         runtime_config
     }
 }

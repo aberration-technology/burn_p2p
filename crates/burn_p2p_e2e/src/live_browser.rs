@@ -311,6 +311,7 @@ pub async fn start_live_browser_participant(
             selected_revision: Some(config.training_plan.revision_id.clone()),
             capability: capability.clone(),
             include_leaderboard: true,
+            sync_active_head_artifact: true,
             enable_direct_swarm: !should_inject_live_browser_fixture_transport(
                 &config.edge_base_url,
             ),

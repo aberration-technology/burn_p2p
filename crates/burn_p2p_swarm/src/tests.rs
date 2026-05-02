@@ -3124,6 +3124,172 @@ fn native_control_plane_shell_reserves_and_dials_relay_paths() {
 }
 
 #[test]
+fn native_relay_path_transfers_large_artifact_chunks() {
+    let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
+    let relay_roles = PeerRoleSet::new([
+        burn_p2p_core::PeerRole::Bootstrap,
+        burn_p2p_core::PeerRole::RelayHelper,
+    ]);
+    let client_policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    let relay_policy = RuntimeTransportPolicy::native_for_roles(&relay_roles);
+
+    let mut relay_seed =
+        NativeControlPlaneShell::new(protocols.control.clone(), relay_policy).expect("relay seed");
+    let mut listener =
+        NativeControlPlaneShell::new(protocols.control.clone(), client_policy.clone())
+            .expect("listener");
+    let mut dialer =
+        NativeControlPlaneShell::new(protocols.control, client_policy).expect("dialer");
+
+    let chunk_bytes = vec![7_u8; 192 * 1024];
+    let chunk_hash =
+        ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+    let descriptor = ArtifactDescriptor {
+        artifact_id: ArtifactId::new(
+            "12209f1f0f5d4cf894e5fedff11e0fbd6186a0d913ec5337f2b6e2e7f1cf2a665cfd",
+        ),
+        kind: ArtifactKind::ServeHead,
+        head_id: Some(HeadId::new("head-relay-large")),
+        base_head_id: None,
+        precision: Precision::Fp16,
+        model_schema_hash: ContentId::new("schema"),
+        record_format: "burn-record:bin".into(),
+        bytes_len: chunk_bytes.len() as u64,
+        chunks: vec![ChunkDescriptor {
+            chunk_id: ChunkId::new(
+                "1220684e225e57ea78aa5cd8f6c705b0c82540dd0fef1dbcd63ea1a0dc3bb638ad2f",
+            ),
+            offset_bytes: 0,
+            length_bytes: chunk_bytes.len() as u64,
+            chunk_hash: chunk_hash.clone(),
+        }],
+        root_hash: chunk_hash,
+    };
+    listener.publish_artifact(
+        descriptor.clone(),
+        vec![ArtifactChunkPayload {
+            artifact_id: descriptor.artifact_id.clone(),
+            chunk: descriptor.chunks[0].clone(),
+            bytes: chunk_bytes.clone(),
+            generated_at: Utc::now(),
+        }],
+    );
+
+    relay_seed
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("relay addr"))
+        .expect("relay listen");
+    let relay_seed_addr = loop {
+        match relay_seed.wait_event(Duration::from_secs(2)) {
+            Some(LiveControlPlaneEvent::NewListenAddr { address }) => break address,
+            Some(_) => {}
+            None => panic!("relay seed did not produce a listen address"),
+        }
+    };
+
+    listener
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("listener addr"))
+        .expect("listener listen");
+    dialer
+        .listen_on(SwarmAddress::new("/ip4/127.0.0.1/tcp/0").expect("dialer addr"))
+        .expect("dialer listen");
+
+    let drain_until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < drain_until {
+        let _ = listener.wait_event(Duration::from_millis(10));
+        let _ = dialer.wait_event(Duration::from_millis(10));
+    }
+
+    listener
+        .dial(relay_seed_addr.clone())
+        .expect("dial relay seed");
+
+    let mut relay_addr = None;
+    let reservation_deadline = Instant::now() + Duration::from_secs(10);
+    while relay_addr.is_none() {
+        assert!(
+            Instant::now() < reservation_deadline,
+            "listener did not confirm a relayed reachable address"
+        );
+
+        let _ = relay_seed.wait_event(Duration::from_millis(50));
+        if let Some(event) = listener.wait_event(Duration::from_millis(50)) {
+            match event {
+                LiveControlPlaneEvent::ReachableAddressConfirmed { address }
+                | LiveControlPlaneEvent::NewListenAddr { address }
+                    if address.is_relay_circuit() =>
+                {
+                    relay_addr = Some(address);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let relay_addr = relay_addr.expect("relay address");
+    dialer.dial(relay_addr).expect("dial relayed listener");
+    let listener_peer_id = listener.local_peer_id().to_string();
+
+    let connect_deadline = Instant::now() + Duration::from_secs(10);
+    let mut listener_connected = false;
+    let mut dialer_connected = false;
+    while !(listener_connected && dialer_connected) {
+        assert!(
+            Instant::now() < connect_deadline,
+            "relayed peers did not connect through relay reservation"
+        );
+
+        let _ = relay_seed.wait_event(Duration::from_millis(25));
+        if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+            listener_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+        if let Some(event) = dialer.wait_event(Duration::from_millis(25)) {
+            dialer_connected |=
+                matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
+        }
+    }
+
+    dialer
+        .request_artifact_chunk(
+            &listener_peer_id,
+            descriptor.artifact_id.clone(),
+            descriptor.chunks[0].chunk_id.clone(),
+        )
+        .expect("request chunk");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let chunk_payload = loop {
+        assert!(Instant::now() < deadline, "fetch relayed chunk");
+        let _ = relay_seed.wait_event(Duration::from_millis(10));
+        if let Some(event) = listener.wait_event(Duration::from_millis(10)) {
+            match event {
+                LiveControlPlaneEvent::ArtifactChunkRequested { .. }
+                | LiveControlPlaneEvent::ConnectionEstablished { .. }
+                | LiveControlPlaneEvent::Other { .. } => {}
+                LiveControlPlaneEvent::ResponseSendFailure { message, .. } => {
+                    panic!("listener failed to send chunk response: {message}");
+                }
+                _ => {}
+            }
+        }
+        if let Some(event) = dialer.wait_event(Duration::from_millis(10)) {
+            match event {
+                LiveControlPlaneEvent::ArtifactChunkReceived { payload, .. } => {
+                    break payload.expect("chunk payload");
+                }
+                LiveControlPlaneEvent::RequestFailure { message, .. } => {
+                    panic!("fetch relayed chunk: {message}");
+                }
+                _ => {}
+            }
+        }
+    };
+
+    assert_eq!(chunk_payload.bytes.len(), chunk_bytes.len());
+    assert_eq!(chunk_payload.bytes, chunk_bytes);
+    assert_eq!(chunk_payload.chunk, descriptor.chunks[0]);
+}
+
+#[test]
 fn native_control_plane_shell_discovers_peers_via_rendezvous_seed() {
     let protocols = ProtocolSet::for_network(&NetworkId::new("network")).expect("protocols");
     let seed_roles = PeerRoleSet::new([
