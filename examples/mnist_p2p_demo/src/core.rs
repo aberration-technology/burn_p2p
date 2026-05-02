@@ -4403,7 +4403,7 @@ fn load_metric_artifacts_from_storages<T: serde::de::DeserializeOwned>(
         .collect()
 }
 
-fn sync_topology_heads<P>(
+fn sync_topology_heads<P: burn_p2p::P2pWorkload>(
     nodes: &[(&str, &burn_p2p::RunningNode<P>)],
     provider_peer_ids: &[PeerId],
     experiment: &burn_p2p::ExperimentHandle,
@@ -4547,7 +4547,7 @@ fn wait_for(
     anyhow::bail!(failure_message.to_owned())
 }
 
-fn wait_for_synced_head<P>(
+fn wait_for_synced_head<P: burn_p2p::P2pWorkload>(
     node: &burn_p2p::RunningNode<P>,
     experiment: &burn_p2p::ExperimentHandle,
     timeout: Duration,
@@ -4557,7 +4557,7 @@ fn wait_for_synced_head<P>(
         .with_context(|| failure_message.to_owned())
 }
 
-fn wait_for_specific_head<P>(
+fn wait_for_specific_head<P: burn_p2p::P2pWorkload>(
     node: &burn_p2p::RunningNode<P>,
     experiment: &burn_p2p::ExperimentHandle,
     expected_head: &HeadDescriptor,
