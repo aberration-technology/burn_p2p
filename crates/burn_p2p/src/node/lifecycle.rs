@@ -31,12 +31,9 @@ impl<P> RunningNode<P> {
         let keypair = resolve_identity(&node.config.identity, node.config.storage.as_ref())?;
 
         let mut snapshot = NodeTelemetrySnapshot::starting(&node.mainnet, &node.config);
-        let mut bootstrap_addresses = node.config.bootstrap_peers.clone();
+        let bootstrap_addresses = node.config.bootstrap_peers.clone();
         if let Some(storage) = node.config.storage.as_ref() {
             for address in load_known_peers(storage)? {
-                if !bootstrap_addresses.contains(&address) {
-                    bootstrap_addresses.push(address.clone());
-                }
                 snapshot.known_peer_addresses.insert(address);
             }
             let slot_assignments = load_slot_assignments(storage)?;

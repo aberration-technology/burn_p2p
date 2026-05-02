@@ -316,6 +316,14 @@ impl<P> RunningNode<P> {
         let _ = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
         let Some((source_peer_id, head)) = resolved_head else {
             let connected_peers = connected_peer_ids(&telemetry_snapshot);
+            let bootstrap_addresses = self
+                .control
+                .runtime_boundary
+                .bootstrap_addresses
+                .iter()
+                .filter(|address| !telemetry_snapshot.listen_addresses.contains(address))
+                .cloned()
+                .collect::<BTreeSet<_>>();
             let provider_addresses = telemetry_snapshot
                 .control_plane
                 .peer_directory_announcements
@@ -324,7 +332,7 @@ impl<P> RunningNode<P> {
                 .flat_map(|announcement| announcement.addresses.iter().cloned())
                 .filter(|address| !telemetry_snapshot.listen_addresses.contains(address))
                 .collect::<BTreeSet<_>>();
-            for address in provider_addresses {
+            for address in bootstrap_addresses.into_iter().chain(provider_addresses) {
                 let _ = self.control.dial_address(address);
             }
             return Ok(None);

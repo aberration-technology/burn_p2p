@@ -1188,14 +1188,22 @@ fn connectivity_repair_targets(
             .then_with(|| left.cmp(right))
     });
 
-    let mut targets = peer_directory_targets
-        .into_iter()
-        .chain(known_peer_targets)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut targets = Vec::new();
+    let mut target_keys = BTreeSet::new();
+    if connected_peers == 0 {
+        for address in &bootstrap_targets {
+            if target_keys.insert(connectivity_address_key(address)) {
+                targets.push(address.clone());
+            }
+        }
+    }
+    for address in peer_directory_targets.into_iter().chain(known_peer_targets) {
+        if target_keys.insert(connectivity_address_key(&address)) {
+            targets.push(address);
+        }
+    }
     if targets.is_empty() {
-        targets.extend(bootstrap_targets);
+        targets = bootstrap_targets;
     }
 
     targets
@@ -1529,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn connectivity_repair_prefers_known_peer_addresses_before_bootstrap_seed_fallback() {
+    fn connectivity_repair_prefers_configured_bootstrap_when_disconnected() {
         let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/32501").expect("bootstrap");
         let discovered = SwarmAddress::new("/ip4/127.0.0.1/tcp/32502").expect("discovered");
 
@@ -1537,11 +1545,26 @@ mod tests {
         snapshot.known_peer_addresses.insert(discovered.clone());
 
         let targets = connectivity_repair_targets(
-            &test_boundary(vec![bootstrap]),
+            &test_boundary(vec![bootstrap.clone()]),
             &snapshot,
             0,
             &BTreeSet::new(),
         );
+        assert_eq!(targets.first(), Some(&bootstrap));
+        assert!(targets.contains(&discovered));
+    }
+
+    #[test]
+    fn connectivity_repair_uses_known_peers_when_bootstrap_dial_is_pending() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/32503").expect("bootstrap");
+        let discovered = SwarmAddress::new("/ip4/127.0.0.1/tcp/32504").expect("discovered");
+        let pending = BTreeSet::from([connectivity_address_key(&bootstrap)]);
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.known_peer_addresses.insert(discovered.clone());
+
+        let targets =
+            connectivity_repair_targets(&test_boundary(vec![bootstrap]), &snapshot, 0, &pending);
         assert_eq!(targets, vec![discovered]);
     }
 

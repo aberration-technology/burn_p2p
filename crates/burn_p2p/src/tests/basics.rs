@@ -305,6 +305,21 @@ fn discovered_bootstrap_peer_survives_restart() {
     .spawn()
     .expect("restarted trainer spawn");
     let restarted_telemetry = restarted_trainer.telemetry();
+    let restarted_snapshot = restarted_telemetry.snapshot();
+    assert!(
+        restarted_snapshot
+            .runtime_boundary
+            .as_ref()
+            .expect("runtime boundary")
+            .bootstrap_addresses
+            .is_empty(),
+        "persisted known peers must not be promoted into configured bootstrap seeds"
+    );
+    assert!(
+        restarted_snapshot
+            .known_peer_addresses
+            .contains(&validator_addr)
+    );
     wait_for(
         Duration::from_secs(5),
         || restarted_telemetry.snapshot().connected_peers >= 1,

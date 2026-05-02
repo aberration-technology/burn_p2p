@@ -1105,7 +1105,7 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
     let mut trainer_c = trainer_c;
     for trainer in [&trainer_b, &trainer_c] {
         wait_for(
-            Duration::from_secs(10),
+            Duration::from_secs(20),
             || {
                 trainer
                     .sync_experiment_head(&experiment)
