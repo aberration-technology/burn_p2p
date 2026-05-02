@@ -331,3 +331,213 @@ fn candidate_heads_collapse_linear_same_peer_descendants_into_rooted_candidate()
         vec!["trainer-a", "provider-b", "provider-c"]
     );
 }
+
+#[derive(Clone, Debug)]
+struct NoopCandidateWorkload;
+
+impl P2pWorkload for NoopCandidateWorkload {
+    type Device = ();
+    type Model = ();
+    type Batch = ();
+    type WindowStats = BTreeMap<String, MetricValue>;
+
+    fn init_model(&self, _device: &Self::Device) -> Self::Model {}
+
+    fn benchmark(&self, _model: &Self::Model, _device: &Self::Device) -> CapabilityEstimate {
+        CapabilityEstimate {
+            preferred_backends: vec!["test".into()],
+            work_units_per_second: 1.0,
+            target_window_seconds: 1,
+        }
+    }
+
+    fn train_window(
+        &self,
+        _ctx: &mut WindowCtx<Self::Device, Self::Model, Self::Batch>,
+    ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
+        unreachable!("direct candidate selection does not train")
+    }
+
+    fn evaluate(&self, _model: &Self::Model, _split: EvalSplit) -> MetricReport {
+        unreachable!("test injects candidate evaluation")
+    }
+
+    fn apply_patch(&mut self, _patch: &RuntimePatch) -> PatchOutcome {
+        PatchOutcome::Applied
+    }
+
+    fn supported_patch_classes(&self) -> PatchSupport {
+        PatchSupport {
+            hot: false,
+            warm: false,
+            cold: false,
+        }
+    }
+
+    fn runtime_device(&self) -> Self::Device {}
+
+    fn dataset_registration(&self) -> anyhow::Result<DatasetRegistration> {
+        anyhow::bail!("not used")
+    }
+
+    fn microshard_plan(
+        &self,
+        _registration: &DatasetRegistration,
+    ) -> anyhow::Result<MicroShardPlan> {
+        anyhow::bail!("not used")
+    }
+
+    fn load_batches(
+        &self,
+        _lease: &AssignmentLease,
+        _cached_microshards: &[CachedMicroShard],
+    ) -> anyhow::Result<Vec<Self::Batch>> {
+        anyhow::bail!("not used")
+    }
+
+    fn load_model_artifact(
+        &self,
+        model: Self::Model,
+        _descriptor: &ArtifactDescriptor,
+        _store: &FsArtifactStore,
+        _device: &Self::Device,
+    ) -> anyhow::Result<Self::Model> {
+        Ok(model)
+    }
+
+    fn materialize_model_artifact(
+        &self,
+        _model: &Self::Model,
+        _artifact_kind: ArtifactKind,
+        _head_id: HeadId,
+        _base_head_id: Option<HeadId>,
+        _store: &FsArtifactStore,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        anyhow::bail!("not used")
+    }
+
+    fn contribution_metrics(
+        &self,
+        _report: &WindowReport<Self::WindowStats>,
+    ) -> BTreeMap<String, MetricValue> {
+        BTreeMap::new()
+    }
+
+    fn supported_workload(&self) -> SupportedWorkload {
+        SupportedWorkload {
+            workload_id: WorkloadId::new("candidate-test"),
+            workload_name: "Candidate Test".into(),
+            model_program_hash: ContentId::new("program"),
+            checkpoint_format_hash: ContentId::new("checkpoint"),
+            supported_revision_family: ContentId::new("revision-family"),
+            resource_class: "test".into(),
+        }
+    }
+
+    fn model_schema_hash(&self) -> ContentId {
+        ContentId::new("schema")
+    }
+}
+
+#[test]
+fn direct_diffusion_promotion_surfaces_evaluation_metrics_on_head() {
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let base_head_id = HeadId::new("head-base");
+    let base_head = HeadDescriptor {
+        head_id: base_head_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-base"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: Utc::now(),
+        metrics: BTreeMap::from([("train_loss".into(), MetricValue::Float(0.9))]),
+    };
+    let peer_id = PeerId::new("trainer-a");
+    let head = HeadDescriptor {
+        head_id: HeadId::new("head-a"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-a"),
+        parent_head_id: Some(base_head_id.clone()),
+        global_step: 1,
+        created_at: Utc::now(),
+        metrics: BTreeMap::from([("train_loss".into(), MetricValue::Float(0.7))]),
+    };
+    let update = UpdateAnnounce {
+        peer_id: peer_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        window_id: WindowId(1),
+        base_head_id: base_head_id.clone(),
+        lease_id: Some(LeaseId::new("lease-a")),
+        delta_artifact_id: head.artifact_id.clone(),
+        sample_weight: 1.0,
+        quality_weight: 1.0,
+        norm_stats: UpdateNormStats {
+            l2_norm: 1.0,
+            max_abs: 1.0,
+            clipped: false,
+            non_finite_tensors: 0,
+        },
+        feature_sketch: None,
+        receipt_root: ContentId::new("receipt-root-a"),
+        receipt_ids: vec![ContributionReceiptId::new("receipt-a")],
+        providers: vec![peer_id.clone()],
+        announced_at: Utc::now(),
+    };
+    let evaluation = MetricReport {
+        metrics: BTreeMap::from([
+            ("loss".into(), MetricValue::Float(0.25)),
+            ("evaluation_batches".into(), MetricValue::Integer(4)),
+        ]),
+        captured_at: Utc::now(),
+    };
+    let candidate = ValidationCandidateView {
+        peer_id: &peer_id,
+        head: &head,
+        update: &update,
+        evaluation: &evaluation,
+        canary_report: None,
+        sample_weight: 1.0,
+        quality_weight: 1.0,
+        model: &(),
+    };
+    let mut project = NoopCandidateWorkload;
+    let store = FsArtifactStore::new(std::env::temp_dir().join(format!(
+        "burn-p2p-direct-promotion-metrics-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    )));
+
+    let (_, promoted, promoted_evaluation) = select_validation_head(
+        &mut project,
+        &experiment,
+        &store,
+        &Some((PeerId::new("provider-base"), base_head)),
+        &base_head_id,
+        WindowId(1),
+        &(),
+        &[candidate],
+        0,
+        MergePolicy::WeightedMean,
+        &PeerId::new("validator-a"),
+        true,
+    )
+    .expect("direct candidate selection");
+
+    assert_eq!(promoted.head_id, head.head_id);
+    assert_eq!(promoted.artifact_id, head.artifact_id);
+    assert_eq!(promoted.parent_head_id, head.parent_head_id);
+    assert_eq!(promoted.global_step, head.global_step);
+    assert_eq!(promoted.metrics, evaluation.metrics);
+    assert_eq!(promoted_evaluation.metrics, evaluation.metrics);
+    assert!(!promoted.metrics.contains_key("train_loss"));
+}

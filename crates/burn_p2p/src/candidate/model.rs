@@ -134,9 +134,11 @@ where
         && candidate.head.parent_head_id.as_ref() == Some(base_head_id)
         && candidate.head.global_step == expected_global_step
     {
+        let mut promoted_head = candidate.head.clone();
+        promoted_head.metrics = candidate.evaluation.metrics.clone();
         return Ok((
             candidate.peer_id.clone(),
-            candidate.head.clone(),
+            promoted_head,
             candidate.evaluation.clone(),
         ));
     }
