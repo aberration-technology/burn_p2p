@@ -120,7 +120,7 @@ where
         let publish_latency_ms =
             self.node
                 .publish_training_execution(&prepared.experiment, &prepared, &execution)?;
-        super::kick_diffusion_steady_state_after_local_publish(
+        super::wait_for_local_publish_visibility(
             self.node,
             &prepared.experiment,
             execution.window_id,

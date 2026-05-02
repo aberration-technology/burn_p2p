@@ -1210,35 +1210,20 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
         },
         "diffusion trainers did not observe the trainer-only update frontier",
     );
-    wait_for(
-        Duration::from_secs(10),
-        || {
-            [
-                seed_telemetry.snapshot(),
-                trainer_b_telemetry.snapshot(),
-                trainer_c_telemetry.snapshot(),
-            ]
-            .into_iter()
-            .all(|snapshot| {
-                snapshot
-                    .control_plane
-                    .trainer_promotion_attestation_announcements
-                    .iter()
-                    .filter(|announcement| {
-                        announcement.attestation.study_id == experiment.study_id
-                            && announcement.attestation.experiment_id == experiment.experiment_id
-                            && announcement.attestation.revision_id == experiment.revision_id
-                            && announcement.attestation.window_id == WindowId(1)
-                            && announcement.attestation.base_head_id == genesis_head.head_id
-                    })
-                    .count()
-                    >= 3
-            })
-        },
-        "one-shot diffusion training did not publish trainer attestations",
-    );
-
-    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(20));
+    for snapshot in [
+        seed_telemetry.snapshot(),
+        trainer_b_telemetry.snapshot(),
+        trainer_c_telemetry.snapshot(),
+    ] {
+        assert!(
+            snapshot
+                .control_plane
+                .trainer_promotion_attestation_announcements
+                .is_empty(),
+            "one-shot training should not run synchronous diffusion settlement"
+        );
+    }
+    let convergence_deadline = Instant::now() + test_timeout(Duration::from_secs(45));
     let local_head_ids = [
         seed_window.head.head_id.clone(),
         trainer_b_window.head.head_id.clone(),
@@ -1266,18 +1251,31 @@ fn diffusion_steady_state_converges_across_trainer_peers() {
         let trainer_c_head = trainer_c
             .sync_experiment_head(&experiment)
             .expect("sync diffusion trainer c head");
-        if let (Some(seed_head), Some(trainer_b_head), Some(trainer_c_head)) =
-            (seed_head, trainer_b_head, trainer_c_head)
-            && seed_head.head_id == trainer_b_head.head_id
-            && seed_head.head_id == trainer_c_head.head_id
-            && seed_head.head_id != genesis_head.head_id
-            && !local_head_ids.contains(&seed_head.head_id)
+        let head_summaries = [
+            seed_head
+                .as_ref()
+                .map(|head| (head.head_id.clone(), head.global_step)),
+            trainer_b_head
+                .as_ref()
+                .map(|head| (head.head_id.clone(), head.global_step)),
+            trainer_c_head
+                .as_ref()
+                .map(|head| (head.head_id.clone(), head.global_step)),
+        ];
+        if let (Some(seed_ref), Some(trainer_b_ref), Some(trainer_c_ref)) = (
+            seed_head.as_ref(),
+            trainer_b_head.as_ref(),
+            trainer_c_head.as_ref(),
+        ) && seed_ref.head_id == trainer_b_ref.head_id
+            && seed_ref.head_id == trainer_c_ref.head_id
+            && seed_ref.head_id != genesis_head.head_id
+            && !local_head_ids.contains(&seed_ref.head_id)
         {
-            break seed_head;
+            break seed_head.expect("promoted seed head");
         }
         assert!(
             Instant::now() < convergence_deadline,
-            "diffusion trainers did not converge on one promoted head"
+            "diffusion trainers did not converge on one promoted head; heads={head_summaries:?}"
         );
         thread::sleep(Duration::from_millis(25));
     };

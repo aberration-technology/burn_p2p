@@ -104,20 +104,7 @@ where
     warm_model: Option<P::Model>,
 }
 
-pub(in crate::training) fn poll_diffusion_steady_state_opportunistically<P>(
-    node: &mut RunningNode<P>,
-    experiment: &ExperimentHandle,
-) where
-    P: P2pWorkload,
-{
-    // Diffusion settlement is a best-effort background pass. Trainers must be
-    // able to keep moving even if one local polling attempt fails.
-    if let Err(error) = node.advance_diffusion_steady_state(experiment, None, None) {
-        drop(error);
-    }
-}
-
-pub(in crate::training) fn kick_diffusion_steady_state_after_local_publish<P>(
+pub(in crate::training) fn wait_for_local_publish_visibility<P>(
     node: &mut RunningNode<P>,
     experiment: &ExperimentHandle,
     window_id: WindowId,
@@ -127,6 +114,9 @@ pub(in crate::training) fn kick_diffusion_steady_state_after_local_publish<P>(
 ) where
     P: P2pWorkload,
 {
+    // Keep one-shot trainers focused on publishing their window. Diffusion
+    // settlement can require validation/eval work on large models, so validators
+    // and long-running coordination loops perform that pass separately.
     const LOCAL_DIFFUSION_PUBLISH_SYNC_TIMEOUT: Duration = Duration::from_millis(250);
     const LOCAL_DIFFUSION_PUBLISH_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -177,8 +167,6 @@ pub(in crate::training) fn kick_diffusion_steady_state_after_local_publish<P>(
         }
         std::thread::sleep(LOCAL_DIFFUSION_PUBLISH_SYNC_POLL_INTERVAL);
     }
-
-    poll_diffusion_steady_state_opportunistically(node, experiment);
 }
 
 struct PrefetchLeasePlanArgs<'a> {

@@ -1775,7 +1775,7 @@ mod tests {
             "embedded daemon did not connect to trainer",
         );
         wait_for(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             || {
                 trainer
                     .sync_experiment_head(&experiment)
