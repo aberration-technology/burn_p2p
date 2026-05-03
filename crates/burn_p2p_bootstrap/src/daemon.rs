@@ -15,13 +15,13 @@ use crate::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPlan,
     BootstrapService,
 };
+#[cfg(feature = "artifact-publish")]
+use burn_p2p::{ArtifactId, ControlPlaneSnapshot, HeadAnnouncement};
 use burn_p2p::{
     ControlHandle, ExperimentHandle, IdentityConfig, LiveControlPlaneEvent, MetricsRetentionConfig,
     MetricsRetentionPreset, NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload,
     RunningNode, StorageConfig, TelemetryHandle,
 };
-#[cfg(feature = "artifact-publish")]
-use burn_p2p::{ControlPlaneSnapshot, HeadAnnouncement};
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_core::HeadId;
 use burn_p2p_core::{ExperimentId, PeerId, RevisionId, StudyId};
@@ -461,12 +461,13 @@ struct BootstrapHeadArtifactMirror {
 impl BootstrapHeadArtifactMirror {
     fn mirror_current_heads(
         &mut self,
-        control: &ControlHandle,
+        running: &RunningNode<()>,
         snapshot: &NodeTelemetrySnapshot,
     ) -> anyhow::Result<Option<String>> {
         let Some(local_peer_id) = snapshot.local_peer_id.as_ref() else {
             return Ok(None);
         };
+        let control = running.control_handle();
 
         for (announcement, provider_peer_ids) in bootstrap_head_artifact_mirror_candidates(
             &snapshot.control_plane,
@@ -486,6 +487,22 @@ impl BootstrapHeadArtifactMirror {
             }
             self.last_attempt_at.insert(key.clone(), Instant::now());
 
+            match publish_local_head_artifact(running, &announcement) {
+                Ok(Some(message)) => {
+                    self.mirrored_head_artifacts.insert(key);
+                    eprintln!("{message}");
+                    return Ok(Some(message));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!(
+                        "bootstrap-local-head-artifact-publish-unavailable head={} artifact={}: {error:#}",
+                        announcement.head.head_id.as_str(),
+                        announcement.head.artifact_id.as_str()
+                    );
+                }
+            }
+
             eprintln!(
                 "bootstrap-head-artifact-mirror-start head={} artifact={} providers={:?}",
                 announcement.head.head_id.as_str(),
@@ -496,7 +513,7 @@ impl BootstrapHeadArtifactMirror {
                     .collect::<Vec<_>>()
             );
             let response = mirror_peer_artifact(
-                control,
+                &control,
                 PeerArtifactMirrorRequest {
                     artifact_id: announcement.head.artifact_id.clone(),
                     provider_peer_ids,
@@ -539,6 +556,48 @@ impl BootstrapHeadArtifactMirror {
 
         Ok(None)
     }
+}
+
+#[cfg(feature = "artifact-publish")]
+fn publish_local_head_artifact(
+    running: &RunningNode<()>,
+    announcement: &HeadAnnouncement,
+) -> anyhow::Result<Option<String>> {
+    if !local_artifact_store_has_complete_artifact(running, &announcement.head.artifact_id)? {
+        return Ok(None);
+    }
+
+    let descriptor = running.publish_artifact_from_store(&announcement.head.artifact_id)?;
+    let control = running.control_handle();
+    let local_peer_id = control.local_peer_id().ok_or_else(|| {
+        anyhow::anyhow!("bootstrap local head artifact publish finished without a local peer id")
+    })?;
+    control.publish_head(HeadAnnouncement {
+        overlay: announcement.overlay.clone(),
+        provider_peer_id: Some(local_peer_id.clone()),
+        head: announcement.head.clone(),
+        announced_at: Utc::now(),
+    })?;
+
+    Ok(Some(format!(
+        "bootstrap local head artifact published head={} artifact={} provider={} bytes={} chunks={}",
+        announcement.head.head_id.as_str(),
+        descriptor.artifact_id.as_str(),
+        local_peer_id.as_str(),
+        descriptor.bytes_len,
+        descriptor.chunks.len()
+    )))
+}
+
+#[cfg(feature = "artifact-publish")]
+fn local_artifact_store_has_complete_artifact(
+    running: &RunningNode<()>,
+    artifact_id: &ArtifactId,
+) -> anyhow::Result<bool> {
+    let Some(store) = running.artifact_store() else {
+        return Ok(false);
+    };
+    Ok(store.has_complete_artifact(artifact_id)?)
 }
 
 #[cfg(feature = "artifact-publish")]
@@ -657,9 +716,7 @@ fn bootstrap_peer_daemon_loop(
             let snapshot = running.telemetry().snapshot();
             #[cfg(feature = "artifact-publish")]
             {
-                if let Err(error) =
-                    head_artifact_mirror.mirror_current_heads(&running.control_handle(), &snapshot)
-                {
+                if let Err(error) = head_artifact_mirror.mirror_current_heads(&running, &snapshot) {
                     let error = format!("{error:#}");
                     eprintln!("bootstrap-head-artifact-mirror-error: {error}");
                     head_artifact_mirror_error = Some(error);
