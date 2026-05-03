@@ -198,7 +198,8 @@ fn mixed_fleet_simulation_drives_browser_worker_training_and_validation() {
         })
         .unwrap_or_else(|| HeadId::new("genesis-head"));
 
-    let directory = browser_directory_from_spec(&spec);
+    let mut directory = browser_directory_from_spec(&spec);
+    directory.entries[0].current_head_id = Some(latest_head_id.clone());
     let session = browser_session(&spec);
     let transport = BrowserTransportStatus::default();
     let capability = browser_capability();
