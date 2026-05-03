@@ -234,6 +234,7 @@ fn browser_conformance_harness_executes_authenticated_training_and_validation() 
     )
     .with_visibility(ExperimentVisibility::Public)
     .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_current_head_id(HeadId::new("head-browser"))
     .with_scope(ExperimentScope::Connect)
     .with_scope(ExperimentScope::Train {
         experiment_id: revision.experiment_id.clone(),
@@ -1936,6 +1937,45 @@ fn worker_runtime_uses_swarm_directory_current_head_when_signed_directory_is_sta
             .map(|head| head.artifact_id.as_str()),
         Some("artifact-canonical")
     );
+}
+
+#[test]
+fn worker_runtime_trainer_does_not_fallback_to_uncanonical_latest_head() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig {
+            role: BrowserRuntimeRole::BrowserTrainerWgpu,
+            ..BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("net-browser"),
+                ContentId::new("train-browser"),
+                "browser-wasm",
+                ContentId::new("artifact-browser"),
+            )
+        },
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::default(),
+    );
+    let mut entry =
+        browser_directory_entry_for_assignment("exp-browser", "rev-browser", "view-browser");
+    entry.current_head_id = None;
+    runtime
+        .storage
+        .remember_directory_snapshot(signed_browser_directory_snapshot(vec![entry]));
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+
+    runtime.apply_head_snapshot(&[
+        browser_head_descriptor("head-older", "artifact-older", 1),
+        browser_head_descriptor("head-candidate", "artifact-candidate", 8),
+    ]);
+
+    assert_eq!(runtime.storage.last_head_id, None);
+    assert!(runtime.storage.last_head_descriptor.is_none());
 }
 
 #[test]
@@ -5583,6 +5623,7 @@ fn browser_conformance_harness_exposes_persisted_active_training_lease() {
     )
     .with_visibility(ExperimentVisibility::Public)
     .with_opt_in_policy(ExperimentOptInPolicy::Open)
+    .with_current_head_id(HeadId::new("head-browser"))
     .with_scope(ExperimentScope::Connect)
     .with_scope(ExperimentScope::Train {
         experiment_id: revision.experiment_id.clone(),

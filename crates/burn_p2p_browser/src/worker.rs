@@ -345,6 +345,14 @@ impl BrowserWorkerRuntime {
         }) {
             return Some(head);
         }
+        if matches!(
+            self.state
+                .as_ref()
+                .and_then(BrowserRuntimeState::active_role),
+            Some(crate::BrowserRuntimeRole::BrowserTrainerWgpu)
+        ) {
+            return None;
+        }
         heads
             .iter()
             .filter(|head| {
@@ -723,6 +731,8 @@ impl BrowserWorkerRuntime {
         directory: &BrowserDirectorySnapshot,
         session: Option<&BrowserSessionState>,
     ) {
+        self.storage
+            .remember_swarm_directory_snapshot(directory.clone());
         let (Some(config), Some(capability)) = (self.config.as_ref(), self.capability.as_ref())
         else {
             return;
