@@ -236,6 +236,9 @@ pub enum HeadPromotionMode {
 pub struct DiffusionSteadyStatePolicy {
     /// Maximum local observation horizon used when waiting for a stable support map.
     pub settlement_timeout_secs: u32,
+    /// Maximum time to wait for a base or candidate checkpoint artifact during promotion.
+    #[serde(default = "default_diffusion_artifact_sync_timeout_secs")]
+    pub artifact_sync_timeout_secs: u32,
     /// Poll interval used when one peer is locally observing diffusion support.
     pub observation_poll_ms: u32,
     /// Number of identical support-map observations required before promotion.
@@ -246,10 +249,15 @@ pub struct DiffusionSteadyStatePolicy {
     pub allow_solo_promotion: bool,
 }
 
+fn default_diffusion_artifact_sync_timeout_secs() -> u32 {
+    120
+}
+
 impl Default for DiffusionSteadyStatePolicy {
     fn default() -> Self {
         Self {
             settlement_timeout_secs: 45,
+            artifact_sync_timeout_secs: default_diffusion_artifact_sync_timeout_secs(),
             observation_poll_ms: 250,
             required_stable_observations: 4,
             support_margin: 1,

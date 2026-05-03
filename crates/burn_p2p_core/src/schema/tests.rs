@@ -814,12 +814,29 @@ fn diffusion_steady_state_policy_round_trips_and_preserves_defaults() {
         decoded.diffusion,
         Some(DiffusionSteadyStatePolicy {
             settlement_timeout_secs: 45,
+            artifact_sync_timeout_secs: 120,
             observation_poll_ms: 250,
             required_stable_observations: 4,
             support_margin: 1,
             allow_solo_promotion: true,
         })
     );
+}
+
+#[test]
+fn diffusion_steady_state_policy_defaults_missing_artifact_sync_timeout() {
+    let decoded: DiffusionSteadyStatePolicy = serde_json::from_str(
+        r#"{
+            "settlement_timeout_secs": 45,
+            "observation_poll_ms": 250,
+            "required_stable_observations": 4,
+            "support_margin": 1,
+            "allow_solo_promotion": true
+        }"#,
+    )
+    .expect("decode legacy diffusion policy");
+
+    assert_eq!(decoded.artifact_sync_timeout_secs, 120);
 }
 
 #[test]

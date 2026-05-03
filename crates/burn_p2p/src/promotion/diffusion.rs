@@ -12,7 +12,6 @@ use crate::runtime_support::{active_experiment_directory_entry, load_json, trace
 use crate::training::load_model_for_head;
 
 const DIFFUSION_WINDOW_LOOKBACK: usize = 4;
-const DIFFUSION_ARTIFACT_SYNC_TIMEOUT: Duration = Duration::from_secs(8);
 const DIFFUSION_SNAPSHOT_REFRESH_TIMEOUT: Duration = Duration::from_millis(250);
 const DIFFUSION_TRACE_ENV: &str = "BURN_P2P_DIFFUSION_TRACE";
 
@@ -156,6 +155,16 @@ fn diffusion_merge_windows_from_snapshot(
         windows.truncate(DIFFUSION_WINDOW_LOOKBACK);
     }
     windows
+}
+
+fn diffusion_artifact_sync_timeout(merge_window: &MergeWindowState) -> Duration {
+    let policy = merge_window
+        .policy
+        .promotion_policy
+        .diffusion
+        .clone()
+        .unwrap_or_default();
+    Duration::from_secs(u64::from(policy.artifact_sync_timeout_secs.max(1)))
 }
 
 fn resolve_known_head_descriptor(
@@ -1146,6 +1155,7 @@ where
             base_resolve_started.elapsed().as_millis()
         ));
         let store = FsArtifactStore::new(storage.root.clone());
+        let artifact_sync_timeout = diffusion_artifact_sync_timeout(merge_window);
         if let Some((head, provider_peer_ids)) = base_head.as_ref()
             && !store.has_complete_artifact(&head.artifact_id)?
             && head.global_step > 0
@@ -1163,7 +1173,7 @@ where
             self.wait_for_artifact_from_peers(
                 provider_peer_ids,
                 &head.artifact_id,
-                DIFFUSION_ARTIFACT_SYNC_TIMEOUT,
+                artifact_sync_timeout,
             )?;
             diffusion_trace(format_args!(
                 "base-artifact-sync-complete peer={} experiment={} window={} elapsed_ms={}",
@@ -1303,7 +1313,7 @@ where
                 let _ = self.wait_for_artifact_from_peers(
                     &candidate_head.provider_peer_ids,
                     &candidate_head.head.artifact_id,
-                    DIFFUSION_ARTIFACT_SYNC_TIMEOUT,
+                    artifact_sync_timeout,
                 );
                 diffusion_trace(format_args!(
                     "candidate-artifact-sync-finished peer={} experiment={} window={} candidate_peer={} complete={} elapsed_ms={}",

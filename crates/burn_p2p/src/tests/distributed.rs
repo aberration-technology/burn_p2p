@@ -13,6 +13,7 @@ fn diffusion_runtime_directory_entry(
             validator_quorum: 1,
             diffusion: Some(crate::DiffusionSteadyStatePolicy {
                 settlement_timeout_secs: 3,
+                artifact_sync_timeout_secs: 10,
                 observation_poll_ms: 10,
                 required_stable_observations: 1,
                 support_margin: 1,
