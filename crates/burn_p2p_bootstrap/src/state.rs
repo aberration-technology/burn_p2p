@@ -1136,6 +1136,10 @@ impl BootstrapAdminState {
             preset: plan.preset.clone(),
             services: plan.services.clone(),
             roles: plan.roles.clone(),
+            local_peer_id: self
+                .runtime_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.local_peer_id.clone()),
             swarm: self.peer_store.stats(remaining_work_units),
             pinned_heads: plan.archive.pinned_heads.clone(),
             pinned_artifacts: plan.archive.pinned_artifacts.clone(),
@@ -1640,6 +1644,9 @@ pub struct BootstrapDiagnostics {
     pub services: BTreeSet<crate::BootstrapService>,
     /// The roles.
     pub roles: burn_p2p_core::PeerRoleSet,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The local runtime peer ID serving this bootstrap edge, when the P2P runtime has reported it.
+    pub local_peer_id: Option<PeerId>,
     /// The swarm.
     pub swarm: SwarmStats,
     /// The pinned heads.

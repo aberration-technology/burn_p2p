@@ -1,6 +1,7 @@
 #[cfg(feature = "artifact-publish")]
 use std::collections::{BTreeMap, BTreeSet};
 use std::{
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +17,10 @@ use crate::{
     BootstrapService,
 };
 #[cfg(feature = "artifact-publish")]
-use burn_p2p::{ArtifactId, ControlPlaneSnapshot, HeadAnnouncement};
+use burn_p2p::{
+    ArtifactChunkPayload, ArtifactDescriptor, ArtifactId, ControlPlaneSnapshot, FsArtifactStore,
+    HeadAnnouncement,
+};
 use burn_p2p::{
     ControlHandle, ExperimentHandle, IdentityConfig, LiveControlPlaneEvent, MetricsRetentionConfig,
     MetricsRetentionPreset, NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload,
@@ -106,6 +110,10 @@ impl Default for BootstrapEmbeddedDaemonConfig {
 pub struct BootstrapPeerDaemonConfig {
     /// The node.
     pub node: NodeConfig,
+    /// Extra filesystem artifact stores that may seed the bootstrap's P2P
+    /// provider mirror for the active head.
+    #[serde(default)]
+    pub head_artifact_mirror_source_roots: Vec<PathBuf>,
 }
 
 impl Default for BootstrapPeerDaemonConfig {
@@ -127,6 +135,7 @@ impl Default for BootstrapPeerDaemonConfig {
                 listen_addresses: Vec::new(),
                 external_addresses: Vec::new(),
             },
+            head_artifact_mirror_source_roots: Vec::new(),
         }
     }
 }
@@ -352,6 +361,7 @@ impl BootstrapPlan {
             .spawn(move || {
                 bootstrap_peer_daemon_loop(
                     plan,
+                    config,
                     running,
                     admin_state_thread,
                     shutdown_requested_thread,
@@ -455,10 +465,18 @@ const BOOTSTRAP_HEAD_ARTIFACT_MIRROR_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 struct BootstrapHeadArtifactMirror {
     last_attempt_at: BTreeMap<String, Instant>,
     mirrored_head_artifacts: BTreeSet<String>,
+    source_roots: Vec<PathBuf>,
 }
 
 #[cfg(feature = "artifact-publish")]
 impl BootstrapHeadArtifactMirror {
+    fn new(source_roots: Vec<PathBuf>) -> Self {
+        Self {
+            source_roots,
+            ..Self::default()
+        }
+    }
+
     fn mirror_current_heads(
         &mut self,
         running: &RunningNode<()>,
@@ -487,7 +505,7 @@ impl BootstrapHeadArtifactMirror {
             }
             self.last_attempt_at.insert(key.clone(), Instant::now());
 
-            match publish_local_head_artifact(running, &announcement) {
+            match publish_local_head_artifact(running, &announcement, &self.source_roots) {
                 Ok(Some(message)) => {
                     self.mirrored_head_artifacts.insert(key);
                     eprintln!("{message}");
@@ -562,12 +580,21 @@ impl BootstrapHeadArtifactMirror {
 fn publish_local_head_artifact(
     running: &RunningNode<()>,
     announcement: &HeadAnnouncement,
+    source_roots: &[PathBuf],
 ) -> anyhow::Result<Option<String>> {
-    if !local_artifact_store_has_complete_artifact(running, &announcement.head.artifact_id)? {
+    let artifact_id = &announcement.head.artifact_id;
+    let published = if local_artifact_store_has_complete_artifact(running, artifact_id)? {
+        Some((
+            "local".to_owned(),
+            running.publish_artifact_from_store(artifact_id)?,
+        ))
+    } else {
+        publish_artifact_from_source_roots(running.control_handle(), artifact_id, source_roots)?
+    };
+    let Some((source_label, descriptor)) = published else {
         return Ok(None);
-    }
+    };
 
-    let descriptor = running.publish_artifact_from_store(&announcement.head.artifact_id)?;
     let control = running.control_handle();
     let local_peer_id = control.local_peer_id().ok_or_else(|| {
         anyhow::anyhow!("bootstrap local head artifact publish finished without a local peer id")
@@ -580,13 +607,63 @@ fn publish_local_head_artifact(
     })?;
 
     Ok(Some(format!(
-        "bootstrap local head artifact published head={} artifact={} provider={} bytes={} chunks={}",
+        "bootstrap local head artifact published head={} artifact={} provider={} source={} bytes={} chunks={}",
         announcement.head.head_id.as_str(),
         descriptor.artifact_id.as_str(),
         local_peer_id.as_str(),
+        source_label,
         descriptor.bytes_len,
         descriptor.chunks.len()
     )))
+}
+
+#[cfg(feature = "artifact-publish")]
+fn publish_artifact_from_source_roots(
+    control: ControlHandle,
+    artifact_id: &ArtifactId,
+    source_roots: &[PathBuf],
+) -> anyhow::Result<Option<(String, ArtifactDescriptor)>> {
+    for root in source_roots {
+        let store = FsArtifactStore::new(root.clone());
+        match store.has_complete_artifact(artifact_id) {
+            Ok(true) => {
+                let descriptor = publish_artifact_from_fs_store(&control, &store, artifact_id)?;
+                return Ok(Some((root.display().to_string(), descriptor)));
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!(
+                    "bootstrap-head-artifact-source-root-unavailable root={} artifact={}: {error}",
+                    root.display(),
+                    artifact_id.as_str()
+                );
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "artifact-publish")]
+fn publish_artifact_from_fs_store(
+    control: &ControlHandle,
+    store: &FsArtifactStore,
+    artifact_id: &ArtifactId,
+) -> anyhow::Result<ArtifactDescriptor> {
+    let descriptor = store.load_manifest(artifact_id)?;
+    let chunks = descriptor
+        .chunks
+        .iter()
+        .map(|chunk| {
+            Ok(ArtifactChunkPayload {
+                artifact_id: descriptor.artifact_id.clone(),
+                chunk: chunk.clone(),
+                bytes: store.load_chunk_bytes(chunk)?,
+                generated_at: Utc::now(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    control.publish_artifact(descriptor.clone(), chunks)?;
+    Ok(descriptor)
 }
 
 #[cfg(feature = "artifact-publish")]
@@ -696,13 +773,17 @@ fn head_artifact_mirror_key(announcement: &HeadAnnouncement) -> String {
 
 fn bootstrap_peer_daemon_loop(
     plan: BootstrapPlan,
+    config: BootstrapPeerDaemonConfig,
     running: RunningNode<()>,
     admin_state: Arc<Mutex<BootstrapAdminState>>,
     shutdown_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     wait_for_runtime_ready(&running.telemetry(), Duration::from_secs(5))?;
+    #[cfg(not(feature = "artifact-publish"))]
+    let _ = &config;
     #[cfg(feature = "artifact-publish")]
-    let mut head_artifact_mirror = BootstrapHeadArtifactMirror::default();
+    let mut head_artifact_mirror =
+        BootstrapHeadArtifactMirror::new(config.head_artifact_mirror_source_roots.clone());
 
     loop {
         if shutdown_requested.load(Ordering::SeqCst) {

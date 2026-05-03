@@ -1892,6 +1892,7 @@ mod tests {
                     ],
                     external_addresses: Vec::new(),
                 },
+                head_artifact_mirror_source_roots: Vec::new(),
             })
             .expect("spawn bootstrap peer daemon");
         let telemetry = daemon.telemetry();
