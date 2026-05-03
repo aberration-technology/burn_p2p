@@ -2691,6 +2691,54 @@ async fn wait_receipt_retry_delay(attempt: usize) {
 async fn wait_receipt_retry_delay(_attempt: usize) {}
 
 #[cfg(target_arch = "wasm32")]
+const BROWSER_PEER_ARTIFACT_MAX_ATTEMPTS: usize = 16;
+
+#[cfg(target_arch = "wasm32")]
+async fn wait_peer_artifact_retry_delay(attempt: usize) {
+    let delay_ms = 250_u32.saturating_mul(attempt.clamp(1, 4) as u32);
+    TimeoutFuture::new(delay_ms).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_peer_artifact_request_excluding(
+    request: &BrowserPeerArtifactRequest,
+    excluded_provider_peer_ids: &BTreeSet<PeerId>,
+) -> Option<BrowserPeerArtifactRequest> {
+    if excluded_provider_peer_ids.is_empty() {
+        return Some(request.clone());
+    }
+    let mut next = request.clone();
+    next.provider_peer_ids
+        .retain(|peer_id| !excluded_provider_peer_ids.contains(peer_id));
+    if !request.provider_peer_ids.is_empty() && next.provider_peer_ids.is_empty() {
+        None
+    } else {
+        Some(next)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn non_advertising_artifact_peer_id(message: &str) -> Option<PeerId> {
+    let peer_marker = "peer ";
+    let denied_marker = " did not advertise the requested artifact ";
+    let start = message.find(peer_marker)? + peer_marker.len();
+    let end = message[start..].find(denied_marker)? + start;
+    let peer_id = message[start..end].trim();
+    (!peer_id.is_empty()).then(|| PeerId::new(peer_id))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn retryable_peer_artifact_transport_error(message: &str) -> bool {
+    message.contains("did not advertise the requested artifact manifest")
+        || message.contains("did not advertise the requested artifact chunk")
+        || message.contains("has no connected peer to service the request")
+        || message.contains("timed out waiting for browser direct swarm artifact manifest")
+        || message.contains("timed out waiting for browser direct swarm artifact chunk")
+        || message.contains("disconnected before artifact manifest request completed")
+        || message.contains("disconnected before artifact chunk request completed")
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn try_download_artifact_via_browser_peer_transport(
     request: &BrowserPeerArtifactRequest,
     runtime: &mut BrowserWorkerRuntime,
@@ -2801,6 +2849,8 @@ async fn try_download_artifact_via_browser_peer_swarm(
         return Ok(None);
     }
 
+    let mut excluded_provider_peer_ids = BTreeSet::new();
+    let mut artifact_request = request.clone();
     let descriptor = if let Some(descriptor) = checkpoint_descriptor_for_request(runtime, request) {
         descriptor
     } else {
@@ -2812,20 +2862,74 @@ async fn try_download_artifact_via_browser_peer_swarm(
                 "browser peer artifact swarm is missing fetchArtifactManifest".into(),
             )
         })?;
-        let request_value = serde_wasm_bindgen::to_value(request)
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
-        let manifest_promise = fetch_manifest
-            .call1(&swarm_value, &request_value)
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-        let manifest_value = JsFuture::from(Promise::from(manifest_promise))
-            .await
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-        if manifest_value.is_undefined() || manifest_value.is_null() {
-            return Ok(None);
-        }
-        let descriptor: burn_p2p::ArtifactDescriptor =
-            serde_wasm_bindgen::from_value(manifest_value)
+        let mut last_error = None;
+        let mut descriptor = None;
+        for attempt in 0..BROWSER_PEER_ARTIFACT_MAX_ATTEMPTS {
+            if attempt > 0 {
+                wait_peer_artifact_retry_delay(attempt).await;
+            }
+            let Some(attempt_request) =
+                browser_peer_artifact_request_excluding(request, &excluded_provider_peer_ids)
+            else {
+                break;
+            };
+            let request_value = serde_wasm_bindgen::to_value(&attempt_request)
                 .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+            let manifest_result: Result<
+                Option<burn_p2p::ArtifactDescriptor>,
+                BrowserAuthClientError,
+            > = async {
+                let manifest_promise =
+                    fetch_manifest
+                        .call1(&swarm_value, &request_value)
+                        .map_err(|error| {
+                            BrowserAuthClientError::ArtifactTransport(format!("{error:?}"))
+                        })?;
+                let manifest_value = JsFuture::from(Promise::from(manifest_promise))
+                    .await
+                    .map_err(|error| {
+                        BrowserAuthClientError::ArtifactTransport(format!("{error:?}"))
+                    })?;
+                if manifest_value.is_undefined() || manifest_value.is_null() {
+                    return Ok(None);
+                }
+                let descriptor: burn_p2p::ArtifactDescriptor =
+                    serde_wasm_bindgen::from_value(manifest_value).map_err(|error| {
+                        BrowserAuthClientError::ArtifactTransport(error.to_string())
+                    })?;
+                Ok(Some(descriptor))
+            }
+            .await;
+            match manifest_result {
+                Ok(Some(next_descriptor)) => {
+                    artifact_request = attempt_request;
+                    descriptor = Some(next_descriptor);
+                    break;
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    let message = error.to_string();
+                    if let Some(peer_id) = non_advertising_artifact_peer_id(&message) {
+                        excluded_provider_peer_ids.insert(peer_id);
+                    }
+                    if attempt + 1 < BROWSER_PEER_ARTIFACT_MAX_ATTEMPTS
+                        && retryable_peer_artifact_transport_error(&message)
+                    {
+                        last_error = Some(error);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let descriptor = descriptor.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                BrowserAuthClientError::ArtifactTransport(
+                    "browser peer swarm exhausted artifact providers before receiving a manifest"
+                        .into(),
+                )
+            })
+        })?;
         runtime
             .storage
             .remember_artifact_replay_descriptor(descriptor.clone());
@@ -2860,39 +2964,93 @@ async fn try_download_artifact_via_browser_peer_swarm(
             bytes.extend_from_slice(&chunk_bytes);
             continue;
         }
-        let chunk_request = BrowserPeerArtifactChunkRequest {
-            artifact: request.clone(),
-            chunk_id: chunk.chunk_id.clone(),
-        };
-        let chunk_request_value = serde_wasm_bindgen::to_value(&chunk_request)
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
-        let chunk_promise = fetch_chunk
-            .call1(&swarm_value, &chunk_request_value)
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-        let chunk_value = JsFuture::from(Promise::from(chunk_promise))
-            .await
-            .map_err(|error| BrowserAuthClientError::ArtifactTransport(format!("{error:?}")))?;
-        if chunk_value.is_undefined() || chunk_value.is_null() {
-            return Ok(None);
-        }
-        let chunk_bytes = if chunk_value.is_instance_of::<js_sys::ArrayBuffer>()
-            || chunk_value.is_instance_of::<Uint8Array>()
-        {
-            Uint8Array::new(&chunk_value).to_vec()
-        } else if let Ok(bytes_value) = Reflect::get(&chunk_value, &JsValue::from_str("bytes")) {
-            if bytes_value.is_undefined() || bytes_value.is_null() {
-                return Err(BrowserAuthClientError::ArtifactTransport(format!(
-                    "browser peer swarm returned an empty chunk payload for {}",
-                    chunk.chunk_id.as_str()
-                )));
+        let mut last_error = None;
+        let mut chunk_bytes = None;
+        for attempt in 0..BROWSER_PEER_ARTIFACT_MAX_ATTEMPTS {
+            if attempt > 0 {
+                wait_peer_artifact_retry_delay(attempt).await;
             }
-            Uint8Array::new(&bytes_value).to_vec()
-        } else {
-            return Err(BrowserAuthClientError::ArtifactTransport(format!(
-                "browser peer swarm returned an unsupported chunk payload for {}",
-                chunk.chunk_id.as_str()
-            )));
-        };
+            let Some(attempt_request) = browser_peer_artifact_request_excluding(
+                &artifact_request,
+                &excluded_provider_peer_ids,
+            ) else {
+                break;
+            };
+            let chunk_request = BrowserPeerArtifactChunkRequest {
+                artifact: attempt_request.clone(),
+                chunk_id: chunk.chunk_id.clone(),
+            };
+            let chunk_request_value = serde_wasm_bindgen::to_value(&chunk_request)
+                .map_err(|error| BrowserAuthClientError::ArtifactTransport(error.to_string()))?;
+            let chunk_result: Result<Option<JsValue>, BrowserAuthClientError> = async {
+                let chunk_promise = fetch_chunk
+                    .call1(&swarm_value, &chunk_request_value)
+                    .map_err(|error| {
+                        BrowserAuthClientError::ArtifactTransport(format!("{error:?}"))
+                    })?;
+                let chunk_value =
+                    JsFuture::from(Promise::from(chunk_promise))
+                        .await
+                        .map_err(|error| {
+                            BrowserAuthClientError::ArtifactTransport(format!("{error:?}"))
+                        })?;
+                if chunk_value.is_undefined() || chunk_value.is_null() {
+                    return Ok(None);
+                }
+                Ok(Some(chunk_value))
+            }
+            .await;
+            match chunk_result {
+                Ok(Some(chunk_value)) => {
+                    artifact_request = attempt_request;
+                    chunk_bytes = Some(
+                        if chunk_value.is_instance_of::<js_sys::ArrayBuffer>()
+                            || chunk_value.is_instance_of::<Uint8Array>()
+                        {
+                            Uint8Array::new(&chunk_value).to_vec()
+                        } else if let Ok(bytes_value) =
+                            Reflect::get(&chunk_value, &JsValue::from_str("bytes"))
+                        {
+                            if bytes_value.is_undefined() || bytes_value.is_null() {
+                                return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                                    "browser peer swarm returned an empty chunk payload for {}",
+                                    chunk.chunk_id.as_str()
+                                )));
+                            }
+                            Uint8Array::new(&bytes_value).to_vec()
+                        } else {
+                            return Err(BrowserAuthClientError::ArtifactTransport(format!(
+                                "browser peer swarm returned an unsupported chunk payload for {}",
+                                chunk.chunk_id.as_str()
+                            )));
+                        },
+                    );
+                    break;
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    let message = error.to_string();
+                    if let Some(peer_id) = non_advertising_artifact_peer_id(&message) {
+                        excluded_provider_peer_ids.insert(peer_id);
+                    }
+                    if attempt + 1 < BROWSER_PEER_ARTIFACT_MAX_ATTEMPTS
+                        && retryable_peer_artifact_transport_error(&message)
+                    {
+                        last_error = Some(error);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let chunk_bytes = chunk_bytes.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                BrowserAuthClientError::ArtifactTransport(format!(
+                    "browser peer swarm exhausted artifact providers before receiving chunk {}",
+                    chunk.chunk_id.as_str()
+                ))
+            })
+        })?;
         if chunk_bytes.len() as u64 != chunk.length_bytes {
             return Err(BrowserAuthClientError::ArtifactTransport(format!(
                 "browser peer swarm returned chunk {} with unexpected length {} (expected {})",

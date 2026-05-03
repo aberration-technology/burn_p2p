@@ -1047,6 +1047,15 @@ async fn run_wasm_browser_swarm_task(
                         request,
                         response_tx,
                     } => {
+                        maybe_dial_wasm_browser_artifact_provider_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &connected_peer_transports,
+                            &mut attempted_mesh_candidate_urls,
+                            &request.provider_peer_ids,
+                        );
                         match resolve_wasm_browser_request_peer_id(
                             &shared.borrow().status.connected_peer_ids,
                             &connected_peer_transports,
@@ -1074,6 +1083,15 @@ async fn run_wasm_browser_swarm_task(
                         request,
                         response_tx,
                     } => {
+                        maybe_dial_wasm_browser_artifact_provider_peers(
+                            &mut swarm,
+                            &shared,
+                            current_bootstrap.as_ref(),
+                            current_snapshot.as_ref(),
+                            &connected_peer_transports,
+                            &mut attempted_mesh_candidate_urls,
+                            &request.provider_peer_ids,
+                        );
                         match resolve_wasm_browser_request_peer_id(
                             &shared.borrow().status.connected_peer_ids,
                             &connected_peer_transports,
@@ -2077,6 +2095,56 @@ fn maybe_dial_wasm_browser_mesh_peers(
 }
 
 #[cfg(target_arch = "wasm32")]
+fn maybe_dial_wasm_browser_artifact_provider_peers(
+    swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
+    shared: &Rc<RefCell<WasmBrowserSwarmSharedState>>,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    current_snapshot: Option<&ControlPlaneSnapshot>,
+    connected_peer_transports: &BTreeMap<PeerId, BrowserTransportFamily>,
+    attempted_mesh_candidate_urls: &mut BTreeMap<String, Instant>,
+    provider_peer_ids: &[PeerId],
+) {
+    let Some(bootstrap) = bootstrap else {
+        return;
+    };
+    let Some(snapshot) = current_snapshot else {
+        return;
+    };
+    if provider_peer_ids.is_empty() {
+        return;
+    }
+    let connected_peer_ids = shared.borrow().status.connected_peer_ids.clone();
+    let available_slots =
+        browser_additional_direct_connection_budget(&connected_peer_ids, connected_peer_transports);
+    if available_slots == 0 {
+        return;
+    }
+    prune_wasm_browser_candidate_attempts(attempted_mesh_candidate_urls);
+    let supported_transports = wasm_supported_browser_transport_families();
+    for candidate in browser_artifact_provider_dial_candidates(
+        snapshot,
+        Some(bootstrap),
+        &bootstrap.transport_preference,
+        &supported_transports,
+        &connected_peer_ids,
+        attempted_mesh_candidate_urls,
+        provider_peer_ids,
+    )
+    .into_iter()
+    .take(available_slots)
+    {
+        let Ok(address) = candidate.seed_url.parse::<Multiaddr>() else {
+            continue;
+        };
+        let seed_url = candidate.seed_url.clone();
+        if let Err(error) = swarm.dial(address) {
+            shared.borrow_mut().status.last_error = Some(error.to_string());
+        }
+        attempted_mesh_candidate_urls.insert(seed_url, Instant::now());
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn ensure_wasm_browser_topic_subscriptions(
     swarm: &mut libp2p::Swarm<WasmBrowserSwarmBehaviour>,
     bootstrap: Option<&BrowserSwarmBootstrap>,
@@ -2227,6 +2295,37 @@ pub(crate) fn browser_peer_directory_dial_candidates(
         }
     }
     candidates
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub(crate) fn browser_artifact_provider_dial_candidates(
+    snapshot: &ControlPlaneSnapshot,
+    bootstrap: Option<&BrowserSwarmBootstrap>,
+    transport_preference: &[BrowserTransportFamily],
+    supported_transports: &[BrowserTransportFamily],
+    connected_peer_ids: &[PeerId],
+    attempted_candidate_urls: &BTreeMap<String, Instant>,
+    provider_peer_ids: &[PeerId],
+) -> Vec<BrowserSeedDialCandidate> {
+    if provider_peer_ids.is_empty() {
+        return Vec::new();
+    }
+    browser_peer_directory_dial_candidates(
+        snapshot,
+        bootstrap,
+        transport_preference,
+        supported_transports,
+        connected_peer_ids,
+        attempted_candidate_urls,
+    )
+    .into_iter()
+    .filter(|candidate| {
+        candidate
+            .peer_id
+            .as_ref()
+            .is_some_and(|peer_id| provider_peer_ids.contains(peer_id))
+    })
+    .collect()
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]

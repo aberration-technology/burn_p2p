@@ -34,12 +34,13 @@ use super::{
     PlannedBrowserSwarmRuntime, ProtocolSet, PubsubEnvelope, PubsubPayload,
     ReductionCertificateAnnouncement, RuntimeBoundary, RuntimeTransportPolicy, SwarmAddress,
     SwarmError, TransportKind, ValidationQuorumAnnouncement, WasmPendingConnect,
-    browser_additional_direct_connection_budget, browser_direct_seed_retry_candidates,
-    browser_peer_directory_dial_candidates, browser_should_retry_direct_handoff,
-    browser_transport_family_for_seed_url, browser_wss_fallback_peers_to_disconnect,
-    filter_supported_browser_seed_dial_candidates, plan_browser_seed_dials,
-    preferred_connected_browser_transport, preferred_wasm_browser_request_peer_id,
-    selected_browser_study_and_experiment, update_wasm_browser_status_from_snapshot,
+    browser_additional_direct_connection_budget, browser_artifact_provider_dial_candidates,
+    browser_direct_seed_retry_candidates, browser_peer_directory_dial_candidates,
+    browser_should_retry_direct_handoff, browser_transport_family_for_seed_url,
+    browser_wss_fallback_peers_to_disconnect, filter_supported_browser_seed_dial_candidates,
+    plan_browser_seed_dials, preferred_connected_browser_transport,
+    preferred_wasm_browser_request_peer_id, selected_browser_study_and_experiment,
+    update_wasm_browser_status_from_snapshot,
 };
 use burn_p2p_experiment::{
     ActivationTarget, ExperimentLifecycleEnvelope, ExperimentLifecyclePhase,
@@ -469,6 +470,58 @@ fn browser_peer_directory_candidates_skip_connected_and_attempted_peers() {
     assert_eq!(
         candidates[0].seed_url,
         "/dns4/peer-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w"
+    );
+}
+
+#[test]
+fn browser_artifact_provider_candidates_only_include_requested_unconnected_providers() {
+    let snapshot = ControlPlaneSnapshot {
+        peer_directory_announcements: vec![
+            semantic_test_peer_directory(
+                "provider-connected",
+                &[
+                    "/dns4/provider-connected.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "provider-fresh",
+                &[
+                    "/dns4/provider-fresh.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+            semantic_test_peer_directory(
+                "observer",
+                &[
+                    "/dns4/observer.example/udp/443/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w",
+                ],
+                None,
+                Utc::now(),
+            ),
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let candidates = browser_artifact_provider_dial_candidates(
+        &snapshot,
+        None,
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[BrowserTransportFamily::WebRtcDirect],
+        &[PeerId::new("provider-connected")],
+        &BTreeMap::new(),
+        &[
+            PeerId::new("provider-connected"),
+            PeerId::new("provider-fresh"),
+        ],
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].peer_id.as_ref(),
+        Some(&PeerId::new("provider-fresh"))
     );
 }
 
