@@ -339,9 +339,10 @@ fn browser_worker_promotes_to_trainer_only_after_live_memory_swarm_snapshot() {
     let study_id = StudyId::new("study-browser");
     let experiment_id = ExperimentId::new("exp-browser");
     let revision_id = RevisionId::new("rev-browser");
-    let directory =
+    let mut directory =
         browser_directory_snapshot(&network_id, &study_id, &experiment_id, &revision_id);
     let head = browser_head(&study_id, &experiment_id, &revision_id);
+    directory.entries[0].current_head_id = Some(head.head_id.clone());
 
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
     let mut listener =
@@ -462,9 +463,10 @@ fn browser_worker_promotes_to_verifier_only_after_live_tcp_swarm_snapshot() {
     let study_id = StudyId::new("study-browser");
     let experiment_id = ExperimentId::new("exp-browser");
     let revision_id = RevisionId::new("rev-browser");
-    let directory =
+    let mut directory =
         browser_directory_snapshot(&network_id, &study_id, &experiment_id, &revision_id);
     let head = browser_head(&study_id, &experiment_id, &revision_id);
+    directory.entries[0].current_head_id = Some(head.head_id.clone());
 
     let protocols = ProtocolSet::for_network(&network_id).expect("protocols");
     let mut listener = NativeControlPlaneShell::new(
