@@ -24,6 +24,15 @@ impl ControlHandle {
     fn retry_runtime_request<T>(
         &self,
         timeout: Duration,
+        request: impl FnMut(Duration) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        self.retry_runtime_request_with_slice(timeout, runtime_fetch_attempt_timeout, request)
+    }
+
+    fn retry_runtime_request_with_slice<T>(
+        &self,
+        timeout: Duration,
+        attempt_timeout: impl Fn(Duration) -> Duration,
         mut request: impl FnMut(Duration) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
         const RUNTIME_FETCH_RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -35,8 +44,7 @@ impl ControlHandle {
             if now >= deadline {
                 break;
             }
-            let attempt_timeout =
-                runtime_fetch_attempt_timeout(deadline.saturating_duration_since(now));
+            let attempt_timeout = attempt_timeout(deadline.saturating_duration_since(now));
             match request(attempt_timeout) {
                 Ok(result) => return Ok(result),
                 Err(error) => {
@@ -367,18 +375,24 @@ impl ControlHandle {
         let peer = PeerId::new(peer_id.clone());
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
-        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            self.tx
-                .send(RuntimeCommand::FetchArtifactManifest {
-                    peer_id: peer_id.clone(),
-                    artifact_id: artifact_id.clone(),
-                    timeout: attempt_timeout,
-                    reply: reply_tx,
-                })
-                .map_err(|error| anyhow::anyhow!("failed to request artifact manifest: {error}"))?;
-            Self::recv_runtime_reply(reply_rx, "artifact manifest", attempt_timeout)
-        });
+        let runtime_result = self.retry_runtime_request_with_slice(
+            runtime_timeout,
+            artifact_runtime_fetch_attempt_timeout,
+            |attempt_timeout| {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.tx
+                    .send(RuntimeCommand::FetchArtifactManifest {
+                        peer_id: peer_id.clone(),
+                        artifact_id: artifact_id.clone(),
+                        timeout: attempt_timeout,
+                        reply: reply_tx,
+                    })
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to request artifact manifest: {error}")
+                    })?;
+                Self::recv_runtime_reply(reply_rx, "artifact manifest", attempt_timeout)
+            },
+        );
 
         match runtime_result {
             Ok(result) => Ok(result),
@@ -406,19 +420,25 @@ impl ControlHandle {
         let peer = PeerId::new(peer_id.clone());
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
-        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            self.tx
-                .send(RuntimeCommand::FetchArtifactChunk {
-                    peer_id: peer_id.clone(),
-                    artifact_id: artifact_id.clone(),
-                    chunk_id: chunk_id.clone(),
-                    timeout: attempt_timeout,
-                    reply: reply_tx,
-                })
-                .map_err(|error| anyhow::anyhow!("failed to request artifact chunk: {error}"))?;
-            Self::recv_runtime_reply(reply_rx, "artifact chunk", attempt_timeout)
-        });
+        let runtime_result = self.retry_runtime_request_with_slice(
+            runtime_timeout,
+            artifact_runtime_fetch_attempt_timeout,
+            |attempt_timeout| {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.tx
+                    .send(RuntimeCommand::FetchArtifactChunk {
+                        peer_id: peer_id.clone(),
+                        artifact_id: artifact_id.clone(),
+                        chunk_id: chunk_id.clone(),
+                        timeout: attempt_timeout,
+                        reply: reply_tx,
+                    })
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to request artifact chunk: {error}")
+                    })?;
+                Self::recv_runtime_reply(reply_rx, "artifact chunk", attempt_timeout)
+            },
+        );
 
         match runtime_result {
             Ok(result) => Ok(result),
@@ -786,6 +806,12 @@ fn runtime_fetch_attempt_timeout(remaining: Duration) -> Duration {
     remaining.min(RUNTIME_FETCH_RETRY_SLICE)
 }
 
+fn artifact_runtime_fetch_attempt_timeout(remaining: Duration) -> Duration {
+    const ARTIFACT_RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_secs(60);
+
+    remaining.min(ARTIFACT_RUNTIME_FETCH_RETRY_SLICE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +829,18 @@ mod tests {
         assert_eq!(
             runtime_fetch_attempt_timeout(Duration::from_secs(45)),
             Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn artifact_runtime_fetch_attempt_timeout_allows_large_chunk_transfers() {
+        assert_eq!(
+            artifact_runtime_fetch_attempt_timeout(Duration::from_secs(180)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            artifact_runtime_fetch_attempt_timeout(Duration::from_millis(750)),
+            Duration::from_millis(750)
         );
     }
 
