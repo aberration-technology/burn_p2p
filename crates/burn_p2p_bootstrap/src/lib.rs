@@ -1774,8 +1774,41 @@ mod tests {
             || daemon_telemetry.snapshot().connected_peers >= 1,
             "embedded daemon did not connect to trainer",
         );
+        let daemon_admin_state = daemon.admin_state();
         wait_for(
             Duration::from_secs(30),
+            || {
+                daemon_admin_state
+                    .lock()
+                    .expect("embedded daemon state should not be poisoned")
+                    .head_descriptors
+                    .iter()
+                    .any(|head| {
+                        head.study_id == active.study_id
+                            && head.experiment_id == active.experiment_id
+                            && head.revision_id == active.revision_id
+                    })
+            },
+            "embedded daemon did not initialize the genesis head",
+        );
+        wait_for(
+            Duration::from_secs(30),
+            || {
+                daemon_telemetry
+                    .snapshot()
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| {
+                        announcement.head.study_id == active.study_id
+                            && announcement.head.experiment_id == active.experiment_id
+                            && announcement.head.revision_id == active.revision_id
+                    })
+            },
+            "embedded daemon did not announce the genesis head",
+        );
+        wait_for(
+            Duration::from_secs(60),
             || {
                 trainer
                     .sync_experiment_head(&experiment)
