@@ -1,3 +1,5 @@
+#[cfg(feature = "artifact-publish")]
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     sync::{
         Arc, Mutex,
@@ -7,6 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "artifact-publish")]
+use crate::artifact_mirror::mirror_peer_artifact;
 use crate::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPlan,
     BootstrapService,
@@ -16,7 +20,13 @@ use burn_p2p::{
     MetricsRetentionPreset, NodeBuilder, NodeConfig, NodeTelemetrySnapshot, P2pWorkload,
     RunningNode, StorageConfig, TelemetryHandle,
 };
+#[cfg(feature = "artifact-publish")]
+use burn_p2p::{ControlPlaneSnapshot, HeadAnnouncement};
+#[cfg(feature = "artifact-publish")]
+use burn_p2p_core::HeadId;
 use burn_p2p_core::{ExperimentId, PeerId, RevisionId, StudyId};
+#[cfg(feature = "artifact-publish")]
+use burn_p2p_publish::PeerArtifactMirrorRequest;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -435,6 +445,163 @@ fn apply_runtime_node_config<P>(
         .with_external_addresses(config.external_addresses.clone())
 }
 
+#[cfg(feature = "artifact-publish")]
+const BOOTSTRAP_HEAD_ARTIFACT_MIRROR_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+#[cfg(feature = "artifact-publish")]
+const BOOTSTRAP_HEAD_ARTIFACT_MIRROR_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+
+#[cfg(feature = "artifact-publish")]
+#[derive(Debug, Default)]
+struct BootstrapHeadArtifactMirror {
+    last_attempt_at: BTreeMap<String, Instant>,
+    mirrored_head_artifacts: BTreeSet<String>,
+}
+
+#[cfg(feature = "artifact-publish")]
+impl BootstrapHeadArtifactMirror {
+    fn mirror_current_heads(
+        &mut self,
+        control: &ControlHandle,
+        snapshot: &NodeTelemetrySnapshot,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(local_peer_id) = snapshot.local_peer_id.as_ref() else {
+            return Ok(None);
+        };
+
+        for (announcement, provider_peer_ids) in
+            bootstrap_head_artifact_mirror_candidates(&snapshot.control_plane, local_peer_id)
+        {
+            let key = head_artifact_mirror_key(&announcement);
+            if self.mirrored_head_artifacts.contains(&key) {
+                continue;
+            }
+            if self
+                .last_attempt_at
+                .get(&key)
+                .is_some_and(|last| last.elapsed() < BOOTSTRAP_HEAD_ARTIFACT_MIRROR_RETRY_INTERVAL)
+            {
+                continue;
+            }
+            self.last_attempt_at.insert(key.clone(), Instant::now());
+
+            eprintln!(
+                "bootstrap-head-artifact-mirror-start head={} artifact={} providers={:?}",
+                announcement.head.head_id.as_str(),
+                announcement.head.artifact_id.as_str(),
+                provider_peer_ids
+                    .iter()
+                    .map(|peer_id| peer_id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            let response = mirror_peer_artifact(
+                control,
+                PeerArtifactMirrorRequest {
+                    artifact_id: announcement.head.artifact_id.clone(),
+                    provider_peer_ids,
+                    timeout_ms: Some(BOOTSTRAP_HEAD_ARTIFACT_MIRROR_TIMEOUT_MS),
+                },
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "bootstrap head artifact mirror failed for head {} artifact {}: {error}",
+                    announcement.head.head_id.as_str(),
+                    announcement.head.artifact_id.as_str()
+                )
+            })?;
+            let mirrored_provider = response
+                .mirrored_provider_peer_id
+                .or_else(|| control.local_peer_id())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "bootstrap head artifact mirror finished without a local provider peer id"
+                    )
+                })?;
+            control.publish_head(HeadAnnouncement {
+                overlay: announcement.overlay.clone(),
+                provider_peer_id: Some(mirrored_provider.clone()),
+                head: announcement.head.clone(),
+                announced_at: Utc::now(),
+            })?;
+            self.mirrored_head_artifacts.insert(key);
+            let message = format!(
+                "bootstrap head artifact mirror complete head={} artifact={} provider={} bytes={} chunks={}",
+                announcement.head.head_id.as_str(),
+                response.artifact_id.as_str(),
+                mirrored_provider.as_str(),
+                response.bytes_len,
+                response.chunk_count
+            );
+            eprintln!("{message}");
+            return Ok(Some(message));
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "artifact-publish")]
+fn bootstrap_head_artifact_mirror_candidates(
+    control_plane: &ControlPlaneSnapshot,
+    local_peer_id: &PeerId,
+) -> Vec<(HeadAnnouncement, Vec<PeerId>)> {
+    let current_head_ids = current_directory_head_ids(control_plane);
+    let locally_provided_head_ids = control_plane
+        .head_announcements
+        .iter()
+        .filter(|announcement| announcement.provider_peer_id.as_ref() == Some(local_peer_id))
+        .map(|announcement| announcement.head.head_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut candidates = BTreeMap::<HeadId, (HeadAnnouncement, Vec<PeerId>)>::new();
+    for announcement in &control_plane.head_announcements {
+        if !current_head_ids.is_empty() && !current_head_ids.contains(&announcement.head.head_id) {
+            continue;
+        }
+        if locally_provided_head_ids.contains(&announcement.head.head_id) {
+            continue;
+        }
+        let Some(provider_peer_id) = announcement.provider_peer_id.as_ref() else {
+            continue;
+        };
+        if provider_peer_id == local_peer_id {
+            continue;
+        }
+
+        let entry = candidates
+            .entry(announcement.head.head_id.clone())
+            .or_insert_with(|| (announcement.clone(), Vec::new()));
+        if announcement.announced_at > entry.0.announced_at {
+            entry.0 = announcement.clone();
+        }
+        if !entry.1.iter().any(|peer_id| peer_id == provider_peer_id) {
+            entry.1.push(provider_peer_id.clone());
+        }
+    }
+
+    let mut candidates = candidates.into_values().collect::<Vec<_>>();
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0.head.created_at));
+    candidates
+}
+
+#[cfg(feature = "artifact-publish")]
+fn current_directory_head_ids(control_plane: &ControlPlaneSnapshot) -> BTreeSet<HeadId> {
+    control_plane
+        .directory_announcements
+        .iter()
+        .flat_map(|announcement| announcement.entries.iter())
+        .filter_map(|entry| entry.current_head_id.clone())
+        .collect()
+}
+
+#[cfg(feature = "artifact-publish")]
+fn head_artifact_mirror_key(announcement: &HeadAnnouncement) -> String {
+    format!(
+        "{}:{}",
+        announcement.head.head_id.as_str(),
+        announcement.head.artifact_id.as_str()
+    )
+}
+
 fn bootstrap_peer_daemon_loop(
     plan: BootstrapPlan,
     running: RunningNode<()>,
@@ -442,18 +609,37 @@ fn bootstrap_peer_daemon_loop(
     shutdown_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     wait_for_runtime_ready(&running.telemetry(), Duration::from_secs(5))?;
+    #[cfg(feature = "artifact-publish")]
+    let mut head_artifact_mirror = BootstrapHeadArtifactMirror::default();
 
     loop {
         if shutdown_requested.load(Ordering::SeqCst) {
             break;
         }
 
+        #[cfg(feature = "artifact-publish")]
+        let mut head_artifact_mirror_error = None;
+
         {
             let snapshot = running.telemetry().snapshot();
+            #[cfg(feature = "artifact-publish")]
+            {
+                if let Err(error) =
+                    head_artifact_mirror.mirror_current_heads(&running.control_handle(), &snapshot)
+                {
+                    let error = format!("{error:#}");
+                    eprintln!("bootstrap-head-artifact-mirror-error: {error}");
+                    head_artifact_mirror_error = Some(error);
+                }
+            }
             let mut state = admin_state
                 .lock()
                 .expect("bootstrap peer state should not be poisoned");
             refresh_admin_state_from_runtime(&mut state, &snapshot, running.config())?;
+            #[cfg(feature = "artifact-publish")]
+            if let Some(error) = head_artifact_mirror_error {
+                state.last_error = Some(error);
+            }
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -766,5 +952,128 @@ mod tests {
 
         let panic = anyhow::anyhow!("runtime thread panicked");
         assert!(!is_controlled_shutdown_runtime_error(&panic));
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    fn mirror_test_overlay() -> burn_p2p::OverlayTopic {
+        burn_p2p::OverlayTopic::experiment(
+            NetworkId::new("test-net"),
+            StudyId::new("study"),
+            ExperimentId::new("experiment"),
+            burn_p2p::OverlayChannel::Heads,
+        )
+        .expect("heads overlay")
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    fn mirror_test_head(
+        head_id: &str,
+        artifact_id: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> burn_p2p::HeadDescriptor {
+        burn_p2p::HeadDescriptor {
+            head_id: HeadId::new(head_id),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+            artifact_id: burn_p2p::ArtifactId::new(artifact_id),
+            parent_head_id: None,
+            global_step: 0,
+            created_at,
+            metrics: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    fn mirror_test_directory(head_id: &str) -> burn_p2p::ExperimentDirectoryAnnouncement {
+        burn_p2p::ExperimentDirectoryAnnouncement {
+            network_id: NetworkId::new("test-net"),
+            entries: vec![burn_p2p::ExperimentDirectoryEntry {
+                network_id: NetworkId::new("test-net"),
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("experiment"),
+                workload_id: burn_p2p::WorkloadId::new("workload"),
+                display_name: "experiment".into(),
+                model_schema_hash: burn_p2p::ContentId::new("schema"),
+                dataset_view_id: burn_p2p::DatasetViewId::new("dataset"),
+                resource_requirements: burn_p2p::ExperimentResourceRequirements {
+                    minimum_roles: BTreeSet::new(),
+                    minimum_device_memory_bytes: None,
+                    minimum_system_memory_bytes: None,
+                    estimated_download_bytes: 0,
+                    estimated_window_seconds: 0,
+                },
+                visibility: burn_p2p::ExperimentVisibility::Public,
+                opt_in_policy: burn_p2p::ExperimentOptInPolicy::Open,
+                current_revision_id: RevisionId::new("revision"),
+                current_head_id: Some(HeadId::new(head_id)),
+                allowed_roles: burn_p2p::PeerRoleSet::default(),
+                allowed_scopes: BTreeSet::new(),
+                metadata: BTreeMap::new(),
+            }],
+            announced_at: Utc::now(),
+        }
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    fn mirror_test_announcement(
+        head: burn_p2p::HeadDescriptor,
+        provider: &str,
+    ) -> HeadAnnouncement {
+        HeadAnnouncement {
+            overlay: mirror_test_overlay(),
+            provider_peer_id: Some(PeerId::new(provider)),
+            head,
+            announced_at: Utc::now(),
+        }
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    #[test]
+    fn bootstrap_head_artifact_mirror_candidates_select_current_nonlocal_providers() {
+        let now = Utc::now();
+        let current = mirror_test_head("head-current", "artifact-current", now);
+        let stale = mirror_test_head(
+            "head-stale",
+            "artifact-stale",
+            now - chrono::Duration::seconds(30),
+        );
+        let snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![mirror_test_directory("head-current")],
+            head_announcements: vec![
+                mirror_test_announcement(stale, "provider-stale"),
+                mirror_test_announcement(current.clone(), "provider-a"),
+                mirror_test_announcement(current.clone(), "provider-b"),
+            ],
+            ..ControlPlaneSnapshot::default()
+        };
+
+        let candidates = bootstrap_head_artifact_mirror_candidates(&snapshot, &PeerId::new("edge"));
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0.head.head_id, HeadId::new("head-current"));
+        assert_eq!(
+            candidates[0].1,
+            vec![PeerId::new("provider-a"), PeerId::new("provider-b")]
+        );
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    #[test]
+    fn bootstrap_head_artifact_mirror_candidates_skip_local_provider_heads() {
+        let now = Utc::now();
+        let current = mirror_test_head("head-current", "artifact-current", now);
+        let snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![mirror_test_directory("head-current")],
+            head_announcements: vec![
+                mirror_test_announcement(current.clone(), "provider-a"),
+                mirror_test_announcement(current, "edge"),
+            ],
+            ..ControlPlaneSnapshot::default()
+        };
+
+        let candidates = bootstrap_head_artifact_mirror_candidates(&snapshot, &PeerId::new("edge"));
+
+        assert!(candidates.is_empty());
     }
 }

@@ -16,6 +16,9 @@
 
 mod admin;
 mod app_render;
+#[cfg(feature = "artifact-publish")]
+#[doc(hidden)]
+pub mod artifact_mirror;
 mod browser_edge;
 mod daemon;
 mod deploy;
