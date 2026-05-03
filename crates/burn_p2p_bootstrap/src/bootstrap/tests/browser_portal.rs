@@ -248,6 +248,7 @@ fn browser_seed_advertisement_includes_webrtc_direct_when_native_listener_is_con
                 known_peer_addresses: BTreeSet::new(),
                 runtime_boundary: None,
                 listen_addresses: vec![
+                    burn_p2p::SwarmAddress::new("/ip4/0.0.0.0/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w").expect("wildcard webrtc certhash addr"),
                     burn_p2p::SwarmAddress::new("/ip4/198.51.100.10/udp/4101/webrtc-direct/certhash/uEiDikp5KVUgkLta1EjUN-IKbHk-dUBg8VzKgf5nXxLK46w").expect("webrtc certhash addr"),
                 ],
                 control_plane: burn_p2p::ControlPlaneSnapshot::default(),

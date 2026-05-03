@@ -32,7 +32,7 @@ pub(super) fn browser_transport_surface(
     BrowserTransportSurface {
         webrtc_direct: native_browser_webrtc_direct_supported()
             && browser_runtime_seed_addresses(runtime_snapshot, "webrtc-direct")
-                .find(|address| browser_direct_seed_uses_publishable_ip(address.as_str()))
+                .next()
                 .is_some()
             && matches!(edge_mode, BrowserEdgeMode::Peer | BrowserEdgeMode::Full),
         webtransport_gateway: native_browser_webtransport_supported()

@@ -468,9 +468,11 @@ impl BootstrapHeadArtifactMirror {
             return Ok(None);
         };
 
-        for (announcement, provider_peer_ids) in
-            bootstrap_head_artifact_mirror_candidates(&snapshot.control_plane, local_peer_id)
-        {
+        for (announcement, provider_peer_ids) in bootstrap_head_artifact_mirror_candidates(
+            &snapshot.control_plane,
+            local_peer_id,
+            &snapshot.connected_peer_ids,
+        ) {
             let key = head_artifact_mirror_key(&announcement);
             if self.mirrored_head_artifacts.contains(&key) {
                 continue;
@@ -543,6 +545,7 @@ impl BootstrapHeadArtifactMirror {
 fn bootstrap_head_artifact_mirror_candidates(
     control_plane: &ControlPlaneSnapshot,
     local_peer_id: &PeerId,
+    connected_peer_ids: &BTreeSet<PeerId>,
 ) -> Vec<(HeadAnnouncement, Vec<PeerId>)> {
     let current_head_ids = current_directory_head_ids(control_plane);
     let locally_provided_head_ids = control_plane
@@ -578,9 +581,39 @@ fn bootstrap_head_artifact_mirror_candidates(
         }
     }
 
-    let mut candidates = candidates.into_values().collect::<Vec<_>>();
+    let mut candidates = candidates
+        .into_values()
+        .filter_map(|(announcement, provider_peer_ids)| {
+            prioritize_head_artifact_mirror_providers(provider_peer_ids, connected_peer_ids)
+                .map(|provider_peer_ids| (announcement, provider_peer_ids))
+        })
+        .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0.head.created_at));
     candidates
+}
+
+#[cfg(feature = "artifact-publish")]
+fn prioritize_head_artifact_mirror_providers(
+    provider_peer_ids: Vec<PeerId>,
+    connected_peer_ids: &BTreeSet<PeerId>,
+) -> Option<Vec<PeerId>> {
+    if provider_peer_ids.is_empty() {
+        return None;
+    }
+    if connected_peer_ids.is_empty() {
+        return Some(provider_peer_ids);
+    }
+
+    let connected = provider_peer_ids
+        .iter()
+        .filter(|peer_id| connected_peer_ids.contains(*peer_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if connected.is_empty() {
+        Some(provider_peer_ids)
+    } else {
+        Some(connected)
+    }
 }
 
 #[cfg(feature = "artifact-publish")]
@@ -1048,7 +1081,11 @@ mod tests {
             ..ControlPlaneSnapshot::default()
         };
 
-        let candidates = bootstrap_head_artifact_mirror_candidates(&snapshot, &PeerId::new("edge"));
+        let candidates = bootstrap_head_artifact_mirror_candidates(
+            &snapshot,
+            &PeerId::new("edge"),
+            &BTreeSet::new(),
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0.head.head_id, HeadId::new("head-current"));
@@ -1072,8 +1109,38 @@ mod tests {
             ..ControlPlaneSnapshot::default()
         };
 
-        let candidates = bootstrap_head_artifact_mirror_candidates(&snapshot, &PeerId::new("edge"));
+        let candidates = bootstrap_head_artifact_mirror_candidates(
+            &snapshot,
+            &PeerId::new("edge"),
+            &BTreeSet::new(),
+        );
 
         assert!(candidates.is_empty());
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    #[test]
+    fn bootstrap_head_artifact_mirror_candidates_prefer_connected_providers() {
+        let now = Utc::now();
+        let current = mirror_test_head("head-current", "artifact-current", now);
+        let snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![mirror_test_directory("head-current")],
+            head_announcements: vec![
+                mirror_test_announcement(current.clone(), "provider-stale"),
+                mirror_test_announcement(current.clone(), "provider-live"),
+                mirror_test_announcement(current, "provider-later-stale"),
+            ],
+            ..ControlPlaneSnapshot::default()
+        };
+
+        let candidates = bootstrap_head_artifact_mirror_candidates(
+            &snapshot,
+            &PeerId::new("edge"),
+            &BTreeSet::from([PeerId::new("provider-live")]),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0.head.head_id, HeadId::new("head-current"));
+        assert_eq!(candidates[0].1, vec![PeerId::new("provider-live")]);
     }
 }
