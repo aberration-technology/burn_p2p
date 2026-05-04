@@ -11,7 +11,7 @@ use std::{
 };
 
 #[cfg(feature = "artifact-publish")]
-use crate::artifact_mirror::mirror_peer_artifact;
+use crate::artifact_mirror::mirror_peer_artifact_into_store;
 use crate::{
     BootstrapAdminState, BootstrapDiagnostics, BootstrapDiagnosticsBundle, BootstrapPlan,
     BootstrapService,
@@ -487,6 +487,48 @@ impl BootstrapHeadArtifactMirror {
         };
         let control = running.control_handle();
 
+        for announcement in bootstrap_head_artifact_local_provider_candidates(
+            &snapshot.control_plane,
+            local_peer_id,
+        ) {
+            let key = head_artifact_mirror_key(&announcement);
+            if self.mirrored_head_artifacts.contains(&key) {
+                continue;
+            }
+            let attempt_key = head_artifact_mirror_attempt_key("local", &announcement);
+            if self
+                .last_attempt_at
+                .get(&attempt_key)
+                .is_some_and(|last| last.elapsed() < BOOTSTRAP_HEAD_ARTIFACT_MIRROR_RETRY_INTERVAL)
+            {
+                continue;
+            }
+            self.last_attempt_at.insert(attempt_key, Instant::now());
+
+            match publish_local_head_artifact(running, &announcement, &self.source_roots) {
+                Ok(Some(message)) => {
+                    self.mirrored_head_artifacts.insert(key);
+                    eprintln!("{message}");
+                    return Ok(Some(message));
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "bootstrap-local-head-artifact-publish-unavailable head={} artifact={}",
+                        announcement.head.head_id.as_str(),
+                        announcement.head.artifact_id.as_str()
+                    );
+                }
+                Err(error) => {
+                    eprintln!(
+                        "bootstrap-local-head-artifact-publish-unavailable head={} artifact={}: {error:#}",
+                        announcement.head.head_id.as_str(),
+                        announcement.head.artifact_id.as_str()
+                    );
+                }
+            }
+        }
+
+        let local_store = running.artifact_store();
         for (announcement, provider_peer_ids) in bootstrap_head_artifact_mirror_candidates(
             &snapshot.control_plane,
             local_peer_id,
@@ -496,14 +538,15 @@ impl BootstrapHeadArtifactMirror {
             if self.mirrored_head_artifacts.contains(&key) {
                 continue;
             }
+            let attempt_key = head_artifact_mirror_attempt_key("remote", &announcement);
             if self
                 .last_attempt_at
-                .get(&key)
+                .get(&attempt_key)
                 .is_some_and(|last| last.elapsed() < BOOTSTRAP_HEAD_ARTIFACT_MIRROR_RETRY_INTERVAL)
             {
                 continue;
             }
-            self.last_attempt_at.insert(key.clone(), Instant::now());
+            self.last_attempt_at.insert(attempt_key, Instant::now());
 
             match publish_local_head_artifact(running, &announcement, &self.source_roots) {
                 Ok(Some(message)) => {
@@ -530,13 +573,14 @@ impl BootstrapHeadArtifactMirror {
                     .map(|peer_id| peer_id.as_str())
                     .collect::<Vec<_>>()
             );
-            let response = mirror_peer_artifact(
+            let response = mirror_peer_artifact_into_store(
                 &control,
                 PeerArtifactMirrorRequest {
                     artifact_id: announcement.head.artifact_id.clone(),
                     provider_peer_ids,
                     timeout_ms: Some(BOOTSTRAP_HEAD_ARTIFACT_MIRROR_TIMEOUT_MS),
                 },
+                local_store.as_ref(),
             )
             .map_err(|error| {
                 anyhow::anyhow!(
@@ -684,19 +728,9 @@ fn bootstrap_head_artifact_mirror_candidates(
     connected_peer_ids: &BTreeSet<PeerId>,
 ) -> Vec<(HeadAnnouncement, Vec<PeerId>)> {
     let current_head_ids = current_directory_head_ids(control_plane);
-    let locally_provided_head_ids = control_plane
-        .head_announcements
-        .iter()
-        .filter(|announcement| announcement.provider_peer_id.as_ref() == Some(local_peer_id))
-        .map(|announcement| announcement.head.head_id.clone())
-        .collect::<BTreeSet<_>>();
-
     let mut candidates = BTreeMap::<HeadId, (HeadAnnouncement, Vec<PeerId>)>::new();
     for announcement in &control_plane.head_announcements {
         if !current_head_ids.is_empty() && !current_head_ids.contains(&announcement.head.head_id) {
-            continue;
-        }
-        if locally_provided_head_ids.contains(&announcement.head.head_id) {
             continue;
         }
         let Some(provider_peer_id) = announcement.provider_peer_id.as_ref() else {
@@ -725,6 +759,34 @@ fn bootstrap_head_artifact_mirror_candidates(
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0.head.created_at));
+    candidates
+}
+
+#[cfg(feature = "artifact-publish")]
+fn bootstrap_head_artifact_local_provider_candidates(
+    control_plane: &ControlPlaneSnapshot,
+    local_peer_id: &PeerId,
+) -> Vec<HeadAnnouncement> {
+    let current_head_ids = current_directory_head_ids(control_plane);
+    let mut candidates = BTreeMap::<HeadId, HeadAnnouncement>::new();
+    for announcement in &control_plane.head_announcements {
+        if !current_head_ids.is_empty() && !current_head_ids.contains(&announcement.head.head_id) {
+            continue;
+        }
+        if announcement.provider_peer_id.as_ref() != Some(local_peer_id) {
+            continue;
+        }
+
+        let entry = candidates
+            .entry(announcement.head.head_id.clone())
+            .or_insert_with(|| announcement.clone());
+        if announcement.announced_at > entry.announced_at {
+            *entry = announcement.clone();
+        }
+    }
+
+    let mut candidates = candidates.into_values().collect::<Vec<_>>();
+    candidates.sort_by_key(|announcement| std::cmp::Reverse(announcement.head.created_at));
     candidates
 }
 
@@ -769,6 +831,11 @@ fn head_artifact_mirror_key(announcement: &HeadAnnouncement) -> String {
         announcement.head.head_id.as_str(),
         announcement.head.artifact_id.as_str()
     )
+}
+
+#[cfg(feature = "artifact-publish")]
+fn head_artifact_mirror_attempt_key(kind: &str, announcement: &HeadAnnouncement) -> String {
+    format!("{kind}:{}", head_artifact_mirror_key(announcement))
 }
 
 fn bootstrap_peer_daemon_loop(
@@ -1235,7 +1302,7 @@ mod tests {
 
     #[cfg(feature = "artifact-publish")]
     #[test]
-    fn bootstrap_head_artifact_mirror_candidates_skip_local_provider_heads() {
+    fn bootstrap_head_artifact_mirror_candidates_repair_local_provider_heads_from_nonlocal() {
         let now = Utc::now();
         let current = mirror_test_head("head-current", "artifact-current", now);
         let snapshot = ControlPlaneSnapshot {
@@ -1253,7 +1320,37 @@ mod tests {
             &BTreeSet::new(),
         );
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0.head.head_id, HeadId::new("head-current"));
+        assert_eq!(candidates[0].1, vec![PeerId::new("provider-a")]);
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    #[test]
+    fn bootstrap_head_artifact_local_provider_candidates_select_current_local_heads() {
+        let now = Utc::now();
+        let current = mirror_test_head("head-current", "artifact-current", now);
+        let stale = mirror_test_head(
+            "head-stale",
+            "artifact-stale",
+            now - chrono::Duration::seconds(30),
+        );
+        let snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![mirror_test_directory("head-current")],
+            head_announcements: vec![
+                mirror_test_announcement(stale, "edge"),
+                mirror_test_announcement(current.clone(), "provider-a"),
+                mirror_test_announcement(current, "edge"),
+            ],
+            ..ControlPlaneSnapshot::default()
+        };
+
+        let candidates =
+            bootstrap_head_artifact_local_provider_candidates(&snapshot, &PeerId::new("edge"));
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].head.head_id, HeadId::new("head-current"));
+        assert_eq!(candidates[0].provider_peer_id, Some(PeerId::new("edge")));
     }
 
     #[cfg(feature = "artifact-publish")]

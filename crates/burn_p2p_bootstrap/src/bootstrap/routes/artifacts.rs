@@ -2,8 +2,11 @@ use super::*;
 
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_bootstrap::artifact_mirror::{
-    mirror_peer_artifact, peer_artifact_mirror_error_status,
+    mirror_peer_artifact_into_store, peer_artifact_mirror_error_status,
 };
+
+#[cfg(feature = "artifact-publish")]
+use burn_p2p::FsArtifactStore;
 
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_publish::PeerArtifactMirrorRequest;
@@ -565,7 +568,12 @@ pub(crate) fn handle_artifact_publish_post_route(
                 )?;
                 return Ok(true);
             };
-            match mirror_peer_artifact(control, mirror) {
+            let artifact_store = with_admin_state(&context.state, |state| {
+                Ok::<_, std::convert::Infallible>(
+                    state.artifact_store_root.clone().map(FsArtifactStore::new),
+                )
+            })?;
+            match mirror_peer_artifact_into_store(control, mirror, artifact_store.as_ref()) {
                 Ok(response) => write_json(stream, &response)?,
                 Err(error) => {
                     let body = format!("peer artifact mirror failed: {error}");

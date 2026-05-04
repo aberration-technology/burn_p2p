@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use burn_p2p::ControlHandle;
+use burn_p2p::{ArtifactChunkPayload, ArtifactDescriptor, ControlHandle, FsArtifactStore};
 use burn_p2p_publish::{PeerArtifactMirrorRequest, PeerArtifactMirrorResponse};
 
 pub const DEFAULT_PEER_ARTIFACT_MIRROR_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -9,6 +9,14 @@ pub const PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT: Duration = Duration::from_secs(6
 pub fn mirror_peer_artifact(
     control: &ControlHandle,
     request: PeerArtifactMirrorRequest,
+) -> Result<PeerArtifactMirrorResponse, Box<dyn std::error::Error>> {
+    mirror_peer_artifact_into_store(control, request, None)
+}
+
+pub fn mirror_peer_artifact_into_store(
+    control: &ControlHandle,
+    request: PeerArtifactMirrorRequest,
+    store: Option<&FsArtifactStore>,
 ) -> Result<PeerArtifactMirrorResponse, Box<dyn std::error::Error>> {
     if request.provider_peer_ids.is_empty() {
         return Err(format!(
@@ -114,6 +122,9 @@ pub fn mirror_peer_artifact(
             continue;
         }
 
+        if let Some(store) = store {
+            persist_mirrored_artifact(store, &descriptor, &chunks)?;
+        }
         control.publish_artifact(descriptor.clone(), chunks)?;
         return Ok(PeerArtifactMirrorResponse {
             artifact_id: descriptor.artifact_id,
@@ -132,6 +143,23 @@ pub fn mirror_peer_artifact(
             )
         })
         .into())
+}
+
+fn persist_mirrored_artifact(
+    store: &FsArtifactStore,
+    descriptor: &ArtifactDescriptor,
+    chunks: &[ArtifactChunkPayload],
+) -> Result<(), Box<dyn std::error::Error>> {
+    store.ensure_layout()?;
+    for payload in chunks {
+        store.store_chunk_bytes(&payload.chunk, &payload.bytes)?;
+    }
+    store.store_manifest(descriptor)?;
+    store.pin_artifact(&descriptor.artifact_id)?;
+    if let Some(head_id) = descriptor.head_id.as_ref() {
+        store.pin_head(head_id)?;
+    }
+    Ok(())
 }
 
 fn bounded_peer_artifact_mirror_timeout(deadline: Instant) -> Option<Duration> {
@@ -153,6 +181,11 @@ pub fn peer_artifact_mirror_error_status(error: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn_p2p::{
+        ArtifactBuildSpec, ArtifactChunkPayload, ArtifactKind, ChunkingScheme, ContentId, HeadId,
+        Precision,
+    };
+    use chrono::Utc;
 
     #[test]
     fn peer_artifact_mirror_timeouts_cover_large_head_checkpoints() {
@@ -180,6 +213,58 @@ mod tests {
         assert_eq!(
             peer_artifact_mirror_error_status("provider did not advertise artifact"),
             "502 Bad Gateway"
+        );
+    }
+
+    #[test]
+    fn mirrored_artifact_persistence_pins_head_artifact_and_chunks() {
+        let source_root = tempfile::tempdir().expect("source tempdir");
+        let source_store = FsArtifactStore::new(source_root.path().join("source"));
+        let head_id = HeadId::new("head-persist");
+        let descriptor = source_store
+            .store_artifact_reader(
+                &ArtifactBuildSpec::new(
+                    ArtifactKind::FullHead,
+                    Precision::Fp32,
+                    ContentId::new("schema-persist"),
+                    "application/octet-stream",
+                )
+                .with_head(head_id.clone()),
+                b"checkpoint bytes".as_slice(),
+                ChunkingScheme::new(8).expect("chunking"),
+            )
+            .expect("source artifact");
+        let chunks = descriptor
+            .chunks
+            .iter()
+            .map(|chunk| ArtifactChunkPayload {
+                artifact_id: descriptor.artifact_id.clone(),
+                chunk: chunk.clone(),
+                bytes: source_store.load_chunk_bytes(chunk).expect("chunk bytes"),
+                generated_at: Utc::now(),
+            })
+            .collect::<Vec<_>>();
+
+        let mirror_root = tempfile::tempdir().expect("mirror tempdir");
+        let mirror_store = FsArtifactStore::new(mirror_root.path().join("mirror"));
+        persist_mirrored_artifact(&mirror_store, &descriptor, &chunks).expect("persist mirror");
+
+        assert!(
+            mirror_store
+                .has_complete_artifact(&descriptor.artifact_id)
+                .expect("complete check")
+        );
+        assert!(
+            mirror_store
+                .pinned_artifacts()
+                .expect("pinned artifacts")
+                .contains(&descriptor.artifact_id)
+        );
+        assert!(
+            mirror_store
+                .pinned_heads()
+                .expect("pinned heads")
+                .contains(&head_id)
         );
     }
 }
