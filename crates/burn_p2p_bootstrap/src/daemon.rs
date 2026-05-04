@@ -933,6 +933,31 @@ fn local_current_head_descriptor_candidates(
 }
 
 #[cfg(feature = "artifact-publish")]
+fn append_stored_current_head_descriptors(
+    control_plane: &ControlPlaneSnapshot,
+    storage: Option<&StorageConfig>,
+    heads: &mut Vec<HeadDescriptor>,
+) -> anyhow::Result<()> {
+    let Some(storage) = storage else {
+        return Ok(());
+    };
+    let mut known_head_ids = heads
+        .iter()
+        .map(|head| head.head_id.clone())
+        .collect::<BTreeSet<_>>();
+    for head_id in current_directory_head_ids(control_plane) {
+        if known_head_ids.contains(&head_id) {
+            continue;
+        }
+        if let Some(head) = crate::history::load_head_descriptor(storage, &head_id)? {
+            known_head_ids.insert(head.head_id.clone());
+            heads.push(head);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "artifact-publish")]
 fn head_artifact_mirror_key(announcement: &HeadAnnouncement) -> String {
     format!(
         "{}:{}",
@@ -976,7 +1001,13 @@ fn bootstrap_peer_daemon_loop(
                     .lock()
                     .expect("bootstrap peer state should not be poisoned");
                 refresh_admin_state_from_runtime(&mut state, &snapshot, running.config())?;
-                state.visible_head_descriptors()
+                let mut heads = state.visible_head_descriptors();
+                append_stored_current_head_descriptors(
+                    &snapshot.control_plane,
+                    running.config().storage.as_ref(),
+                    &mut heads,
+                )?;
+                heads
             };
             #[cfg(not(feature = "artifact-publish"))]
             {
@@ -1506,6 +1537,51 @@ mod tests {
             &PeerId::new("edge"),
         );
 
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].head.head_id, current.head_id);
+        assert_eq!(candidates[0].provider_peer_id, Some(PeerId::new("edge")));
+    }
+
+    #[cfg(feature = "artifact-publish")]
+    #[test]
+    fn stored_current_head_descriptors_recover_evicted_directory_current_head() {
+        let now = Utc::now();
+        let current = mirror_test_head("head-current", "artifact-current", now);
+        let recent = mirror_test_head(
+            "head-recent",
+            "artifact-recent",
+            now + chrono::Duration::seconds(30),
+        );
+        let snapshot = ControlPlaneSnapshot {
+            directory_announcements: vec![mirror_test_directory("head-current")],
+            head_announcements: vec![mirror_test_announcement(recent.clone(), "provider-recent")],
+            ..ControlPlaneSnapshot::default()
+        };
+        let root = tempfile::tempdir().expect("tempdir");
+        let storage = StorageConfig::new(root.path());
+        std::fs::create_dir_all(storage.heads_dir()).expect("heads dir");
+        std::fs::write(
+            storage
+                .heads_dir()
+                .join(format!("{}.json", current.head_id.path_component())),
+            serde_json::to_vec(&current).expect("head json"),
+        )
+        .expect("write head");
+        let mut visible_heads = vec![recent];
+
+        append_stored_current_head_descriptors(&snapshot, Some(&storage), &mut visible_heads)
+            .expect("append stored current head");
+        let candidates = local_current_head_descriptor_candidates(
+            &snapshot,
+            &visible_heads,
+            &PeerId::new("edge"),
+        );
+
+        assert!(
+            visible_heads
+                .iter()
+                .any(|head| head.head_id == current.head_id)
+        );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].head.head_id, current.head_id);
         assert_eq!(candidates[0].provider_peer_id, Some(PeerId::new("edge")));

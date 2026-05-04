@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use burn_p2p::{ContributionReceipt, HeadDescriptor, MetricsRetentionBudget, StorageConfig};
+#[cfg(feature = "artifact-publish")]
+use burn_p2p_core::HeadId;
 use burn_p2p_core::{
     EvalProtocolManifest, ExperimentId, HeadEvalReport, MergeCertificate, Page, PageRequest,
     PeerWindowMetrics, ReducerCohortMetrics, RevisionId,
@@ -338,6 +340,20 @@ pub(crate) fn load_all_head_descriptors(
         |name| name.ends_with(".json"),
         load_json_file::<HeadDescriptor>,
     )
+}
+
+#[cfg(feature = "artifact-publish")]
+pub(crate) fn load_head_descriptor(
+    storage: &StorageConfig,
+    head_id: &HeadId,
+) -> anyhow::Result<Option<HeadDescriptor>> {
+    let path = storage
+        .heads_dir()
+        .join(format!("{}.json", head_id.path_component()));
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_json_file::<HeadDescriptor>(path).map(Some)
 }
 
 pub(crate) fn load_paged_head_descriptors<F>(
