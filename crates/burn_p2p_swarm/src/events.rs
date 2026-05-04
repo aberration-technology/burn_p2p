@@ -491,7 +491,7 @@ impl ControlPlaneSnapshot {
         cap_control_announcements(&mut self.control_announcements);
         cap_lifecycle_announcements(&mut self.lifecycle_announcements);
         cap_schedule_announcements(&mut self.schedule_announcements);
-        cap_head_announcements(&mut self.head_announcements);
+        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
         cap_lease_announcements(&mut self.lease_announcements);
         cap_merge_window_announcements(&mut self.merge_window_announcements);
         cap_reducer_assignment_announcements(&mut self.reducer_assignment_announcements);
@@ -533,7 +533,7 @@ impl ControlPlaneSnapshot {
 
     pub(crate) fn insert_head_announcement(&mut self, announcement: HeadAnnouncement) {
         push_unique(&mut self.head_announcements, announcement);
-        cap_head_announcements(&mut self.head_announcements);
+        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
     }
 
     pub(crate) fn insert_lease_announcement(&mut self, announcement: LeaseAnnouncement) {
@@ -581,6 +581,7 @@ impl ControlPlaneSnapshot {
     ) {
         push_unique(&mut self.directory_announcements, announcement);
         cap_directory_announcements(&mut self.directory_announcements);
+        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
     }
 
     pub(crate) fn insert_peer_directory_announcement(
@@ -617,6 +618,9 @@ impl ControlPlaneSnapshot {
         }
         for announcement in &remote.schedule_announcements {
             self.insert_schedule_announcement(announcement.clone());
+        }
+        for announcement in &remote.directory_announcements {
+            self.insert_directory_announcement(announcement.clone());
         }
         for announcement in &remote.head_announcements {
             self.insert_head_announcement(announcement.clone());
@@ -678,9 +682,6 @@ impl ControlPlaneSnapshot {
         }
         for announcement in &remote.auth_announcements {
             self.insert_auth_announcement(announcement.clone());
-        }
-        for announcement in &remote.directory_announcements {
-            self.insert_directory_announcement(announcement.clone());
         }
         for announcement in &remote.peer_directory_announcements {
             self.insert_peer_directory_announcement(announcement.clone());
@@ -1072,14 +1073,29 @@ fn cap_schedule_announcements(values: &mut Vec<FleetScheduleAnnouncement>) {
     cap_tail(values, MAX_SCHEDULE_ANNOUNCEMENTS);
 }
 
-fn cap_head_announcements(values: &mut Vec<HeadAnnouncement>) {
+fn cap_head_announcements(
+    values: &mut Vec<HeadAnnouncement>,
+    directory_announcements: &[ExperimentDirectoryAnnouncement],
+) {
+    let current_head_ids = directory_current_head_ids(directory_announcements);
     values.sort_by(|left, right| {
-        left.head
-            .global_step
-            .cmp(&right.head.global_step)
+        current_head_ids
+            .contains(&left.head.head_id)
+            .cmp(&current_head_ids.contains(&right.head.head_id))
+            .then(left.head.global_step.cmp(&right.head.global_step))
             .then(left.announced_at.cmp(&right.announced_at))
     });
     cap_tail(values, MAX_HEAD_ANNOUNCEMENTS);
+}
+
+fn directory_current_head_ids(
+    directory_announcements: &[ExperimentDirectoryAnnouncement],
+) -> BTreeSet<HeadId> {
+    directory_announcements
+        .iter()
+        .flat_map(|announcement| announcement.entries.iter())
+        .filter_map(|entry| entry.current_head_id.clone())
+        .collect()
 }
 
 fn cap_lease_announcements(values: &mut Vec<LeaseAnnouncement>) {

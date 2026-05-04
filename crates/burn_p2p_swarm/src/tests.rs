@@ -2129,6 +2129,133 @@ fn control_plane_snapshot_caps_live_announcement_histories() {
     );
 }
 
+fn semantic_directory_current_head_announcement(
+    current_head_id: &str,
+    announced_at: chrono::DateTime<Utc>,
+) -> super::ExperimentDirectoryAnnouncement {
+    super::ExperimentDirectoryAnnouncement {
+        network_id: NetworkId::new("semantic-net"),
+        entries: vec![ExperimentDirectoryEntry {
+            network_id: NetworkId::new("semantic-net"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            workload_id: WorkloadId::new("workload"),
+            display_name: "experiment".into(),
+            model_schema_hash: ContentId::new("schema"),
+            dataset_view_id: DatasetViewId::new("dataset"),
+            resource_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 0,
+                estimated_window_seconds: 0,
+            },
+            visibility: ExperimentVisibility::Public,
+            opt_in_policy: ExperimentOptInPolicy::Open,
+            current_revision_id: RevisionId::new("rev"),
+            current_head_id: Some(HeadId::new(current_head_id)),
+            allowed_roles: PeerRoleSet::default(),
+            allowed_scopes: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        }],
+        announced_at,
+    }
+}
+
+fn semantic_head_announcement(
+    overlay: &OverlayTopic,
+    index: u64,
+    announced_at: chrono::DateTime<Utc>,
+) -> HeadAnnouncement {
+    HeadAnnouncement {
+        overlay: overlay.clone(),
+        provider_peer_id: Some(PeerId::new(format!("provider-{index:03}"))),
+        head: HeadDescriptor {
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            head_id: HeadId::new(format!("head-{index:03}")),
+            artifact_id: ArtifactId::new(format!("artifact-{index:03}")),
+            parent_head_id: None,
+            global_step: index,
+            created_at: announced_at,
+            metrics: BTreeMap::new(),
+        },
+        announced_at,
+    }
+}
+
+#[test]
+fn control_plane_snapshot_cap_preserves_directory_current_head() {
+    const MAX_HEADS: usize = 256;
+
+    let overlay = semantic_test_overlay();
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    snapshot.insert_directory_announcement(semantic_directory_current_head_announcement(
+        "head-000", now,
+    ));
+
+    for index in 0..320u64 {
+        snapshot.insert_head_announcement(semantic_head_announcement(
+            &overlay,
+            index,
+            now + chrono::Duration::seconds(index as i64),
+        ));
+    }
+
+    assert_eq!(snapshot.head_announcements.len(), MAX_HEADS);
+    assert!(
+        snapshot
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == HeadId::new("head-000"))
+    );
+    assert!(
+        snapshot
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.global_step == 319)
+    );
+}
+
+#[test]
+fn control_plane_snapshot_merge_preserves_remote_directory_current_head() {
+    const MAX_HEADS: usize = 256;
+
+    let overlay = semantic_test_overlay();
+    let now = Utc::now();
+    let mut remote = ControlPlaneSnapshot::default();
+    remote.insert_directory_announcement(semantic_directory_current_head_announcement(
+        "head-000", now,
+    ));
+
+    for index in 0..320u64 {
+        remote.head_announcements.push(semantic_head_announcement(
+            &overlay,
+            index,
+            now + chrono::Duration::seconds(index as i64),
+        ));
+    }
+
+    let mut local = ControlPlaneSnapshot::default();
+    local.merge_from_semantic(&remote);
+
+    assert_eq!(local.head_announcements.len(), MAX_HEADS);
+    assert!(
+        local
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == HeadId::new("head-000"))
+    );
+    assert!(
+        local
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.global_step == 319)
+    );
+}
+
 #[test]
 fn request_metadata_types_are_constructible() {
     let now = Utc::now();
