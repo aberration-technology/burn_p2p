@@ -58,7 +58,13 @@ pub(super) use burn_p2p_browser::{
     BrowserTransportStatus, BrowserUiBindings, BrowserValidationPlan, BrowserWorkerCommand,
     BrowserWorkerEvent, BrowserWorkerIdentity, BrowserWorkerRuntime,
 };
-#[cfg(feature = "artifact-publish")]
+#[cfg(all(
+    feature = "metrics-indexer",
+    feature = "artifact-publish",
+    feature = "artifact-download",
+    feature = "browser-edge",
+    feature = "browser-join"
+))]
 pub(super) use burn_p2p_core::ArtifactLiveEventKind;
 #[cfg(feature = "auth-github")]
 pub(super) use burn_p2p_core::AuthProvider;

@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(feature = "artifact-publish")]
 use burn_p2p_bootstrap::artifact_mirror::{
-    mirror_peer_artifact_into_store, peer_artifact_mirror_error_status,
+    mirror_peer_artifact_into_store_with_source_roots, peer_artifact_mirror_error_status,
 };
 
 #[cfg(feature = "artifact-publish")]
@@ -573,7 +573,17 @@ pub(crate) fn handle_artifact_publish_post_route(
                     state.artifact_store_root.clone().map(FsArtifactStore::new),
                 )
             })?;
-            match mirror_peer_artifact_into_store(control, mirror, artifact_store.as_ref()) {
+            let source_roots = lock_shared(&context.config, "daemon config")?
+                .bootstrap_peer
+                .as_ref()
+                .map(|config| config.head_artifact_mirror_source_roots.clone())
+                .unwrap_or_default();
+            match mirror_peer_artifact_into_store_with_source_roots(
+                control,
+                mirror,
+                artifact_store.as_ref(),
+                &source_roots,
+            ) {
                 Ok(response) => write_json(stream, &response)?,
                 Err(error) => {
                     let body = format!("peer artifact mirror failed: {error}");

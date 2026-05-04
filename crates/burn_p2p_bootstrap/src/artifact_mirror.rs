@@ -1,10 +1,15 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use burn_p2p::{ArtifactChunkPayload, ArtifactDescriptor, ControlHandle, FsArtifactStore};
+use burn_p2p::{
+    ArtifactChunkPayload, ArtifactDescriptor, ArtifactId, ControlHandle, FsArtifactStore,
+};
 use burn_p2p_publish::{PeerArtifactMirrorRequest, PeerArtifactMirrorResponse};
 
 pub const DEFAULT_PEER_ARTIFACT_MIRROR_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub const PEER_ARTIFACT_MIRROR_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+type SourceRootArtifact = (PathBuf, ArtifactDescriptor, Vec<ArtifactChunkPayload>);
 
 pub fn mirror_peer_artifact(
     control: &ControlHandle,
@@ -18,6 +23,21 @@ pub fn mirror_peer_artifact_into_store(
     request: PeerArtifactMirrorRequest,
     store: Option<&FsArtifactStore>,
 ) -> Result<PeerArtifactMirrorResponse, Box<dyn std::error::Error>> {
+    mirror_peer_artifact_into_store_with_source_roots(control, request, store, &[])
+}
+
+pub fn mirror_peer_artifact_into_store_with_source_roots(
+    control: &ControlHandle,
+    request: PeerArtifactMirrorRequest,
+    store: Option<&FsArtifactStore>,
+    source_roots: &[PathBuf],
+) -> Result<PeerArtifactMirrorResponse, Box<dyn std::error::Error>> {
+    if let Some(response) =
+        mirror_artifact_from_source_roots(control, &request.artifact_id, store, source_roots)?
+    {
+        return Ok(response);
+    }
+
     if request.provider_peer_ids.is_empty() {
         return Err(format!(
             "artifact {} does not have provider peers to mirror from",
@@ -145,6 +165,70 @@ pub fn mirror_peer_artifact_into_store(
         .into())
 }
 
+fn mirror_artifact_from_source_roots(
+    control: &ControlHandle,
+    artifact_id: &ArtifactId,
+    store: Option<&FsArtifactStore>,
+    source_roots: &[PathBuf],
+) -> Result<Option<PeerArtifactMirrorResponse>, Box<dyn std::error::Error>> {
+    let Some((_root, descriptor, chunks)) =
+        load_artifact_from_source_roots(artifact_id, source_roots)?
+    else {
+        return Ok(None);
+    };
+    if let Some(store) = store {
+        persist_mirrored_artifact(store, &descriptor, &chunks)?;
+    }
+    control.publish_artifact(descriptor.clone(), chunks)?;
+    let local_peer_id = control.local_peer_id().ok_or_else(|| {
+        "edge mirror source-root publish finished without a local peer id".to_owned()
+    })?;
+    let chunk_count = descriptor.chunks.len();
+    Ok(Some(PeerArtifactMirrorResponse {
+        artifact_id: descriptor.artifact_id,
+        mirrored_from: local_peer_id.clone(),
+        mirrored_provider_peer_id: Some(local_peer_id),
+        bytes_len: descriptor.bytes_len,
+        chunk_count,
+    }))
+}
+
+fn load_artifact_from_source_roots(
+    artifact_id: &ArtifactId,
+    source_roots: &[PathBuf],
+) -> Result<Option<SourceRootArtifact>, Box<dyn std::error::Error>> {
+    for root in source_roots {
+        let source = FsArtifactStore::new(root.clone());
+        match source.has_complete_artifact(artifact_id) {
+            Ok(true) => {
+                let descriptor = source.load_manifest(artifact_id)?;
+                let chunks = descriptor
+                    .chunks
+                    .iter()
+                    .map(|chunk| {
+                        Ok(ArtifactChunkPayload {
+                            artifact_id: descriptor.artifact_id.clone(),
+                            chunk: chunk.clone(),
+                            bytes: source.load_chunk_bytes(chunk)?,
+                            generated_at: chrono::Utc::now(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                return Ok(Some((root.clone(), descriptor, chunks)));
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!(
+                    "peer-artifact-mirror-source-root-unavailable root={} artifact={}: {error}",
+                    root.display(),
+                    artifact_id.as_str()
+                );
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn persist_mirrored_artifact(
     store: &FsArtifactStore,
     descriptor: &ArtifactDescriptor,
@@ -266,5 +350,36 @@ mod tests {
                 .expect("pinned heads")
                 .contains(&head_id)
         );
+    }
+
+    #[test]
+    fn source_root_artifact_loads_complete_manifest_and_chunks() {
+        let source_root = tempfile::tempdir().expect("source tempdir");
+        let source_store = FsArtifactStore::new(source_root.path().join("source"));
+        let descriptor = source_store
+            .store_artifact_reader(
+                &ArtifactBuildSpec::new(
+                    ArtifactKind::FullHead,
+                    Precision::Fp32,
+                    ContentId::new("schema-source-root"),
+                    "application/octet-stream",
+                ),
+                b"source root checkpoint bytes".as_slice(),
+                ChunkingScheme::new(8).expect("chunking"),
+            )
+            .expect("source artifact");
+
+        let loaded = load_artifact_from_source_roots(
+            &descriptor.artifact_id,
+            &[
+                source_root.path().join("missing"),
+                source_store.root().to_path_buf(),
+            ],
+        )
+        .expect("source root load")
+        .expect("artifact loaded");
+
+        assert_eq!(loaded.1.artifact_id, descriptor.artifact_id);
+        assert_eq!(loaded.2.len(), descriptor.chunks.len());
     }
 }

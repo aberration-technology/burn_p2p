@@ -32,7 +32,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.0-pre.73"
+version = "0.21.0-pre.74"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["burn_p2p contributors"]
@@ -45,33 +45,33 @@ categories = ["network-programming", "science"]
 anyhow = "1.0"
 burn = { version = "0.21.0-pre.3", default-features = false, features = ["std", "ndarray", "train", "store"] }
 burn-store = { version = "0.21.0-pre.3", default-features = false, features = ["std", "burnpack", "safetensors"] }
-burn_p2p = { version = "=0.21.0-pre.73", path = "crates/burn_p2p" }
-burn_p2p_admin = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_admin" }
-burn_p2p_workload = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_workload" }
-burn_p2p_e2e = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_e2e" }
-burn_p2p_python = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_python" }
-burn_p2p_auth_external = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_auth_external" }
-burn_p2p_auth_github = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_auth_github" }
-burn_p2p_auth_oidc = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_auth_oidc" }
-burn_p2p_auth_oauth = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_auth_oauth" }
-burn_p2p_bootstrap = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_bootstrap" }
-burn_p2p_browser = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_browser" }
-burn_p2p_checkpoint = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_checkpoint" }
-burn_p2p_core = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_core" }
-burn_p2p_dataloader = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_dataloader" }
-burn_p2p_engine = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_engine" }
-burn_p2p_experiment = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_experiment" }
-burn_p2p_limits = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_limits" }
-burn_p2p_metrics = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_metrics" }
-burn_p2p_app = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_app", default-features = false }
-burn_p2p_publish = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_publish", default-features = false }
-burn_p2p_security = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_security" }
-burn_p2p_social = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_social", default-features = false }
-burn_p2p_swarm = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_swarm" }
-burn_p2p_testkit = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_testkit" }
-burn_p2p_views = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_views" }
-burn_p2p_webrtc = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_webrtc" }
-burn_p2p_webrtc_websys = { version = "=0.21.0-pre.73", path = "crates/burn_p2p_webrtc_websys" }
+burn_p2p = { version = "=0.21.0-pre.74", path = "crates/burn_p2p" }
+burn_p2p_admin = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_admin" }
+burn_p2p_workload = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_workload" }
+burn_p2p_e2e = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_e2e" }
+burn_p2p_python = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_python" }
+burn_p2p_auth_external = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_auth_external" }
+burn_p2p_auth_github = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_auth_github" }
+burn_p2p_auth_oidc = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_auth_oidc" }
+burn_p2p_auth_oauth = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_auth_oauth" }
+burn_p2p_bootstrap = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_bootstrap" }
+burn_p2p_browser = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_browser" }
+burn_p2p_checkpoint = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_checkpoint" }
+burn_p2p_core = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_core" }
+burn_p2p_dataloader = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_dataloader" }
+burn_p2p_engine = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_engine" }
+burn_p2p_experiment = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_experiment" }
+burn_p2p_limits = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_limits" }
+burn_p2p_metrics = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_metrics" }
+burn_p2p_app = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_app", default-features = false }
+burn_p2p_publish = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_publish", default-features = false }
+burn_p2p_security = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_security" }
+burn_p2p_social = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_social", default-features = false }
+burn_p2p_swarm = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_swarm" }
+burn_p2p_testkit = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_testkit" }
+burn_p2p_views = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_views" }
+burn_p2p_webrtc = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_webrtc" }
+burn_p2p_webrtc_websys = { version = "=0.21.0-pre.74", path = "crates/burn_p2p_webrtc_websys" }
 ciborium = "0.2.2"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 criterion = "0.5"
