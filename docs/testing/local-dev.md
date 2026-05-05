@@ -239,6 +239,7 @@ just ci-publish
 Exact CI lanes are also runnable locally through the canonical runner:
 
 ```bash
+cargo xtask ci local-contract --keep-artifacts
 cargo xtask ci pr-fast --keep-artifacts
 cargo xtask ci browser --keep-artifacts
 cargo xtask ci integration --keep-artifacts
@@ -246,6 +247,11 @@ cargo xtask ci services --keep-artifacts
 cargo xtask ci nightly --keep-artifacts
 cargo xtask ci publish --keep-artifacts
 ```
+
+Use `ci local-contract` before deploy-facing changes. It is heavier than
+`pr-fast`, but still local-first: mixed browser/native E2E, services
+publication checks, adversarial smoke, bounded multiprocess stress, and chaos
+run under one artifact summary.
 
 ## Artifacts
 

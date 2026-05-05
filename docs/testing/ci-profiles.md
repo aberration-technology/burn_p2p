@@ -16,6 +16,12 @@ already available from crates.io.
 
 ## Workflow Mapping
 
+Local contract:
+
+- `cargo xtask ci local-contract`
+  - local-first deploy confidence lane for p2p training, browser contribution,
+    publication, adversarial, multiprocess, and chaos checks
+
 - `pr-fast.yml`
   - `cargo xtask ci pr-fast`
 - `browser.yml`
@@ -52,6 +58,10 @@ Integration CI adds broader product-shape coverage:
   restart and late-joiner resilience drills and does not require full
   trainer/viewer promoted-head fanout on `ubuntu-latest`
 - bounded multiprocess stress
+
+The local contract lane composes the highest-value integration pieces into one
+pre-deploy command. Use it before changes that affect artifact publication,
+head promotion, browser/native contribution symmetry, or network dynamics.
 
 Nightly absorbs heavier work:
 

@@ -196,6 +196,8 @@ pub enum FormalCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CiCommand {
+    /// Run the local production-contract lane before deploy-facing changes.
+    LocalContract(CiArgs),
     /// Run the lean PR fast lane locally.
     PrFast(CiArgs),
     /// Run the browser workflow lane locally.

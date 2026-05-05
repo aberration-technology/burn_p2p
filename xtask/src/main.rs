@@ -209,6 +209,7 @@ fn main() -> anyhow::Result<()> {
             FormalCommand::VerifyTrace(args) => run_formal_verify_trace(&workspace, args),
         },
         Command::Ci { command } => match command {
+            CiCommand::LocalContract(args) => run_ci_local_contract(&workspace, args),
             CiCommand::PrFast(args) => run_ci_pr_fast(&workspace, args),
             CiCommand::Browser(args) => run_ci_browser(&workspace, args),
             CiCommand::Integration(args) => run_ci_integration(&workspace, args),
@@ -4038,6 +4039,70 @@ fn run_ci_pr_fast(workspace: &Workspace, args: CiArgs) -> anyhow::Result<()> {
                     "smoke",
                     "--profile",
                     "ci-pr",
+                    "--keep-artifacts",
+                ],
+            ),
+        ],
+    )
+}
+
+fn run_ci_local_contract(workspace: &Workspace, args: CiArgs) -> anyhow::Result<()> {
+    run_ci_lane(
+        workspace,
+        "ci-local-contract",
+        Profile::CiIntegration,
+        args.keep_artifacts,
+        &[
+            ("setup-browser", vec!["setup", "browser"]),
+            (
+                "e2e-mixed",
+                vec![
+                    "e2e",
+                    "mixed",
+                    "--profile",
+                    "ci-integration",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "e2e-services",
+                vec!["e2e", "services", "--profile", "ci-pr", "--keep-artifacts"],
+            ),
+            (
+                "adversarial-smoke",
+                vec![
+                    "adversarial",
+                    "smoke",
+                    "--profile",
+                    "ci-pr",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "stress-multiprocess",
+                vec![
+                    "stress",
+                    "multiprocess",
+                    "--profile",
+                    "ci-integration",
+                    "--peers",
+                    "8",
+                    "--duration",
+                    "90s",
+                    "--keep-artifacts",
+                ],
+            ),
+            (
+                "stress-chaos",
+                vec![
+                    "stress",
+                    "chaos",
+                    "--profile",
+                    "ci-integration",
+                    "--events",
+                    "8",
+                    "--peers",
+                    "8",
                     "--keep-artifacts",
                 ],
             ),
