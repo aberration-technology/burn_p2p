@@ -253,19 +253,26 @@ Use `ci local-contract` before deploy-facing changes. It is heavier than
 publication checks, adversarial smoke, bounded multiprocess stress, and chaos
 run under one artifact summary.
 
-For long local runs in the shared `burn_dragon`/`burn_p2p` workspace, prefer
-the local agent task broker so the agent gets a final actionable summary instead
-of polling build output:
+For long local runs in the shared `burn_dragon`/`burn_p2p` workspace, prefer the
+`burn_dragon` xtask agent broker so the agent gets a final actionable summary
+instead of polling build output:
 
 ```bash
-python3 /home/mosure/repos/burn_dragon/scripts/agent_task.py run \
+/home/mosure/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo \
+  run --manifest-path /home/mosure/repos/burn_dragon/Cargo.toml -p xtask -- \
+  agent-task run \
   --cwd /home/mosure/repos/burn_p2p \
   --label burn-p2p-local-contract \
   --detach \
   -- /home/mosure/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo xtask ci local-contract --keep-artifacts
 
-python3 /home/mosure/repos/burn_dragon/scripts/agent_task.py status --cwd /home/mosure/repos/burn_p2p
-python3 /home/mosure/repos/burn_dragon/scripts/agent_task.py summarize --cwd /home/mosure/repos/burn_p2p TASK_ID
+/home/mosure/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo \
+  run --manifest-path /home/mosure/repos/burn_dragon/Cargo.toml -p xtask -- \
+  agent-task status --cwd /home/mosure/repos/burn_p2p
+
+/home/mosure/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo \
+  run --manifest-path /home/mosure/repos/burn_dragon/Cargo.toml -p xtask -- \
+  agent-task summarize --cwd /home/mosure/repos/burn_p2p TASK_ID
 ```
 
 ## Artifacts
