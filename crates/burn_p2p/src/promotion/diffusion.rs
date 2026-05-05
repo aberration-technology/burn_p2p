@@ -206,9 +206,10 @@ fn local_candidate_head_for_update(
     experiment: &ExperimentHandle,
     local_peer_id: &PeerId,
     base_head_id: &HeadId,
+    expected_global_step: u64,
     update: &UpdateAnnounce,
 ) -> Option<ValidationCandidateHead> {
-    snapshot
+    let announced = snapshot
         .head_announcements
         .iter()
         .filter(|announcement| {
@@ -228,7 +229,44 @@ fn local_candidate_head_for_update(
             provider_peer_ids: vec![local_peer_id.clone()],
             head: announcement.head.clone(),
             update: update.clone(),
-        })
+        });
+    if announced.is_some() {
+        return announced;
+    }
+
+    if update.study_id != experiment.study_id
+        || update.experiment_id != experiment.experiment_id
+        || update.revision_id != experiment.revision_id
+        || update.peer_id != *local_peer_id
+        || update.base_head_id != *base_head_id
+    {
+        return None;
+    }
+
+    // Local snapshots may retain the just-published update before they retain
+    // its non-canonical head announcement. The training path uses this stable
+    // head-id shape, and the artifact is already persisted locally.
+    Some(ValidationCandidateHead {
+        origin_peer_id: local_peer_id.clone(),
+        provider_peer_ids: vec![local_peer_id.clone()],
+        head: HeadDescriptor {
+            head_id: HeadId::new(format!(
+                "{}-{}-window-{}",
+                experiment.experiment_id.as_str(),
+                local_peer_id.as_str(),
+                update.window_id.0
+            )),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            artifact_id: update.delta_artifact_id.clone(),
+            parent_head_id: Some(base_head_id.clone()),
+            global_step: expected_global_step,
+            created_at: update.announced_at,
+            metrics: BTreeMap::new(),
+        },
+        update: update.clone(),
+    })
 }
 
 fn diffusion_frontier_bounds(
@@ -1213,9 +1251,18 @@ where
                 experiment,
                 local_peer_id,
                 &merge_window.base_head_id,
+                expected_global_step,
                 local_update,
             )
         {
+            diffusion_trace(format_args!(
+                "candidate-build-local-head peer={} experiment={} window={} head={} artifact={}",
+                local_peer_id.as_str(),
+                experiment.experiment_id.as_str(),
+                merge_window.window_id.0,
+                local_candidate_head.head.head_id.as_str(),
+                local_candidate_head.head.artifact_id.as_str()
+            ));
             candidate_heads.push(local_candidate_head);
         }
         if candidate_heads.is_empty() {
@@ -1718,6 +1765,41 @@ mod tests {
                 .iter()
                 .any(|update| update.peer_id == PeerId::new("peer-local"))
         );
+    }
+
+    #[test]
+    fn local_candidate_head_falls_back_to_published_training_head_shape() {
+        let experiment = ExperimentHandle {
+            network_id: NetworkId::new("net"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+        };
+        let local_peer_id = PeerId::new("peer-local");
+        let update = test_update(local_peer_id.as_str(), 1.0, 1.0);
+
+        let candidate = local_candidate_head_for_update(
+            &ControlPlaneSnapshot::default(),
+            &experiment,
+            &local_peer_id,
+            &HeadId::new("base"),
+            8,
+            &update,
+        )
+        .expect("local candidate head");
+
+        assert_eq!(candidate.origin_peer_id, local_peer_id);
+        assert_eq!(candidate.provider_peer_ids, vec![PeerId::new("peer-local")]);
+        assert_eq!(
+            candidate.head.head_id,
+            HeadId::new("experiment-peer-local-window-7")
+        );
+        assert_eq!(
+            candidate.head.artifact_id,
+            ArtifactId::new("artifact-peer-local")
+        );
+        assert_eq!(candidate.head.parent_head_id, Some(HeadId::new("base")));
+        assert_eq!(candidate.head.global_step, 8);
     }
 
     #[test]
