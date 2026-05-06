@@ -13,7 +13,6 @@ on:
       - "Cargo.lock"
       - "xtask/**"
       - "justfile"
-      - "scripts/release_prep.sh"
       - "patches/**"
       - "crates/**"
       - "examples/**"
