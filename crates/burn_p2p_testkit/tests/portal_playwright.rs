@@ -14,19 +14,23 @@ fn portal_capture_bundle_renders_reference_scenarios() {
         "expected a broad scenario matrix, got {}",
         manifest.scenarios.len()
     );
-    assert!(manifest
-        .scenarios
-        .iter()
-        .any(|scenario| scenario.slug == "publishing-download"));
+    assert!(
+        manifest
+            .scenarios
+            .iter()
+            .any(|scenario| scenario.slug == "publishing-download")
+    );
     assert!(manifest.scenarios.iter().any(|scenario| {
         scenario.slug == "peers-1024"
             && scenario.estimated_network_size == 1024
             && scenario.peer_count < 64
     }));
-    assert!(manifest
-        .scenarios
-        .iter()
-        .any(|scenario| scenario.slug == "mobile-viewer" && scenario.viewport.is_some()));
+    assert!(
+        manifest
+            .scenarios
+            .iter()
+            .any(|scenario| scenario.slug == "mobile-viewer" && scenario.viewport.is_some())
+    );
 
     for scenario in &manifest.scenarios {
         assert!(
