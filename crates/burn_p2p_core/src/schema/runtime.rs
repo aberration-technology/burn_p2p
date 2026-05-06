@@ -191,8 +191,78 @@ pub struct ExperimentDirectoryEntry {
     pub allowed_roles: PeerRoleSet,
     /// The allowed scopes.
     pub allowed_scopes: BTreeSet<ExperimentScope>,
+    #[serde(default)]
+    /// The training protocol advertised for the current revision.
+    pub training_protocol: TrainingProtocol,
     /// The metadata.
     pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Enumerates control-plane operations tracked by request-failure telemetry.
+pub enum RequestFailureOperation {
+    /// Fetching a peer control-plane snapshot.
+    SnapshotFetch,
+    /// Fetching an artifact manifest.
+    ArtifactManifestFetch,
+    /// Fetching an artifact chunk.
+    ArtifactChunkFetch,
+    /// Fetching a DiLoCo state snapshot.
+    DiLoCoStateFetch,
+    /// Fetching DiLoCo current parameters or optimizer state.
+    DiLoCoParameterStateFetch,
+    /// Fetching a DiLoCo pseudo-gradient manifest.
+    DiLoCoGradientManifestFetch,
+    /// Fetching a DiLoCo pseudo-gradient chunk.
+    DiLoCoGradientChunkFetch,
+    /// Sending a DiLoCo round-control request.
+    DiLoCoRoundRequest,
+    /// Sending an outbound request whose semantic operation is not known locally.
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Enumerates the stable failure categories used by request telemetry.
+pub enum RequestFailureReason {
+    /// The request exceeded its configured deadline.
+    Timeout,
+    /// No connected or reachable provider was available for the requested payload.
+    ProviderUnavailable,
+    /// The provider answered but did not have the requested payload.
+    NotFound,
+    /// The transport failed before a usable response was received.
+    Transport,
+    /// The response shape did not match the requested operation.
+    UnexpectedResponse,
+    /// Admission or policy checks rejected the provider.
+    AdmissionRejected,
+    /// A lower-level failure string could not be classified more precisely.
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Stable request-failure key used for telemetry counters.
+pub struct RequestFailureKind {
+    /// The operation that failed.
+    pub operation: RequestFailureOperation,
+    /// The stable reason category.
+    pub reason: RequestFailureReason,
+}
+
+impl RequestFailureKind {
+    /// Creates a new request-failure kind.
+    pub fn new(operation: RequestFailureOperation, reason: RequestFailureReason) -> Self {
+        Self { operation, reason }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Count accumulated for one request-failure kind.
+pub struct RequestFailureCounter {
+    /// The stable failure key.
+    pub kind: RequestFailureKind,
+    /// The observed count.
+    pub count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

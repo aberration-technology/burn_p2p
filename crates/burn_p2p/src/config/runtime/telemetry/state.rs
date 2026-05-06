@@ -1,5 +1,5 @@
 use super::*;
-use burn_p2p_core::ControlCertId;
+use burn_p2p_core::{ControlCertId, RequestFailureCounter, RequestFailureKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Enumerates the supported runtime statuses.
@@ -299,6 +299,9 @@ pub struct NodeTelemetrySnapshot {
     /// The in flight transfers.
     pub in_flight_transfers: BTreeMap<ArtifactId, ArtifactTransferState>,
     #[serde(default)]
+    /// Stable request-failure counters grouped by operation and failure kind.
+    pub request_failures: Vec<RequestFailureCounter>,
+    #[serde(default)]
     /// The active robustness policy, when one is currently scoped to the revision.
     pub robustness_policy: Option<RobustnessPolicy>,
     #[serde(default)]
@@ -359,6 +362,7 @@ impl NodeTelemetrySnapshot {
                 .map(|policy| policy.minimum_revocation_epoch),
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            request_failures: Vec::new(),
             robustness_policy: None,
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
@@ -372,6 +376,12 @@ impl NodeTelemetrySnapshot {
     }
 
     pub(crate) fn push_event(&mut self, event: LiveControlPlaneEvent) {
+        if let LiveControlPlaneEvent::RequestFailure {
+            kind: Some(kind), ..
+        } = &event
+        {
+            self.record_request_failure(kind.clone());
+        }
         match &event {
             LiveControlPlaneEvent::ConnectionClosed { peer_id } => {
                 self.observed_peer_ids.remove(&PeerId::new(peer_id.clone()));
@@ -473,6 +483,22 @@ impl NodeTelemetrySnapshot {
         self.updated_at = Utc::now();
     }
 
+    pub(crate) fn record_request_failure(&mut self, kind: RequestFailureKind) {
+        if let Some(counter) = self
+            .request_failures
+            .iter_mut()
+            .find(|counter| counter.kind == kind)
+        {
+            counter.count = counter.count.saturating_add(1);
+        } else {
+            self.request_failures
+                .push(RequestFailureCounter { kind, count: 1 });
+            self.request_failures
+                .sort_by(|left, right| left.kind.cmp(&right.kind));
+        }
+        self.updated_at = Utc::now();
+    }
+
     pub(crate) fn set_robustness_state(
         &mut self,
         policy: RobustnessPolicy,
@@ -533,6 +559,8 @@ fn observed_peer_id_from_event(event: &LiveControlPlaneEvent) -> Option<PeerId> 
 
 #[cfg(test)]
 mod tests {
+    use burn_p2p_core::{RequestFailureOperation, RequestFailureReason};
+
     use super::*;
 
     fn test_snapshot() -> NodeTelemetrySnapshot {
@@ -581,9 +609,37 @@ mod tests {
         snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
             peer_id: "peer-failed".into(),
             request_id: None,
+            kind: None,
             message: "timeout".into(),
         });
 
         assert!(snapshot.observed_peer_ids.is_empty());
+    }
+
+    #[test]
+    fn push_event_counts_typed_request_failures() {
+        let mut snapshot = test_snapshot();
+        let kind = RequestFailureKind::new(
+            RequestFailureOperation::ArtifactManifestFetch,
+            RequestFailureReason::Timeout,
+        );
+
+        snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
+            peer_id: "peer-failed".into(),
+            request_id: Some("req-1".into()),
+            kind: Some(kind.clone()),
+            message: "timeout".into(),
+        });
+        snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
+            peer_id: "peer-failed".into(),
+            request_id: Some("req-2".into()),
+            kind: Some(kind.clone()),
+            message: "timeout".into(),
+        });
+
+        assert_eq!(
+            snapshot.request_failures,
+            vec![RequestFailureCounter { kind, count: 2 }]
+        );
     }
 }

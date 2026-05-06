@@ -271,6 +271,10 @@ impl<P> RunningNode<P> {
                             break;
                         }
                         Ok(None) => {
+                            self.record_request_failure(artifact_request_failure(
+                                RequestFailureOperation::ArtifactManifestFetch,
+                                RequestFailureReason::NotFound,
+                            ));
                             candidate_manifest_results.insert(candidate.clone(), "none".to_owned());
                             continue;
                         }
@@ -292,6 +296,10 @@ impl<P> RunningNode<P> {
             .clone()
             .or_else(|| transfer_state.source_peers.first().cloned())
             .ok_or_else(|| {
+                self.record_request_failure(artifact_request_failure(
+                    RequestFailureOperation::ArtifactManifestFetch,
+                    RequestFailureReason::ProviderUnavailable,
+                ));
                 let snapshot = self.telemetry().snapshot();
                 anyhow::anyhow!(
                     "no connected peer provided artifact {}; connected_peers={:?}; source_peers={:?}; peer_directory={:?}; candidate_results={:?}",
@@ -325,6 +333,10 @@ impl<P> RunningNode<P> {
                 )
             })?;
         let descriptor = descriptor.ok_or_else(|| {
+            self.record_request_failure(artifact_request_failure(
+                RequestFailureOperation::ArtifactManifestFetch,
+                RequestFailureReason::ProviderUnavailable,
+            ));
             let snapshot = self.telemetry().snapshot();
             anyhow::anyhow!(
                 "no connected peer provided artifact {}; connected_peers={:?}; source_peers={:?}; selected_provider={:?}; peer_directory={:?}; candidate_results={:?}",
@@ -414,6 +426,10 @@ impl<P> RunningNode<P> {
                             break;
                         }
                         Ok(None) => {
+                            self.record_request_failure(artifact_request_failure(
+                                RequestFailureOperation::ArtifactChunkFetch,
+                                RequestFailureReason::NotFound,
+                            ));
                             candidate_last_results.insert(candidate_key, "none".into());
                             continue;
                         }
@@ -430,6 +446,10 @@ impl<P> RunningNode<P> {
             }
 
             if !stored {
+                self.record_request_failure(artifact_request_failure(
+                    RequestFailureOperation::ArtifactChunkFetch,
+                    RequestFailureReason::ProviderUnavailable,
+                ));
                 let snapshot = self.telemetry().snapshot();
                 artifact_trace(format_args!(
                     "chunk-failed artifact={} chunk={} provider_candidates={:?} attempts={:?} last_results={:?}",
@@ -522,6 +542,13 @@ pub(super) fn is_transient_artifact_sync_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|pattern| message.contains(pattern))
+}
+
+fn artifact_request_failure(
+    operation: RequestFailureOperation,
+    reason: RequestFailureReason,
+) -> RequestFailureKind {
+    RequestFailureKind::new(operation, reason)
 }
 
 pub(crate) fn fair_request_timeout(

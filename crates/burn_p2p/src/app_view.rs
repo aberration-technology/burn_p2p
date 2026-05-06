@@ -547,6 +547,7 @@ mod tests {
             minimum_revocation_epoch: Some(RevocationEpoch(0)),
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            request_failures: Vec::new(),
             robustness_policy: None,
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
@@ -578,6 +579,7 @@ mod tests {
             current_head_id: Some(crate::HeadId::new("head")),
             allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu, PeerRole::Validator]),
             allowed_scopes: BTreeSet::new(),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         };
 
@@ -637,6 +639,7 @@ mod tests {
             minimum_revocation_epoch: None,
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            request_failures: Vec::new(),
             robustness_policy: None,
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
@@ -668,6 +671,7 @@ mod tests {
             current_head_id: None,
             allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
             allowed_scopes: BTreeSet::new(),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         };
         let entry_b = ExperimentDirectoryEntry {
@@ -691,6 +695,7 @@ mod tests {
             current_head_id: Some(crate::HeadId::new("head-b")),
             allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
             allowed_scopes: BTreeSet::new(),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         };
 

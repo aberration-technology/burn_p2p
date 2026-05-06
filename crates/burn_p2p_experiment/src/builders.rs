@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use burn_p2p_core::{
     ContentId, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, NetworkId, PeerRoleSet,
-    RevisionId, RevisionManifest, StudyId, WindowActivation,
+    RevisionId, RevisionManifest, StudyId, TrainingProtocol, WindowActivation,
 };
 
 use crate::{
@@ -28,6 +28,7 @@ pub struct ExperimentDirectoryProjectionBuilder {
     current_head_id: Option<burn_p2p_core::HeadId>,
     allowed_roles: PeerRoleSet,
     allowed_scopes: BTreeSet<ExperimentScope>,
+    training_protocol: TrainingProtocol,
     metadata: BTreeMap<String, String>,
 }
 
@@ -54,6 +55,7 @@ impl ExperimentDirectoryProjectionBuilder {
             current_head_id: None,
             allowed_roles: PeerRoleSet::default(),
             allowed_scopes: BTreeSet::new(),
+            training_protocol: TrainingProtocol::default(),
             metadata: BTreeMap::new(),
         };
         entry.apply_revision_policy(revision);
@@ -73,6 +75,7 @@ impl ExperimentDirectoryProjectionBuilder {
             current_head_id: entry.current_head_id,
             allowed_roles: entry.allowed_roles,
             allowed_scopes: entry.allowed_scopes,
+            training_protocol: entry.training_protocol,
             metadata: entry.metadata,
         }
     }
@@ -130,6 +133,12 @@ impl ExperimentDirectoryProjectionBuilder {
         self
     }
 
+    /// Overrides the current revision's training protocol.
+    pub fn with_training_protocol(mut self, training_protocol: TrainingProtocol) -> Self {
+        self.training_protocol = training_protocol;
+        self
+    }
+
     /// Adds one freeform metadata entry.
     pub fn with_metadata_entry(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
@@ -153,6 +162,7 @@ impl ExperimentDirectoryProjectionBuilder {
             current_head_id: self.current_head_id,
             allowed_roles: self.allowed_roles,
             allowed_scopes: self.allowed_scopes,
+            training_protocol: self.training_protocol,
             metadata: self.metadata,
         }
     }

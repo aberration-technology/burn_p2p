@@ -107,6 +107,7 @@ fn benchmark_directory(
                 experiment_id: experiment_id.clone(),
             },
         ]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
     entry.apply_revision_policy(&revision);

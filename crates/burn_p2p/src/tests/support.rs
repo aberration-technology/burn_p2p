@@ -646,6 +646,7 @@ pub(super) fn switching_directory_entry(
         current_head_id: None,
         allowed_roles: crate::PeerRoleSet::default_trainer(),
         allowed_scopes: BTreeSet::new(),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     }
 }
@@ -793,6 +794,7 @@ pub(super) fn auth_scoped_directory_entry(
         current_head_id: Some(crate::HeadId::new("head-auth")),
         allowed_roles: crate::PeerRoleSet::default_trainer(),
         allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train { experiment_id }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::from([("owner".into(), "lab-auth".into())]),
     }
 }
@@ -821,6 +823,7 @@ pub(super) fn runtime_directory_entry(experiment: &ExperimentHandle) -> Experime
         allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train {
             experiment_id: experiment.experiment_id.clone(),
         }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     }
 }

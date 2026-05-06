@@ -292,6 +292,7 @@ fn experiment_directory_entry_round_trips() {
                 experiment_id: crate::id::ExperimentId::new("exp-a"),
             },
         ]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::from([("family".into(), "demo".into())]),
     };
 
@@ -871,6 +872,56 @@ fn diloco_training_protocol_round_trips_through_cbor() {
         from_cbor_slice(&encoded).expect("decode diloco protocol");
 
     assert_eq!(decoded, payload);
+}
+
+#[test]
+fn diloco_training_protocol_validation_allows_single_peer_groups() {
+    let protocol = super::TrainingProtocol::DiLoCo(super::DiLoCoPolicy {
+        target_group_size: 1,
+        minimum_group_size: 1,
+        topology_policy: super::DiLoCoTopologyPolicy {
+            fanout: 1,
+            ..super::DiLoCoTopologyPolicy::default()
+        },
+        ..super::DiLoCoPolicy::default()
+    });
+
+    protocol.validate().expect("single-peer DiLoCo is valid");
+}
+
+#[test]
+fn diloco_training_protocol_validation_rejects_invalid_group_semantics() {
+    let protocol = super::TrainingProtocol::DiLoCo(super::DiLoCoPolicy {
+        target_group_size: 1,
+        minimum_group_size: 2,
+        ..super::DiLoCoPolicy::default()
+    });
+
+    assert_eq!(
+        protocol.validate(),
+        Err(
+            super::TrainingProtocolValidationError::MinimumGroupExceedsTarget {
+                minimum_group_size: 2,
+                target_group_size: 1,
+            }
+        )
+    );
+}
+
+#[test]
+fn diloco_training_protocol_validation_rejects_invalid_codec() {
+    let protocol = super::TrainingProtocol::DiLoCo(super::DiLoCoPolicy {
+        codec: super::GradientCodec::Qsgd {
+            bits: 9,
+            stochastic: true,
+        },
+        ..super::DiLoCoPolicy::default()
+    });
+
+    assert_eq!(
+        protocol.validate(),
+        Err(super::TrainingProtocolValidationError::InvalidQsgdBits { bits: 9 })
+    );
 }
 
 #[test]

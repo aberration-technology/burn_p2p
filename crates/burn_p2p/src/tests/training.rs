@@ -17,13 +17,8 @@ fn train_window_once_rejects_diloco_revisions() {
 
     let experiment = experiment();
     let mut directory_entry = runtime_directory_entry(&experiment);
-    directory_entry.metadata.insert(
-        "burn_p2p.revision.training_protocol.policy_json".into(),
-        serde_json::to_string(&crate::TrainingProtocol::DiLoCo(
-            crate::DiLoCoPolicy::default(),
-        ))
-        .expect("diloco policy json"),
-    );
+    directory_entry.training_protocol =
+        crate::TrainingProtocol::DiLoCo(crate::DiLoCoPolicy::default());
     let auth = crate::AuthConfig::new().with_experiment_directory(vec![directory_entry]);
 
     let mut running = NodeBuilder::new(project)

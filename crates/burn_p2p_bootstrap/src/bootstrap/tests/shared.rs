@@ -577,6 +577,7 @@ pub(super) fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig 
                 allowed_scopes: BTreeSet::from([ExperimentScope::Train {
                     experiment_id: burn_p2p::ExperimentId::new("exp-auth"),
                 }]),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::from([("owner".into(), "burn-lab".into())]),
             },
             ExperimentDirectoryEntry {
@@ -602,6 +603,7 @@ pub(super) fn sample_auth_config(root: &std::path::Path) -> BootstrapAuthConfig 
                 allowed_scopes: BTreeSet::from([ExperimentScope::Validate {
                     experiment_id: burn_p2p::ExperimentId::new("exp-hidden"),
                 }]),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::new(),
             },
         ],

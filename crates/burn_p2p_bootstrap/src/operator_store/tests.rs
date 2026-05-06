@@ -511,6 +511,7 @@ fn sample_lifecycle_and_schedule_preview(now: DateTime<Utc>) -> FileOperatorStor
                 current_head_id: Some(HeadId::new("head-b")),
                 allowed_roles: burn_p2p_core::PeerRoleSet::default_trainer(),
                 allowed_scopes: BTreeSet::new(),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::new(),
             },
             phase: ExperimentLifecyclePhase::Activating,

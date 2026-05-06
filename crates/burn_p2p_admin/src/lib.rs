@@ -389,6 +389,7 @@ mod tests {
             current_head_id: None,
             allowed_roles: PeerRoleSet::default_trainer(),
             allowed_scopes: BTreeSet::from([ExperimentScope::Discover]),
+            training_protocol: Default::default(),
             metadata: Default::default(),
         }
     }

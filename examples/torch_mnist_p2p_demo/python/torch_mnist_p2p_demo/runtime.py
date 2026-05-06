@@ -342,9 +342,10 @@ def run_diloco_command_job(config):
     job_path = Path(os.environ["BURN_P2P_DILOCO_JOB_MANIFEST"])
     result_path = Path(os.environ["BURN_P2P_DILOCO_RESULT_MANIFEST"])
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    state_dict_filter = job.get("state_dict_filter")
     workload = TorchMnistWorkload(config)
     state = workload.init_model(workload.runtime_device())
-    _load_parameter_pack(job["base_parameter_pack_path"], state["model"])
+    _load_parameter_pack(job["base_parameter_pack_path"], state["model"], state_dict_filter)
     metrics = workload._train_steps(state, job["batches"], int(job["num_inner_steps"]))
     steps_completed = int(metrics["train_steps"])
     if job.get("require_exact_steps", True) and steps_completed != int(job["num_inner_steps"]):
@@ -355,6 +356,7 @@ def run_diloco_command_job(config):
         job["output_parameter_pack_path"],
         state["model"],
         job["model_schema_hash"],
+        state_dict_filter,
     )
     result_path.write_text(
         json.dumps(

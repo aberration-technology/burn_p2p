@@ -591,6 +591,10 @@ pub(crate) fn run_control_plane(
                         snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
                             peer_id,
                             request_id: None,
+                            kind: Some(RequestFailureKind::new(
+                                RequestFailureOperation::SnapshotFetch,
+                                RequestFailureReason::Transport,
+                            )),
                             message: error.to_string(),
                         });
                     }
@@ -844,6 +848,7 @@ fn handle_control_plane_event(
         snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
             peer_id,
             request_id: None,
+            kind: None,
             message: message.clone(),
         });
         snapshot.last_error = Some(message);

@@ -1,4 +1,5 @@
 import argparse
+import fnmatch
 import hashlib
 import importlib
 import json
@@ -66,50 +67,134 @@ def _send_message(sock, payload):
     sock.sendall(encoded)
 
 
-def _torch_model_from_state(state):
+def _torch_module_entries_from_state(state):
+    if isinstance(state, dict) and "modules" in state:
+        modules = state["modules"]
+        if not isinstance(modules, dict) or not modules:
+            raise TypeError("{'modules': ...} must contain a non-empty module mapping")
+        entries = []
+        for module_name in sorted(modules):
+            module = modules[module_name]
+            if not isinstance(module_name, str) or not module_name:
+                raise TypeError("module names must be non-empty strings")
+            if "." in module_name:
+                raise TypeError("module names must not contain '.'")
+            if not hasattr(module, "state_dict") or not hasattr(module, "load_state_dict"):
+                raise TypeError(f"module {module_name!r} does not support state_dict I/O")
+            entries.append((module_name, module))
+        return entries
     if isinstance(state, dict) and "model" in state:
-        return state["model"]
+        state = state["model"]
     if hasattr(state, "state_dict") and hasattr(state, "load_state_dict"):
-        return state
-    raise TypeError("generic parameter-pack support requires a torch model or {'model': model}")
+        return [("", state)]
+    raise TypeError(
+        "generic parameter-pack support requires a torch model, {'model': model}, "
+        "or {'modules': {'name': module}}"
+    )
 
 
-def _torch_float_layout(model):
+def _state_dict_filter(config):
+    config = config or {}
+    return {
+        "include_globs": [str(pattern) for pattern in config.get("include_globs") or []],
+        "exclude_globs": [str(pattern) for pattern in config.get("exclude_globs") or []],
+    }
+
+
+def _filter_allows_state_key(full_name: str, config) -> bool:
+    config = _state_dict_filter(config)
+    include_globs = config["include_globs"]
+    exclude_globs = config["exclude_globs"]
+    if include_globs and not any(
+        fnmatch.fnmatchcase(full_name, pattern) for pattern in include_globs
+    ):
+        return False
+    if any(fnmatch.fnmatchcase(full_name, pattern) for pattern in exclude_globs):
+        return False
+    return True
+
+
+def _torch_float_layout(model, state_dict_filter=None):
     import torch
 
     items = []
-    state_dict = model.state_dict()
-    for name in sorted(state_dict):
-        tensor = state_dict[name].detach()
-        if not torch.is_floating_point(tensor):
-            continue
-        shape = [int(dim) for dim in tensor.shape]
-        numel = int(tensor.numel())
-        items.append(
-            {
-                "name": name,
-                "shape": shape,
-                "dtype": str(tensor.dtype),
-                "numel": numel,
-            }
-        )
-    encoded = json.dumps(items, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return "torch-layout-" + hashlib.sha256(encoded).hexdigest(), items
+    excluded_float_keys = []
+    ignored_non_float_keys = []
+    for module_name, module in _torch_module_entries_from_state(model):
+        state_dict = module.state_dict()
+        for key in sorted(state_dict):
+            full_name = f"{module_name}.{key}" if module_name else key
+            tensor = state_dict[key].detach()
+            if not torch.is_floating_point(tensor):
+                ignored_non_float_keys.append(full_name)
+                continue
+            if not _filter_allows_state_key(full_name, state_dict_filter):
+                excluded_float_keys.append(full_name)
+                continue
+            shape = [int(dim) for dim in tensor.shape]
+            numel = int(tensor.numel())
+            items.append(
+                {
+                    "name": full_name,
+                    "module": module_name,
+                    "key": key,
+                    "shape": shape,
+                    "dtype": str(tensor.dtype),
+                    "numel": numel,
+                }
+            )
+    layout_for_hash = [
+        {
+            "name": item["name"],
+            "shape": item["shape"],
+            "dtype": item["dtype"],
+            "numel": item["numel"],
+        }
+        for item in items
+    ]
+    encoded = json.dumps(layout_for_hash, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return (
+        "torch-layout-" + hashlib.sha256(encoded).hexdigest(),
+        items,
+        excluded_float_keys,
+        ignored_non_float_keys,
+    )
 
 
-def _write_parameter_pack(path, model, model_schema_hash):
+def _parameter_pack_plan(model, state_dict_filter=None):
+    layout_hash, layout, excluded_float_keys, ignored_non_float_keys = _torch_float_layout(
+        model, state_dict_filter
+    )
+    return {
+        "uses_custom_parameter_pack_hooks": False,
+        "layout_hash": layout_hash,
+        "included_keys": [item["name"] for item in layout],
+        "excluded_float_keys": excluded_float_keys,
+        "ignored_non_float_keys": ignored_non_float_keys,
+        "parameter_count": sum(int(item["numel"]) for item in layout),
+    }
+
+
+def _write_parameter_pack(path, model, model_schema_hash, state_dict_filter=None):
     import torch
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    layout_hash, layout = _torch_float_layout(model)
+    layout_hash, layout, excluded_float_keys, ignored_non_float_keys = _torch_float_layout(
+        model, state_dict_filter
+    )
     values_path = path / "values.f32le"
     parameter_count = 0
-    state_dict = model.state_dict()
+    state_dicts = {
+        module_name: module.state_dict()
+        for module_name, module in _torch_module_entries_from_state(model)
+    }
     with values_path.open("wb") as values_file:
         for item in layout:
             tensor = (
-                state_dict[item["name"]]
+                state_dicts[item["module"]][item["key"]]
                 .detach()
                 .to(device="cpu", dtype=torch.float32)
                 .contiguous()
@@ -126,6 +211,10 @@ def _write_parameter_pack(path, model, model_schema_hash):
         "layout_hash": layout_hash,
         "parameter_count": parameter_count,
         "values_f32_le": "values.f32le",
+        "state_dict_filter": _state_dict_filter(state_dict_filter),
+        "included_keys": [item["name"] for item in layout],
+        "excluded_float_keys": excluded_float_keys,
+        "ignored_non_float_keys": ignored_non_float_keys,
     }
     (path / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -145,11 +234,11 @@ def _read_pack_manifest(path):
     return manifest, values_bytes
 
 
-def _load_parameter_pack(path, model):
+def _load_parameter_pack(path, model, state_dict_filter=None):
     import torch
 
     manifest, values_bytes = _read_pack_manifest(path)
-    layout_hash, layout = _torch_float_layout(model)
+    layout_hash, layout, _, _ = _torch_float_layout(model, state_dict_filter)
     if manifest["layout_hash"] != layout_hash:
         raise ValueError(
             f"parameter-pack layout {manifest['layout_hash']} does not match model layout {layout_hash}"
@@ -161,21 +250,25 @@ def _load_parameter_pack(path, model):
     if len(values) != int(manifest["parameter_count"]):
         raise ValueError("decoded parameter count does not match manifest")
 
-    state_dict = model.state_dict()
+    module_entries = _torch_module_entries_from_state(model)
+    state_dicts = {module_name: module.state_dict() for module_name, module in module_entries}
     offset = 0
     for item in layout:
         numel = int(item["numel"])
-        existing = state_dict[item["name"]]
+        existing = state_dicts[item["module"]][item["key"]]
         restored = torch.tensor(
             values[offset : offset + numel],
             dtype=torch.float32,
             device=existing.device,
         ).reshape(item["shape"])
-        state_dict[item["name"]] = restored.to(dtype=existing.dtype, device=existing.device)
+        state_dicts[item["module"]][item["key"]] = restored.to(
+            dtype=existing.dtype, device=existing.device
+        )
         offset += numel
     if offset != len(values):
         raise ValueError(f"unused parameter-pack values: consumed {offset}, found {len(values)}")
-    model.load_state_dict(state_dict)
+    for module_name, module in module_entries:
+        module.load_state_dict(state_dicts[module_name])
 
 
 class WorkerServer:
@@ -247,6 +340,27 @@ class WorkerServer:
         if method == "init_model":
             model = self.workload.init_model(params["device"])
             return {"model_id": self.new_model(model)}
+        if method == "parameter_pack_plan":
+            uses_custom_hooks = hasattr(
+                self.workload, "export_parameter_pack_path"
+            ) or hasattr(self.workload, "import_parameter_pack_path")
+            model = self.workload.init_model(params["device"])
+            try:
+                plan = _parameter_pack_plan(model, params.get("state_dict_filter"))
+                plan["uses_custom_parameter_pack_hooks"] = uses_custom_hooks
+                return plan
+            except Exception as exc:
+                if uses_custom_hooks:
+                    return {
+                        "uses_custom_parameter_pack_hooks": True,
+                        "layout_hash": None,
+                        "included_keys": [],
+                        "excluded_float_keys": [],
+                        "ignored_non_float_keys": [],
+                        "parameter_count": 0,
+                        "generic_plan_error": str(exc),
+                    }
+                raise
         if method == "train_window":
             model_id = params["model_id"]
             metrics = self.workload.train_window(self.models[model_id], params["batches"])
@@ -302,8 +416,9 @@ class WorkerServer:
             else:
                 _write_parameter_pack(
                     parameter_pack_path,
-                    _torch_model_from_state(self.models[model_id]),
+                    self.models[model_id],
                     model_schema_hash,
+                    params.get("state_dict_filter"),
                 )
             return {"ok": True}
         if method == "import_parameter_pack":
@@ -315,7 +430,9 @@ class WorkerServer:
                 )
             else:
                 imported = self.workload.init_model(device)
-                _load_parameter_pack(parameter_pack_path, _torch_model_from_state(imported))
+                _load_parameter_pack(
+                    parameter_pack_path, imported, params.get("state_dict_filter")
+                )
             return {"model_id": self.new_model(imported)}
         if method == "run_inner_loop":
             model_id = params["model_id"]
@@ -328,8 +445,9 @@ class WorkerServer:
             if not Path(output_pack_path, "manifest.json").exists():
                 _write_parameter_pack(
                     output_pack_path,
-                    _torch_model_from_state(self.models[model_id]),
+                    self.models[model_id],
                     params["model_schema_hash"],
+                    params.get("state_dict_filter"),
                 )
             steps_completed = int(result.get("steps_completed", params["num_inner_steps"]))
             if params.get("require_exact_steps") and steps_completed != int(

@@ -1,5 +1,7 @@
 use super::*;
-use burn_p2p_core::{ExperimentId, FleetPlacementSnapshot, RevisionId, StudyId, WindowId};
+use burn_p2p_core::{
+    ExperimentId, FleetPlacementSnapshot, RequestFailureKind, RevisionId, StudyId, WindowId,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates high-level memory/native swarm shell events.
@@ -2311,6 +2313,9 @@ pub enum LiveControlPlaneEvent {
         peer_id: String,
         /// The outbound request ID, when the failure originated from a request-response exchange.
         request_id: Option<String>,
+        /// Stable request-failure kind, when the caller can classify the request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<RequestFailureKind>,
         /// The message.
         message: String,
     },

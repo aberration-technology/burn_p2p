@@ -236,6 +236,7 @@ fn directory_announcement(entry_count: usize) -> ExperimentDirectoryAnnouncement
                         experiment_id: experiment_id.clone(),
                     },
                 ]),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::from([
                     ("owner".to_owned(), "bench".to_owned()),
                     ("slot".to_owned(), index.to_string()),

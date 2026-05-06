@@ -16,7 +16,7 @@ use burn_p2p::{
     ArtifactTransferState, ContributionReceipt, ContributionReceiptId,
     ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadAnnouncement, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
-    RevocationEpoch, SlotRuntimeState, StorageConfig,
+    RequestFailureCounter, RevocationEpoch, SlotRuntimeState, StorageConfig,
 };
 use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
@@ -739,6 +739,9 @@ pub struct BootstrapAdminState {
     pub reducer_load_announcements: Vec<ReducerLoadAnnouncement>,
     /// The in flight transfers.
     pub in_flight_transfers: Vec<ArtifactTransferState>,
+    #[serde(default)]
+    /// Request failure counters grouped by operation and reason.
+    pub request_failures: Vec<RequestFailureCounter>,
     /// The admitted peers.
     pub admitted_peers: BTreeSet<PeerId>,
     /// The peer admission reports.
@@ -1148,6 +1151,7 @@ impl BootstrapAdminState {
                 .max(self.contribution_receipts.len()) as u64,
             certified_merges,
             in_flight_transfers: self.in_flight_transfers.clone(),
+            request_failures: self.request_failures.clone(),
             admitted_peers: self.admitted_peers.clone(),
             peer_diagnostics: self.peer_diagnostics(),
             rejected_peers: self.rejected_peers.clone(),
@@ -1284,6 +1288,7 @@ mod tests {
             minimum_revocation_epoch: None,
             trust_bundle: None,
             in_flight_transfers: BTreeMap::new(),
+            request_failures: Vec::new(),
             robustness_policy: None,
             latest_cohort_robustness: None,
             trust_scores: Vec::new(),
@@ -1659,6 +1664,9 @@ pub struct BootstrapDiagnostics {
     pub certified_merges: u64,
     /// The in flight transfers.
     pub in_flight_transfers: Vec<ArtifactTransferState>,
+    #[serde(default)]
+    /// Request failure counters grouped by operation and reason.
+    pub request_failures: Vec<RequestFailureCounter>,
     /// The admitted peers.
     pub admitted_peers: BTreeSet<PeerId>,
     /// The peer diagnostics.
@@ -1763,6 +1771,13 @@ pub fn render_openmetrics(diagnostics: &BootstrapDiagnostics) -> String {
         "burn_p2p_in_flight_transfers {}",
         diagnostics.in_flight_transfers.len()
     ));
+    lines.push("# TYPE burn_p2p_request_failures counter".to_owned());
+    for counter in &diagnostics.request_failures {
+        lines.push(format!(
+            "burn_p2p_request_failures{{operation=\"{:?}\",reason=\"{:?}\"}} {}",
+            counter.kind.operation, counter.kind.reason, counter.count
+        ));
+    }
     lines.push("# TYPE burn_p2p_admitted_peers gauge".to_owned());
     lines.push(format!(
         "burn_p2p_admitted_peers {}",

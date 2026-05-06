@@ -1260,12 +1260,6 @@ mod tests {
         experiment: &ExperimentHandle,
         policy: &DiLoCoPolicy,
     ) -> ExperimentDirectoryEntry {
-        let mut metadata = BTreeMap::new();
-        metadata.insert(
-            "burn_p2p.revision.training_protocol.policy_json".into(),
-            serde_json::to_string(&TrainingProtocol::DiLoCo(policy.clone()))
-                .expect("training protocol json"),
-        );
         ExperimentDirectoryEntry {
             network_id: experiment.network_id.clone(),
             study_id: experiment.study_id.clone(),
@@ -1289,7 +1283,8 @@ mod tests {
             allowed_scopes: BTreeSet::from([ExperimentScope::Train {
                 experiment_id: experiment.experiment_id.clone(),
             }]),
-            metadata,
+            training_protocol: TrainingProtocol::DiLoCo(policy.clone()),
+            metadata: BTreeMap::new(),
         }
     }
 

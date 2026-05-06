@@ -504,6 +504,7 @@ fn browser_directory_entries(
                     },
                     ExperimentScope::Train { experiment_id },
                 ]),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::new(),
             };
             apply_browser_revision_policy(&mut entry, browser_mode);

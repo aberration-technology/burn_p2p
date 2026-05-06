@@ -77,6 +77,29 @@ impl ControlHandle {
         }
     }
 
+    fn record_request_failure(&self, kind: RequestFailureKind) {
+        let mut snapshot = self
+            .telemetry
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.record_request_failure(kind);
+    }
+
+    fn record_fetch_error(&self, operation: RequestFailureOperation, error: &anyhow::Error) {
+        self.record_request_failure(RequestFailureKind::new(
+            operation,
+            classify_request_failure(error),
+        ));
+    }
+
+    fn record_missing_payload(&self, operation: RequestFailureOperation) {
+        self.record_request_failure(RequestFailureKind::new(
+            operation,
+            RequestFailureReason::NotFound,
+        ));
+    }
+
     /// Performs the subscribe topic operation.
     pub fn subscribe_topic(&self, topic: OverlayTopic) -> anyhow::Result<()> {
         self.tx
@@ -324,14 +347,22 @@ impl ControlHandle {
 
         match runtime_result {
             Ok(result) => Ok(result),
-            Err(primary_error) if fallback_timeout > Duration::ZERO => self
-                .fetch_snapshot_via_sidecar(&peer_id, fallback_timeout)
-                .map_err(|fallback_error| {
-                    anyhow::anyhow!(
-                        "runtime snapshot fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
-                    )
-                }),
-            Err(error) => Err(error),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => {
+                match self.fetch_snapshot_via_sidecar(&peer_id, fallback_timeout) {
+                    Ok(result) => Ok(result),
+                    Err(fallback_error) => {
+                        let error = anyhow::anyhow!(
+                            "runtime snapshot fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                        );
+                        self.record_fetch_error(RequestFailureOperation::SnapshotFetch, &error);
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.record_fetch_error(RequestFailureOperation::SnapshotFetch, &error);
+                Err(error)
+            }
         }
     }
 
@@ -396,14 +427,29 @@ impl ControlHandle {
 
         match runtime_result {
             Ok(result) => Ok(result),
-            Err(primary_error) if fallback_timeout > Duration::ZERO => self
-                .fetch_artifact_manifest_via_sidecar(&peer_id, artifact_id, fallback_timeout)
-                .map_err(|fallback_error| {
-                    anyhow::anyhow!(
-                        "runtime artifact manifest fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
-                    )
-                }),
-            Err(error) => Err(error),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => {
+                match self.fetch_artifact_manifest_via_sidecar(
+                    &peer_id,
+                    artifact_id,
+                    fallback_timeout,
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(fallback_error) => {
+                        let error = anyhow::anyhow!(
+                            "runtime artifact manifest fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                        );
+                        self.record_fetch_error(
+                            RequestFailureOperation::ArtifactManifestFetch,
+                            &error,
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.record_fetch_error(RequestFailureOperation::ArtifactManifestFetch, &error);
+                Err(error)
+            }
         }
     }
 
@@ -442,19 +488,30 @@ impl ControlHandle {
 
         match runtime_result {
             Ok(result) => Ok(result),
-            Err(primary_error) if fallback_timeout > Duration::ZERO => self
-                .fetch_artifact_chunk_via_sidecar(
+            Err(primary_error) if fallback_timeout > Duration::ZERO => {
+                match self.fetch_artifact_chunk_via_sidecar(
                     &peer_id,
                     artifact_id,
                     chunk_id,
                     fallback_timeout,
-                )
-                .map_err(|fallback_error| {
-                    anyhow::anyhow!(
-                        "runtime artifact chunk fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
-                    )
-                }),
-            Err(error) => Err(error),
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(fallback_error) => {
+                        let error = anyhow::anyhow!(
+                            "runtime artifact chunk fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                        );
+                        self.record_fetch_error(
+                            RequestFailureOperation::ArtifactChunkFetch,
+                            &error,
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.record_fetch_error(RequestFailureOperation::ArtifactChunkFetch, &error);
+                Err(error)
+            }
         }
     }
 
@@ -466,6 +523,7 @@ impl ControlHandle {
         timeout: Duration,
     ) -> anyhow::Result<DiLoCoResponse> {
         let peer_id = peer_id.into();
+        let operation = diloco_request_failure_operation(&request);
         let telemetry_snapshot = self.telemetry.snapshot();
         let peer = PeerId::new(peer_id.clone());
         let (runtime_timeout, fallback_timeout) =
@@ -486,14 +544,22 @@ impl ControlHandle {
 
         match runtime_result {
             Ok(result) => Ok(result),
-            Err(primary_error) if fallback_timeout > Duration::ZERO => self
-                .fetch_diloco_via_sidecar(&peer_id, request, fallback_timeout)
-                .map_err(|fallback_error| {
-                    anyhow::anyhow!(
-                        "runtime DiLoCo fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
-                    )
-                }),
-            Err(error) => Err(error),
+            Err(primary_error) if fallback_timeout > Duration::ZERO => {
+                match self.fetch_diloco_via_sidecar(&peer_id, request, fallback_timeout) {
+                    Ok(result) => Ok(result),
+                    Err(fallback_error) => {
+                        let error = anyhow::anyhow!(
+                            "runtime DiLoCo fetch failed: {primary_error}; sidecar fallback failed: {fallback_error}"
+                        );
+                        self.record_fetch_error(operation, &error);
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.record_fetch_error(operation, &error);
+                Err(error)
+            }
         }
     }
 
@@ -512,8 +578,18 @@ impl ControlHandle {
             },
             timeout,
         )? {
-            DiLoCoResponse::StateSnapshot(snapshot) => Ok(snapshot),
-            other => anyhow::bail!("unexpected DiLoCo state response: {other:?}"),
+            DiLoCoResponse::StateSnapshot(Some(snapshot)) => Ok(Some(snapshot)),
+            DiLoCoResponse::StateSnapshot(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoStateFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoStateFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo state response: {other:?}")
+            }
         }
     }
 
@@ -532,8 +608,18 @@ impl ControlHandle {
             },
             timeout,
         )? {
-            DiLoCoResponse::OuterOptimizerState(state) => Ok(state),
-            other => anyhow::bail!("unexpected DiLoCo outer-state response: {other:?}"),
+            DiLoCoResponse::OuterOptimizerState(Some(state)) => Ok(Some(state)),
+            DiLoCoResponse::OuterOptimizerState(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoParameterStateFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoParameterStateFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo outer-state response: {other:?}")
+            }
         }
     }
 
@@ -552,8 +638,18 @@ impl ControlHandle {
             },
             timeout,
         )? {
-            DiLoCoResponse::CurrentParameters(parameters) => Ok(parameters),
-            other => anyhow::bail!("unexpected DiLoCo parameter response: {other:?}"),
+            DiLoCoResponse::CurrentParameters(Some(parameters)) => Ok(Some(parameters)),
+            DiLoCoResponse::CurrentParameters(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoParameterStateFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoParameterStateFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo parameter response: {other:?}")
+            }
         }
     }
 
@@ -568,8 +664,18 @@ impl ControlHandle {
             DiLoCoRequest::GradientManifest { manifest_id },
             timeout,
         )? {
-            DiLoCoResponse::GradientManifest(manifest) => Ok(manifest),
-            other => anyhow::bail!("unexpected DiLoCo manifest response: {other:?}"),
+            DiLoCoResponse::GradientManifest(Some(manifest)) => Ok(Some(manifest)),
+            DiLoCoResponse::GradientManifest(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoGradientManifestFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoGradientManifestFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo manifest response: {other:?}")
+            }
         }
     }
 
@@ -588,8 +694,18 @@ impl ControlHandle {
             },
             timeout,
         )? {
-            DiLoCoResponse::GradientChunk(chunk) => Ok(chunk),
-            other => anyhow::bail!("unexpected DiLoCo chunk response: {other:?}"),
+            DiLoCoResponse::GradientChunk(Some(chunk)) => Ok(Some(chunk)),
+            DiLoCoResponse::GradientChunk(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoGradientChunkFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoGradientChunkFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo chunk response: {other:?}")
+            }
         }
     }
 
@@ -797,6 +913,49 @@ impl ControlHandle {
                 .map(|address| address.as_str().to_owned())
                 .collect::<Vec<_>>()
         )
+    }
+}
+
+fn classify_request_failure(error: &anyhow::Error) -> RequestFailureReason {
+    let message = error.to_string().to_lowercase();
+    if message.contains("timed out") || message.contains("timeout") {
+        RequestFailureReason::Timeout
+    } else if message.contains("no known address")
+        || message.contains("no connected peer")
+        || message.contains("provider unavailable")
+        || message.contains("unavailable")
+    {
+        RequestFailureReason::ProviderUnavailable
+    } else if message.contains("not found") || message.contains("missing") {
+        RequestFailureReason::NotFound
+    } else if message.contains("unexpected") || message.contains("mismatch") {
+        RequestFailureReason::UnexpectedResponse
+    } else if message.contains("admission") || message.contains("not admitted") {
+        RequestFailureReason::AdmissionRejected
+    } else if message.contains("transport")
+        || message.contains("connection")
+        || message.contains("channel closed")
+        || message.contains("request")
+    {
+        RequestFailureReason::Transport
+    } else {
+        RequestFailureReason::Unknown
+    }
+}
+
+fn diloco_request_failure_operation(request: &DiLoCoRequest) -> RequestFailureOperation {
+    match request {
+        DiLoCoRequest::StateSnapshot { .. } => RequestFailureOperation::DiLoCoStateFetch,
+        DiLoCoRequest::OuterOptimizerState { .. } | DiLoCoRequest::CurrentParameters { .. } => {
+            RequestFailureOperation::DiLoCoParameterStateFetch
+        }
+        DiLoCoRequest::GradientManifest { .. } => {
+            RequestFailureOperation::DiLoCoGradientManifestFetch
+        }
+        DiLoCoRequest::GradientChunk { .. } => RequestFailureOperation::DiLoCoGradientChunkFetch,
+        DiLoCoRequest::RoundOffer(_)
+        | DiLoCoRequest::RoundHeartbeat(_)
+        | DiLoCoRequest::RoundFinalize(_) => RequestFailureOperation::DiLoCoRoundRequest,
     }
 }
 

@@ -19,7 +19,7 @@ use burn_p2p::{
 };
 use burn_p2p_python::{
     PythonCheckpointCommandConfig, PythonTorchDatasetConfig, PythonTorchProject,
-    PythonTorchRuntimeConfig, PythonTorchWorkloadConfig,
+    PythonTorchRuntimeConfig, PythonTorchWorkloadConfig, PythonStateDictFilterConfig,
 };
 use chrono::Utc;
 use semver::Version;
@@ -37,6 +37,8 @@ struct DemoArgs {
     python_executable: PathBuf,
     protocol: DemoProtocol,
     peer_count: usize,
+    state_dict_includes: Vec<String>,
+    state_dict_excludes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +53,8 @@ impl DemoArgs {
         let mut python_executable = PathBuf::from(DEFAULT_PYTHON);
         let mut protocol = DemoProtocol::ArtifactWindows;
         let mut peer_count = DEFAULT_DILOCO_PEER_COUNT;
+        let mut state_dict_includes = Vec::new();
+        let mut state_dict_excludes = Vec::new();
         let mut args = env::args_os().skip(1);
 
         while let Some(arg) = args.next() {
@@ -81,6 +85,22 @@ impl DemoArgs {
                             .context("--peer-count must be valid UTF-8")?,
                     )?;
                 }
+                Some("--state-dict-include") => {
+                    state_dict_includes.push(parse_glob_arg(
+                        args.next()
+                            .context("--state-dict-include requires a glob")?
+                            .to_str()
+                            .context("--state-dict-include must be valid UTF-8")?,
+                    )?);
+                }
+                Some("--state-dict-exclude") => {
+                    state_dict_excludes.push(parse_glob_arg(
+                        args.next()
+                            .context("--state-dict-exclude requires a glob")?
+                            .to_str()
+                            .context("--state-dict-exclude must be valid UTF-8")?,
+                    )?);
+                }
                 Some(value) if value.starts_with("--root=") => {
                     root = PathBuf::from(&value["--root=".len()..]);
                 }
@@ -93,6 +113,16 @@ impl DemoArgs {
                 Some(value) if value.starts_with("--peer-count=") => {
                     peer_count = parse_peer_count(&value["--peer-count=".len()..])?;
                 }
+                Some(value) if value.starts_with("--state-dict-include=") => {
+                    state_dict_includes.push(parse_glob_arg(
+                        &value["--state-dict-include=".len()..],
+                    )?);
+                }
+                Some(value) if value.starts_with("--state-dict-exclude=") => {
+                    state_dict_excludes.push(parse_glob_arg(
+                        &value["--state-dict-exclude=".len()..],
+                    )?);
+                }
                 _ => bail!("unknown argument {arg:?}; use --help for usage"),
             }
         }
@@ -102,6 +132,8 @@ impl DemoArgs {
             python_executable,
             protocol,
             peer_count,
+            state_dict_includes,
+            state_dict_excludes,
         })
     }
 }
@@ -124,15 +156,25 @@ fn parse_peer_count(value: &str) -> anyhow::Result<usize> {
     Ok(peer_count)
 }
 
+fn parse_glob_arg(value: &str) -> anyhow::Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("state_dict glob must not be empty");
+    }
+    Ok(value.to_owned())
+}
+
 fn print_help() {
     println!(
         "Python/Torch MNIST burn_p2p demo\n\n\
-         Usage: torch_mnist_p2p_demo [--root PATH] [--python PATH] [--protocol artifact-windows|diloco] [--peer-count N]\n\n\
+         Usage: torch_mnist_p2p_demo [--root PATH] [--python PATH] [--protocol artifact-windows|diloco] [--peer-count N] [--state-dict-include GLOB] [--state-dict-exclude GLOB]\n\n\
          Options:\n  \
            --root PATH    Output/cache root [default: {DEFAULT_ROOT}]\n  \
            --python PATH  Python executable for dataset prep and workers [default: {DEFAULT_PYTHON}]\n  \
            --protocol     Training protocol to run [default: artifact-windows]\n  \
-           --peer-count   DiLoCo trainer participants [default: {DEFAULT_DILOCO_PEER_COUNT}]"
+           --peer-count   DiLoCo trainer participants [default: {DEFAULT_DILOCO_PEER_COUNT}]\n  \
+           --state-dict-include GLOB  Include trainable state_dict keys for DiLoCo parameter packs\n  \
+           --state-dict-exclude GLOB  Exclude frozen state_dict keys; may be repeated"
     );
 }
 
@@ -159,6 +201,8 @@ fn main() -> anyhow::Result<()> {
         &mnist_root,
         &args.python_executable,
         args.protocol,
+        &args.state_dict_includes,
+        &args.state_dict_excludes,
     )?;
     match args.protocol {
         DemoProtocol::ArtifactWindows => {
@@ -323,15 +367,38 @@ fn run_diloco_demo(
         let _ = fs::remove_dir_all(root.join(format!("diloco-peer-{peer_index}")));
     }
 
+    let policy = DiLoCoPolicy {
+        num_inner_steps: 2,
+        target_group_size: peer_count_u16,
+        minimum_group_size: peer_count_u16,
+        matchmaking_timeout_ms: 10_000,
+        aggregation_timeout_ms: 15_000,
+        checkpoint_interval_rounds: 1,
+        outer_optimizer_policy: OuterOptimizerPolicy::Sgd {
+            learning_rate_micros: 1_000_000,
+            momentum_micros: None,
+            nesterov: false,
+            weight_decay_micros: None,
+        },
+        ..DiLoCoPolicy::default()
+    };
+
     let seed_project = PythonTorchProject::new_with_data_pipeline(
         project_config.clone(),
         build_micro_epoch_pipeline(&dataset_config),
     )?;
+    let sanity =
+        seed_project.sanity_check_training_protocol(&TrainingProtocol::DiLoCo(policy.clone()))?;
     println!(
         "python capability device={} preferred_backends={:?} work_units_per_second={:.2}",
         seed_project.runtime_device_name(),
         seed_project.probe_capability().preferred_backends,
         seed_project.probe_capability().work_units_per_second
+    );
+    println!(
+        "DiLoCo parameter pack selected {} tensors ({} parameters)",
+        sanity.parameter_pack_plan.included_keys.len(),
+        sanity.parameter_pack_plan.parameter_count
     );
 
     let genesis = GenesisSpec {
@@ -365,21 +432,6 @@ fn run_diloco_demo(
         burn_p2p::ExperimentId::new("torch-mnist-exp"),
         RevisionId::new("rev-diloco"),
     );
-    let policy = DiLoCoPolicy {
-        num_inner_steps: 2,
-        target_group_size: peer_count_u16,
-        minimum_group_size: peer_count_u16,
-        matchmaking_timeout_ms: 10_000,
-        aggregation_timeout_ms: 15_000,
-        checkpoint_interval_rounds: 1,
-        outer_optimizer_policy: OuterOptimizerPolicy::Sgd {
-            learning_rate_micros: 1_000_000,
-            momentum_micros: None,
-            nesterov: false,
-            weight_decay_micros: None,
-        },
-        ..DiLoCoPolicy::default()
-    };
     let auth = AuthConfig::new().with_experiment_directory([diloco_directory_entry(
         &experiment,
         &policy,
@@ -492,6 +544,8 @@ fn build_project_config(
     mnist_root: &Path,
     python_executable: &Path,
     protocol: DemoProtocol,
+    state_dict_includes: &[String],
+    state_dict_excludes: &[String],
 ) -> anyhow::Result<PythonTorchWorkloadConfig> {
     let workload = workload_manifest();
     let workload_config = json!({
@@ -516,6 +570,16 @@ fn build_project_config(
         ContentId::new("python-torch-mnist-schema-v1"),
     )?;
     if protocol == DemoProtocol::DiLoCo {
+        let mut filter = PythonStateDictFilterConfig::all();
+        for pattern in state_dict_includes {
+            filter = filter.with_include_glob(pattern.clone());
+        }
+        for pattern in state_dict_excludes {
+            filter = filter.with_exclude_glob(pattern.clone());
+        }
+        filter.validate()?;
+        config = config.with_state_dict_filter(filter);
+
         let command = PythonCheckpointCommandConfig::new(python_executable)
             .with_arg("-m")
             .with_arg("torch_mnist_p2p_demo.runtime")
@@ -561,12 +625,6 @@ fn diloco_directory_entry(
     experiment: &burn_p2p::ExperimentHandle,
     policy: &DiLoCoPolicy,
 ) -> burn_p2p::ExperimentDirectoryEntry {
-    let mut metadata = BTreeMap::new();
-    metadata.insert(
-        "burn_p2p.revision.training_protocol.policy_json".into(),
-        serde_json::to_string(&TrainingProtocol::DiLoCo(policy.clone()))
-            .expect("serialize DiLoCo training protocol"),
-    );
     burn_p2p::ExperimentDirectoryEntry {
         network_id: experiment.network_id.clone(),
         study_id: experiment.study_id.clone(),
@@ -590,7 +648,8 @@ fn diloco_directory_entry(
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: experiment.experiment_id.clone(),
         }]),
-        metadata,
+        training_protocol: TrainingProtocol::DiLoCo(policy.clone()),
+        metadata: BTreeMap::new(),
     }
 }
 

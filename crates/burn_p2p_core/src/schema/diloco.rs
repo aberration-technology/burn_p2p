@@ -2,6 +2,7 @@ use std::fmt;
 
 use super::*;
 use crate::codec::{CanonicalSchema, SchemaError};
+use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -199,6 +200,26 @@ pub enum GradientCodec {
     },
 }
 
+impl GradientCodec {
+    fn validate(&self) -> Result<(), TrainingProtocolValidationError> {
+        match self {
+            Self::Fp32 | Self::Fp16 => Ok(()),
+            Self::BlockwiseInt8 { block_size } if *block_size == 0 => {
+                Err(TrainingProtocolValidationError::ZeroCodecBlockSize)
+            }
+            Self::BlockwiseInt8 { .. } => Ok(()),
+            Self::Qsgd { bits, .. } if *bits == 0 || *bits > 8 => {
+                Err(TrainingProtocolValidationError::InvalidQsgdBits { bits: *bits })
+            }
+            Self::Qsgd { .. } => Ok(()),
+            Self::LowRank { rank } if *rank == 0 => {
+                Err(TrainingProtocolValidationError::ZeroLowRankRank)
+            }
+            Self::LowRank { .. } | Self::SignSgd { .. } => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures how one peer rejoins after missing DiLoCo rounds.
 pub struct DiLoCoRejoinPolicy {
@@ -306,6 +327,21 @@ impl DiLoCoAggregationPolicy {
                 ..
             } => (*minimum_agreement_micros as f32 / 1_000_000.0).clamp(0.0, 1.0),
             Self::Mean | Self::CoordinateMedian => 0.0,
+        }
+    }
+
+    fn validate(&self) -> Result<(), TrainingProtocolValidationError> {
+        match self {
+            Self::Mean | Self::CoordinateMedian => Ok(()),
+            Self::SignMajority {
+                minimum_agreement_micros,
+                ..
+            } if *minimum_agreement_micros > 1_000_000 => Err(
+                TrainingProtocolValidationError::MinimumAgreementOutOfRange {
+                    minimum_agreement_micros: *minimum_agreement_micros,
+                },
+            ),
+            Self::SignMajority { .. } => Ok(()),
         }
     }
 }
@@ -425,6 +461,75 @@ impl Default for DiLoCoPolicy {
     }
 }
 
+impl DiLoCoPolicy {
+    /// Validates deploy-time DiLoCo semantics before a node is launched.
+    pub fn validate(&self) -> Result<(), TrainingProtocolValidationError> {
+        if self.num_inner_steps == 0 {
+            return Err(TrainingProtocolValidationError::ZeroInnerSteps);
+        }
+        if self.target_group_size == 0 {
+            return Err(TrainingProtocolValidationError::ZeroTargetGroupSize);
+        }
+        if self.minimum_group_size == 0 {
+            return Err(TrainingProtocolValidationError::ZeroMinimumGroupSize);
+        }
+        if self.minimum_group_size > self.target_group_size {
+            return Err(TrainingProtocolValidationError::MinimumGroupExceedsTarget {
+                minimum_group_size: self.minimum_group_size,
+                target_group_size: self.target_group_size,
+            });
+        }
+        if self.matchmaking_timeout_ms == 0 {
+            return Err(TrainingProtocolValidationError::ZeroMatchmakingTimeout);
+        }
+        if self.aggregation_timeout_ms == 0 {
+            return Err(TrainingProtocolValidationError::ZeroAggregationTimeout);
+        }
+        if self.checkpoint_interval_rounds == 0 {
+            return Err(TrainingProtocolValidationError::ZeroCheckpointInterval);
+        }
+        if self.topology_policy.fanout == 0 {
+            return Err(TrainingProtocolValidationError::ZeroTopologyFanout);
+        }
+        self.codec.validate()?;
+        self.aggregation_policy.validate()?;
+        self.outer_optimizer_policy.validate()?;
+        Ok(())
+    }
+}
+
+impl OuterOptimizerPolicy {
+    fn validate(&self) -> Result<(), TrainingProtocolValidationError> {
+        match self {
+            Self::Sgd {
+                learning_rate_micros,
+                momentum_micros,
+                weight_decay_micros,
+                ..
+            } => {
+                if *learning_rate_micros == 0 {
+                    return Err(TrainingProtocolValidationError::ZeroOuterLearningRate);
+                }
+                if let Some(momentum_micros) = momentum_micros
+                    && *momentum_micros > 1_000_000
+                {
+                    return Err(TrainingProtocolValidationError::MomentumOutOfRange {
+                        momentum_micros: *momentum_micros,
+                    });
+                }
+                if let Some(weight_decay_micros) = weight_decay_micros
+                    && *weight_decay_micros > 1_000_000
+                {
+                    return Err(TrainingProtocolValidationError::WeightDecayOutOfRange {
+                        weight_decay_micros: *weight_decay_micros,
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Selects the training protocol executed inside one experiment revision.
 pub enum TrainingProtocol {
@@ -433,6 +538,89 @@ pub enum TrainingProtocol {
     ArtifactWindows,
     /// Uses DiLoCo inner/outer optimization rounds with pseudo-gradient exchange.
     DiLoCo(DiLoCoPolicy),
+}
+
+impl TrainingProtocol {
+    /// Validates the training protocol for deploy-time configuration checks.
+    pub fn validate(&self) -> Result<(), TrainingProtocolValidationError> {
+        match self {
+            Self::ArtifactWindows => Ok(()),
+            Self::DiLoCo(policy) => policy.validate(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+/// Explains why a training protocol cannot be deployed.
+pub enum TrainingProtocolValidationError {
+    /// The DiLoCo inner-loop step budget must be non-zero.
+    #[error("DiLoCo num_inner_steps must be greater than zero")]
+    ZeroInnerSteps,
+    /// The desired aggregation cohort size must be non-zero.
+    #[error("DiLoCo target_group_size must be greater than zero")]
+    ZeroTargetGroupSize,
+    /// The minimum viable aggregation cohort size must be non-zero.
+    #[error("DiLoCo minimum_group_size must be greater than zero")]
+    ZeroMinimumGroupSize,
+    /// The minimum viable group cannot exceed the target group.
+    #[error(
+        "DiLoCo minimum_group_size ({minimum_group_size}) cannot exceed target_group_size ({target_group_size})"
+    )]
+    MinimumGroupExceedsTarget {
+        /// Configured minimum group size.
+        minimum_group_size: u16,
+        /// Configured target group size.
+        target_group_size: u16,
+    },
+    /// Group matching needs a positive timeout.
+    #[error("DiLoCo matchmaking_timeout_ms must be greater than zero")]
+    ZeroMatchmakingTimeout,
+    /// Aggregation needs a positive timeout.
+    #[error("DiLoCo aggregation_timeout_ms must be greater than zero")]
+    ZeroAggregationTimeout,
+    /// Cold checkpoint publication cadence must be non-zero.
+    #[error("DiLoCo checkpoint_interval_rounds must be greater than zero")]
+    ZeroCheckpointInterval,
+    /// Topology fanout must be positive.
+    #[error("DiLoCo topology_policy.fanout must be greater than zero")]
+    ZeroTopologyFanout,
+    /// Blockwise codecs require a positive block size.
+    #[error("DiLoCo blockwise int8 codec block_size must be greater than zero")]
+    ZeroCodecBlockSize,
+    /// QSGD quantization supports one to eight bits.
+    #[error("DiLoCo QSGD codec bits must be between 1 and 8, got {bits}")]
+    InvalidQsgdBits {
+        /// Configured QSGD bit count.
+        bits: u8,
+    },
+    /// Low-rank codecs require a positive rank.
+    #[error("DiLoCo low-rank codec rank must be greater than zero")]
+    ZeroLowRankRank,
+    /// Sign-majority agreement is expressed in millionths.
+    #[error(
+        "DiLoCo sign-majority minimum_agreement_micros must be <= 1000000, got {minimum_agreement_micros}"
+    )]
+    MinimumAgreementOutOfRange {
+        /// Configured agreement threshold in millionths.
+        minimum_agreement_micros: u64,
+    },
+    /// Outer-loop SGD needs a positive learning rate.
+    #[error("DiLoCo outer optimizer learning_rate_micros must be greater than zero")]
+    ZeroOuterLearningRate,
+    /// Momentum is expressed in millionths.
+    #[error("DiLoCo outer optimizer momentum_micros must be <= 1000000, got {momentum_micros}")]
+    MomentumOutOfRange {
+        /// Configured momentum coefficient in millionths.
+        momentum_micros: u64,
+    },
+    /// Weight decay is expressed in millionths.
+    #[error(
+        "DiLoCo outer optimizer weight_decay_micros must be <= 1000000, got {weight_decay_micros}"
+    )]
+    WeightDecayOutOfRange {
+        /// Configured weight decay coefficient in millionths.
+        weight_decay_micros: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

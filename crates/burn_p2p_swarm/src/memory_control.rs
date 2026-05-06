@@ -684,6 +684,7 @@ impl MemoryControlPlaneShell {
                 } => Poll::Ready(LiveControlPlaneEvent::RequestFailure {
                     peer_id: peer.to_string(),
                     request_id: Some(request_id.to_string()),
+                    kind: None,
                     message: error.to_string(),
                 }),
                 request_response::Event::InboundFailure { peer, error, .. } => {

@@ -17,7 +17,7 @@ use burn_p2p_workload::{EvalSplit, PatchOutcome, TrainerCanonicalReconcileStrate
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::{PythonBatchRef, PythonTorchRuntimeConfig};
+use crate::{PythonBatchRef, PythonStateDictFilterConfig, PythonTorchRuntimeConfig};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PythonWorkerClient {
@@ -168,6 +168,7 @@ impl PythonWorkerClient {
         model_id: &str,
         parameter_pack_path: &std::path::Path,
         model_schema_hash: &burn_p2p_core::ContentId,
+        state_dict_filter: &PythonStateDictFilterConfig,
     ) -> anyhow::Result<()> {
         let _: AckResponse = self.call(
             "export_parameter_pack",
@@ -175,6 +176,7 @@ impl PythonWorkerClient {
                 "model_id": model_id,
                 "parameter_pack_path": parameter_pack_path.to_string_lossy(),
                 "model_schema_hash": model_schema_hash.as_str(),
+                "state_dict_filter": state_dict_filter,
             }),
         )?;
         Ok(())
@@ -184,15 +186,31 @@ impl PythonWorkerClient {
         &self,
         device: &str,
         parameter_pack_path: &std::path::Path,
+        state_dict_filter: &PythonStateDictFilterConfig,
     ) -> anyhow::Result<String> {
         let response = self.call::<_, ModelHandleResponse>(
             "import_parameter_pack",
             serde_json::json!({
                 "device": device,
                 "parameter_pack_path": parameter_pack_path.to_string_lossy(),
+                "state_dict_filter": state_dict_filter,
             }),
         )?;
         Ok(response.model_id)
+    }
+
+    pub(crate) fn parameter_pack_plan(
+        &self,
+        device: &str,
+        state_dict_filter: &PythonStateDictFilterConfig,
+    ) -> anyhow::Result<PythonParameterPackPlanResponse> {
+        self.call(
+            "parameter_pack_plan",
+            serde_json::json!({
+                "device": device,
+                "state_dict_filter": state_dict_filter,
+            }),
+        )
     }
 
     pub(crate) fn run_inner_loop_path(
@@ -209,6 +227,7 @@ impl PythonWorkerClient {
                 "output_parameter_pack_path": request.output_parameter_pack_path.to_string_lossy(),
                 "model_schema_hash": request.model_schema_hash.as_str(),
                 "require_exact_steps": request.require_exact_steps,
+                "state_dict_filter": request.state_dict_filter,
             }),
         )
     }
@@ -493,6 +512,24 @@ struct MetricsResponse {
 #[derive(Clone, Debug, Deserialize)]
 struct AckResponse {}
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PythonParameterPackPlanResponse {
+    #[serde(default)]
+    pub uses_custom_parameter_pack_hooks: bool,
+    #[serde(default)]
+    pub layout_hash: Option<String>,
+    #[serde(default)]
+    pub included_keys: Vec<String>,
+    #[serde(default)]
+    pub excluded_float_keys: Vec<String>,
+    #[serde(default)]
+    pub ignored_non_float_keys: Vec<String>,
+    #[serde(default)]
+    pub parameter_count: usize,
+    #[serde(default)]
+    pub generic_plan_error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PythonDiLoCoInnerLoopResponse {
     pub steps_completed: u32,
@@ -513,6 +550,7 @@ pub(crate) struct PythonDiLoCoInnerLoopPathRequest<'a> {
     pub output_parameter_pack_path: &'a Path,
     pub model_schema_hash: &'a burn_p2p_core::ContentId,
     pub require_exact_steps: bool,
+    pub state_dict_filter: &'a PythonStateDictFilterConfig,
 }
 
 #[derive(Clone, Debug, Serialize)]

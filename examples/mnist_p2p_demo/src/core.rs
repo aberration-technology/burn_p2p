@@ -2869,6 +2869,7 @@ fn mnist_directory_entry(
                 experiment_id: experiment_id.clone(),
             },
         ]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::from([("learning_rate".into(), learning_rate.into())]),
     };
     entry.apply_revision_policy(&RevisionManifest {

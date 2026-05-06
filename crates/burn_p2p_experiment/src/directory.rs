@@ -239,10 +239,14 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
     }
 
     fn training_protocol(&self) -> TrainingProtocol {
+        if self.training_protocol != TrainingProtocol::default() {
+            return self.training_protocol.clone();
+        }
+
         self.metadata
             .get(TRAINING_PROTOCOL_JSON_KEY)
             .and_then(|value| serde_json::from_str(value).ok())
-            .unwrap_or_default()
+            .unwrap_or_else(|| self.training_protocol.clone())
     }
 
     fn browser_enabled(&self) -> bool {
@@ -429,6 +433,7 @@ impl ExperimentDirectoryPolicyExt for ExperimentDirectoryEntry {
     }
 
     fn apply_revision_policy(&mut self, revision: &RevisionManifest) {
+        self.training_protocol = revision.training_protocol.clone();
         let lag_policy = revision.effective_lag_policy();
         self.metadata.insert(
             LAG_CATCHUP_KEY.into(),
@@ -543,7 +548,7 @@ mod tests {
         ExperimentScope, ExperimentVisibility, HeadId, HeadPromotionMode, HeadPromotionPolicy,
         LagPolicy, MergeTopologyPolicy, MergeWindowMissPolicy, NetworkId, PeerId, PeerRole,
         PeerRoleSet, PersistenceClass, Precision, RevisionId, RevisionManifest, RobustnessPolicy,
-        StudyId, WindowActivation, WindowId,
+        StudyId, TrainingProtocol, WindowActivation, WindowId,
     };
     use chrono::Utc;
 
@@ -577,6 +582,7 @@ mod tests {
                 },
                 ExperimentScope::Validate { experiment_id },
             ]),
+            training_protocol: TrainingProtocol::default(),
             metadata: BTreeMap::new(),
         }
     }
@@ -770,6 +776,19 @@ mod tests {
             "burn_p2p.revision.training_protocol.policy_json".into(),
             serde_json::to_string(&protocol).expect("training protocol json"),
         );
+
+        assert_eq!(entry.training_protocol(), protocol);
+    }
+
+    #[test]
+    fn entry_reads_diloco_training_protocol_from_typed_field() {
+        let mut entry = entry();
+        let protocol = burn_p2p_core::TrainingProtocol::DiLoCo(burn_p2p_core::DiLoCoPolicy {
+            target_group_size: 1,
+            minimum_group_size: 1,
+            ..burn_p2p_core::DiLoCoPolicy::default()
+        });
+        entry.training_protocol = protocol.clone();
 
         assert_eq!(entry.training_protocol(), protocol);
     }

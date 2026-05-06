@@ -226,6 +226,15 @@ impl<P> RunningNode<P> {
         self.persist_transfer_snapshot(&mut snapshot);
     }
 
+    pub(crate) fn record_request_failure(&self, kind: RequestFailureKind) {
+        let mut snapshot = self
+            .telemetry
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.record_request_failure(kind);
+    }
+
     pub(crate) fn clear_transfer_state(&self, artifact_id: &ArtifactId) {
         let mut snapshot = self
             .telemetry

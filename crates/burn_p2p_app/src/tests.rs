@@ -648,6 +648,7 @@ fn reusable_widgets_render_typed_non_portal_cards() {
             allowed_scopes: std::collections::BTreeSet::from([ExperimentScope::Train {
                 experiment_id: ExperimentId::new("exp-auth"),
             }]),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         }],
         &[ExperimentScope::Train {
@@ -825,6 +826,7 @@ fn snapshot_assertions_cover_non_portal_downstream_smoke_checks() {
             allowed_scopes: std::collections::BTreeSet::from([ExperimentScope::Train {
                 experiment_id: ExperimentId::new("exp-auth"),
             }]),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         }],
         &[ExperimentScope::Train {

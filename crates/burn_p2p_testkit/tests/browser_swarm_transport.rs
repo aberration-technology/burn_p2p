@@ -118,6 +118,7 @@ fn browser_directory_snapshot(
                 experiment_id: experiment_id.clone(),
             },
         ]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
     entry.apply_revision_policy(&revision);

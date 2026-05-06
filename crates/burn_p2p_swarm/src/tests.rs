@@ -1063,6 +1063,7 @@ fn browser_subscription_topics_follow_selected_experiment_after_directory_seed()
         current_head_id: None,
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::new(),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
     let snapshot = ControlPlaneSnapshot {
@@ -1155,6 +1156,7 @@ fn browser_swarm_status_advances_to_head_synced_from_selected_snapshot() {
                 current_head_id: None,
                 allowed_roles: PeerRoleSet::default(),
                 allowed_scopes: BTreeSet::new(),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::new(),
             }],
             announced_at: Utc::now(),
@@ -2157,6 +2159,7 @@ fn semantic_directory_current_head_announcement(
             current_head_id: Some(HeadId::new(current_head_id)),
             allowed_roles: PeerRoleSet::default(),
             allowed_scopes: BTreeSet::new(),
+            training_protocol: Default::default(),
             metadata: BTreeMap::new(),
         }],
         announced_at,
@@ -2797,6 +2800,7 @@ fn browser_edge_control_plane_client_fetches_directory_and_heads_snapshot() {
         current_head_id: Some(HeadId::new("head-1")),
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::new(),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     }];
     let heads = vec![HeadDescriptor {
@@ -4109,6 +4113,7 @@ fn native_control_plane_shell_propagates_lifecycle_announcements_over_pubsub() {
                     current_head_id: None,
                     allowed_roles: PeerRoleSet::default_trainer(),
                     allowed_scopes: BTreeSet::new(),
+                    training_protocol: Default::default(),
                     metadata: BTreeMap::new(),
                 },
                 phase: ExperimentLifecyclePhase::Activating,

@@ -1248,6 +1248,7 @@ fn browser_join_policy_prefers_requested_role_and_falls_back_safely() {
         current_head_id: None,
         allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -1370,6 +1371,7 @@ fn browser_runtime_state_surfaces_portal_only_and_blocked_candidates() {
         current_head_id: None,
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
 
@@ -1495,6 +1497,7 @@ fn browser_portal_ui_state_projects_browser_picker_with_scope_and_fallback_metad
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: ExperimentId::new("exp-browser"),
         }]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -1645,6 +1648,7 @@ fn worker_runtime_projects_directory_state_and_transport_selection() {
         current_head_id: None,
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -2054,6 +2058,7 @@ fn worker_runtime_select_experiment_persists_assignment_and_blocks_missing_selec
         current_head_id: None,
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -2216,6 +2221,7 @@ fn worker_runtime_apply_command_emits_selection_and_storage_events() {
         current_head_id: None,
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -2600,6 +2606,7 @@ fn worker_runtime_apply_edge_sync_tracks_signed_snapshots_and_promotes_join_stat
         current_head_id: Some(burn_p2p::HeadId::new("head-browser")),
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     };
     entry.apply_revision_policy(&burn_p2p::RevisionManifest {
@@ -5029,6 +5036,7 @@ fn browser_directory_entry_for_assignment(
         current_head_id: Some(HeadId::new("head-browser")),
         allowed_roles: PeerRoleSet::default(),
         allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+        training_protocol: Default::default(),
         metadata: Default::default(),
     }
 }
@@ -5193,6 +5201,7 @@ fn browser_app_model_projects_trainer_focused_client_view() {
                 current_head_id: Some(HeadId::new("head-browser")),
                 allowed_roles: PeerRoleSet::new([PeerRole::TrainerGpu]),
                 allowed_scopes: BTreeSet::from([ExperimentScope::Connect]),
+                training_protocol: Default::default(),
                 metadata: Default::default(),
             },
         ]));

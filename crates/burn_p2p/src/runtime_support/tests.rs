@@ -234,7 +234,7 @@ fn publish_schedule_epoch(
 }
 
 #[test]
-fn runtime_training_protocol_prefers_directory_entry_metadata() {
+fn runtime_training_protocol_reads_directory_entry_field() {
     let protocol = crate::TrainingProtocol::DiLoCo(crate::DiLoCoPolicy {
         num_inner_steps: 8,
         target_group_size: 4,
@@ -249,7 +249,7 @@ fn runtime_training_protocol_prefers_directory_entry_metadata() {
         },
         ..crate::DiLoCoPolicy::default()
     });
-    let mut entry = ExperimentDirectoryEntry {
+    let entry = ExperimentDirectoryEntry {
         network_id: NetworkId::new("net-test"),
         study_id: StudyId::new("study"),
         experiment_id: ExperimentId::new("experiment"),
@@ -272,12 +272,9 @@ fn runtime_training_protocol_prefers_directory_entry_metadata() {
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: ExperimentId::new("experiment"),
         }]),
+        training_protocol: protocol.clone(),
         metadata: BTreeMap::new(),
     };
-    entry.metadata.insert(
-        "burn_p2p.revision.training_protocol.policy_json".into(),
-        serde_json::to_string(&protocol).expect("training protocol json"),
-    );
     let config = NodeConfig {
         auth: Some(AuthConfig::default().with_experiment_directory([entry])),
         ..NodeConfig::default()

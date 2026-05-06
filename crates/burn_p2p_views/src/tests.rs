@@ -660,6 +660,7 @@ fn experiment_picker_marks_scope_eligible_entries() {
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: ExperimentId::new("exp"),
         }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
 
@@ -973,6 +974,7 @@ fn operator_rollout_views_serialize_directory_and_draft_state() {
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: ExperimentId::new("exp"),
         }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::from([("profile_json".into(), "{\"kind\":\"language\"}".into())]),
     };
 

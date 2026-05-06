@@ -10,7 +10,7 @@ use burn_p2p_checkpoint::{ArtifactBuildSpec, ChunkingScheme, FsArtifactStore};
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CapabilityEstimate, ContentId, DatasetId,
     DatasetManifest, DatasetView, DatasetViewId, FlattenedTensorPack, HeadId, MergePolicy,
-    MetricValue, Precision, StateBlob, SupportedWorkload,
+    MetricValue, Precision, StateBlob, SupportedWorkload, TrainingProtocol,
 };
 use burn_p2p_dataloader::{
     CachedMicroShard, DatasetRegistration, DatasetSizing, MicroShardPlan, MicroShardPlanner,
@@ -29,6 +29,7 @@ use serde_json::Value;
 
 mod worker;
 
+pub use worker::PythonParameterPackPlanResponse;
 use worker::{
     PythonDiLoCoInnerLoopPathRequest, PythonDiLoCoInnerLoopResponse, PythonMergeCandidateRef,
     PythonWorkerClient,
@@ -163,6 +164,8 @@ pub struct PythonTorchWorkloadConfig {
     pub patch_support: PatchSupport,
     /// Optional DiLoCo bridge configuration. Artifact-window training is unchanged when disabled.
     pub diloco: PythonDiLoCoConfig,
+    /// Generic parameter-pack state_dict key filter for frozen or multi-module Torch workloads.
+    pub state_dict_filter: PythonStateDictFilterConfig,
 }
 
 impl PythonTorchWorkloadConfig {
@@ -187,6 +190,7 @@ impl PythonTorchWorkloadConfig {
                 cold: false,
             },
             diloco: PythonDiLoCoConfig::disabled(),
+            state_dict_filter: PythonStateDictFilterConfig::default(),
         })
     }
 
@@ -204,9 +208,118 @@ impl PythonTorchWorkloadConfig {
         self.diloco = PythonDiLoCoConfig::checkpoint_command(command);
         self
     }
+
+    /// Configures which floating-point state_dict entries are transported by the generic
+    /// parameter-pack bridge. Custom Python parameter-pack hooks are responsible for their own
+    /// filtering semantics.
+    pub fn with_state_dict_filter(mut self, filter: PythonStateDictFilterConfig) -> Self {
+        self.state_dict_filter = filter;
+        self
+    }
+
+    /// Validates static deploy-time configuration before the Python worker is spawned.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        ensure!(
+            self.runtime.workload_factory.contains(':'),
+            "python workload_factory must use module:attr form"
+        );
+        let (module, attr) = self
+            .runtime
+            .workload_factory
+            .split_once(':')
+            .expect("contains colon");
+        ensure!(
+            !module.trim().is_empty() && !attr.trim().is_empty(),
+            "python workload_factory must include non-empty module and attr"
+        );
+        self.diloco.validate()?;
+        self.state_dict_filter.validate()?;
+        Ok(())
+    }
+
+    /// Validates this adapter against the training protocol attached to an experiment revision.
+    pub fn validate_for_training_protocol(
+        &self,
+        protocol: &TrainingProtocol,
+    ) -> anyhow::Result<()> {
+        protocol
+            .validate()
+            .context("validate training protocol semantics")?;
+        self.validate()?;
+        if matches!(protocol, TrainingProtocol::DiLoCo(_))
+            && matches!(self.diloco.backend, PythonDiLoCoBackend::Disabled)
+        {
+            anyhow::bail!("Python DiLoCo backend is disabled but the training protocol is DiLoCo");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Filters generic Torch state_dict entries transported in DiLoCo parameter packs.
+pub struct PythonStateDictFilterConfig {
+    /// Include glob patterns matched against full state_dict keys. Empty means include all.
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+    /// Exclude glob patterns matched after includes. Excludes win.
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
+}
+
+impl PythonStateDictFilterConfig {
+    /// Includes every floating-point state_dict entry.
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    /// Adds one include glob pattern.
+    pub fn with_include_glob(mut self, pattern: impl Into<String>) -> Self {
+        self.include_globs.push(pattern.into());
+        self
+    }
+
+    /// Adds one exclude glob pattern.
+    pub fn with_exclude_glob(mut self, pattern: impl Into<String>) -> Self {
+        self.exclude_globs.push(pattern.into());
+        self
+    }
+
+    /// Validates filter patterns for safe deploy-time transport.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        validate_globs("include_globs", &self.include_globs)?;
+        validate_globs("exclude_globs", &self.exclude_globs)?;
+        Ok(())
+    }
+}
+
+fn validate_globs(label: &str, patterns: &[String]) -> anyhow::Result<()> {
+    for pattern in patterns {
+        ensure!(
+            !pattern.trim().is_empty(),
+            "state_dict_filter.{label} contains an empty pattern"
+        );
+        ensure!(
+            !pattern.contains('\0'),
+            "state_dict_filter.{label} pattern contains a NUL byte"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Deploy-time sanity report for one Python adapter and training protocol.
+pub struct PythonDeploymentSanityReport {
+    /// Training protocol that was validated.
+    pub training_protocol: TrainingProtocol,
+    /// Python DiLoCo backend selected by this adapter.
+    pub diloco_backend: PythonDiLoCoBackend,
+    /// State-dict filter used by the generic parameter-pack bridge.
+    pub state_dict_filter: PythonStateDictFilterConfig,
+    /// Worker-side generic parameter-pack plan.
+    pub parameter_pack_plan: PythonParameterPackPlanResponse,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Configures the Python-side DiLoCo inner-loop bridge.
 pub struct PythonDiLoCoConfig {
     /// Backend used to execute local DiLoCo inner loops.
@@ -239,6 +352,14 @@ impl PythonDiLoCoConfig {
             require_exact_steps: true,
         }
     }
+
+    /// Validates Python-side DiLoCo backend configuration.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let PythonDiLoCoBackend::CheckpointCommand(command) = &self.backend {
+            command.validate()?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for PythonDiLoCoConfig {
@@ -247,7 +368,7 @@ impl Default for PythonDiLoCoConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 /// Selects how Python-backed DiLoCo inner loops are executed.
 pub enum PythonDiLoCoBackend {
@@ -259,7 +380,7 @@ pub enum PythonDiLoCoBackend {
     CheckpointCommand(PythonCheckpointCommandConfig),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Command-mode DiLoCo adapter for downstream trainers that expose checkpoint I/O only.
 pub struct PythonCheckpointCommandConfig {
     /// Program to execute for each DiLoCo inner-loop job.
@@ -299,6 +420,27 @@ impl PythonCheckpointCommandConfig {
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(key.into(), value.into());
         self
+    }
+
+    /// Validates the command shape without executing the downstream trainer.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self.program.as_os_str().is_empty(),
+            "DiLoCo checkpoint command program must not be empty"
+        );
+        for arg in &self.args {
+            ensure!(
+                !arg.contains('\0'),
+                "DiLoCo checkpoint command args must not contain NUL bytes"
+            );
+        }
+        for (key, value) in &self.env {
+            ensure!(
+                !key.trim().is_empty() && !key.contains('\0') && !value.contains('\0'),
+                "DiLoCo checkpoint command env keys and values must be non-empty strings without NUL bytes"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -393,6 +535,7 @@ struct PythonDiLoCoCheckpointJob<'a> {
     batches: &'a [PythonBatchRef],
     num_inner_steps: u32,
     require_exact_steps: bool,
+    state_dict_filter: &'a PythonStateDictFilterConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inner_optimizer_state_path: Option<String>,
 }
@@ -456,6 +599,7 @@ impl PythonTorchProject {
         config: PythonTorchWorkloadConfig,
         data_pipeline: LeaseDataPipeline<String, PythonBatchRef>,
     ) -> anyhow::Result<Self> {
+        config.validate()?;
         let client = PythonWorkerClient::spawn(&config.runtime)?;
         let hello = client.hello()?;
         if hello.protocol_version == 0 || hello.protocol_version > 2 {
@@ -482,6 +626,33 @@ impl PythonTorchProject {
             workload_name: hello.workload_name,
             runtime_device: probe.runtime_device,
             capability: probe.capability,
+        })
+    }
+
+    /// Runs deploy-time sanity checks against the revision training protocol and the
+    /// worker-visible generic parameter-pack plan.
+    pub fn sanity_check_training_protocol(
+        &self,
+        protocol: &TrainingProtocol,
+    ) -> anyhow::Result<PythonDeploymentSanityReport> {
+        self.config.validate_for_training_protocol(protocol)?;
+        let parameter_pack_plan = self
+            .client
+            .parameter_pack_plan(&self.runtime_device, &self.config.state_dict_filter)
+            .context("probe Python parameter-pack plan")?;
+        if matches!(protocol, TrainingProtocol::DiLoCo(_))
+            && !parameter_pack_plan.uses_custom_parameter_pack_hooks
+            && parameter_pack_plan.parameter_count == 0
+        {
+            anyhow::bail!(
+                "Python DiLoCo parameter-pack filter selected zero floating-point parameters"
+            );
+        }
+        Ok(PythonDeploymentSanityReport {
+            training_protocol: protocol.clone(),
+            diloco_backend: self.config.diloco.backend.clone(),
+            state_dict_filter: self.config.state_dict_filter.clone(),
+            parameter_pack_plan,
         })
     }
 
@@ -1008,7 +1179,12 @@ impl DiLoCoWorkload for PythonTorchProject {
             .tempdir()?;
         let pack_path = staged_dir.path().join("parameters");
         self.client
-            .export_parameter_pack_path(model.id(), &pack_path, &self.config.model_schema_hash)
+            .export_parameter_pack_path(
+                model.id(),
+                &pack_path,
+                &self.config.model_schema_hash,
+                &self.config.state_dict_filter,
+            )
             .context("export Python model parameter pack")?;
         let pack = Self::read_parameter_pack_dir(&pack_path)?;
         ensure!(
@@ -1038,7 +1214,7 @@ impl DiLoCoWorkload for PythonTorchProject {
         Self::write_parameter_pack_dir(&pack_path, pack)?;
         let model_id = self
             .client
-            .import_parameter_pack_path(device, &pack_path)
+            .import_parameter_pack_path(device, &pack_path, &self.config.state_dict_filter)
             .context("import Python model parameter pack")?;
         Ok(PythonModelHandle::new(model_id, self.client.clone()))
     }
@@ -1105,6 +1281,7 @@ impl PythonTorchProject {
                 output_parameter_pack_path: &output_pack_path,
                 model_schema_hash: &self.config.model_schema_hash,
                 require_exact_steps: self.config.diloco.require_exact_steps,
+                state_dict_filter: &self.config.state_dict_filter,
             })
             .map_err(|error| TrainError::new(error.to_string()))?;
         self.validate_diloco_steps(num_inner_steps, &response)?;
@@ -1150,7 +1327,12 @@ impl PythonTorchProject {
         let job_manifest_path = staged_dir.path().join("job.json");
 
         self.client
-            .export_parameter_pack_path(model.id(), &base_pack_path, &self.config.model_schema_hash)
+            .export_parameter_pack_path(
+                model.id(),
+                &base_pack_path,
+                &self.config.model_schema_hash,
+                &self.config.state_dict_filter,
+            )
             .map_err(|error| TrainError::new(error.to_string()))?;
         let inner_state_path = if let Some(state) = inner_optimizer_state {
             let path = staged_dir.path().join("inner-state-input.blob");
@@ -1173,6 +1355,7 @@ impl PythonTorchProject {
             batches,
             num_inner_steps,
             require_exact_steps: self.config.diloco.require_exact_steps,
+            state_dict_filter: &self.config.state_dict_filter,
             inner_optimizer_state_path: inner_state_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
@@ -1236,6 +1419,37 @@ impl PythonTorchProject {
 mod tests {
     use super::*;
 
+    fn test_workload_config() -> PythonTorchWorkloadConfig {
+        let runtime = PythonTorchRuntimeConfig::new(
+            "python3",
+            "demo_runtime:make_workload",
+            serde_json::json!({}),
+        );
+        let dataset = PythonTorchDatasetConfig {
+            root: PathBuf::from("/tmp/python-dataset"),
+            dataset_id: DatasetId::new("dataset-a"),
+            dataset_view_id: DatasetViewId::new("view-a"),
+            source_uri: "file:///tmp/python-dataset".into(),
+            format: "test".into(),
+            manifest_hash: ContentId::new("manifest-a"),
+            preprocessing_hash: ContentId::new("preprocess-a"),
+            tokenizer_hash: None,
+            sizing: DatasetSizing::default(),
+            planner: MicroShardPlannerConfig::default(),
+            microshards_per_batch: 1,
+            metadata: BTreeMap::new(),
+        };
+        let workload = burn_p2p_core::SupportedWorkloadBuilder::new(
+            burn_p2p_core::WorkloadId::new("python-test"),
+            "Python Test",
+            ContentId::new("program-a"),
+            ContentId::new("format-a"),
+        )
+        .build();
+        PythonTorchWorkloadConfig::new(runtime, dataset, workload, ContentId::new("schema-a"))
+            .expect("config")
+    }
+
     #[test]
     fn python_diloco_config_defaults_to_disabled_exact_steps() {
         let config = PythonDiLoCoConfig::default();
@@ -1249,6 +1463,46 @@ mod tests {
             PythonDiLoCoBackend::CheckpointCommand(_)
         ));
         assert!(config.require_exact_steps);
+    }
+
+    #[test]
+    fn state_dict_filter_rejects_empty_patterns() {
+        let filter = PythonStateDictFilterConfig::default().with_include_glob(" ");
+
+        let error = filter.validate().expect_err("empty glob should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("state_dict_filter.include_globs contains an empty pattern")
+        );
+    }
+
+    #[test]
+    fn workload_config_rejects_diloco_protocol_when_backend_disabled() {
+        let config = test_workload_config();
+        let protocol = TrainingProtocol::DiLoCo(burn_p2p_core::DiLoCoPolicy {
+            target_group_size: 1,
+            minimum_group_size: 1,
+            topology_policy: burn_p2p_core::DiLoCoTopologyPolicy {
+                fanout: 1,
+                ..burn_p2p_core::DiLoCoTopologyPolicy::default()
+            },
+            ..burn_p2p_core::DiLoCoPolicy::default()
+        });
+
+        let error = config
+            .validate_for_training_protocol(&protocol)
+            .expect_err("disabled backend should fail DiLoCo protocol");
+        assert!(
+            error
+                .to_string()
+                .contains("Python DiLoCo backend is disabled")
+        );
+
+        let enabled = config.with_diloco_in_process();
+        enabled
+            .validate_for_training_protocol(&protocol)
+            .expect("enabled in-process DiLoCo config");
     }
 
     #[test]

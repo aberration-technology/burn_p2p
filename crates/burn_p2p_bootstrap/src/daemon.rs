@@ -1157,6 +1157,7 @@ fn refresh_admin_state_from_runtime(
     state.node_state = telemetry.node_state.clone();
     state.slot_states = telemetry.slot_states.clone();
     state.in_flight_transfers = telemetry.in_flight_transfers.values().cloned().collect();
+    state.request_failures = telemetry.request_failures.clone();
     state.admitted_peers = telemetry.admitted_peers.keys().cloned().collect();
     state.peer_admission_reports = telemetry.admitted_peers.clone();
     state.rejected_peers = telemetry.rejected_peers.clone();
@@ -1409,6 +1410,7 @@ mod tests {
                 current_head_id: Some(HeadId::new(head_id)),
                 allowed_roles: burn_p2p::PeerRoleSet::default(),
                 allowed_scopes: BTreeSet::new(),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::new(),
             }],
             announced_at: Utc::now(),

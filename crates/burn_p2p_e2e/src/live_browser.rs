@@ -1721,6 +1721,7 @@ mod tests {
                     experiment_id: experiment_id.clone(),
                 },
             ]),
+            training_protocol: Default::default(),
             metadata: BTreeMap::from([
                 (
                     "burn_p2p.revision.browser.enabled".into(),

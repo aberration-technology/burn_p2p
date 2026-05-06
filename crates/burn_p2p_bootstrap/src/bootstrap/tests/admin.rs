@@ -308,6 +308,7 @@ fn admin_route_publishes_lifecycle_certificate_to_runtime_control_plane() {
                             current_head_id: None,
                             allowed_roles: PeerRoleSet::default_trainer(),
                             allowed_scopes: BTreeSet::new(),
+                            training_protocol: Default::default(),
                             metadata: BTreeMap::new(),
                         },
                         phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
@@ -587,6 +588,7 @@ fn admin_route_publishes_cross_experiment_lifecycle_reassignment_certificate() {
                             current_head_id: None,
                             allowed_roles: PeerRoleSet::default_trainer(),
                             allowed_scopes: BTreeSet::new(),
+                            training_protocol: Default::default(),
                             metadata: BTreeMap::new(),
                         },
                         phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,
@@ -886,6 +888,7 @@ fn auth_portal_rotation_and_policy_rollout_persist_and_reissue() {
         allowed_scopes: BTreeSet::from([ExperimentScope::Train {
             experiment_id: burn_p2p::ExperimentId::new("exp-auth"),
         }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::from([("rollout".into(), "true".into())]),
     }];
     let rollout = rollout_auth_policy(

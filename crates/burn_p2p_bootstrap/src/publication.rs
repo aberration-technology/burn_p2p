@@ -367,6 +367,7 @@ mod tests {
                 minimum_revocation_epoch: None,
                 trust_bundle: None,
                 in_flight_transfers: BTreeMap::new(),
+                request_failures: Vec::new(),
                 robustness_policy: None,
                 latest_cohort_robustness: None,
                 trust_scores: Vec::new(),

@@ -106,6 +106,7 @@ fn browser_directory_from_spec(spec: &SimulationSpec) -> BrowserDirectorySnapsho
             },
             ExperimentScope::Connect,
         ]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
     entry.apply_revision_policy(&revision);

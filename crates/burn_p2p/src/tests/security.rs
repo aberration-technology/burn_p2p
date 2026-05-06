@@ -147,6 +147,7 @@ fn control_handle_updates_auth_and_directory_announcements() {
                 current_head_id: Some(crate::HeadId::new("head-auth")),
                 allowed_roles: crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]),
                 allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train { experiment_id }]),
+                training_protocol: Default::default(),
                 metadata: BTreeMap::from([("owner".into(), "lab-auth".into())]),
             }],
             announced_at: Utc::now(),
@@ -216,6 +217,7 @@ fn control_handle_updates_lifecycle_announcements() {
                     allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train {
                         experiment_id: crate::ExperimentId::new("exp-1"),
                     }]),
+                    training_protocol: Default::default(),
                     metadata: BTreeMap::from([("owner".into(), "lab-switch".into())]),
                 },
                 phase: burn_p2p_experiment::ExperimentLifecyclePhase::Activating,

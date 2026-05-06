@@ -381,6 +381,7 @@ fn training_uses_revision_lag_policy_from_directory_entry() {
         allowed_scopes: BTreeSet::from([crate::ExperimentScope::Train {
             experiment_id: experiment.experiment_id.clone(),
         }]),
+        training_protocol: Default::default(),
         metadata: BTreeMap::new(),
     };
     lag_directory_entry.apply_revision_policy(&crate::RevisionManifest {
