@@ -1,4 +1,6 @@
 import argparse
+import json
+import os
 from pathlib import Path
 
 import torch
@@ -79,6 +81,17 @@ class TorchMnistWorkload:
         }
 
     def train_window(self, state, batches):
+        return self._train_steps(state, batches, None)
+
+    def run_inner_loop(self, state, job):
+        steps = int(job["num_inner_steps"])
+        metrics = self._train_steps(state, job["batches"], steps)
+        return {
+            "steps_completed": int(metrics["train_steps"]),
+            "metrics": metrics,
+        }
+
+    def _train_steps(self, state, batches, max_steps):
         model = state["model"]
         optimizer = state["optimizer"]
         criterion = torch.nn.CrossEntropyLoss()
@@ -89,27 +102,40 @@ class TorchMnistWorkload:
         total_examples = 0
         total_steps = 0
 
-        for batch in batches:
-            for shard_path in self._batch_shard_paths(batch):
-                shard = load_file(shard_path)
-                images = shard["images"].to(self.device, dtype=torch.float32) / 255.0
-                labels = shard["labels"].to(self.device, dtype=torch.long)
-                for start in range(0, labels.shape[0], self.train_batch_size):
-                    batch_images = images[start : start + self.train_batch_size]
-                    batch_labels = labels[start : start + self.train_batch_size]
-                    optimizer.zero_grad(set_to_none=True)
-                    logits = model(batch_images)
-                    loss = criterion(logits, batch_labels)
-                    loss.backward()
-                    optimizer.step()
+        while max_steps is None or total_steps < max_steps:
+            progressed = False
+            for batch in batches:
+                for shard_path in self._batch_shard_paths(batch):
+                    shard = load_file(shard_path)
+                    images = shard["images"].to(self.device, dtype=torch.float32) / 255.0
+                    labels = shard["labels"].to(self.device, dtype=torch.long)
+                    for start in range(0, labels.shape[0], self.train_batch_size):
+                        if max_steps is not None and total_steps >= max_steps:
+                            break
+                        batch_images = images[start : start + self.train_batch_size]
+                        batch_labels = labels[start : start + self.train_batch_size]
+                        optimizer.zero_grad(set_to_none=True)
+                        logits = model(batch_images)
+                        loss = criterion(logits, batch_labels)
+                        loss.backward()
+                        optimizer.step()
 
-                    total_steps += 1
-                    batch_size = int(batch_labels.shape[0])
-                    total_examples += batch_size
-                    total_loss += float(loss.detach().cpu().item()) * batch_size
-                    total_correct += int(
-                        (logits.argmax(dim=1) == batch_labels).sum().detach().cpu().item()
-                    )
+                        progressed = True
+                        total_steps += 1
+                        batch_size = int(batch_labels.shape[0])
+                        total_examples += batch_size
+                        total_loss += float(loss.detach().cpu().item()) * batch_size
+                        total_correct += int(
+                            (logits.argmax(dim=1) == batch_labels).sum().detach().cpu().item()
+                        )
+                    if max_steps is not None and total_steps >= max_steps:
+                        break
+                if max_steps is not None and total_steps >= max_steps:
+                    break
+            if max_steps is None or total_steps >= max_steps:
+                break
+            if not progressed:
+                raise ValueError("training batches did not produce any optimizer steps")
 
         average_loss = total_loss / max(total_examples, 1)
         accuracy = total_correct / max(total_examples, 1)
@@ -310,6 +336,39 @@ def prepare_dataset(dataset_root: Path, mnist_root: Path, sample_count: int, sha
         (dataset_root / f"{ordinal:05}.bin").write_bytes(shard_bytes)
 
 
+def run_diloco_command_job(config):
+    from burn_p2p_python_runtime.worker import _load_parameter_pack, _write_parameter_pack
+
+    job_path = Path(os.environ["BURN_P2P_DILOCO_JOB_MANIFEST"])
+    result_path = Path(os.environ["BURN_P2P_DILOCO_RESULT_MANIFEST"])
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    workload = TorchMnistWorkload(config)
+    state = workload.init_model(workload.runtime_device())
+    _load_parameter_pack(job["base_parameter_pack_path"], state["model"])
+    metrics = workload._train_steps(state, job["batches"], int(job["num_inner_steps"]))
+    steps_completed = int(metrics["train_steps"])
+    if job.get("require_exact_steps", True) and steps_completed != int(job["num_inner_steps"]):
+        raise ValueError(
+            f"command inner loop completed {steps_completed} steps, requested {job['num_inner_steps']}"
+        )
+    _write_parameter_pack(
+        job["output_parameter_pack_path"],
+        state["model"],
+        job["model_schema_hash"],
+    )
+    result_path.write_text(
+        json.dumps(
+            {
+                "steps_completed": steps_completed,
+                "metrics": metrics,
+                "local_parameter_pack_path": job["output_parameter_pack_path"],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -320,6 +379,9 @@ def main():
     prepare.add_argument("--sample-count", type=int, required=True)
     prepare.add_argument("--shard-count", type=int, required=True)
 
+    diloco_job = subcommands.add_parser("diloco-command-job")
+    diloco_job.add_argument("--config-json", required=True)
+
     args = parser.parse_args()
     if args.command == "prepare-dataset":
         prepare_dataset(
@@ -328,6 +390,9 @@ def main():
             args.sample_count,
             args.shard_count,
         )
+        return
+    if args.command == "diloco-command-job":
+        run_diloco_command_job(json.loads(args.config_json))
         return
     raise SystemExit(f"unknown command {args.command}")
 

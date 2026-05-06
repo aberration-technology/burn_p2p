@@ -1,13 +1,16 @@
 import argparse
+import hashlib
 import importlib
 import json
+from pathlib import Path
 import socket
 import struct
 import sys
 import traceback
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+PARAMETER_PACK_FORMAT = "burn-p2p-python-flattened-parameter-pack-v1"
 
 
 def _import_factory(spec: str):
@@ -63,6 +66,118 @@ def _send_message(sock, payload):
     sock.sendall(encoded)
 
 
+def _torch_model_from_state(state):
+    if isinstance(state, dict) and "model" in state:
+        return state["model"]
+    if hasattr(state, "state_dict") and hasattr(state, "load_state_dict"):
+        return state
+    raise TypeError("generic parameter-pack support requires a torch model or {'model': model}")
+
+
+def _torch_float_layout(model):
+    import torch
+
+    items = []
+    state_dict = model.state_dict()
+    for name in sorted(state_dict):
+        tensor = state_dict[name].detach()
+        if not torch.is_floating_point(tensor):
+            continue
+        shape = [int(dim) for dim in tensor.shape]
+        numel = int(tensor.numel())
+        items.append(
+            {
+                "name": name,
+                "shape": shape,
+                "dtype": str(tensor.dtype),
+                "numel": numel,
+            }
+        )
+    encoded = json.dumps(items, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "torch-layout-" + hashlib.sha256(encoded).hexdigest(), items
+
+
+def _write_parameter_pack(path, model, model_schema_hash):
+    import torch
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    layout_hash, layout = _torch_float_layout(model)
+    values_path = path / "values.f32le"
+    parameter_count = 0
+    state_dict = model.state_dict()
+    with values_path.open("wb") as values_file:
+        for item in layout:
+            tensor = (
+                state_dict[item["name"]]
+                .detach()
+                .to(device="cpu", dtype=torch.float32)
+                .contiguous()
+                .reshape(-1)
+            )
+            values = tensor.tolist()
+            parameter_count += len(values)
+            for start in range(0, len(values), 65536):
+                chunk = values[start : start + 65536]
+                values_file.write(struct.pack(f"<{len(chunk)}f", *chunk))
+    manifest = {
+        "format": PARAMETER_PACK_FORMAT,
+        "model_schema_hash": str(model_schema_hash),
+        "layout_hash": layout_hash,
+        "parameter_count": parameter_count,
+        "values_f32_le": "values.f32le",
+    }
+    (path / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _read_pack_manifest(path):
+    path = Path(path)
+    manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("format") != PARAMETER_PACK_FORMAT:
+        raise ValueError(f"unsupported parameter-pack format {manifest.get('format')!r}")
+    values_path = path / manifest["values_f32_le"]
+    values_bytes = values_path.read_bytes()
+    expected_bytes = int(manifest["parameter_count"]) * 4
+    if len(values_bytes) != expected_bytes:
+        raise ValueError(
+            f"parameter-pack byte length {len(values_bytes)} does not match {expected_bytes}"
+        )
+    return manifest, values_bytes
+
+
+def _load_parameter_pack(path, model):
+    import torch
+
+    manifest, values_bytes = _read_pack_manifest(path)
+    layout_hash, layout = _torch_float_layout(model)
+    if manifest["layout_hash"] != layout_hash:
+        raise ValueError(
+            f"parameter-pack layout {manifest['layout_hash']} does not match model layout {layout_hash}"
+        )
+    values = []
+    for start in range(0, len(values_bytes), 4 * 65536):
+        chunk = values_bytes[start : start + 4 * 65536]
+        values.extend(struct.unpack(f"<{len(chunk) // 4}f", chunk))
+    if len(values) != int(manifest["parameter_count"]):
+        raise ValueError("decoded parameter count does not match manifest")
+
+    state_dict = model.state_dict()
+    offset = 0
+    for item in layout:
+        numel = int(item["numel"])
+        existing = state_dict[item["name"]]
+        restored = torch.tensor(
+            values[offset : offset + numel],
+            dtype=torch.float32,
+            device=existing.device,
+        ).reshape(item["shape"])
+        state_dict[item["name"]] = restored.to(dtype=existing.dtype, device=existing.device)
+        offset += numel
+    if offset != len(values):
+        raise ValueError(f"unused parameter-pack values: consumed {offset}, found {len(values)}")
+    model.load_state_dict(state_dict)
+
+
 class WorkerServer:
     def __init__(self, factory_spec: str, config_json: str):
         factory = _import_factory(factory_spec)
@@ -116,6 +231,13 @@ class WorkerServer:
                 "workload_name": getattr(
                     self.workload, "workload_name", type(self.workload).__name__
                 ),
+                "capabilities": [
+                    "artifact_path_io",
+                    "diloco_checkpoint_job",
+                    "parameter_pack_export",
+                    "parameter_pack_import",
+                    "exact_step_budget",
+                ],
             }
         if method == "capability_probe":
             return {
@@ -169,6 +291,61 @@ class WorkerServer:
                 with open(artifact_path, "wb") as artifact_file:
                     artifact_file.write(artifact_bytes)
             return {"ok": True}
+        if method == "export_parameter_pack":
+            model_id = params["model_id"]
+            parameter_pack_path = params["parameter_pack_path"]
+            model_schema_hash = params["model_schema_hash"]
+            if hasattr(self.workload, "export_parameter_pack_path"):
+                self.workload.export_parameter_pack_path(
+                    self.models[model_id], parameter_pack_path, model_schema_hash
+                )
+            else:
+                _write_parameter_pack(
+                    parameter_pack_path,
+                    _torch_model_from_state(self.models[model_id]),
+                    model_schema_hash,
+                )
+            return {"ok": True}
+        if method == "import_parameter_pack":
+            parameter_pack_path = params["parameter_pack_path"]
+            device = params["device"]
+            if hasattr(self.workload, "import_parameter_pack_path"):
+                imported = self.workload.import_parameter_pack_path(
+                    device, parameter_pack_path
+                )
+            else:
+                imported = self.workload.init_model(device)
+                _load_parameter_pack(parameter_pack_path, _torch_model_from_state(imported))
+            return {"model_id": self.new_model(imported)}
+        if method == "run_inner_loop":
+            model_id = params["model_id"]
+            if not hasattr(self.workload, "run_inner_loop"):
+                raise ValueError("python workload does not implement run_inner_loop")
+            result = self.workload.run_inner_loop(self.models[model_id], params) or {}
+            if "state" in result:
+                self.models[model_id] = result["state"]
+            output_pack_path = params["output_parameter_pack_path"]
+            if not Path(output_pack_path, "manifest.json").exists():
+                _write_parameter_pack(
+                    output_pack_path,
+                    _torch_model_from_state(self.models[model_id]),
+                    params["model_schema_hash"],
+                )
+            steps_completed = int(result.get("steps_completed", params["num_inner_steps"]))
+            if params.get("require_exact_steps") and steps_completed != int(
+                params["num_inner_steps"]
+            ):
+                raise ValueError(
+                    f"python inner loop completed {steps_completed} steps, requested {params['num_inner_steps']}"
+                )
+            return {
+                "steps_completed": steps_completed,
+                "metrics": _metric_map(result.get("metrics", {})),
+                "inner_optimizer_state_path": result.get("inner_optimizer_state_path"),
+                "inner_optimizer_state_encoding": result.get(
+                    "inner_optimizer_state_encoding"
+                ),
+            }
         if method == "merge_candidate_models":
             base_model = self.models[params["base_model_id"]]
             candidates = []

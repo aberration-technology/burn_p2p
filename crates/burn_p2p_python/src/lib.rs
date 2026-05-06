@@ -1,11 +1,16 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use burn_p2p_checkpoint::{ArtifactBuildSpec, ChunkingScheme, FsArtifactStore};
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CapabilityEstimate, ContentId, DatasetId,
-    DatasetManifest, DatasetView, DatasetViewId, HeadId, MergePolicy, MetricValue, Precision,
-    SupportedWorkload,
+    DatasetManifest, DatasetView, DatasetViewId, FlattenedTensorPack, HeadId, MergePolicy,
+    MetricValue, Precision, StateBlob, SupportedWorkload,
 };
 use burn_p2p_dataloader::{
     CachedMicroShard, DatasetRegistration, DatasetSizing, MicroShardPlan, MicroShardPlanner,
@@ -13,10 +18,10 @@ use burn_p2p_dataloader::{
 };
 use burn_p2p_experiment::{PatchSupport, RuntimePatch};
 use burn_p2p_workload::{
-    EvalSplit, LeaseDataPipeline, LeaseDataPipelineDescriptor, LeaseDataPipelineKind,
-    MergeModelCandidate, MetricReport, P2pWorkload, PatchOutcome, TrainError,
-    TrainerCanonicalReconcileStrategy, WindowCtx, WindowReport, local_upstream_root_for_pipeline,
-    standard_contribution_weight,
+    DiLoCoInnerLoopReport, DiLoCoWorkload, EvalSplit, LeaseDataPipeline,
+    LeaseDataPipelineDescriptor, LeaseDataPipelineKind, MergeModelCandidate, MetricReport,
+    P2pWorkload, PatchOutcome, TrainError, TrainerCanonicalReconcileStrategy, WindowCtx,
+    WindowReport, local_upstream_root_for_pipeline, standard_contribution_weight,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -24,7 +29,12 @@ use serde_json::Value;
 
 mod worker;
 
-use worker::{PythonMergeCandidateRef, PythonWorkerClient};
+use worker::{
+    PythonDiLoCoInnerLoopPathRequest, PythonDiLoCoInnerLoopResponse, PythonMergeCandidateRef,
+    PythonWorkerClient,
+};
+
+const PYTHON_PARAMETER_PACK_FORMAT: &str = "burn-p2p-python-flattened-parameter-pack-v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Configures how the Rust runtime launches the Python worker process.
@@ -151,6 +161,8 @@ pub struct PythonTorchWorkloadConfig {
     pub artifact_chunking: ChunkingScheme,
     /// Patch support advertised by the workload.
     pub patch_support: PatchSupport,
+    /// Optional DiLoCo bridge configuration. Artifact-window training is unchanged when disabled.
+    pub diloco: PythonDiLoCoConfig,
 }
 
 impl PythonTorchWorkloadConfig {
@@ -174,7 +186,119 @@ impl PythonTorchWorkloadConfig {
                 warm: false,
                 cold: false,
             },
+            diloco: PythonDiLoCoConfig::disabled(),
         })
+    }
+
+    /// Enables DiLoCo through the long-lived Python worker.
+    pub fn with_diloco_in_process(mut self) -> Self {
+        self.diloco = PythonDiLoCoConfig::in_process_worker();
+        self
+    }
+
+    /// Enables DiLoCo through an external checkpoint-command job.
+    pub fn with_diloco_checkpoint_command(
+        mut self,
+        command: PythonCheckpointCommandConfig,
+    ) -> Self {
+        self.diloco = PythonDiLoCoConfig::checkpoint_command(command);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Configures the Python-side DiLoCo inner-loop bridge.
+pub struct PythonDiLoCoConfig {
+    /// Backend used to execute local DiLoCo inner loops.
+    pub backend: PythonDiLoCoBackend,
+    /// Rejects inner-loop reports that complete fewer or more steps than requested.
+    pub require_exact_steps: bool,
+}
+
+impl PythonDiLoCoConfig {
+    /// Disables the Python DiLoCo bridge.
+    pub fn disabled() -> Self {
+        Self {
+            backend: PythonDiLoCoBackend::Disabled,
+            require_exact_steps: true,
+        }
+    }
+
+    /// Runs DiLoCo inner loops inside the already-running Python worker.
+    pub fn in_process_worker() -> Self {
+        Self {
+            backend: PythonDiLoCoBackend::InProcessWorker,
+            require_exact_steps: true,
+        }
+    }
+
+    /// Runs DiLoCo inner loops by invoking one checkpoint-command job per round.
+    pub fn checkpoint_command(command: PythonCheckpointCommandConfig) -> Self {
+        Self {
+            backend: PythonDiLoCoBackend::CheckpointCommand(command),
+            require_exact_steps: true,
+        }
+    }
+}
+
+impl Default for PythonDiLoCoConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+/// Selects how Python-backed DiLoCo inner loops are executed.
+pub enum PythonDiLoCoBackend {
+    /// DiLoCo hooks are not available for this Python workload.
+    Disabled,
+    /// Uses a protocol-v2 method on the long-lived Python worker.
+    InProcessWorker,
+    /// Uses an external command that consumes a JSON job manifest and emits a checkpoint result.
+    CheckpointCommand(PythonCheckpointCommandConfig),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Command-mode DiLoCo adapter for downstream trainers that expose checkpoint I/O only.
+pub struct PythonCheckpointCommandConfig {
+    /// Program to execute for each DiLoCo inner-loop job.
+    pub program: PathBuf,
+    /// Arguments passed to the program. `{job_manifest}` and `{result_manifest}` are expanded.
+    pub args: Vec<String>,
+    /// Extra environment variables passed to the command.
+    pub env: BTreeMap<String, String>,
+    /// Extra module roots appended to the command `PYTHONPATH`.
+    pub module_search_roots: Vec<PathBuf>,
+}
+
+impl PythonCheckpointCommandConfig {
+    /// Creates a new checkpoint-command adapter.
+    pub fn new(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            module_search_roots: Vec::new(),
+        }
+    }
+
+    /// Adds one command-line argument.
+    pub fn with_arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// Adds one Python import root for the command process.
+    pub fn with_module_search_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.module_search_roots.push(root.into());
+        self
+    }
+
+    /// Adds one environment override for the command process.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(key.into(), value.into());
+        self
     }
 }
 
@@ -249,6 +373,43 @@ impl PythonBatchRef {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PythonParameterPackManifest {
+    format: String,
+    model_schema_hash: String,
+    layout_hash: String,
+    parameter_count: usize,
+    values_f32_le: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PythonDiLoCoCheckpointJob<'a> {
+    protocol_version: u32,
+    job_id: String,
+    model_schema_hash: String,
+    base_parameter_pack_path: String,
+    output_parameter_pack_path: String,
+    result_manifest_path: String,
+    batches: &'a [PythonBatchRef],
+    num_inner_steps: u32,
+    require_exact_steps: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inner_optimizer_state_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PythonDiLoCoCheckpointResult {
+    steps_completed: u32,
+    #[serde(default)]
+    metrics: BTreeMap<String, MetricValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_parameter_pack_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inner_optimizer_state_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inner_optimizer_state_encoding: Option<String>,
+}
+
 #[derive(Debug)]
 /// Worker-owned model/optimizer state referenced by one opaque handle id.
 pub struct PythonModelHandle {
@@ -297,10 +458,20 @@ impl PythonTorchProject {
     ) -> anyhow::Result<Self> {
         let client = PythonWorkerClient::spawn(&config.runtime)?;
         let hello = client.hello()?;
-        if hello.protocol_version != 1 {
+        if hello.protocol_version == 0 || hello.protocol_version > 2 {
             anyhow::bail!(
-                "python worker protocol mismatch: expected 1, got {}",
+                "python worker protocol mismatch: expected 1 or 2, got {}",
                 hello.protocol_version
+            );
+        }
+        if matches!(&config.diloco.backend, PythonDiLoCoBackend::InProcessWorker)
+            && !hello
+                .capabilities
+                .iter()
+                .any(|capability| capability == "diloco_checkpoint_job")
+        {
+            anyhow::bail!(
+                "python worker does not advertise the diloco_checkpoint_job capability required by in-process DiLoCo"
             );
         }
         let probe = client.capability_probe()?;
@@ -455,6 +626,145 @@ impl PythonTorchProject {
     /// active pipeline when `new_with_data_pipeline(...)` is used.
     pub fn configured_shard_root(&self) -> &std::path::Path {
         &self.config.dataset.root
+    }
+
+    fn read_parameter_pack_dir(path: &Path) -> anyhow::Result<FlattenedTensorPack> {
+        let manifest_path = path.join("manifest.json");
+        let manifest: PythonParameterPackManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).with_context(|| {
+                format!("read parameter-pack manifest {}", manifest_path.display())
+            })?)
+            .with_context(|| {
+                format!("decode parameter-pack manifest {}", manifest_path.display())
+            })?;
+        ensure!(
+            manifest.format == PYTHON_PARAMETER_PACK_FORMAT,
+            "unsupported Python parameter-pack format {}",
+            manifest.format
+        );
+        let values_path = path.join(&manifest.values_f32_le);
+        let value_bytes = fs::read(&values_path)
+            .with_context(|| format!("read parameter-pack values {}", values_path.display()))?;
+        ensure!(
+            value_bytes.len() == manifest.parameter_count * std::mem::size_of::<f32>(),
+            "parameter-pack byte length {} does not match parameter count {}",
+            value_bytes.len(),
+            manifest.parameter_count
+        );
+        let mut values = Vec::with_capacity(manifest.parameter_count);
+        for chunk in value_bytes.chunks_exact(std::mem::size_of::<f32>()) {
+            values.push(f32::from_le_bytes(
+                chunk.try_into().expect("chunk has 4 bytes"),
+            ));
+        }
+        Ok(FlattenedTensorPack::new(
+            ContentId::new(manifest.model_schema_hash),
+            ContentId::new(manifest.layout_hash),
+            values,
+        ))
+    }
+
+    fn write_parameter_pack_dir(path: &Path, pack: &FlattenedTensorPack) -> anyhow::Result<()> {
+        fs::create_dir_all(path)
+            .with_context(|| format!("create parameter-pack dir {}", path.display()))?;
+        let values_path = path.join("values.f32le");
+        let mut value_bytes = Vec::with_capacity(pack.values.len() * std::mem::size_of::<f32>());
+        for value in &pack.values {
+            value_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&values_path, value_bytes)
+            .with_context(|| format!("write parameter-pack values {}", values_path.display()))?;
+        let manifest = PythonParameterPackManifest {
+            format: PYTHON_PARAMETER_PACK_FORMAT.to_owned(),
+            model_schema_hash: pack.model_schema_hash.as_str().to_owned(),
+            layout_hash: pack.layout_hash.as_str().to_owned(),
+            parameter_count: pack.parameter_count(),
+            values_f32_le: "values.f32le".into(),
+        };
+        fs::write(
+            path.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )
+        .with_context(|| format!("write parameter-pack manifest {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_state_blob_file(path: &Path, state: &StateBlob) -> anyhow::Result<()> {
+        fs::write(path, &state.bytes)
+            .with_context(|| format!("write optimizer state blob {}", path.display()))
+    }
+
+    fn read_state_blob_file(path: &Path, encoding: impl Into<String>) -> anyhow::Result<StateBlob> {
+        StateBlob::try_new(
+            encoding,
+            fs::read(path)
+                .with_context(|| format!("read optimizer state blob {}", path.display()))?,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn validate_diloco_steps(
+        &self,
+        requested: u32,
+        response: &PythonDiLoCoInnerLoopResponse,
+    ) -> Result<(), TrainError> {
+        if self.config.diloco.require_exact_steps && response.steps_completed != requested {
+            return Err(TrainError::new(format!(
+                "Python DiLoCo inner loop completed {} step(s), requested {}",
+                response.steps_completed, requested
+            )));
+        }
+        Ok(())
+    }
+
+    fn run_checkpoint_command(
+        &self,
+        command_config: &PythonCheckpointCommandConfig,
+        job_manifest_path: &Path,
+        result_manifest_path: &Path,
+    ) -> anyhow::Result<()> {
+        let runtime_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("python");
+        let mut pythonpath_entries = vec![runtime_root];
+        pythonpath_entries.extend(self.config.runtime.module_search_roots.iter().cloned());
+        pythonpath_entries.extend(command_config.module_search_roots.iter().cloned());
+        let pythonpath = worker::join_pythonpath_for_command(&pythonpath_entries)?;
+
+        let mut command = Command::new(&command_config.program);
+        for arg in &command_config.args {
+            command.arg(
+                arg.replace(
+                    "{job_manifest}",
+                    job_manifest_path.to_string_lossy().as_ref(),
+                )
+                .replace(
+                    "{result_manifest}",
+                    result_manifest_path.to_string_lossy().as_ref(),
+                ),
+            );
+        }
+        command
+            .env("BURN_P2P_DILOCO_JOB_MANIFEST", job_manifest_path)
+            .env("BURN_P2P_DILOCO_RESULT_MANIFEST", result_manifest_path);
+        if let Some(path) = pythonpath {
+            command.env("PYTHONPATH", path);
+        }
+        for (key, value) in &self.config.runtime.env {
+            command.env(key, value);
+        }
+        for (key, value) in &command_config.env {
+            command.env(key, value);
+        }
+        let status = command.status().with_context(|| {
+            format!(
+                "spawn Python DiLoCo checkpoint command {:?}",
+                command_config.program
+            )
+        })?;
+        ensure!(
+            status.success(),
+            "Python DiLoCo checkpoint command exited with {status}"
+        );
+        Ok(())
     }
 }
 
@@ -688,5 +998,269 @@ impl P2pWorkload for PythonTorchProject {
 
     fn model_schema_hash(&self) -> ContentId {
         self.config.model_schema_hash.clone()
+    }
+}
+
+impl DiLoCoWorkload for PythonTorchProject {
+    fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
+        let staged_dir = tempfile::Builder::new()
+            .prefix("burn-p2p-python-export-pack")
+            .tempdir()?;
+        let pack_path = staged_dir.path().join("parameters");
+        self.client
+            .export_parameter_pack_path(model.id(), &pack_path, &self.config.model_schema_hash)
+            .context("export Python model parameter pack")?;
+        let pack = Self::read_parameter_pack_dir(&pack_path)?;
+        ensure!(
+            pack.model_schema_hash == self.config.model_schema_hash,
+            "Python exported model schema {}, expected {}",
+            pack.model_schema_hash.as_str(),
+            self.config.model_schema_hash.as_str()
+        );
+        Ok(pack)
+    }
+
+    fn import_parameter_pack(
+        &self,
+        device: &Self::Device,
+        pack: &FlattenedTensorPack,
+    ) -> anyhow::Result<Self::Model> {
+        ensure!(
+            pack.model_schema_hash == self.config.model_schema_hash,
+            "cannot import Python parameter pack for schema {}, expected {}",
+            pack.model_schema_hash.as_str(),
+            self.config.model_schema_hash.as_str()
+        );
+        let staged_dir = tempfile::Builder::new()
+            .prefix("burn-p2p-python-import-pack")
+            .tempdir()?;
+        let pack_path = staged_dir.path().join("parameters");
+        Self::write_parameter_pack_dir(&pack_path, pack)?;
+        let model_id = self
+            .client
+            .import_parameter_pack_path(device, &pack_path)
+            .context("import Python model parameter pack")?;
+        Ok(PythonModelHandle::new(model_id, self.client.clone()))
+    }
+
+    fn run_inner_steps(
+        &self,
+        model: &Self::Model,
+        batches: &[Self::Batch],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, TrainError> {
+        if num_inner_steps > 0 && batches.is_empty() {
+            return Err(TrainError::new(
+                "Python DiLoCo inner loop requires at least one batch",
+            ));
+        }
+
+        match &self.config.diloco.backend {
+            PythonDiLoCoBackend::Disabled => Err(TrainError::new(
+                "Python DiLoCo bridge is disabled for this workload",
+            )),
+            PythonDiLoCoBackend::InProcessWorker => {
+                self.run_worker_inner_loop(model, batches, num_inner_steps, inner_optimizer_state)
+            }
+            PythonDiLoCoBackend::CheckpointCommand(command) => self.run_command_inner_loop(
+                command,
+                model,
+                batches,
+                num_inner_steps,
+                inner_optimizer_state,
+            ),
+        }
+    }
+}
+
+impl PythonTorchProject {
+    fn run_worker_inner_loop(
+        &self,
+        model: &PythonModelHandle,
+        batches: &[PythonBatchRef],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, TrainError> {
+        let staged_dir = tempfile::Builder::new()
+            .prefix("burn-p2p-python-diloco-worker")
+            .tempdir()
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let output_pack_path = staged_dir.path().join("local-parameters");
+        let inner_state_path = if let Some(state) = inner_optimizer_state {
+            let path = staged_dir.path().join("inner-state-input.blob");
+            Self::write_state_blob_file(&path, state)
+                .map_err(|error| TrainError::new(error.to_string()))?;
+            Some(path)
+        } else {
+            None
+        };
+        let response = self
+            .client
+            .run_inner_loop_path(PythonDiLoCoInnerLoopPathRequest {
+                model_id: model.id(),
+                batches,
+                num_inner_steps,
+                inner_optimizer_state_path: inner_state_path.as_deref(),
+                output_parameter_pack_path: &output_pack_path,
+                model_schema_hash: &self.config.model_schema_hash,
+                require_exact_steps: self.config.diloco.require_exact_steps,
+            })
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        self.validate_diloco_steps(num_inner_steps, &response)?;
+        let local_parameters = Self::read_parameter_pack_dir(&output_pack_path)
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let inner_optimizer_state = response
+            .inner_optimizer_state_path
+            .as_ref()
+            .map(|path| {
+                Self::read_state_blob_file(
+                    path,
+                    response
+                        .inner_optimizer_state_encoding
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".into()),
+                )
+            })
+            .transpose()
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        Ok(DiLoCoInnerLoopReport {
+            local_parameters,
+            inner_optimizer_state,
+            steps_completed: response.steps_completed,
+            metrics: response.metrics,
+        })
+    }
+
+    fn run_command_inner_loop(
+        &self,
+        command_config: &PythonCheckpointCommandConfig,
+        model: &PythonModelHandle,
+        batches: &[PythonBatchRef],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Result<DiLoCoInnerLoopReport, TrainError> {
+        let staged_dir = tempfile::Builder::new()
+            .prefix("burn-p2p-python-diloco-command")
+            .tempdir()
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let base_pack_path = staged_dir.path().join("base-parameters");
+        let output_pack_path = staged_dir.path().join("local-parameters");
+        let result_manifest_path = staged_dir.path().join("result.json");
+        let job_manifest_path = staged_dir.path().join("job.json");
+
+        self.client
+            .export_parameter_pack_path(model.id(), &base_pack_path, &self.config.model_schema_hash)
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let inner_state_path = if let Some(state) = inner_optimizer_state {
+            let path = staged_dir.path().join("inner-state-input.blob");
+            Self::write_state_blob_file(&path, state)
+                .map_err(|error| TrainError::new(error.to_string()))?;
+            Some(path)
+        } else {
+            None
+        };
+        let job = PythonDiLoCoCheckpointJob {
+            protocol_version: 1,
+            job_id: format!(
+                "diloco-inner-{}",
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            model_schema_hash: self.config.model_schema_hash.as_str().to_owned(),
+            base_parameter_pack_path: base_pack_path.to_string_lossy().into_owned(),
+            output_parameter_pack_path: output_pack_path.to_string_lossy().into_owned(),
+            result_manifest_path: result_manifest_path.to_string_lossy().into_owned(),
+            batches,
+            num_inner_steps,
+            require_exact_steps: self.config.diloco.require_exact_steps,
+            inner_optimizer_state_path: inner_state_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+        };
+        fs::write(
+            &job_manifest_path,
+            serde_json::to_vec_pretty(&job).map_err(|error| {
+                TrainError::new(format!("serialize Python DiLoCo command job: {error}"))
+            })?,
+        )
+        .map_err(|error| TrainError::new(error.to_string()))?;
+
+        self.run_checkpoint_command(command_config, &job_manifest_path, &result_manifest_path)
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let result: PythonDiLoCoCheckpointResult =
+            serde_json::from_slice(&fs::read(&result_manifest_path).map_err(|error| {
+                TrainError::new(format!(
+                    "read Python DiLoCo command result {}: {error}",
+                    result_manifest_path.display()
+                ))
+            })?)
+            .map_err(|error| TrainError::new(format!("decode Python DiLoCo result: {error}")))?;
+        let response = PythonDiLoCoInnerLoopResponse {
+            steps_completed: result.steps_completed,
+            metrics: result.metrics,
+            inner_optimizer_state_path: result.inner_optimizer_state_path.map(PathBuf::from),
+            inner_optimizer_state_encoding: result.inner_optimizer_state_encoding,
+        };
+        self.validate_diloco_steps(num_inner_steps, &response)?;
+        let local_pack_path = result
+            .local_parameter_pack_path
+            .map(PathBuf::from)
+            .unwrap_or(output_pack_path);
+        let local_parameters = Self::read_parameter_pack_dir(&local_pack_path)
+            .map_err(|error| TrainError::new(error.to_string()))?;
+        let inner_optimizer_state = response
+            .inner_optimizer_state_path
+            .as_ref()
+            .map(|path| {
+                Self::read_state_blob_file(
+                    path,
+                    response
+                        .inner_optimizer_state_encoding
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".into()),
+                )
+            })
+            .transpose()
+            .map_err(|error| TrainError::new(error.to_string()))?;
+
+        Ok(DiLoCoInnerLoopReport {
+            local_parameters,
+            inner_optimizer_state,
+            steps_completed: response.steps_completed,
+            metrics: response.metrics,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn python_diloco_config_defaults_to_disabled_exact_steps() {
+        let config = PythonDiLoCoConfig::default();
+        assert!(matches!(config.backend, PythonDiLoCoBackend::Disabled));
+        assert!(config.require_exact_steps);
+
+        let command = PythonCheckpointCommandConfig::new("python3").with_arg("trainer.py");
+        let config = PythonDiLoCoConfig::checkpoint_command(command);
+        assert!(matches!(
+            config.backend,
+            PythonDiLoCoBackend::CheckpointCommand(_)
+        ));
+        assert!(config.require_exact_steps);
+    }
+
+    #[test]
+    fn parameter_pack_sidecar_round_trips_flattened_values() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pack = FlattenedTensorPack::new(
+            ContentId::new("schema-a"),
+            ContentId::new("layout-a"),
+            vec![0.25, -1.5, 3.0, 8.25],
+        );
+        PythonTorchProject::write_parameter_pack_dir(temp.path(), &pack).expect("write pack");
+        let decoded = PythonTorchProject::read_parameter_pack_dir(temp.path()).expect("read pack");
+        assert_eq!(decoded, pack);
     }
 }

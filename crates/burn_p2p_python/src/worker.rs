@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -161,6 +161,56 @@ impl PythonWorkerClient {
             }),
         )?;
         Ok(())
+    }
+
+    pub(crate) fn export_parameter_pack_path(
+        &self,
+        model_id: &str,
+        parameter_pack_path: &std::path::Path,
+        model_schema_hash: &burn_p2p_core::ContentId,
+    ) -> anyhow::Result<()> {
+        let _: AckResponse = self.call(
+            "export_parameter_pack",
+            serde_json::json!({
+                "model_id": model_id,
+                "parameter_pack_path": parameter_pack_path.to_string_lossy(),
+                "model_schema_hash": model_schema_hash.as_str(),
+            }),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn import_parameter_pack_path(
+        &self,
+        device: &str,
+        parameter_pack_path: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let response = self.call::<_, ModelHandleResponse>(
+            "import_parameter_pack",
+            serde_json::json!({
+                "device": device,
+                "parameter_pack_path": parameter_pack_path.to_string_lossy(),
+            }),
+        )?;
+        Ok(response.model_id)
+    }
+
+    pub(crate) fn run_inner_loop_path(
+        &self,
+        request: PythonDiLoCoInnerLoopPathRequest<'_>,
+    ) -> anyhow::Result<PythonDiLoCoInnerLoopResponse> {
+        self.call(
+            "run_inner_loop",
+            serde_json::json!({
+                "model_id": request.model_id,
+                "batches": request.batches,
+                "num_inner_steps": request.num_inner_steps,
+                "inner_optimizer_state_path": request.inner_optimizer_state_path.map(|path| path.to_string_lossy().into_owned()),
+                "output_parameter_pack_path": request.output_parameter_pack_path.to_string_lossy(),
+                "model_schema_hash": request.model_schema_hash.as_str(),
+                "require_exact_steps": request.require_exact_steps,
+            }),
+        )
     }
 
     pub(crate) fn merge_candidate_models(
@@ -371,6 +421,10 @@ fn read_frame(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
 }
 
 fn join_pythonpath(entries: &[PathBuf]) -> anyhow::Result<Option<OsString>> {
+    join_pythonpath_for_command(entries)
+}
+
+pub(crate) fn join_pythonpath_for_command(entries: &[PathBuf]) -> anyhow::Result<Option<OsString>> {
     let mut all_entries = entries.to_vec();
     if let Some(existing) = std::env::var_os("PYTHONPATH") {
         all_entries.extend(std::env::split_paths(&existing));
@@ -404,6 +458,8 @@ struct RpcResponse {
 pub(crate) struct HelloResponse {
     pub protocol_version: u32,
     pub workload_name: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -429,6 +485,28 @@ struct MetricsResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 struct AckResponse {}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct PythonDiLoCoInnerLoopResponse {
+    pub steps_completed: u32,
+    #[serde(default)]
+    pub metrics: BTreeMap<String, MetricValue>,
+    #[serde(default)]
+    pub inner_optimizer_state_path: Option<PathBuf>,
+    #[serde(default)]
+    pub inner_optimizer_state_encoding: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PythonDiLoCoInnerLoopPathRequest<'a> {
+    pub model_id: &'a str,
+    pub batches: &'a [PythonBatchRef],
+    pub num_inner_steps: u32,
+    pub inner_optimizer_state_path: Option<&'a Path>,
+    pub output_parameter_pack_path: &'a Path,
+    pub model_schema_hash: &'a burn_p2p_core::ContentId,
+    pub require_exact_steps: bool,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct PythonMergeCandidateRef<'a> {

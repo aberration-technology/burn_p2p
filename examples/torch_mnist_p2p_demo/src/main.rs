@@ -11,14 +11,15 @@ use std::{
 
 use anyhow::{Context, bail};
 use burn_p2p::{
-    ClientPlatform, ClientReleaseManifest, ContentId, GenesisSpec, MainnetHandle,
-    MicroShardPlannerConfig, NetworkManifest, PeerRole, PeerRoleSet, ProjectFamilyId, RevisionId,
-    RoleSet, ShardFetchManifest, SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload,
-    WorkloadId,
+    AuthConfig, ClientPlatform, ClientReleaseManifest, ContentId, DiLoCoPolicy,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility,
+    GenesisSpec, MainnetHandle, MicroShardPlannerConfig, NetworkManifest, OuterOptimizerPolicy,
+    PeerRole, PeerRoleSet, ProjectFamilyId, RevisionId, RoleSet, ShardFetchManifest,
+    SingleWorkloadProjectFamily, StorageConfig, SupportedWorkload, TrainingProtocol, WorkloadId,
 };
 use burn_p2p_python::{
-    PythonTorchDatasetConfig, PythonTorchProject, PythonTorchRuntimeConfig,
-    PythonTorchWorkloadConfig,
+    PythonCheckpointCommandConfig, PythonTorchDatasetConfig, PythonTorchProject,
+    PythonTorchRuntimeConfig, PythonTorchWorkloadConfig,
 };
 use chrono::Utc;
 use semver::Version;
@@ -28,17 +29,28 @@ const SAMPLE_COUNT: u64 = 512;
 const SHARD_COUNT: u32 = 8;
 const DEFAULT_ROOT: &str = ".burn_p2p-python-mnist";
 const DEFAULT_PYTHON: &str = "python3";
+const DEFAULT_DILOCO_PEER_COUNT: usize = 2;
 
 #[derive(Debug)]
 struct DemoArgs {
     root: PathBuf,
     python_executable: PathBuf,
+    protocol: DemoProtocol,
+    peer_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemoProtocol {
+    ArtifactWindows,
+    DiLoCo,
 }
 
 impl DemoArgs {
     fn parse() -> anyhow::Result<Self> {
         let mut root = PathBuf::from(DEFAULT_ROOT);
         let mut python_executable = PathBuf::from(DEFAULT_PYTHON);
+        let mut protocol = DemoProtocol::ArtifactWindows;
+        let mut peer_count = DEFAULT_DILOCO_PEER_COUNT;
         let mut args = env::args_os().skip(1);
 
         while let Some(arg) = args.next() {
@@ -53,11 +65,33 @@ impl DemoArgs {
                 Some("--python") => {
                     python_executable = args.next().context("--python requires a path")?.into();
                 }
+                Some("--protocol") => {
+                    protocol = parse_protocol(
+                        args.next()
+                            .context("--protocol requires artifact-windows or diloco")?
+                            .to_str()
+                            .context("--protocol must be valid UTF-8")?,
+                    )?;
+                }
+                Some("--peer-count") => {
+                    peer_count = parse_peer_count(
+                        args.next()
+                            .context("--peer-count requires a positive integer")?
+                            .to_str()
+                            .context("--peer-count must be valid UTF-8")?,
+                    )?;
+                }
                 Some(value) if value.starts_with("--root=") => {
                     root = PathBuf::from(&value["--root=".len()..]);
                 }
                 Some(value) if value.starts_with("--python=") => {
                     python_executable = PathBuf::from(&value["--python=".len()..]);
+                }
+                Some(value) if value.starts_with("--protocol=") => {
+                    protocol = parse_protocol(&value["--protocol=".len()..])?;
+                }
+                Some(value) if value.starts_with("--peer-count=") => {
+                    peer_count = parse_peer_count(&value["--peer-count=".len()..])?;
                 }
                 _ => bail!("unknown argument {arg:?}; use --help for usage"),
             }
@@ -66,17 +100,39 @@ impl DemoArgs {
         Ok(Self {
             root,
             python_executable,
+            protocol,
+            peer_count,
         })
     }
+}
+
+fn parse_protocol(value: &str) -> anyhow::Result<DemoProtocol> {
+    match value {
+        "artifact-windows" => Ok(DemoProtocol::ArtifactWindows),
+        "diloco" => Ok(DemoProtocol::DiLoCo),
+        other => bail!("unsupported protocol {other:?}; expected artifact-windows or diloco"),
+    }
+}
+
+fn parse_peer_count(value: &str) -> anyhow::Result<usize> {
+    let peer_count = value
+        .parse::<usize>()
+        .with_context(|| format!("invalid --peer-count value {value:?}"))?;
+    if peer_count == 0 {
+        bail!("--peer-count must be at least 1");
+    }
+    Ok(peer_count)
 }
 
 fn print_help() {
     println!(
         "Python/Torch MNIST burn_p2p demo\n\n\
-         Usage: torch_mnist_p2p_demo [--root PATH] [--python PATH]\n\n\
+         Usage: torch_mnist_p2p_demo [--root PATH] [--python PATH] [--protocol artifact-windows|diloco] [--peer-count N]\n\n\
          Options:\n  \
            --root PATH    Output/cache root [default: {DEFAULT_ROOT}]\n  \
-           --python PATH  Python executable for dataset prep and workers [default: {DEFAULT_PYTHON}]"
+           --python PATH  Python executable for dataset prep and workers [default: {DEFAULT_PYTHON}]\n  \
+           --protocol     Training protocol to run [default: artifact-windows]\n  \
+           --peer-count   DiLoCo trainer participants [default: {DEFAULT_DILOCO_PEER_COUNT}]"
     );
 }
 
@@ -85,12 +141,8 @@ fn main() -> anyhow::Result<()> {
     let root = args.root;
     let dataset_root = root.join("dataset");
     let mnist_root = root.join("mnist");
-    let validator_storage = root.join("validator");
-    let trainer_storage = root.join("trainer");
     let python_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("python");
 
-    let _ = fs::remove_dir_all(&validator_storage);
-    let _ = fs::remove_dir_all(&trainer_storage);
     prepare_demo_dataset(
         &dataset_root,
         &mnist_root,
@@ -106,7 +158,28 @@ fn main() -> anyhow::Result<()> {
         &python_root,
         &mnist_root,
         &args.python_executable,
+        args.protocol,
     )?;
+    match args.protocol {
+        DemoProtocol::ArtifactWindows => {
+            run_artifact_windows_demo(root, dataset_config, project_config)
+        }
+        DemoProtocol::DiLoCo => {
+            run_diloco_demo(root, dataset_config, project_config, args.peer_count)
+        }
+    }
+}
+
+fn run_artifact_windows_demo(
+    root: PathBuf,
+    dataset_config: PythonTorchDatasetConfig,
+    project_config: PythonTorchWorkloadConfig,
+) -> anyhow::Result<()> {
+    let validator_storage = root.join("validator");
+    let trainer_storage = root.join("trainer");
+    let _ = fs::remove_dir_all(&validator_storage);
+    let _ = fs::remove_dir_all(&trainer_storage);
+
     let validator_project = PythonTorchProject::new_with_data_pipeline(
         project_config.clone(),
         build_micro_epoch_pipeline(&dataset_config),
@@ -236,33 +309,223 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_diloco_demo(
+    root: PathBuf,
+    dataset_config: PythonTorchDatasetConfig,
+    project_config: PythonTorchWorkloadConfig,
+    peer_count: usize,
+) -> anyhow::Result<()> {
+    let peer_count_u16 =
+        u16::try_from(peer_count).context("--peer-count exceeds supported DiLoCo group size")?;
+    let seed_storage = root.join("diloco-seed");
+    let _ = fs::remove_dir_all(&seed_storage);
+    for peer_index in 1..peer_count {
+        let _ = fs::remove_dir_all(root.join(format!("diloco-peer-{peer_index}")));
+    }
+
+    let seed_project = PythonTorchProject::new_with_data_pipeline(
+        project_config.clone(),
+        build_micro_epoch_pipeline(&dataset_config),
+    )?;
+    println!(
+        "python capability device={} preferred_backends={:?} work_units_per_second={:.2}",
+        seed_project.runtime_device_name(),
+        seed_project.probe_capability().preferred_backends,
+        seed_project.probe_capability().work_units_per_second
+    );
+
+    let genesis = GenesisSpec {
+        network_id: burn_p2p::NetworkId::new("torch-mnist-python-demo-diloco"),
+        protocol_version: Version::new(0, 1, 0),
+        display_name: "Torch MNIST Python DiLoCo Demo".into(),
+        created_at: Utc::now(),
+        metadata: BTreeMap::from([("runtime".into(), "python-torch-diloco".into())]),
+    };
+    let network_manifest = NetworkManifest {
+        network_id: genesis.network_id.clone(),
+        project_family_id: ProjectFamilyId::new("torch-mnist-python-family"),
+        protocol_major: 0,
+        minimum_client_version: Version::new(0, 0, 0),
+        required_release_train_hash: ContentId::new("torch-mnist-python-train"),
+        allowed_target_artifact_hashes: BTreeSet::from([ContentId::new(
+            "torch-mnist-python-artifact",
+        )]),
+        authority_public_keys: vec!["torch-mnist-diloco".into()],
+        bootstrap_addrs: Vec::new(),
+        auth_policy_hash: ContentId::new("auth-policy"),
+        created_at: genesis.created_at,
+        description: genesis.display_name.clone(),
+    };
+    let experiment = MainnetHandle {
+        genesis: genesis.clone(),
+        roles: RoleSet::default_trainer(),
+    }
+    .experiment(
+        burn_p2p::StudyId::new("torch-mnist-study"),
+        burn_p2p::ExperimentId::new("torch-mnist-exp"),
+        RevisionId::new("rev-diloco"),
+    );
+    let policy = DiLoCoPolicy {
+        num_inner_steps: 2,
+        target_group_size: peer_count_u16,
+        minimum_group_size: peer_count_u16,
+        matchmaking_timeout_ms: 10_000,
+        aggregation_timeout_ms: 15_000,
+        checkpoint_interval_rounds: 1,
+        outer_optimizer_policy: OuterOptimizerPolicy::Sgd {
+            learning_rate_micros: 1_000_000,
+            momentum_micros: None,
+            nesterov: false,
+            weight_decay_micros: None,
+        },
+        ..DiLoCoPolicy::default()
+    };
+    let auth = AuthConfig::new().with_experiment_directory([diloco_directory_entry(
+        &experiment,
+        &policy,
+    )]);
+
+    let seed_family = SingleWorkloadProjectFamily::new(release_manifest(), seed_project)?;
+    let mut seed = burn_p2p::NodeBuilder::new(seed_family)
+        .with_network(network_manifest.clone())?
+        .with_roles(RoleSet::default_trainer())
+        .with_storage(StorageConfig::new(&seed_storage))
+        .with_auth(auth.clone())
+        .spawn()?;
+    wait_for(
+        Duration::from_secs(10),
+        || {
+            let snapshot = seed.telemetry().snapshot();
+            snapshot.status == burn_p2p::RuntimeStatus::Running
+                && !snapshot.listen_addresses.is_empty()
+        },
+        "DiLoCo seed runtime did not start",
+    )?;
+    let genesis_head = seed.initialize_local_head(&experiment)?;
+    println!("DiLoCo seed published genesis head {}", genesis_head.head_id);
+    let seed_addr = seed.telemetry().snapshot().listen_addresses[0].clone();
+
+    let mut peers = Vec::new();
+    for peer_index in 1..peer_count {
+        let peer_project = PythonTorchProject::new_with_data_pipeline(
+            project_config.clone(),
+            build_micro_epoch_pipeline(&dataset_config),
+        )?;
+        let peer_family = SingleWorkloadProjectFamily::new(release_manifest(), peer_project)?;
+        let peer = burn_p2p::NodeBuilder::new(peer_family)
+            .with_network(network_manifest.clone())?
+            .with_roles(RoleSet::default_trainer())
+            .with_storage(StorageConfig::new(
+                root.join(format!("diloco-peer-{peer_index}")),
+            ))
+            .with_auth(auth.clone())
+            .with_bootstrap_peer(seed_addr.clone())
+            .spawn()?;
+        wait_for(
+            Duration::from_secs(10),
+            || peer.telemetry().snapshot().connected_peers >= 1,
+            "DiLoCo peer did not connect to seed",
+        )?;
+        wait_for(
+            Duration::from_secs(10),
+            || peer.sync_experiment_head(&experiment).unwrap_or(None).is_some(),
+            "DiLoCo peer did not sync genesis head",
+        )?;
+        peers.push(peer);
+    }
+    if peer_count > 1 {
+        wait_for(
+            Duration::from_secs(10),
+            || seed.telemetry().snapshot().connected_peers >= peer_count - 1,
+            "DiLoCo seed did not connect to every peer",
+        )?;
+    }
+
+    let mut peer_threads = Vec::new();
+    for mut peer in peers {
+        let experiment_for_peer = experiment.clone();
+        peer_threads.push(thread::spawn(move || {
+            peer.diloco_round_once(&experiment_for_peer)
+                .map(|outcome| (peer, outcome))
+                .map_err(|error| format!("{error:#}"))
+        }));
+    }
+    let seed_outcome = seed.diloco_round_once(&experiment)?;
+    let mut peer_results = Vec::new();
+    for peer_thread in peer_threads {
+        peer_results.push(
+            peer_thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("DiLoCo peer thread panicked"))?
+                .map_err(|error| anyhow::anyhow!(error))?,
+        );
+    }
+    println!(
+        "DiLoCo round {} group={} participants={} seed_contributions={} checkpoint={:?}",
+        seed_outcome.completed_round.round_id,
+        seed_outcome.group_id,
+        peer_count,
+        seed_outcome.contributions.len(),
+        seed_outcome
+            .published_checkpoint
+            .as_ref()
+            .map(|head| head.head_id.as_str().to_owned())
+    );
+
+    for (peer, peer_outcome) in peer_results {
+        println!(
+            "DiLoCo peer round {} contributions={}",
+            peer_outcome.completed_round.round_id,
+            peer_outcome.contributions.len()
+        );
+        peer.shutdown()?;
+        let _ = peer.await_termination()?;
+    }
+    seed.shutdown()?;
+    let _ = seed.await_termination()?;
+    Ok(())
+}
+
 fn build_project_config(
     dataset: PythonTorchDatasetConfig,
     python_root: &Path,
     mnist_root: &Path,
     python_executable: &Path,
+    protocol: DemoProtocol,
 ) -> anyhow::Result<PythonTorchWorkloadConfig> {
     let workload = workload_manifest();
+    let workload_config = json!({
+        "mnist_root": mnist_root,
+        "hidden_size": 64,
+        "learning_rate": 0.05,
+        "train_batch_size": 32,
+        "eval_batch_size": 64,
+        "eval_limit": 256,
+        "preferred_device": "auto",
+    });
     let runtime = PythonTorchRuntimeConfig::new(
         python_executable,
         "torch_mnist_p2p_demo.runtime:TorchMnistWorkload",
-        json!({
-            "mnist_root": mnist_root,
-            "hidden_size": 64,
-            "learning_rate": 0.05,
-            "train_batch_size": 32,
-            "eval_batch_size": 64,
-            "eval_limit": 256,
-            "preferred_device": "auto",
-        }),
+        workload_config.clone(),
     )
     .with_module_search_root(python_root);
-    PythonTorchWorkloadConfig::new(
+    let mut config = PythonTorchWorkloadConfig::new(
         runtime,
         dataset,
         workload,
         ContentId::new("python-torch-mnist-schema-v1"),
-    )
+    )?;
+    if protocol == DemoProtocol::DiLoCo {
+        let command = PythonCheckpointCommandConfig::new(python_executable)
+            .with_arg("-m")
+            .with_arg("torch_mnist_p2p_demo.runtime")
+            .with_arg("diloco-command-job")
+            .with_arg("--config-json")
+            .with_arg(serde_json::to_string(&workload_config)?)
+            .with_module_search_root(python_root);
+        config = config.with_diloco_checkpoint_command(command);
+    }
+    Ok(config)
 }
 
 fn build_dataset_config(dataset_root: &Path) -> anyhow::Result<PythonTorchDatasetConfig> {
@@ -292,6 +555,43 @@ fn build_dataset_config(dataset_root: &Path) -> anyhow::Result<PythonTorchDatase
             ("runtime".into(), "python-torch".into()),
         ]),
     })
+}
+
+fn diloco_directory_entry(
+    experiment: &burn_p2p::ExperimentHandle,
+    policy: &DiLoCoPolicy,
+) -> burn_p2p::ExperimentDirectoryEntry {
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        "burn_p2p.revision.training_protocol.policy_json".into(),
+        serde_json::to_string(&TrainingProtocol::DiLoCo(policy.clone()))
+            .expect("serialize DiLoCo training protocol"),
+    );
+    burn_p2p::ExperimentDirectoryEntry {
+        network_id: experiment.network_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        workload_id: WorkloadId::new("python-torch-mnist"),
+        display_name: "Python Torch MNIST DiLoCo".into(),
+        model_schema_hash: ContentId::new("python-torch-mnist-schema-v1"),
+        dataset_view_id: burn_p2p::DatasetViewId::new("torch-mnist-view"),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::from([PeerRole::TrainerGpu]),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 1024,
+            estimated_window_seconds: 5,
+        },
+        visibility: ExperimentVisibility::Public,
+        opt_in_policy: ExperimentOptInPolicy::Open,
+        current_revision_id: experiment.revision_id.clone(),
+        current_head_id: None,
+        allowed_roles: RoleSet::default_trainer(),
+        allowed_scopes: BTreeSet::from([ExperimentScope::Train {
+            experiment_id: experiment.experiment_id.clone(),
+        }]),
+        metadata,
+    }
 }
 
 fn write_fetch_manifest(dataset: &PythonTorchDatasetConfig) -> anyhow::Result<()> {
@@ -418,7 +718,7 @@ fn release_manifest() -> ClientReleaseManifest {
 
 fn wait_for(
     timeout: Duration,
-    condition: impl Fn() -> bool,
+    mut condition: impl FnMut() -> bool,
     failure_message: &str,
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
