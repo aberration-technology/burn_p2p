@@ -376,10 +376,7 @@ fn accept_worker_connection(
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                stream
-                    .set_nodelay(true)
-                    .context("configure python worker tcp nodelay")?;
-                return Ok(stream);
+                return configure_python_worker_stream(stream);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if let Some(status) = child
@@ -396,6 +393,16 @@ fn accept_worker_connection(
             Err(error) => return Err(error).context("accept python worker rpc connection"),
         }
     }
+}
+
+fn configure_python_worker_stream(stream: TcpStream) -> anyhow::Result<TcpStream> {
+    stream
+        .set_nonblocking(false)
+        .context("configure python worker tcp stream as blocking")?;
+    stream
+        .set_nodelay(true)
+        .context("configure python worker tcp nodelay")?;
+    Ok(stream)
 }
 
 fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> anyhow::Result<()> {
@@ -516,4 +523,49 @@ pub(crate) struct PythonMergeCandidateRef<'a> {
     pub model_id: &'a str,
     pub sample_weight: f64,
     pub quality_weight: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configure_python_worker_stream_restores_blocking_mode() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let listener_addr = listener.local_addr().expect("listener address");
+        let writer = thread::spawn(move || {
+            let mut stream = TcpStream::connect(listener_addr).expect("connect client stream");
+            thread::sleep(Duration::from_millis(50));
+            stream.write_all(b"ok").expect("write client payload");
+        });
+
+        let accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept client stream: {error}"),
+            }
+        };
+
+        accepted
+            .set_nonblocking(true)
+            .expect("force accepted stream nonblocking");
+        let mut accepted =
+            configure_python_worker_stream(accepted).expect("configure accepted stream");
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set read timeout");
+
+        let mut payload = [0_u8; 2];
+        accepted
+            .read_exact(&mut payload)
+            .expect("blocking read should wait for payload");
+        assert_eq!(&payload, b"ok");
+        writer.join().expect("writer thread");
+    }
 }
