@@ -44,9 +44,10 @@ use burn_p2p_views::BrowserAppSurface;
 use clap::Parser;
 use cli::{
     AdversarialCommand, BenchArgs, BenchCommand, BrowserArgs, BrowserCommand, BrowserSiteArgs,
-    ChaosArgs, CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs, DeployAction,
-    DeployCloudArgs, DeployCommand, DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs,
-    PublishCommand, RunArgs, SetupCommand, StressCommand,
+    ChaosArgs, CheckSubcommand, CiArgs, CiCommand, Cli, Command, CommonArgs,
+    ContainerBuildTargetArgs, ContainerTargetKind, DeployAction, DeployCloudArgs, DeployCommand,
+    DeployComposeArgs, E2eCommand, FormalCommand, MultiprocessArgs, PublishCommand, RunArgs,
+    SetupCommand, StressCommand,
 };
 use formal::{
     run_formal_check, run_formal_export_trace, run_formal_modelcheck, run_formal_verify_trace,
@@ -202,6 +203,7 @@ fn main() -> anyhow::Result<()> {
             DeployCommand::Aws(args) => run_deploy_cloud(&workspace, "aws", args),
             DeployCommand::Gcp(args) => run_deploy_cloud(&workspace, "gcp", args),
         },
+        Command::ContainerBuildTarget(args) => run_container_build_target(&workspace, args),
         Command::Formal { command } => match command {
             FormalCommand::Check(args) => run_formal_check(&workspace, args),
             FormalCommand::Modelcheck(args) => run_formal_modelcheck(&workspace, args),
@@ -325,6 +327,106 @@ fn doctor(workspace: &Workspace) -> anyhow::Result<()> {
         }
     );
     Ok(())
+}
+
+fn run_container_build_target(
+    workspace: &Workspace,
+    args: ContainerBuildTargetArgs,
+) -> anyhow::Result<()> {
+    let manifest_path = if args.from_env {
+        PathBuf::from(env_required("APP_MANIFEST_PATH")?)
+    } else {
+        args.manifest_path
+            .context("--manifest-path is required unless --from-env is set")?
+    };
+    let target_kind = if args.from_env {
+        match env::var("APP_TARGET_KIND")
+            .unwrap_or_else(|_| "bin".to_owned())
+            .trim()
+        {
+            "bin" => ContainerTargetKind::Bin,
+            "example" => ContainerTargetKind::Example,
+            other => anyhow::bail!("unsupported APP_TARGET_KIND: {other}"),
+        }
+    } else {
+        args.target_kind
+            .context("--target-kind is required unless --from-env is set")?
+    };
+    let target_name = if args.from_env {
+        env_required("APP_TARGET_NAME")?
+    } else {
+        args.target_name
+            .context("--target-name is required unless --from-env is set")?
+    };
+    let features = if args.from_env {
+        env::var("APP_FEATURES")
+            .ok()
+            .filter(|value| !value.is_empty())
+    } else {
+        args.features
+    };
+    let no_default_features = if args.from_env {
+        env::var("APP_NO_DEFAULT_FEATURES")
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+    } else {
+        args.no_default_features
+    };
+
+    let mut cargo_args = vec![
+        "build".to_owned(),
+        "--locked".to_owned(),
+        "--release".to_owned(),
+        "--manifest-path".to_owned(),
+        manifest_path.display().to_string(),
+    ];
+    if no_default_features {
+        cargo_args.push("--no-default-features".to_owned());
+    }
+    if let Some(features) = features {
+        cargo_args.extend(["--features".to_owned(), features]);
+    }
+    match target_kind {
+        ContainerTargetKind::Bin => cargo_args.extend(["--bin".to_owned(), target_name.clone()]),
+        ContainerTargetKind::Example => {
+            cargo_args.extend(["--example".to_owned(), target_name.clone()])
+        }
+    }
+
+    let status = ProcessCommand::new("cargo")
+        .args(&cargo_args)
+        .current_dir(&workspace.root)
+        .status()
+        .context("failed to start cargo for container target build")?;
+    ensure!(status.success(), "container target cargo build failed");
+
+    let target_root = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.root.join("target"));
+    let source = match target_kind {
+        ContainerTargetKind::Bin => target_root.join("release").join(&target_name),
+        ContainerTargetKind::Example => target_root
+            .join("release")
+            .join("examples")
+            .join(&target_name),
+    };
+    if let Some(parent) = args.out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&source, &args.out).with_context(|| {
+        format!(
+            "failed to copy built target {} to {}",
+            source.display(),
+            args.out.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn env_required(name: &str) -> anyhow::Result<String> {
+    let value = env::var(name).with_context(|| format!("{name} is required"))?;
+    ensure!(!value.is_empty(), "{name} is required");
+    Ok(value)
 }
 
 fn setup_browser(workspace: &Workspace) -> anyhow::Result<()> {
@@ -1697,7 +1799,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
                     &artifacts,
                     "mnist-browser-wasm-probe",
                     &[
-                        "examples/mnist_p2p_demo/scripts/mnist_browser_wasm_probe.mjs",
+                        "examples/mnist_p2p_demo/playwright/mnist_browser_wasm_probe.mjs",
                         artifacts
                             .root
                             .join("configs/mnist-browser-probe.json")
@@ -2050,7 +2152,7 @@ fn run_e2e_mnist(workspace: &Workspace, args: CommonArgs) -> anyhow::Result<()> 
             &artifacts,
             "portal-playwright-capture",
             &[
-                "crates/burn_p2p_testkit/scripts/portal_playwright_capture.mjs",
+                "crates/burn_p2p_testkit/playwright/portal_playwright_capture.mjs",
                 browser_bundle
                     .join("manifest.json")
                     .display()
@@ -2481,7 +2583,7 @@ fn run_browser_smoke(workspace: &Workspace, args: BrowserArgs) -> anyhow::Result
             &artifacts,
             "portal-playwright-capture",
             &[
-                "crates/burn_p2p_testkit/scripts/portal_playwright_capture.mjs",
+                "crates/burn_p2p_testkit/playwright/portal_playwright_capture.mjs",
                 browser_bundle
                     .join("manifest.json")
                     .display()
@@ -2551,7 +2653,7 @@ fn run_browser_trainer(workspace: &Workspace, args: BrowserArgs) -> anyhow::Resu
             &artifacts,
             "portal-playwright-capture",
             &[
-                "crates/burn_p2p_testkit/scripts/portal_playwright_capture.mjs",
+                "crates/burn_p2p_testkit/playwright/portal_playwright_capture.mjs",
                 browser_bundle
                     .join("manifest.json")
                     .display()

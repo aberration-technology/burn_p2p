@@ -454,7 +454,7 @@ async function main() {
     const output = {
       measured_at: new Date().toISOString(),
       host: process.env.HOSTNAME ?? null,
-      command: "node crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs",
+      command: "node crates/burn_p2p_testkit/playwright/browser_real_device_probe.mjs",
       results,
     };
     console.log(JSON.stringify(output, null, 2));

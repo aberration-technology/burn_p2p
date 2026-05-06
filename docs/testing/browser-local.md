@@ -77,7 +77,7 @@ its artifact directory when Playwright launches successfully.
 The old ignored local-only probe remains the underlying harness:
 
 - `crates/burn_p2p_testkit/tests/browser_real_device.rs`
-- `crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs`
+- `crates/burn_p2p_testkit/playwright/browser_real_device_probe.mjs`
 
 Use `cargo xtask browser real` instead of invoking the ignored test directly.
 It works with Playwright-managed browsers from `cargo xtask setup browser`, and

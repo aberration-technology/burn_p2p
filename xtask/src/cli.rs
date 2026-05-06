@@ -54,6 +54,8 @@ pub enum Command {
         #[command(subcommand)]
         command: DeployCommand,
     },
+    /// Build the binary that a deployment Dockerfile will copy into the runtime image.
+    ContainerBuildTarget(ContainerBuildTargetArgs),
     /// Run optional formal verification helpers and trace exports.
     Formal {
         #[command(subcommand)]
@@ -395,6 +397,37 @@ pub struct DeployCloudArgs {
     /// Optional reducer config path passed as TF_VAR_reducer_config_json.
     #[arg(long)]
     pub reducer_config: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ContainerBuildTargetArgs {
+    /// Read APP_MANIFEST_PATH, APP_TARGET_KIND, APP_TARGET_NAME, APP_FEATURES, and APP_NO_DEFAULT_FEATURES.
+    #[arg(long)]
+    pub from_env: bool,
+    /// Cargo manifest path to build.
+    #[arg(long)]
+    pub manifest_path: Option<PathBuf>,
+    /// Cargo target kind to build.
+    #[arg(long, value_enum)]
+    pub target_kind: Option<ContainerTargetKind>,
+    /// Cargo binary or example name.
+    #[arg(long)]
+    pub target_name: Option<String>,
+    /// Optional cargo features.
+    #[arg(long)]
+    pub features: Option<String>,
+    /// Disable default cargo features.
+    #[arg(long)]
+    pub no_default_features: bool,
+    /// Output path for the copied executable.
+    #[arg(long, default_value = "/out/app-target")]
+    pub out: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ContainerTargetKind {
+    Bin,
+    Example,
 }
 
 #[derive(Debug, Args, Clone)]

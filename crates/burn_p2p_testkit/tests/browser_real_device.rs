@@ -10,7 +10,7 @@ fn browser_real_device_probe_reports_budget_and_role_evidence() {
         .canonicalize()
         .expect("canonicalize repo root");
     let output = Command::new("node")
-        .arg("crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs")
+        .arg("crates/burn_p2p_testkit/playwright/browser_real_device_probe.mjs")
         .current_dir(&repo_root)
         .output();
 
@@ -21,7 +21,7 @@ fn browser_real_device_probe_reports_budget_and_role_evidence() {
             .arg("-p")
             .arg("playwright")
             .arg("node")
-            .arg("crates/burn_p2p_testkit/scripts/browser_real_device_probe.mjs")
+            .arg("crates/burn_p2p_testkit/playwright/browser_real_device_probe.mjs")
             .current_dir(&repo_root)
             .output()
             .expect("real-browser probe should launch"),

@@ -14,23 +14,19 @@ fn portal_capture_bundle_renders_reference_scenarios() {
         "expected a broad scenario matrix, got {}",
         manifest.scenarios.len()
     );
-    assert!(
-        manifest
-            .scenarios
-            .iter()
-            .any(|scenario| scenario.slug == "publishing-download")
-    );
+    assert!(manifest
+        .scenarios
+        .iter()
+        .any(|scenario| scenario.slug == "publishing-download"));
     assert!(manifest.scenarios.iter().any(|scenario| {
         scenario.slug == "peers-1024"
             && scenario.estimated_network_size == 1024
             && scenario.peer_count < 64
     }));
-    assert!(
-        manifest
-            .scenarios
-            .iter()
-            .any(|scenario| scenario.slug == "mobile-viewer" && scenario.viewport.is_some())
-    );
+    assert!(manifest
+        .scenarios
+        .iter()
+        .any(|scenario| scenario.slug == "mobile-viewer" && scenario.viewport.is_some()));
 
     for scenario in &manifest.scenarios {
         assert!(
@@ -105,7 +101,7 @@ fn portal_playwright_capture_writes_artifacts_summary() {
     let manifest_path = artifact_root.join("manifest.json");
 
     let output = Command::new("node")
-        .arg("crates/burn_p2p_testkit/scripts/portal_playwright_capture.mjs")
+        .arg("crates/burn_p2p_testkit/playwright/portal_playwright_capture.mjs")
         .arg(&manifest_path)
         .current_dir(&repo_root)
         .output()
