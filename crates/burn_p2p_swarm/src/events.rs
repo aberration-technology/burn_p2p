@@ -491,7 +491,7 @@ impl ControlPlaneSnapshot {
         cap_control_announcements(&mut self.control_announcements);
         cap_lifecycle_announcements(&mut self.lifecycle_announcements);
         cap_schedule_announcements(&mut self.schedule_announcements);
-        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
+        cap_snapshot_head_announcements(self);
         cap_lease_announcements(&mut self.lease_announcements);
         cap_merge_window_announcements(&mut self.merge_window_announcements);
         cap_reducer_assignment_announcements(&mut self.reducer_assignment_announcements);
@@ -532,8 +532,8 @@ impl ControlPlaneSnapshot {
     }
 
     pub(crate) fn insert_head_announcement(&mut self, announcement: HeadAnnouncement) {
-        push_unique(&mut self.head_announcements, announcement);
-        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
+        coalesce_head_announcement(&mut self.head_announcements, announcement);
+        cap_snapshot_head_announcements(self);
     }
 
     pub(crate) fn insert_lease_announcement(&mut self, announcement: LeaseAnnouncement) {
@@ -581,7 +581,7 @@ impl ControlPlaneSnapshot {
     ) {
         push_unique(&mut self.directory_announcements, announcement);
         cap_directory_announcements(&mut self.directory_announcements);
-        cap_head_announcements(&mut self.head_announcements, &self.directory_announcements);
+        cap_snapshot_head_announcements(self);
     }
 
     pub(crate) fn insert_peer_directory_announcement(
@@ -621,9 +621,6 @@ impl ControlPlaneSnapshot {
         }
         for announcement in &remote.directory_announcements {
             self.insert_directory_announcement(announcement.clone());
-        }
-        for announcement in &remote.head_announcements {
-            self.insert_head_announcement(announcement.clone());
         }
         for announcement in &remote.lease_announcements {
             self.insert_lease_announcement(announcement.clone());
@@ -676,6 +673,9 @@ impl ControlPlaneSnapshot {
                 &mut index,
                 announcement.clone(),
             );
+        }
+        for announcement in &remote.head_announcements {
+            self.insert_head_announcement(announcement.clone());
         }
         for announcement in &remote.reducer_load_announcements {
             self.insert_reducer_load_announcement(announcement.clone());
@@ -996,6 +996,61 @@ pub(crate) fn push_unique<T: PartialEq>(values: &mut Vec<T>, value: T) {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HeadAnnouncementKey {
+    overlay_path: String,
+    provider_peer_id: Option<PeerId>,
+    head_id: HeadId,
+    artifact_id: ArtifactId,
+}
+
+fn head_announcement_key(announcement: &HeadAnnouncement) -> HeadAnnouncementKey {
+    HeadAnnouncementKey {
+        overlay_path: announcement.overlay.path.clone(),
+        provider_peer_id: announcement.provider_peer_id.clone(),
+        head_id: announcement.head.head_id.clone(),
+        artifact_id: announcement.head.artifact_id.clone(),
+    }
+}
+
+fn coalesce_head_announcement(values: &mut Vec<HeadAnnouncement>, announcement: HeadAnnouncement) {
+    let key = head_announcement_key(&announcement);
+    match values
+        .iter_mut()
+        .find(|existing| head_announcement_key(existing) == key)
+    {
+        Some(existing) => {
+            existing.announced_at = existing.announced_at.max(announcement.announced_at);
+            existing.head.created_at = existing.head.created_at.max(announcement.head.created_at);
+        }
+        None => values.push(announcement),
+    }
+}
+
+fn coalesce_head_announcements(values: &mut Vec<HeadAnnouncement>) {
+    let mut positions = BTreeMap::<HeadAnnouncementKey, usize>::new();
+    let mut coalesced = Vec::<HeadAnnouncement>::with_capacity(values.len());
+    for announcement in values.drain(..) {
+        let key = head_announcement_key(&announcement);
+        match positions.get(&key).copied() {
+            Some(position) => {
+                coalesced[position].announced_at = coalesced[position]
+                    .announced_at
+                    .max(announcement.announced_at);
+                coalesced[position].head.created_at = coalesced[position]
+                    .head
+                    .created_at
+                    .max(announcement.head.created_at);
+            }
+            None => {
+                positions.insert(key, coalesced.len());
+                coalesced.push(announcement);
+            }
+        }
+    }
+    *values = coalesced;
+}
+
 pub(crate) fn cap_tail<T>(values: &mut Vec<T>, max_len: usize) {
     if values.len() > max_len {
         let overflow = values.len() - max_len;
@@ -1073,29 +1128,58 @@ fn cap_schedule_announcements(values: &mut Vec<FleetScheduleAnnouncement>) {
     cap_tail(values, MAX_SCHEDULE_ANNOUNCEMENTS);
 }
 
+fn cap_snapshot_head_announcements(snapshot: &mut ControlPlaneSnapshot) {
+    let retained_head_ids = retained_head_ids(snapshot);
+    cap_head_announcements(&mut snapshot.head_announcements, &retained_head_ids);
+}
+
 fn cap_head_announcements(
     values: &mut Vec<HeadAnnouncement>,
-    directory_announcements: &[ExperimentDirectoryAnnouncement],
+    retained_head_ids: &BTreeSet<HeadId>,
 ) {
-    let current_head_ids = directory_current_head_ids(directory_announcements);
+    coalesce_head_announcements(values);
     values.sort_by(|left, right| {
-        current_head_ids
+        retained_head_ids
             .contains(&left.head.head_id)
-            .cmp(&current_head_ids.contains(&right.head.head_id))
+            .cmp(&retained_head_ids.contains(&right.head.head_id))
             .then(left.head.global_step.cmp(&right.head.global_step))
             .then(left.announced_at.cmp(&right.announced_at))
     });
     cap_tail(values, MAX_HEAD_ANNOUNCEMENTS);
 }
 
-fn directory_current_head_ids(
-    directory_announcements: &[ExperimentDirectoryAnnouncement],
-) -> BTreeSet<HeadId> {
-    directory_announcements
+fn retained_head_ids(snapshot: &ControlPlaneSnapshot) -> BTreeSet<HeadId> {
+    let mut retained = snapshot
+        .directory_announcements
         .iter()
         .flat_map(|announcement| announcement.entries.iter())
         .filter_map(|entry| entry.current_head_id.clone())
-        .collect()
+        .collect::<BTreeSet<_>>();
+    retained.extend(
+        snapshot
+            .merge_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.merged_head_id.clone()),
+    );
+    retained.extend(
+        snapshot
+            .validation_quorum_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.merged_head_id.clone()),
+    );
+    retained.extend(
+        snapshot
+            .trainer_promotion_attestation_announcements
+            .iter()
+            .map(|announcement| announcement.attestation.merged_head_id.clone()),
+    );
+    retained.extend(
+        snapshot
+            .diffusion_promotion_certificate_announcements
+            .iter()
+            .map(|announcement| announcement.certificate.merged_head_id.clone()),
+    );
+    retained
 }
 
 fn cap_lease_announcements(values: &mut Vec<LeaseAnnouncement>) {
@@ -1859,6 +1943,7 @@ pub(crate) fn insert_validation_quorum_announcement_with_index(
         None => snapshot.validation_quorum_announcements.push(announcement),
     }
     cap_validation_quorum_announcements(&mut snapshot.validation_quorum_announcements);
+    cap_snapshot_head_announcements(snapshot);
     rebuild_hot_index(snapshot, index);
 }
 
@@ -1902,6 +1987,7 @@ pub(crate) fn insert_trainer_promotion_attestation_announcement_with_index(
     cap_trainer_promotion_attestation_announcements(
         &mut snapshot.trainer_promotion_attestation_announcements,
     );
+    cap_snapshot_head_announcements(snapshot);
     rebuild_hot_index(snapshot, index);
 }
 
@@ -1945,6 +2031,7 @@ pub(crate) fn insert_diffusion_promotion_certificate_announcement_with_index(
     cap_diffusion_promotion_certificate_announcements(
         &mut snapshot.diffusion_promotion_certificate_announcements,
     );
+    cap_snapshot_head_announcements(snapshot);
     rebuild_hot_index(snapshot, index);
 }
 
@@ -1975,6 +2062,7 @@ pub(crate) fn insert_merge_announcement_with_index(
         None => snapshot.merge_announcements.push(announcement),
     }
     cap_merge_announcements(&mut snapshot.merge_announcements);
+    cap_snapshot_head_announcements(snapshot);
     rebuild_hot_index(snapshot, index);
 }
 

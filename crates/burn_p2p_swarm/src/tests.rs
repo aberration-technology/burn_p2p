@@ -14,8 +14,9 @@ use burn_p2p_core::{
     BrowserResolvedSeedBootstrap, BrowserSeedBootstrapSource, BrowserSwarmPhase,
     BrowserSwarmStatus, BrowserTransportFamily, BrowserTransportObservationSource, CapabilityCard,
     CapabilityCardId, CapabilityClass, ChunkDescriptor, ChunkId, ClientPlatform, ContentId,
-    DatasetViewId, ExperimentDirectoryEntry, ExperimentId, ExperimentOptInPolicy,
-    ExperimentResourceRequirements, ExperimentVisibility, HeadDescriptor, HeadId, MetricValue,
+    DatasetViewId, DiffusionPromotionCertificate, ExperimentDirectoryEntry, ExperimentId,
+    ExperimentOptInPolicy, ExperimentResourceRequirements, ExperimentVisibility, HeadDescriptor,
+    HeadId, HeadPromotionMode, MergeCertId, MergeCertificate, MergePolicy, MetricValue,
     MetricsLiveEvent, MetricsLiveEventKind, NetworkId, PeerId, PeerRole, PeerRoleSet,
     PersistenceClass, Precision, ReductionCertificate, RevisionId, StudyId, TelemetrySummary,
     ValidationQuorumCertificate, WindowActivation, WindowId, WorkloadId,
@@ -2253,6 +2254,123 @@ fn control_plane_snapshot_merge_preserves_remote_directory_current_head() {
             .head_announcements
             .iter()
             .any(|announcement| announcement.head.global_step == 319)
+    );
+}
+
+#[test]
+fn control_plane_snapshot_coalesces_head_reannouncements() {
+    let overlay = semantic_test_overlay();
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+    let first = semantic_head_announcement(&overlay, 1, now);
+    let mut second = first.clone();
+    second.announced_at = now + chrono::Duration::seconds(30);
+    second.head.created_at = second.announced_at;
+
+    snapshot.insert_head_announcement(first);
+    snapshot.insert_head_announcement(second);
+
+    assert_eq!(snapshot.head_announcements.len(), 1);
+    assert_eq!(
+        snapshot.head_announcements[0].announced_at,
+        now + chrono::Duration::seconds(30)
+    );
+    assert_eq!(
+        snapshot.head_announcements[0].head.created_at,
+        now + chrono::Duration::seconds(30)
+    );
+}
+
+#[test]
+fn control_plane_snapshot_cap_preserves_promoted_head_when_current_head_is_noisy() {
+    const MAX_HEADS: usize = 256;
+
+    let overlay = semantic_test_overlay();
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot {
+        directory_announcements: vec![semantic_directory_current_head_announcement(
+            "head-genesis",
+            now,
+        )],
+        ..ControlPlaneSnapshot::default()
+    };
+
+    let mut promoted = semantic_head_announcement(&overlay, 1, now);
+    promoted.provider_peer_id = Some(PeerId::new("promoter"));
+    promoted.head.head_id = HeadId::new("head-promoted");
+    promoted.head.artifact_id = ArtifactId::new("artifact-promoted");
+    promoted.head.parent_head_id = Some(HeadId::new("head-genesis"));
+    promoted.head.global_step = 1;
+    snapshot.head_announcements.push(promoted);
+
+    for index in 0..320u64 {
+        let mut genesis = semantic_head_announcement(
+            &overlay,
+            0,
+            now + chrono::Duration::milliseconds(index as i64),
+        );
+        genesis.provider_peer_id = Some(PeerId::new(format!("genesis-provider-{index:03}")));
+        genesis.head.head_id = HeadId::new("head-genesis");
+        genesis.head.artifact_id = ArtifactId::new("artifact-genesis");
+        genesis.head.global_step = 0;
+        snapshot.head_announcements.push(genesis);
+    }
+
+    snapshot.diffusion_promotion_certificate_announcements.push(
+        super::DiffusionPromotionCertificateAnnouncement {
+            overlay: overlay.clone(),
+            certificate: DiffusionPromotionCertificate {
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("exp"),
+                revision_id: RevisionId::new("rev"),
+                window_id: WindowId(1),
+                base_head_id: HeadId::new("head-genesis"),
+                merged_head_id: HeadId::new("head-promoted"),
+                merged_artifact_id: ArtifactId::new("artifact-promoted"),
+                promotion_mode: HeadPromotionMode::DiffusionSteadyState,
+                attesting_trainers: vec![PeerId::new("trainer")],
+                attestation_ids: vec![ContentId::new("attestation")],
+                attester_count: 1,
+                cumulative_sample_weight: 1.0,
+                settled_at: now,
+                promoter_peer_id: PeerId::new("promoter"),
+            },
+            announced_at: now,
+        },
+    );
+    snapshot.merge_announcements.push(super::MergeAnnouncement {
+        overlay,
+        certificate: MergeCertificate {
+            merge_cert_id: MergeCertId::new("merge-cert"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("exp"),
+            revision_id: RevisionId::new("rev"),
+            base_head_id: HeadId::new("head-genesis"),
+            merged_head_id: HeadId::new("head-promoted"),
+            merged_artifact_id: ArtifactId::new("artifact-promoted"),
+            policy: MergePolicy::WeightedMean,
+            issued_at: now,
+            promoter_peer_id: PeerId::new("promoter"),
+            promotion_mode: HeadPromotionMode::DiffusionSteadyState,
+            contribution_receipts: Vec::new(),
+        },
+        announced_at: now,
+    });
+
+    snapshot.clamp_announcement_histories();
+
+    assert_eq!(snapshot.head_announcements.len(), MAX_HEADS);
+    assert!(
+        snapshot
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == HeadId::new("head-promoted"))
+    );
+    assert!(
+        snapshot
+            .head_announcements
+            .iter()
+            .any(|announcement| announcement.head.head_id == HeadId::new("head-genesis"))
     );
 }
 
