@@ -644,6 +644,10 @@ pub(crate) fn run_control_plane(
             let pending_dial_key_set = pending_dial_keys.keys().cloned().collect::<BTreeSet<_>>();
             let (dial_targets, offload_targets) = {
                 let snapshot = lock_telemetry_state(&state);
+                let mut offload_targets = bootstrap_offload_targets(&boundary, &snapshot);
+                offload_targets.extend(excess_connected_peer_offload_targets(&boundary, &snapshot));
+                offload_targets.sort();
+                offload_targets.dedup();
                 (
                     connectivity_repair_targets(
                         &boundary,
@@ -651,7 +655,7 @@ pub(crate) fn run_control_plane(
                         shell.connected_peer_count(),
                         &pending_dial_key_set,
                     ),
-                    bootstrap_offload_targets(&boundary, &snapshot),
+                    offload_targets,
                 )
             };
             for address in dial_targets {
@@ -1350,6 +1354,64 @@ fn bootstrap_offload_targets(
         .collect()
 }
 
+fn excess_connected_peer_offload_targets(
+    boundary: &RuntimeBoundary,
+    snapshot: &NodeTelemetrySnapshot,
+) -> Vec<PeerId> {
+    let Some(max_connected_peers) = boundary
+        .transport_policy
+        .max_established_total
+        .map(|max| max as usize)
+    else {
+        return Vec::new();
+    };
+    let connected = connected_peer_ids(snapshot);
+    let excess = connected.len().saturating_sub(max_connected_peers);
+    if excess == 0 {
+        return Vec::new();
+    }
+
+    let protected = protected_connected_peer_ids(boundary, snapshot);
+    connected
+        .into_iter()
+        .filter(|peer_id| !protected.contains(peer_id))
+        .take(excess)
+        .collect()
+}
+
+fn protected_connected_peer_ids(
+    boundary: &RuntimeBoundary,
+    snapshot: &NodeTelemetrySnapshot,
+) -> BTreeSet<PeerId> {
+    const STALE_PEER_DIRECTORY_AFTER: chrono::Duration = chrono::Duration::minutes(5);
+
+    let now = Utc::now();
+    let connected = connected_peer_ids(snapshot);
+    let bootstrap_addresses = boundary
+        .bootstrap_addresses
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    snapshot
+        .control_plane
+        .peer_directory_announcements
+        .iter()
+        .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
+        .filter(|announcement| connected.contains(&announcement.peer_id))
+        .filter(|announcement| {
+            announcement.advertised_roles.as_ref().is_some_and(|roles| {
+                roles.contains(&PeerRole::Bootstrap)
+                    || roles.contains(&PeerRole::RelayHelper)
+                    || roles.contains(&PeerRole::Authority)
+            }) || announcement
+                .addresses
+                .iter()
+                .any(|address| bootstrap_addresses.contains(address))
+        })
+        .map(|announcement| announcement.peer_id.clone())
+        .collect()
+}
+
 fn publish_local_peer_directory(
     shell: &mut ControlPlaneShell,
     boundary: &RuntimeBoundary,
@@ -1460,6 +1522,20 @@ mod tests {
             webrtc_certificate_pem_path: None,
             protocols: ProtocolSet::for_network(&network_id).expect("protocols"),
             control_overlay: OverlayTopic::control(network_id),
+        }
+    }
+
+    fn peer_directory_record(
+        peer_id: PeerId,
+        addresses: Vec<SwarmAddress>,
+        roles: impl IntoIterator<Item = PeerRole>,
+    ) -> PeerDirectoryAnnouncement {
+        PeerDirectoryAnnouncement {
+            network_id: NetworkId::new("repair-test"),
+            peer_id,
+            addresses,
+            advertised_roles: Some(PeerRoleSet::new(roles)),
+            announced_at: Utc::now(),
         }
     }
 
@@ -1852,5 +1928,60 @@ mod tests {
 
         let targets = bootstrap_offload_targets(&test_boundary(vec![validator_addr]), &snapshot);
         assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn excess_connected_peer_offload_prunes_non_protected_peers() {
+        let mut boundary = test_boundary(Vec::new());
+        boundary.transport_policy.max_established_total = Some(3);
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        let peers = (0..5)
+            .map(|index| {
+                PeerId::new(format!(
+                    "12D3KooWExcessPeer{index:02}1111111111111111111111111"
+                ))
+            })
+            .collect::<Vec<_>>();
+        for peer_id in peers.iter().cloned() {
+            connect_peer(&mut snapshot, peer_id);
+        }
+
+        let targets = excess_connected_peer_offload_targets(&boundary, &snapshot);
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().all(|peer_id| peers.contains(peer_id)));
+    }
+
+    #[test]
+    fn excess_connected_peer_offload_preserves_protected_peers() {
+        let bootstrap = SwarmAddress::new("/ip4/127.0.0.1/tcp/40001").expect("bootstrap");
+        let protected_peer = PeerId::new("12D3KooWProtectedSeed1111111111111111111111111111");
+        let trainer_a = PeerId::new("12D3KooWExcessTrainerA111111111111111111111111111");
+        let trainer_b = PeerId::new("12D3KooWExcessTrainerB111111111111111111111111111");
+
+        let mut boundary = test_boundary(vec![bootstrap.clone()]);
+        boundary.transport_policy.max_established_total = Some(2);
+
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        for peer_id in [protected_peer.clone(), trainer_a.clone(), trainer_b.clone()] {
+            connect_peer(&mut snapshot, peer_id);
+        }
+        snapshot
+            .control_plane
+            .peer_directory_announcements
+            .push(peer_directory_record(
+                protected_peer.clone(),
+                vec![bootstrap],
+                [PeerRole::Bootstrap, PeerRole::RelayHelper],
+            ));
+
+        let targets = excess_connected_peer_offload_targets(&boundary, &snapshot);
+        assert_eq!(targets.len(), 1);
+        assert!(!targets.contains(&protected_peer));
+        assert!(
+            targets
+                .iter()
+                .all(|peer_id| [trainer_a.clone(), trainer_b.clone()].contains(peer_id))
+        );
     }
 }
