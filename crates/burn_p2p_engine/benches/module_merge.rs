@@ -4,7 +4,7 @@ use burn::{
     backend::NdArray,
     module::{Module, ModuleMapper, Param},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, backend::Backend},
+    tensor::{Device as BackendDevice, Tensor, backend::Backend},
 };
 use burn_p2p_engine::{BurnMergeCandidate, apply_root_ema_modules, merge_weighted_mean_modules};
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
@@ -43,7 +43,7 @@ fn fill_model(model: BenchModel<TestBackend>, value: f32) -> BenchModel<TestBack
 }
 
 fn bench_weighted_merge(c: &mut Criterion) {
-    let device = <TestBackend as Backend>::Device::default();
+    let device = BackendDevice::<TestBackend>::default();
     let base = fill_model(BenchModel::<TestBackend>::new(&device), 0.0);
     let total_params = 2_u64 * ((256_u64 * 256_u64) + 256_u64);
     let mut group = c.benchmark_group("engine_weighted_merge");
@@ -86,7 +86,7 @@ fn bench_weighted_merge(c: &mut Criterion) {
 }
 
 fn bench_root_ema(c: &mut Criterion) {
-    let device = <TestBackend as Backend>::Device::default();
+    let device = BackendDevice::<TestBackend>::default();
     let base = fill_model(BenchModel::<TestBackend>::new(&device), 2.0);
     let merged = fill_model(BenchModel::<TestBackend>::new(&device), 6.0);
     let total_params = 2_u64 * ((256_u64 * 256_u64) + 256_u64);

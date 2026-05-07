@@ -251,7 +251,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
     } = demo_context;
 
     let build_trainer_project = |learning_rate: f64| -> anyhow::Result<_> {
-        let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
+        let device = burn::tensor::Device::<RuntimeBackend>::default();
         let prepared_for_eval = prepared_data.clone();
         let train_loader = prepared_data.build_train_loader(&device);
         let validation_loader = prepared_data.build_eval_loader(&device);
@@ -290,7 +290,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         }))
     };
     let build_validator_project = |learning_rate: f64| -> anyhow::Result<_> {
-        let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
+        let device = burn::tensor::Device::<RuntimeBackend>::default();
         let prepared_for_eval = prepared_data.clone();
         let validation_loader = prepared_data.build_eval_loader(&device);
         Ok(from_learner(
@@ -310,7 +310,7 @@ pub(crate) fn run_core_demo(args: &Args) -> anyhow::Result<CoreMnistRun> {
         .with_evaluate(move |model, _split| evaluate_model(model, &prepared_for_eval)))
     };
     let build_service_project = |learning_rate: f64| -> anyhow::Result<_> {
-        let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
+        let device = burn::tensor::Device::<RuntimeBackend>::default();
         Ok(from_learner(
             Learner::new(
                 MnistModel::<RuntimeBackend>::new(&device),
@@ -1220,7 +1220,7 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
             HeadPromotionMode::DiffusionSteadyState,
         ));
     let build_trainer_project = |learning_rate: f64| -> anyhow::Result<_> {
-        let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
+        let device = burn::tensor::Device::<RuntimeBackend>::default();
         let prepared_for_eval = prepared_data.clone();
         let train_loader = prepared_data.build_train_loader(&device);
         let validation_loader = prepared_data.build_eval_loader(&device);
@@ -1259,7 +1259,7 @@ fn run_core_demo_diffusion(args: &Args, context: CoreDemoContext) -> anyhow::Res
         }))
     };
     let build_service_project = |learning_rate: f64| -> anyhow::Result<_> {
-        let device = <RuntimeBackend as burn::tensor::backend::Backend>::Device::default();
+        let device = burn::tensor::Device::<RuntimeBackend>::default();
         Ok(from_learner(
             Learner::new(
                 MnistModel::<RuntimeBackend>::new(&device),
@@ -2772,7 +2772,7 @@ pub(crate) fn release_manifest(supported_workload: &SupportedWorkload) -> Client
         app_semver: Version::new(0, 1, 0),
         git_commit: "local-mnist-demo".into(),
         cargo_lock_hash: ContentId::new("mnist-demo-cargo-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("burn,portal"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],

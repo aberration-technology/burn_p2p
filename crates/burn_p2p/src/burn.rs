@@ -4,7 +4,7 @@ use burn::{
     module::{AutodiffModule, Module},
     optim::{Optimizer, lr_scheduler::LrScheduler},
     prelude::Backend,
-    tensor::backend::AutodiffBackend,
+    tensor::{Device as BackendDevice, backend::AutodiffBackend},
     train::{InferenceStep, LearningComponentsMarker, LearningComponentsTypes, TrainStep},
 };
 use chrono::Utc;
@@ -52,7 +52,7 @@ pub type BurnWorkloadLearner<W> = BurnLearner<BurnLearningComponents<W>>;
 pub type BurnLearnerBackend<LC> = <LC as LearningComponentsTypes>::Backend;
 
 /// Type alias for the burn device used by a concrete learner.
-pub type BurnLearnerDevice<LC> = <<LC as LearningComponentsTypes>::Backend as Backend>::Device;
+pub type BurnLearnerDevice<LC> = BackendDevice<<LC as LearningComponentsTypes>::Backend>;
 
 /// Type alias for the training model used by a concrete learner.
 pub type BurnLearnerModel<LC> = <LC as LearningComponentsTypes>::TrainingModel;
@@ -457,16 +457,13 @@ pub trait BurnLearnerWorkload {
     type Scheduler: LrScheduler + Clone + 'static;
 
     /// Creates the initial learner for the provided device.
-    fn init_learner(
-        &self,
-        device: &<Self::Backend as Backend>::Device,
-    ) -> BurnWorkloadLearner<Self>;
+    fn init_learner(&self, device: &BackendDevice<Self::Backend>) -> BurnWorkloadLearner<Self>;
 
     /// Restores a learner from the current p2p model head.
     fn restore_learner(
         &self,
         model: Self::Model,
-        device: &<Self::Backend as Backend>::Device,
+        device: &BackendDevice<Self::Backend>,
     ) -> BurnWorkloadLearner<Self> {
         let mut learner = self.init_learner(device);
         learner.load_model(model.into_record());
@@ -474,7 +471,7 @@ pub trait BurnLearnerWorkload {
     }
 
     /// Initializes the starting model from the learner.
-    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
+    fn init_model(&self, device: &BackendDevice<Self::Backend>) -> Self::Model {
         self.init_learner(device).model()
     }
 
@@ -482,14 +479,14 @@ pub trait BurnLearnerWorkload {
     fn benchmark(
         &self,
         model: &Self::Model,
-        device: &<Self::Backend as Backend>::Device,
+        device: &BackendDevice<Self::Backend>,
     ) -> crate::CapabilityEstimate;
 
     /// Evaluates the current model on the requested split.
     fn evaluate(&self, model: &BurnEvalModel<Self>, split: EvalSplit) -> MetricReport;
 
     /// Returns the runtime device used by the workload.
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device;
+    fn runtime_device(&self) -> BackendDevice<Self::Backend>;
 
     /// Returns the dataset registration used to plan microshards.
     fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration>;
@@ -572,21 +569,21 @@ where
     type Batch = BurnTrainBatch<W>;
     type WindowStats = BTreeMap<String, MetricValue>;
 
-    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
+    fn init_model(&self, device: &BackendDevice<Self::Backend>) -> Self::Model {
         BurnLearnerWorkload::init_model(self, device)
     }
 
     fn benchmark(
         &self,
         model: &Self::Model,
-        device: &<Self::Backend as Backend>::Device,
+        device: &BackendDevice<Self::Backend>,
     ) -> crate::CapabilityEstimate {
         BurnLearnerWorkload::benchmark(self, model, device)
     }
 
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<BackendDevice<Self::Backend>, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
         let batch_count = ctx.batches.len() as i64;
         let mut learner = self.restore_learner(ctx.model.clone(), &ctx.device);
@@ -625,7 +622,7 @@ where
         BurnLearnerWorkload::evaluate(self, &model.valid(), split)
     }
 
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
+    fn runtime_device(&self) -> BackendDevice<Self::Backend> {
         BurnLearnerWorkload::runtime_device(self)
     }
 
@@ -685,26 +682,26 @@ pub trait BurnWorkload {
     type WindowStats;
 
     /// Initializes the model for the provided device.
-    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model;
+    fn init_model(&self, device: &BackendDevice<Self::Backend>) -> Self::Model;
 
     /// Reports runtime capability for the local device.
     fn benchmark(
         &self,
         model: &Self::Model,
-        device: &<Self::Backend as Backend>::Device,
+        device: &BackendDevice<Self::Backend>,
     ) -> crate::CapabilityEstimate;
 
     /// Runs one training window over the leased batches.
     fn train_window(
         &self,
-        ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
+        ctx: &mut WindowCtx<BackendDevice<Self::Backend>, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, TrainError>;
 
     /// Evaluates the current model on the requested split.
     fn evaluate(&self, model: &Self::Model, split: EvalSplit) -> MetricReport;
 
     /// Returns the runtime device used by the workload.
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device;
+    fn runtime_device(&self) -> BackendDevice<Self::Backend>;
 
     /// Returns the dataset registration used to plan microshards.
     fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration>;
@@ -864,7 +861,7 @@ impl<W> P2pWorkload for BurnWorkloadAdapter<W>
 where
     W: BurnWorkload,
 {
-    type Device = <W::Backend as Backend>::Device;
+    type Device = BackendDevice<W::Backend>;
     type Model = W::Model;
     type Batch = W::Batch;
     type WindowStats = W::WindowStats;

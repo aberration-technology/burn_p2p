@@ -1685,7 +1685,7 @@ mod tests {
             app_semver: Version::new(0, 21, 0),
             git_commit: "fixture".into(),
             cargo_lock_hash: ContentId::new("lock"),
-            burn_version_string: "0.21.0-pre.3".into(),
+            burn_version_string: "0.21.0".into(),
             enabled_features_hash: ContentId::new("features"),
             protocol_major: 0,
             supported_workloads: vec![supported_workload.clone()],

@@ -15,7 +15,7 @@ use burn::{
     nn::{Linear, LinearConfig},
     optim::SgdConfig,
     tensor::{
-        ElementConversion, Tensor, TensorData,
+        Device as BackendDevice, ElementConversion, Tensor, TensorData,
         backend::{AutodiffBackend, Backend},
     },
     train::{InferenceStep, ItemLazy, Learner, TrainOutput, TrainStep},
@@ -138,7 +138,7 @@ fn tiny_release_manifest() -> ClientReleaseManifest {
         app_semver: Version::new(0, 2, 0),
         git_commit: "local-demo".into(),
         cargo_lock_hash: ContentId::new("cargo-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("burn-runtime"),
         protocol_major: 0,
         supported_workloads: vec![tiny_workload_manifest()],
@@ -180,7 +180,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let make_workload = || -> anyhow::Result<_> {
-        let device = <RuntimeBackend as Backend>::Device::default();
+        let device = BackendDevice::<RuntimeBackend>::default();
         let train_loader =
             DataLoaderBuilder::new(TinyBatcher)
                 .batch_size(2)

@@ -1297,7 +1297,7 @@ mod tests {
         backend::NdArray,
         module::{Module, ModuleMapper, Param},
         nn::{Linear, LinearConfig},
-        tensor::{Tensor, backend::Backend},
+        tensor::{Device as BackendDevice, Tensor, backend::Backend},
     };
     use burn_p2p_core::Precision;
     use tempfile::tempdir;
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn module_inventory_reports_parameter_paths() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let model = TinyModel::<TestBackend>::new(&device);
         let inventory = inspect_module::<TestBackend, _>(&model);
 
@@ -1371,7 +1371,7 @@ mod tests {
 
     #[test]
     fn record_bytes_round_trip_restores_the_same_payload() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let model = TinyModel::<TestBackend>::new(&device);
         let encoded = encode_record_bytes::<TestBackend, _>(
             model,
@@ -1401,7 +1401,7 @@ mod tests {
 
     #[test]
     fn store_bytes_round_trip_restores_the_same_payload() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let model = TinyModel::<TestBackend>::new(&device);
         let encoded = encode_store_bytes::<TestBackend, _>(&model, BurnStoreFormat::Safetensors)
             .expect("encode");
@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn schema_hash_is_stable_for_equivalent_models() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let first = TinyModel::<TestBackend>::new(&device);
         let second = TinyModel::<TestBackend>::new(&device);
 
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn materialized_store_bytes_include_checkpoint_descriptor() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let model = TinyModel::<TestBackend>::new(&device);
 
         let artifact = materialize_store_bytes_artifact::<TestBackend, _>(
@@ -1460,7 +1460,7 @@ mod tests {
 
     #[test]
     fn materialized_record_file_uses_expected_extension() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let model = TinyModel::<TestBackend>::new(&device);
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("checkpoint");
@@ -1488,7 +1488,7 @@ mod tests {
 
     #[test]
     fn weighted_mean_merge_combines_float_parameters_parameterwise() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let base = fill_model(TinyModel::<TestBackend>::new(&device), 0.0);
         let left = fill_model(TinyModel::<TestBackend>::new(&device), 2.0);
         let right = fill_model(TinyModel::<TestBackend>::new(&device), 6.0);
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn weighted_mean_merge_is_rooted_in_base_delta_space() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let base = fill_model(TinyModel::<TestBackend>::new(&device), 10.0);
         let left = fill_model(TinyModel::<TestBackend>::new(&device), 12.0);
         let right = fill_model(TinyModel::<TestBackend>::new(&device), 18.0);
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn root_ema_is_applied_once_at_the_root_model() {
-        let device = <TestBackend as Backend>::Device::default();
+        let device = BackendDevice::<TestBackend>::default();
         let base = fill_model(TinyModel::<TestBackend>::new(&device), 2.0);
         let merged = fill_model(TinyModel::<TestBackend>::new(&device), 6.0);
 

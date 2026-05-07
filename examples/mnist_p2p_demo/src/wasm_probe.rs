@@ -2,7 +2,7 @@ use burn::{
     backend::{Autodiff, WebGpu, wgpu},
     module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
-    tensor::{ElementConversion, Int, Tensor, backend::Backend},
+    tensor::{Device as BackendDevice, ElementConversion, Int, Tensor, backend::Backend},
 };
 use burn_p2p_e2e::{
     BrowserLiveParticipantConfig, BrowserLiveParticipantResult, finish_live_browser_participant,
@@ -68,7 +68,7 @@ pub async fn run_browser_mnist_probe(config: JsValue) -> Result<JsValue, JsValue
     let config: BrowserMnistProbeConfig =
         serde_wasm_bindgen::from_value(config).map_err(js_error)?;
     let total_started_at = Instant::now();
-    let device = <BrowserTrainBackend as Backend>::Device::default();
+    let device = BackendDevice::<BrowserTrainBackend>::default();
 
     let setup_started_at = Instant::now();
     if !WEBGPU_RUNTIME_READY.swap(true, Ordering::SeqCst) {
@@ -126,7 +126,7 @@ pub async fn run_browser_mnist_probe(config: JsValue) -> Result<JsValue, JsValue
     log_phase("mnist browser probe: training complete");
 
     let eval_started_at = Instant::now();
-    let eval_device = <BrowserEvalBackend as Backend>::Device::default();
+    let eval_device = BackendDevice::<BrowserEvalBackend>::default();
     let eval_model = model.valid();
     let eval_batches = records_to_batches::<BrowserEvalBackend>(
         &config.eval_records,

@@ -55,14 +55,14 @@ impl BurnWorkload for TinyBurnWorkload {
     type Batch = f32;
     type WindowStats = BTreeMap<String, MetricValue>;
 
-    fn init_model(&self, device: &<Self::Backend as Backend>::Device) -> Self::Model {
+    fn init_model(&self, device: &BackendDevice<Self::Backend>) -> Self::Model {
         TinyModel::new(device)
     }
 
     fn benchmark(
         &self,
         _model: &Self::Model,
-        _device: &<Self::Backend as Backend>::Device,
+        _device: &BackendDevice<Self::Backend>,
     ) -> crate::CapabilityEstimate {
         crate::CapabilityEstimate {
             preferred_backends: vec!["ndarray".into()],
@@ -73,7 +73,7 @@ impl BurnWorkload for TinyBurnWorkload {
 
     fn train_window(
         &self,
-        _ctx: &mut WindowCtx<<Self::Backend as Backend>::Device, Self::Model, Self::Batch>,
+        _ctx: &mut WindowCtx<BackendDevice<Self::Backend>, Self::Model, Self::Batch>,
     ) -> Result<WindowReport<Self::WindowStats>, TrainError> {
         Ok(WindowReport {
             contribution: None,
@@ -89,8 +89,8 @@ impl BurnWorkload for TinyBurnWorkload {
         }
     }
 
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
-        <TestBackend as Backend>::Device::default()
+    fn runtime_device(&self) -> BackendDevice<Self::Backend> {
+        BackendDevice::<TestBackend>::default()
     }
 
     fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
@@ -338,10 +338,7 @@ impl BurnLearnerWorkload for TinyLearnerWorkload {
     type Optimizer = TinyLearnerOptimizer;
     type Scheduler = f64;
 
-    fn init_learner(
-        &self,
-        device: &<Self::Backend as Backend>::Device,
-    ) -> BurnWorkloadLearner<Self> {
+    fn init_learner(&self, device: &BackendDevice<Self::Backend>) -> BurnWorkloadLearner<Self> {
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(device),
             SgdConfig::new().init(),
@@ -352,7 +349,7 @@ impl BurnLearnerWorkload for TinyLearnerWorkload {
     fn benchmark(
         &self,
         _model: &Self::Model,
-        _device: &<Self::Backend as Backend>::Device,
+        _device: &BackendDevice<Self::Backend>,
     ) -> crate::CapabilityEstimate {
         crate::CapabilityEstimate {
             preferred_backends: vec!["ndarray".into()],
@@ -362,7 +359,7 @@ impl BurnLearnerWorkload for TinyLearnerWorkload {
     }
 
     fn evaluate(&self, model: &Self::EvalModel, _split: EvalSplit) -> MetricReport {
-        let device = <LearnerEvalBackend as Backend>::Device::default();
+        let device = BackendDevice::<LearnerEvalBackend>::default();
         let loss = model
             .step(Self::batch::<LearnerEvalBackend>(&device, 2.0))
             .loss;
@@ -372,8 +369,8 @@ impl BurnLearnerWorkload for TinyLearnerWorkload {
         }
     }
 
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
-        <LearnerBackend as Backend>::Device::default()
+    fn runtime_device(&self) -> BackendDevice<Self::Backend> {
+        BackendDevice::<LearnerBackend>::default()
     }
 
     fn dataset_registration(&self) -> anyhow::Result<crate::DatasetRegistration> {
@@ -549,7 +546,7 @@ fn trainer_builder_wraps_single_burn_workload_with_trainer_roles() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -609,7 +606,7 @@ fn validator_builder_wraps_single_burn_workload_with_validator_roles() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -676,7 +673,7 @@ fn connect_builder_accepts_explicit_target_preset() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -699,7 +696,7 @@ fn connect_builder_accepts_explicit_target_preset() {
 
 #[test]
 fn learner_workload_runs_default_burn_window() {
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let mut ctx = WindowCtx {
         device,
         model: BurnLearnerWorkload::init_model(&TinyLearnerWorkload, &device),
@@ -790,7 +787,7 @@ fn from_loaders_builder_wraps_single_burn_workload_with_trainer_roles() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -811,7 +808,7 @@ fn from_loaders_builder_wraps_single_burn_workload_with_trainer_roles() {
         created_at: Utc::now(),
         description: "tiny network".into(),
     };
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let builder = from_loaders(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -854,7 +851,7 @@ fn from_learner_validator_builder_does_not_require_training_dataset_hooks() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -875,7 +872,7 @@ fn from_learner_validator_builder_does_not_require_training_dataset_hooks() {
         created_at: Utc::now(),
         description: "tiny network".into(),
     };
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let builder = from_learner(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -924,7 +921,7 @@ fn from_learner_custom_non_training_builder_does_not_require_training_dataset_ho
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -945,7 +942,7 @@ fn from_learner_custom_non_training_builder_does_not_require_training_dataset_ho
         created_at: Utc::now(),
         description: "tiny network".into(),
     };
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let roles = crate::PeerRoleSet::new([crate::PeerRole::Viewer]);
     let builder = from_learner(
         BurnLearner::new(
@@ -991,13 +988,13 @@ fn from_learner_trainer_builder_still_requires_training_dataset_hooks() {
         app_semver: semver::Version::new(0, 1, 0),
         git_commit: "local".into(),
         cargo_lock_hash: ContentId::new("tiny-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("tiny-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload],
         built_at: Utc::now(),
     };
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let error = from_learner(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -1029,7 +1026,7 @@ fn from_learner_trainer_builder_still_requires_training_dataset_hooks() {
 
 #[test]
 fn from_loaders_builder_defaults_evaluate_and_local_dataset_hooks() {
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let project = from_loaders(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -1088,7 +1085,7 @@ fn from_loaders_builder_supports_sharded_dataset_training_hooks() {
     let cached = crate::ShardCache::new(cache_root.path())
         .fetch_lease_microshards(dataset.registration(), dataset.microshard_plan(), &lease)
         .expect("cached shards");
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let project = from_loaders(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -1156,7 +1153,7 @@ fn from_loaders_builder_supports_explicit_data_pipeline() {
         },
     );
 
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let project = from_loaders(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),
@@ -1360,7 +1357,7 @@ fn from_learner_builder_supports_generated_data_pipeline() {
             )])
         },
     );
-    let device = <LearnerBackend as Backend>::Device::default();
+    let device = BackendDevice::<LearnerBackend>::default();
     let project = from_learner(
         BurnLearner::new(
             TinyLearnerModel::<LearnerBackend>::new(&device),

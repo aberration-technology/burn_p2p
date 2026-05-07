@@ -32,7 +32,7 @@ use burn::{
     nn::{Linear, LinearConfig},
     optim::SgdConfig,
     tensor::{
-        ElementConversion, Tensor, TensorData,
+        Device as BackendDevice, ElementConversion, Tensor, TensorData,
         backend::{AutodiffBackend, Backend},
     },
     train::{InferenceStep, ItemLazy, TrainOutput, TrainStep},
@@ -793,7 +793,7 @@ where
 
     fn init_learner(
         &self,
-        device: &<Self::Backend as Backend>::Device,
+        device: &BackendDevice<Self::Backend>,
     ) -> burn_p2p::burn::BurnWorkloadLearner<Self> {
         burn_p2p::burn::BurnLearner::new(
             SyntheticBurnModel::<B>::new(device),
@@ -805,7 +805,7 @@ where
     fn benchmark(
         &self,
         model: &Self::Model,
-        _device: &<Self::Backend as Backend>::Device,
+        _device: &BackendDevice<Self::Backend>,
     ) -> CapabilityEstimate {
         let inventory = inspect_module::<B, _>(model);
         CapabilityEstimate {
@@ -838,7 +838,7 @@ where
         }
     }
 
-    fn runtime_device(&self) -> <Self::Backend as Backend>::Device {
+    fn runtime_device(&self) -> BackendDevice<Self::Backend> {
         self.device.clone()
     }
 
@@ -982,7 +982,7 @@ fn synthetic_burn_release_manifest(
         app_semver: Version::new(0, 1, 0),
         git_commit: "local-testkit".into(),
         cargo_lock_hash: burn_p2p::ContentId::new("synthetic-burn-linear-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: burn_p2p::ContentId::new("synthetic-burn-linear-features"),
         protocol_major: 0,
         supported_workloads: vec![supported_workload.clone()],
@@ -1059,7 +1059,7 @@ fn run_synthetic_burn_process_node(
             run_synthetic_burn_process_node_with_backend::<SyntheticBurnNdArrayBackend>(
                 config,
                 backend,
-                <SyntheticBurnNdArrayBackend as Backend>::Device::default(),
+                BackendDevice::<SyntheticBurnNdArrayBackend>::default(),
             )
         }
         SyntheticNativeBackend::Wgpu => {
@@ -1073,7 +1073,7 @@ fn run_synthetic_burn_process_node(
             run_synthetic_burn_process_node_with_backend::<SyntheticBurnCudaBackend>(
                 config,
                 backend,
-                <SyntheticBurnCudaBackend as Backend>::Device::default(),
+                BackendDevice::<SyntheticBurnCudaBackend>::default(),
             )
         }
     }
@@ -1083,7 +1083,7 @@ fn run_synthetic_burn_process_node(
 fn run_synthetic_burn_process_node_with_backend<B>(
     config: &SyntheticProcessConfig,
     backend: SyntheticNativeBackend,
-    device: <B as Backend>::Device,
+    device: BackendDevice<B>,
 ) -> anyhow::Result<SyntheticProcessReport>
 where
     B: AutodiffBackend<FloatElem = f32> + 'static,

@@ -585,7 +585,7 @@ pub(super) fn switching_test_family() -> SwitchingTestFamily {
             app_semver: Version::new(0, 2, 0),
             git_commit: "switch-release".into(),
             cargo_lock_hash: crate::ContentId::new("switch-cargo-lock"),
-            burn_version_string: "0.21.0-pre.3".into(),
+            burn_version_string: "0.21.0".into(),
             enabled_features_hash: crate::ContentId::new("switch-features"),
             protocol_major,
             supported_workloads: vec![compiled.manifest.clone(), alternate.manifest.clone()],

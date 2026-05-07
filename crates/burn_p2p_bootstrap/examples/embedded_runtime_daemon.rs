@@ -272,7 +272,7 @@ fn demo_release_manifest() -> ClientReleaseManifest {
         app_semver: Version::new(0, 2, 0),
         git_commit: "local-demo".into(),
         cargo_lock_hash: ContentId::new("cargo-lock"),
-        burn_version_string: "0.21.0-pre.3".into(),
+        burn_version_string: "0.21.0".into(),
         enabled_features_hash: ContentId::new("bootstrap-example"),
         protocol_major: 0,
         supported_workloads: vec![demo_workload_manifest()],
