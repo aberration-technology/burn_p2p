@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime_support::{
-    head_by_id_from_snapshots, head_provider_peers, load_slot_assignments,
-    persist_slot_assignments, runtime_window_reducers,
+    best_head_by_ids_from_snapshots, directory_current_head_ids_from_snapshots,
+    head_provider_peers, load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
 };
 
 impl<P> RunningNode<P> {
@@ -353,20 +353,22 @@ impl<P> RunningNode<P> {
             telemetry_snapshot.local_peer_id.as_ref(),
             &telemetry_snapshot.control_plane,
         );
-        let directory_current_head_id = self
-            .visible_experiment_entry(
-                &experiment.study_id,
-                &experiment.experiment_id,
-                &experiment.revision_id,
-            )
-            .ok()
-            .and_then(|entry| entry.current_head_id);
+        let local_directory_current_head_ids = self
+            .list_experiments()
+            .into_iter()
+            .filter(|entry| {
+                entry.study_id == experiment.study_id
+                    && entry.experiment_id == experiment.experiment_id
+                    && entry.current_revision_id == experiment.revision_id
+            })
+            .filter_map(|entry| entry.current_head_id)
+            .collect::<BTreeSet<_>>();
         let mut snapshots = cached_snapshots;
         let mut resolved_head = resolve_sync_target_head(
             &storage,
             experiment,
             &cached_canonical_snapshots,
-            directory_current_head_id.as_ref(),
+            &local_directory_current_head_ids,
         )?;
 
         if resolved_head.is_none() {
@@ -380,7 +382,7 @@ impl<P> RunningNode<P> {
                 &storage,
                 experiment,
                 &canonical_snapshots,
-                directory_current_head_id.as_ref(),
+                &local_directory_current_head_ids,
             )?;
         }
         if resolved_head.is_none() {
@@ -402,7 +404,7 @@ impl<P> RunningNode<P> {
                     &storage,
                     experiment,
                     &canonical_snapshots,
-                    directory_current_head_id.as_ref(),
+                    &local_directory_current_head_ids,
                 )?;
             }
         }
@@ -1124,14 +1126,21 @@ fn resolve_sync_target_head(
     storage: &StorageConfig,
     experiment: &ExperimentHandle,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
-    directory_current_head_id: Option<&HeadId>,
+    local_directory_current_head_ids: &BTreeSet<HeadId>,
 ) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
-    if let Some(head_id) = directory_current_head_id {
-        if let Some((peer_id, head)) = head_by_id_from_snapshots(snapshots, experiment, head_id) {
-            return Ok(Some((peer_id, head)));
+    let mut directory_current_head_ids = local_directory_current_head_ids.clone();
+    directory_current_head_ids.extend(directory_current_head_ids_from_snapshots(
+        snapshots, experiment,
+    ));
+
+    if !directory_current_head_ids.is_empty() {
+        let best_remote =
+            best_head_by_ids_from_snapshots(snapshots, experiment, &directory_current_head_ids);
+        if best_remote.is_some() {
+            return Ok(best_remote);
         }
         if let Some(head) = load_head_state(storage, experiment)?
-            && head.head_id == *head_id
+            && directory_current_head_ids.contains(&head.head_id)
         {
             return Ok(Some((PeerId::new("local"), head)));
         }

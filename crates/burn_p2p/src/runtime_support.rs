@@ -43,11 +43,14 @@ pub(crate) use signing::{
 };
 #[cfg(test)]
 pub(crate) use topology::experiment_snapshot_peer_ids;
+#[cfg(test)]
+pub(crate) use topology::head_by_id_from_snapshots;
 pub use topology::latest_promoted_head_from_control_plane;
 pub(crate) use topology::{
-    LagAssessment, active_experiment_directory_entry, assess_head_lag, cached_connected_snapshots,
-    connected_peer_ids, effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch,
-    experiment_has_lifecycle_plan, head_by_id_from_snapshots, head_provider_peers,
+    LagAssessment, active_experiment_directory_entry, assess_head_lag,
+    best_head_by_ids_from_snapshots, cached_connected_snapshots, connected_peer_ids,
+    directory_current_head_ids_from_snapshots, effective_experiment_lifecycle_plan,
+    effective_fleet_schedule_epoch, experiment_has_lifecycle_plan, head_provider_peers,
     latest_head_from_snapshot, latest_merge_window_from_connected_snapshots,
     latest_merge_window_from_snapshot, latest_reducer_assignment_from_snapshot,
     matches_experiment_head, merge_control_plane_snapshot, metric_quality,

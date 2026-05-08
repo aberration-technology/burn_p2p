@@ -41,6 +41,33 @@ fn test_experiment_handle() -> ExperimentHandle {
     }
 }
 
+fn test_directory_entry(experiment: &ExperimentHandle) -> ExperimentDirectoryEntry {
+    ExperimentDirectoryEntry {
+        network_id: experiment.network_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        workload_id: WorkloadId::new("workload"),
+        display_name: "runtime test".into(),
+        model_schema_hash: ContentId::new("schema"),
+        dataset_view_id: DatasetViewId::new("view"),
+        resource_requirements: ExperimentResourceRequirements {
+            minimum_roles: BTreeSet::new(),
+            minimum_device_memory_bytes: None,
+            minimum_system_memory_bytes: None,
+            estimated_download_bytes: 1024,
+            estimated_window_seconds: 30,
+        },
+        visibility: ExperimentVisibility::Public,
+        opt_in_policy: ExperimentOptInPolicy::Open,
+        current_revision_id: experiment.revision_id.clone(),
+        current_head_id: None,
+        allowed_roles: PeerRoleSet::default_trainer(),
+        allowed_scopes: BTreeSet::new(),
+        training_protocol: TrainingProtocol::default(),
+        metadata: BTreeMap::new(),
+    }
+}
+
 fn trust_score(
     peer_id: &str,
     reducer_eligible: bool,
@@ -526,6 +553,86 @@ fn head_by_id_from_snapshots_selects_directory_current_head() {
         &experiment,
         &HeadId::new("head-current"),
     );
+
+    assert_eq!(resolved, Some((PeerId::new("trainer-current"), current)));
+}
+
+#[test]
+fn best_head_by_ids_from_snapshots_selects_newest_directory_head() {
+    let experiment = test_experiment_handle();
+    let now = Utc::now();
+    let root = HeadDescriptor {
+        head_id: HeadId::new("head-root"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-root"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let stale = HeadDescriptor {
+        head_id: HeadId::new("head-stale"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-stale"),
+        parent_head_id: Some(root.head_id.clone()),
+        global_step: 1,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let current = HeadDescriptor {
+        head_id: HeadId::new("head-current"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-current"),
+        parent_head_id: Some(stale.head_id.clone()),
+        global_step: 2,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+
+    let mut stale_entry = test_directory_entry(&experiment);
+    stale_entry.current_head_id = Some(stale.head_id.clone());
+    let mut current_entry = test_directory_entry(&experiment);
+    current_entry.current_head_id = Some(current.head_id.clone());
+    let mut null_entry = test_directory_entry(&experiment);
+    null_entry.current_head_id = None;
+
+    let mut snapshot = ControlPlaneSnapshot::default();
+    snapshot
+        .directory_announcements
+        .push(ExperimentDirectoryAnnouncement {
+            network_id: experiment.network_id.clone(),
+            entries: vec![null_entry, stale_entry],
+            announced_at: now,
+        });
+    snapshot
+        .directory_announcements
+        .push(ExperimentDirectoryAnnouncement {
+            network_id: experiment.network_id.clone(),
+            entries: vec![current_entry],
+            announced_at: now,
+        });
+    for (provider, head) in [
+        ("trainer-root", root),
+        ("trainer-stale", stale),
+        ("trainer-current", current.clone()),
+    ] {
+        snapshot.head_announcements.push(HeadAnnouncement {
+            overlay: experiment.overlay_set().expect("overlay set").heads,
+            provider_peer_id: Some(PeerId::new(provider)),
+            head,
+            announced_at: now,
+        });
+    }
+
+    let snapshots = [(PeerId::new("edge"), snapshot)];
+    let head_ids = directory_current_head_ids_from_snapshots(&snapshots, &experiment);
+    let resolved = best_head_by_ids_from_snapshots(&snapshots, &experiment, &head_ids);
 
     assert_eq!(resolved, Some((PeerId::new("trainer-current"), current)));
 }

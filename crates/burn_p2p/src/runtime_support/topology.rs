@@ -564,6 +564,41 @@ pub(crate) fn head_by_id_from_snapshots(
         })
 }
 
+pub(crate) fn directory_current_head_ids_from_snapshots(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+) -> BTreeSet<HeadId> {
+    snapshots
+        .iter()
+        .flat_map(|(_, snapshot)| snapshot.directory_announcements.iter())
+        .filter(|announcement| announcement.network_id == experiment.network_id)
+        .flat_map(|announcement| announcement.entries.iter())
+        .filter(|entry| {
+            entry.network_id == experiment.network_id
+                && entry.study_id == experiment.study_id
+                && entry.experiment_id == experiment.experiment_id
+                && entry.current_revision_id == experiment.revision_id
+        })
+        .filter_map(|entry| entry.current_head_id.clone())
+        .collect()
+}
+
+pub(crate) fn best_head_by_ids_from_snapshots(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+    head_ids: &BTreeSet<HeadId>,
+) -> Option<(PeerId, HeadDescriptor)> {
+    head_ids
+        .iter()
+        .filter_map(|head_id| head_by_id_from_snapshots(snapshots, experiment, head_id))
+        .max_by(|left, right| {
+            left.1
+                .global_step
+                .cmp(&right.1.global_step)
+                .then(left.1.created_at.cmp(&right.1.created_at))
+        })
+}
+
 pub(crate) fn head_provider_peers(
     primary_provider: Option<&PeerId>,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
