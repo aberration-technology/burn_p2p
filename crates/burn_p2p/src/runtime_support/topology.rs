@@ -531,6 +531,39 @@ pub(crate) fn latest_head_from_snapshot(
         })
 }
 
+pub(crate) fn head_by_id_from_snapshots(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+    head_id: &HeadId,
+) -> Option<(PeerId, HeadDescriptor)> {
+    snapshots
+        .iter()
+        .flat_map(|(snapshot_peer_id, snapshot)| {
+            snapshot
+                .head_announcements
+                .iter()
+                .filter(move |announcement| {
+                    announcement.head.head_id.as_str() == head_id.as_str()
+                        && matches_experiment_head(&announcement.head, experiment)
+                })
+                .map(move |announcement| {
+                    (
+                        announcement
+                            .provider_peer_id
+                            .clone()
+                            .unwrap_or_else(|| snapshot_peer_id.clone()),
+                        announcement.head.clone(),
+                    )
+                })
+        })
+        .max_by(|left, right| {
+            left.1
+                .created_at
+                .cmp(&right.1.created_at)
+                .then(left.1.global_step.cmp(&right.1.global_step))
+        })
+}
+
 pub(crate) fn head_provider_peers(
     primary_provider: Option<&PeerId>,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],

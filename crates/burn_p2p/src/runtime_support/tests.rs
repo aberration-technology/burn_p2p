@@ -486,6 +486,51 @@ fn latest_promoted_head_from_control_plane_uses_diffusion_certificate() {
 }
 
 #[test]
+fn head_by_id_from_snapshots_selects_directory_current_head() {
+    let experiment = test_experiment_handle();
+    let now = Utc::now();
+    let root = HeadDescriptor {
+        head_id: HeadId::new("head-root"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-root"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let current = HeadDescriptor {
+        head_id: HeadId::new("head-current"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-current"),
+        parent_head_id: Some(root.head_id.clone()),
+        global_step: 2,
+        created_at: now,
+        metrics: BTreeMap::new(),
+    };
+    let mut snapshot = ControlPlaneSnapshot::default();
+    for (provider, head) in [("trainer-root", root), ("trainer-current", current.clone())] {
+        snapshot.head_announcements.push(HeadAnnouncement {
+            overlay: experiment.overlay_set().expect("overlay set").heads,
+            provider_peer_id: Some(PeerId::new(provider)),
+            head,
+            announced_at: now,
+        });
+    }
+
+    let resolved = head_by_id_from_snapshots(
+        &[(PeerId::new("edge"), snapshot)],
+        &experiment,
+        &HeadId::new("head-current"),
+    );
+
+    assert_eq!(resolved, Some((PeerId::new("trainer-current"), current)));
+}
+
+#[test]
 fn diffusion_steady_state_rejects_reducer_centric_strategies() {
     let experiment = test_experiment_handle();
     let policy = MergeTopologyPolicy {

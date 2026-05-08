@@ -47,16 +47,16 @@ pub use topology::latest_promoted_head_from_control_plane;
 pub(crate) use topology::{
     LagAssessment, active_experiment_directory_entry, assess_head_lag, cached_connected_snapshots,
     connected_peer_ids, effective_experiment_lifecycle_plan, effective_fleet_schedule_epoch,
-    experiment_has_lifecycle_plan, head_provider_peers, latest_head_from_snapshot,
-    latest_merge_window_from_connected_snapshots, latest_merge_window_from_snapshot,
-    latest_reducer_assignment_from_snapshot, matches_experiment_head, merge_control_plane_snapshot,
-    metric_quality, open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids,
-    resolve_canonical_head, runtime_assign_reducers, runtime_merge_topology_policy,
-    runtime_robustness_policy, runtime_topology_peers, runtime_training_peers,
-    runtime_training_protocol, runtime_validator_peers, runtime_validators,
-    runtime_window_reducers, snapshots_with_local_control_plane,
-    update_announces_from_connected_snapshots, update_feature_sketch_from_metrics,
-    update_norm_stats,
+    experiment_has_lifecycle_plan, head_by_id_from_snapshots, head_provider_peers,
+    latest_head_from_snapshot, latest_merge_window_from_connected_snapshots,
+    latest_merge_window_from_snapshot, latest_reducer_assignment_from_snapshot,
+    matches_experiment_head, merge_control_plane_snapshot, metric_quality,
+    open_runtime_merge_window, prioritized_experiment_snapshot_peer_ids, resolve_canonical_head,
+    runtime_assign_reducers, runtime_merge_topology_policy, runtime_robustness_policy,
+    runtime_topology_peers, runtime_training_peers, runtime_training_protocol,
+    runtime_validator_peers, runtime_validators, runtime_window_reducers,
+    snapshots_with_local_control_plane, update_announces_from_connected_snapshots,
+    update_feature_sketch_from_metrics, update_norm_stats,
 };
 pub(crate) use trust::verify_snapshot_admission;
 use trust::{

@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime_support::{
-    head_provider_peers, load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
+    head_by_id_from_snapshots, head_provider_peers, load_slot_assignments,
+    persist_slot_assignments, runtime_window_reducers,
 };
 
 impl<P> RunningNode<P> {
@@ -352,9 +353,21 @@ impl<P> RunningNode<P> {
             telemetry_snapshot.local_peer_id.as_ref(),
             &telemetry_snapshot.control_plane,
         );
+        let directory_current_head_id = self
+            .visible_experiment_entry(
+                &experiment.study_id,
+                &experiment.experiment_id,
+                &experiment.revision_id,
+            )
+            .ok()
+            .and_then(|entry| entry.current_head_id);
         let mut snapshots = cached_snapshots;
-        let mut resolved_head =
-            resolve_canonical_head(&storage, experiment, &cached_canonical_snapshots)?;
+        let mut resolved_head = resolve_sync_target_head(
+            &storage,
+            experiment,
+            &cached_canonical_snapshots,
+            directory_current_head_id.as_ref(),
+        )?;
 
         if resolved_head.is_none() {
             snapshots = self.fetch_experiment_snapshots(experiment, HEAD_SYNC_SNAPSHOT_TIMEOUT)?;
@@ -363,7 +376,12 @@ impl<P> RunningNode<P> {
                 telemetry_snapshot.local_peer_id.as_ref(),
                 &telemetry_snapshot.control_plane,
             );
-            resolved_head = resolve_canonical_head(&storage, experiment, &canonical_snapshots)?;
+            resolved_head = resolve_sync_target_head(
+                &storage,
+                experiment,
+                &canonical_snapshots,
+                directory_current_head_id.as_ref(),
+            )?;
         }
         if resolved_head.is_none() {
             let bootstrap_snapshots = self.fetch_bootstrap_snapshots(ci_scaled_timeout(
@@ -380,7 +398,12 @@ impl<P> RunningNode<P> {
                     refreshed_telemetry_snapshot.local_peer_id.as_ref(),
                     &refreshed_telemetry_snapshot.control_plane,
                 );
-                resolved_head = resolve_canonical_head(&storage, experiment, &canonical_snapshots)?;
+                resolved_head = resolve_sync_target_head(
+                    &storage,
+                    experiment,
+                    &canonical_snapshots,
+                    directory_current_head_id.as_ref(),
+                )?;
             }
         }
         let _ = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
@@ -1095,4 +1118,25 @@ impl<P> RunningNode<P> {
             .project
             .model_schema_hash())
     }
+}
+
+fn resolve_sync_target_head(
+    storage: &StorageConfig,
+    experiment: &ExperimentHandle,
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    directory_current_head_id: Option<&HeadId>,
+) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
+    if let Some(head_id) = directory_current_head_id {
+        if let Some((peer_id, head)) = head_by_id_from_snapshots(snapshots, experiment, head_id) {
+            return Ok(Some((peer_id, head)));
+        }
+        if let Some(head) = load_head_state(storage, experiment)?
+            && head.head_id == *head_id
+        {
+            return Ok(Some((PeerId::new("local"), head)));
+        }
+        return Ok(None);
+    }
+
+    resolve_canonical_head(storage, experiment, snapshots)
 }
