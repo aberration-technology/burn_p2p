@@ -1,8 +1,15 @@
 use super::*;
 use crate::runtime_support::{
     best_head_by_ids_from_snapshots, directory_current_head_ids_from_snapshots,
-    head_provider_peers, load_slot_assignments, persist_slot_assignments, runtime_window_reducers,
+    head_provider_peers, load_slot_assignments, persist_slot_assignments, resolve_canonical_head,
+    runtime_window_reducers,
 };
+
+#[derive(Clone, Copy)]
+enum HeadSyncTargetMode {
+    DirectoryCurrent,
+    LatestPromoted,
+}
 
 impl<P> RunningNode<P> {
     /// Performs the list experiments operation.
@@ -327,6 +334,33 @@ impl<P> RunningNode<P> {
     where
         P: P2pWorkload,
     {
+        self.sync_experiment_head_with_mode(experiment, HeadSyncTargetMode::DirectoryCurrent)
+    }
+
+    /// Synchronizes the latest promoted experiment head.
+    ///
+    /// This is intended for trusted head mirrors and other durability services
+    /// that must promote a newly merged/diffusion-settled head even while the
+    /// directory's `current_head_id` still points at the previous durable head.
+    /// Training peers should normally use [`Self::sync_experiment_head`].
+    pub fn sync_latest_promoted_experiment_head(
+        &self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<Option<HeadDescriptor>>
+    where
+        P: P2pWorkload,
+    {
+        self.sync_experiment_head_with_mode(experiment, HeadSyncTargetMode::LatestPromoted)
+    }
+
+    fn sync_experiment_head_with_mode(
+        &self,
+        experiment: &ExperimentHandle,
+        target_mode: HeadSyncTargetMode,
+    ) -> anyhow::Result<Option<HeadDescriptor>>
+    where
+        P: P2pWorkload,
+    {
         const HEAD_SYNC_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(750);
         // Head adoption may require pulling a newly promoted artifact from the
         // network. Give larger runtime payloads enough room to materialize
@@ -369,6 +403,7 @@ impl<P> RunningNode<P> {
             experiment,
             &cached_canonical_snapshots,
             &local_directory_current_head_ids,
+            target_mode,
         )?;
 
         if resolved_head.is_none() {
@@ -383,6 +418,7 @@ impl<P> RunningNode<P> {
                 experiment,
                 &canonical_snapshots,
                 &local_directory_current_head_ids,
+                target_mode,
             )?;
         }
         if resolved_head.is_none() {
@@ -405,6 +441,7 @@ impl<P> RunningNode<P> {
                     experiment,
                     &canonical_snapshots,
                     &local_directory_current_head_ids,
+                    target_mode,
                 )?;
             }
         }
@@ -1127,25 +1164,206 @@ fn resolve_sync_target_head(
     experiment: &ExperimentHandle,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     local_directory_current_head_ids: &BTreeSet<HeadId>,
+    target_mode: HeadSyncTargetMode,
 ) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
     let mut directory_current_head_ids = local_directory_current_head_ids.clone();
     directory_current_head_ids.extend(directory_current_head_ids_from_snapshots(
         snapshots, experiment,
     ));
 
-    if !directory_current_head_ids.is_empty() {
-        let best_remote =
-            best_head_by_ids_from_snapshots(snapshots, experiment, &directory_current_head_ids);
-        if best_remote.is_some() {
-            return Ok(best_remote);
+    let directory_current = if directory_current_head_ids.is_empty() {
+        None
+    } else {
+        resolve_directory_current_head(storage, experiment, snapshots, &directory_current_head_ids)?
+    };
+
+    match target_mode {
+        HeadSyncTargetMode::DirectoryCurrent if !directory_current_head_ids.is_empty() => {
+            Ok(directory_current)
         }
-        if let Some(head) = load_head_state(storage, experiment)?
-            && directory_current_head_ids.contains(&head.head_id)
-        {
-            return Ok(Some((PeerId::new("local"), head)));
+        HeadSyncTargetMode::DirectoryCurrent => {
+            resolve_canonical_head(storage, experiment, snapshots)
         }
-        return Ok(None);
+        HeadSyncTargetMode::LatestPromoted => {
+            let canonical = resolve_canonical_head(storage, experiment, snapshots)?;
+            Ok(newer_head_candidate(directory_current, canonical))
+        }
+    }
+}
+
+fn resolve_directory_current_head(
+    storage: &StorageConfig,
+    experiment: &ExperimentHandle,
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    directory_current_head_ids: &BTreeSet<HeadId>,
+) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
+    let best_remote =
+        best_head_by_ids_from_snapshots(snapshots, experiment, directory_current_head_ids);
+    if best_remote.is_some() {
+        return Ok(best_remote);
+    }
+    if let Some(head) = load_head_state(storage, experiment)?
+        && directory_current_head_ids.contains(&head.head_id)
+    {
+        return Ok(Some((PeerId::new("local"), head)));
+    }
+    Ok(None)
+}
+
+fn newer_head_candidate(
+    left: Option<(PeerId, HeadDescriptor)>,
+    right: Option<(PeerId, HeadDescriptor)>,
+) -> Option<(PeerId, HeadDescriptor)> {
+    match (left, right) {
+        (Some(left), Some(right)) if head_is_newer(&right.1, &left.1) => Some(right),
+        (Some(left), Some(_)) => Some(left),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn head_is_newer(candidate: &HeadDescriptor, current: &HeadDescriptor) -> bool {
+    candidate.global_step > current.global_step
+        || (candidate.global_step == current.global_step
+            && candidate.created_at > current.created_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn experiment() -> ExperimentHandle {
+        ExperimentHandle {
+            network_id: NetworkId::new("net-test"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+        }
     }
 
-    resolve_canonical_head(storage, experiment, snapshots)
+    fn directory_entry(
+        experiment: &ExperimentHandle,
+        current_head_id: HeadId,
+    ) -> ExperimentDirectoryEntry {
+        ExperimentDirectoryEntry {
+            network_id: experiment.network_id.clone(),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            workload_id: WorkloadId::new("workload"),
+            display_name: "runtime test".into(),
+            model_schema_hash: ContentId::new("schema"),
+            dataset_view_id: DatasetViewId::new("view"),
+            resource_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 1024,
+                estimated_window_seconds: 30,
+            },
+            visibility: ExperimentVisibility::Public,
+            opt_in_policy: ExperimentOptInPolicy::Open,
+            current_revision_id: experiment.revision_id.clone(),
+            current_head_id: Some(current_head_id),
+            allowed_roles: PeerRoleSet::default_trainer(),
+            allowed_scopes: BTreeSet::new(),
+            training_protocol: TrainingProtocol::default(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn head(
+        experiment: &ExperimentHandle,
+        head_id: &str,
+        artifact_id: &str,
+        global_step: u64,
+    ) -> HeadDescriptor {
+        HeadDescriptor {
+            head_id: HeadId::new(head_id),
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            artifact_id: ArtifactId::new(artifact_id),
+            parent_head_id: None,
+            global_step,
+            created_at: Utc::now() + chrono::Duration::milliseconds(global_step as i64),
+            metrics: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn latest_promoted_sync_can_advance_past_stale_directory_current_head() {
+        let experiment = experiment();
+        let overlay = experiment.overlay_set().expect("overlay").heads;
+        let stale = head(&experiment, "head-window-2", "artifact-window-2", 2);
+        let promoted = head(&experiment, "head-window-3", "artifact-window-3", 3);
+        let validator = PeerId::new("validator");
+        let trainer = PeerId::new("trainer");
+        let now = Utc::now();
+        let mut snapshot = ControlPlaneSnapshot::default();
+
+        snapshot
+            .directory_announcements
+            .push(ExperimentDirectoryAnnouncement {
+                network_id: experiment.network_id.clone(),
+                entries: vec![directory_entry(&experiment, stale.head_id.clone())],
+                announced_at: now,
+            });
+        for (provider, announced_head) in [
+            (PeerId::new("stale-provider"), stale.clone()),
+            (trainer.clone(), promoted.clone()),
+        ] {
+            snapshot.head_announcements.push(HeadAnnouncement {
+                overlay: overlay.clone(),
+                provider_peer_id: Some(provider),
+                head: announced_head,
+                announced_at: now,
+            });
+        }
+        snapshot.merge_announcements.push(MergeAnnouncement {
+            overlay,
+            certificate: MergeCertificate {
+                merge_cert_id: MergeCertId::new("merge-window-3"),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                base_head_id: stale.head_id.clone(),
+                merged_head_id: promoted.head_id.clone(),
+                merged_artifact_id: promoted.artifact_id.clone(),
+                policy: MergePolicy::WeightedMean,
+                issued_at: now,
+                promoter_peer_id: validator.clone(),
+                promotion_mode: HeadPromotionMode::ValidatorQuorum,
+                contribution_receipts: vec![ContributionReceiptId::new("receipt-window-3")],
+            },
+            announced_at: now,
+        });
+
+        let storage_root = tempdir().expect("storage tempdir");
+        let snapshots = [(validator, snapshot)];
+        let directory_current_head_ids = BTreeSet::new();
+        let directory_current = resolve_sync_target_head(
+            &StorageConfig::new(storage_root.path()),
+            &experiment,
+            &snapshots,
+            &directory_current_head_ids,
+            HeadSyncTargetMode::DirectoryCurrent,
+        )
+        .expect("resolve directory current")
+        .expect("directory current head");
+        let latest_promoted = resolve_sync_target_head(
+            &StorageConfig::new(storage_root.path()),
+            &experiment,
+            &snapshots,
+            &directory_current_head_ids,
+            HeadSyncTargetMode::LatestPromoted,
+        )
+        .expect("resolve latest promoted")
+        .expect("latest promoted head");
+
+        assert_eq!(directory_current.1.head_id, stale.head_id);
+        assert_eq!(latest_promoted.0, trainer);
+        assert_eq!(latest_promoted.1.head_id, promoted.head_id);
+    }
 }
