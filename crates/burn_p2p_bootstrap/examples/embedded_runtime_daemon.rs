@@ -339,6 +339,7 @@ fn main() -> anyhow::Result<()> {
                 client_release_manifest: Some(demo_release_manifest()),
                 selected_workload_id: Some(demo_workload_manifest().workload_id),
                 metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
+                transport_policy: None,
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
                 external_addresses: Vec::new(),

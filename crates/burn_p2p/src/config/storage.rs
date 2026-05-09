@@ -695,6 +695,9 @@ pub struct NodeConfig {
     /// The raw metrics retention policy applied to local history and drilldowns.
     #[serde(default)]
     pub metrics_retention: MetricsRetentionConfig,
+    /// Explicit transport policy override for specialized deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_policy: Option<RuntimeTransportPolicy>,
     /// The bootstrap peers.
     pub bootstrap_peers: Vec<SwarmAddress>,
     /// The listen addresses.

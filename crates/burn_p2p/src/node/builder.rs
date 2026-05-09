@@ -67,6 +67,12 @@ impl<P> NodeBuilder<P> {
         self
     }
 
+    /// Sets an explicit transport policy for specialized runtimes.
+    pub fn with_transport_policy(mut self, transport_policy: RuntimeTransportPolicy) -> Self {
+        self.config.transport_policy = Some(transport_policy);
+        self
+    }
+
     /// Adds one bootstrap peer to the initial dial set.
     pub fn with_bootstrap_peer(mut self, peer: SwarmAddress) -> Self {
         self.config.bootstrap_peers.push(peer);

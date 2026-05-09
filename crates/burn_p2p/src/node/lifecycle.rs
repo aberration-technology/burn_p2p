@@ -44,7 +44,7 @@ impl<P> RunningNode<P> {
             restore_runtime_security_state(storage, &mut snapshot)?;
             restore_in_flight_transfer_states(storage, &mut snapshot)?;
         }
-        let boundary = RuntimeBoundary::for_platform_and_roles(
+        let mut boundary = RuntimeBoundary::for_platform_and_roles(
             &node.mainnet.genesis,
             burn_p2p_core::ClientPlatform::Native,
             &node.mainnet.roles,
@@ -56,6 +56,9 @@ impl<P> RunningNode<P> {
                 .as_ref()
                 .map(StorageConfig::webrtc_certificate_pem_path),
         )?;
+        if let Some(transport_policy) = node.config.transport_policy.clone() {
+            boundary.transport_policy = transport_policy;
+        }
         snapshot.runtime_boundary = Some(boundary.clone());
         snapshot.listen_addresses = Vec::new();
 

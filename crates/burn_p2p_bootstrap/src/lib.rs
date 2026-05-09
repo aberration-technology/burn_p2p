@@ -1742,6 +1742,7 @@ mod tests {
                         client_release_manifest: None,
                         selected_workload_id: None,
                         metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
+                        transport_policy: None,
                         bootstrap_peers: Vec::new(),
                         listen_addresses: vec![bootstrap_addr.clone()],
                         external_addresses: Vec::new(),
@@ -1889,6 +1890,7 @@ mod tests {
                     client_release_manifest: None,
                     selected_workload_id: None,
                     metrics_retention: burn_p2p::MetricsRetentionConfig::default(),
+                    transport_policy: None,
                     bootstrap_peers: Vec::new(),
                     listen_addresses: vec![
                         burn_p2p_swarm::SwarmAddress::new("/ip4/127.0.0.1/tcp/0")

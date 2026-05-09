@@ -87,6 +87,7 @@ impl Default for BootstrapEmbeddedDaemonConfig {
                 client_release_manifest: None,
                 selected_workload_id: None,
                 metrics_retention: MetricsRetentionConfig::default(),
+                transport_policy: None,
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
                 external_addresses: Vec::new(),
@@ -131,6 +132,7 @@ impl Default for BootstrapPeerDaemonConfig {
                     preset: MetricsRetentionPreset::PeerLean,
                     ..MetricsRetentionConfig::default()
                 },
+                transport_policy: None,
                 bootstrap_peers: Vec::new(),
                 listen_addresses: Vec::new(),
                 external_addresses: Vec::new(),
@@ -442,6 +444,12 @@ fn apply_runtime_node_config<P>(
     };
     builder
         .with_metrics_retention(config.metrics_retention.clone())
+        .with_transport_policy(
+            config
+                .transport_policy
+                .clone()
+                .unwrap_or_else(|| burn_p2p::RuntimeTransportPolicy::native_for_roles(&plan.roles)),
+        )
         .with_bootstrap_peers(if config.bootstrap_peers.is_empty() {
             plan.runtime.bootstrap_addresses.clone()
         } else {
@@ -1340,6 +1348,23 @@ mod tests {
         let builder = apply_runtime_node_config(burn_p2p::NodeBuilder::new(()), &plan, &config);
 
         assert_eq!(builder.config().external_addresses, vec![external]);
+    }
+
+    #[test]
+    fn apply_runtime_node_config_preserves_transport_policy_override() {
+        let plan = test_plan();
+        let mut policy = burn_p2p::RuntimeTransportPolicy::native_for_roles(&plan.roles);
+        policy.target_connected_peers = 2;
+        policy.max_established_total = Some(4);
+        policy.enable_kademlia = false;
+        let config = NodeConfig {
+            transport_policy: Some(policy.clone()),
+            ..NodeConfig::default()
+        };
+
+        let builder = apply_runtime_node_config(burn_p2p::NodeBuilder::new(()), &plan, &config);
+
+        assert_eq!(builder.config().transport_policy, Some(policy));
     }
 
     #[test]

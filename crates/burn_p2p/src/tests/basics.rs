@@ -128,6 +128,48 @@ fn spawn_starts_a_live_runtime_and_shutdown_returns_node() {
 }
 
 #[test]
+fn spawn_applies_explicit_transport_policy() {
+    let _guard = native_swarm_test_guard();
+    let storage_root = std::env::temp_dir().join(format!(
+        "burn-p2p-transport-policy-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let mut policy =
+        crate::RuntimeTransportPolicy::native_for_roles(&crate::PeerRoleSet::default_trainer());
+    policy.target_connected_peers = 1;
+    policy.max_established_total = Some(2);
+    policy.enable_kademlia = false;
+
+    let running = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(storage_root))
+        .with_transport_policy(policy.clone())
+        .spawn()
+        .expect("spawn");
+
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(2),
+        || telemetry.snapshot().runtime_boundary.is_some(),
+        "runtime boundary was not published",
+    );
+    let snapshot = telemetry.snapshot();
+    let transport_policy = &snapshot
+        .runtime_boundary
+        .as_ref()
+        .expect("runtime boundary")
+        .transport_policy;
+    assert_eq!(transport_policy.target_connected_peers, 1);
+    assert_eq!(transport_policy.max_established_total, Some(2));
+    assert!(!transport_policy.enable_kademlia);
+
+    running.shutdown().expect("shutdown");
+    let _ = running
+        .await_termination_timeout(test_timeout(Duration::from_secs(5)))
+        .expect("await termination");
+}
+
+#[test]
 fn plain_unit_follower_connects_to_plain_bootstrap_seed() {
     let _guard = native_swarm_test_guard();
     let seed_storage = std::env::temp_dir().join(format!(
