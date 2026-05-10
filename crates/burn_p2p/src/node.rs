@@ -8,7 +8,7 @@ mod experiments;
 mod lifecycle;
 mod selected;
 
-pub(crate) use artifacts::ci_scaled_timeout;
+pub(crate) use artifacts::{artifact_sync_attempt_timeout, ci_scaled_timeout};
 use artifacts::{
     fair_request_timeout as artifact_fair_request_timeout, is_transient_artifact_sync_error,
 };

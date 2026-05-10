@@ -366,7 +366,7 @@ impl<P> RunningNode<P> {
         // network. Give larger runtime payloads enough room to materialize
         // before the caller falls back to another outer retry loop.
         let head_sync_wait_timeout =
-            ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
+            ci_scaled_timeout(Duration::from_secs(60), Duration::from_secs(120));
         const HEAD_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         let assignment = SlotAssignmentState::from_experiment(experiment);
@@ -619,8 +619,6 @@ impl<P> RunningNode<P> {
         timeout: Duration,
     ) -> anyhow::Result<()> {
         const ARTIFACT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-        let artifact_request_timeout =
-            ci_scaled_timeout(Duration::from_secs(3), Duration::from_secs(10));
 
         let Some(store) = self.artifact_store() else {
             anyhow::bail!("artifact prewarm requires configured storage");
@@ -641,18 +639,17 @@ impl<P> RunningNode<P> {
                 return Ok(());
             }
 
-            for provider_peer_id in provider_peer_ids {
-                let Some(request_timeout) = fair_request_timeout(
-                    deadline,
-                    artifact_request_timeout,
-                    provider_peer_ids.len(),
-                ) else {
+            for (provider_index, provider_peer_id) in provider_peer_ids.iter().enumerate() {
+                let remaining_candidates = provider_peer_ids.len().saturating_sub(provider_index);
+                let Some(sync_timeout) =
+                    artifact_sync_attempt_timeout(deadline, timeout, remaining_candidates)
+                else {
                     break;
                 };
                 match self.sync_artifact_from_peer_bounded(
                     provider_peer_id,
                     artifact_id.clone(),
-                    request_timeout,
+                    sync_timeout,
                 ) {
                     Ok(_) => return Ok(()),
                     Err(error) => {

@@ -33,6 +33,34 @@ fn fair_request_timeout_respects_small_remaining_budget() {
 }
 
 #[test]
+fn artifact_sync_attempt_timeout_preserves_transfer_budget_with_many_providers() {
+    let timeout = crate::node::artifact_sync_attempt_timeout(
+        Instant::now() + Duration::from_secs(120),
+        Duration::from_secs(120),
+        64,
+    )
+    .expect("timeout");
+
+    assert!(
+        timeout >= Duration::from_secs(10),
+        "artifact transfer attempts should not be reduced to per-RPC slices"
+    );
+    assert!(timeout <= Duration::from_secs(120));
+}
+
+#[test]
+fn artifact_sync_attempt_timeout_respects_remaining_budget() {
+    let timeout = crate::node::artifact_sync_attempt_timeout(
+        Instant::now() + Duration::from_millis(120),
+        Duration::from_secs(10),
+        8,
+    )
+    .expect("timeout");
+
+    assert!(timeout <= Duration::from_millis(120));
+}
+
+#[test]
 fn persisted_runtime_binding_survives_restart_without_with_network() {
     let storage = tempdir().expect("persisted runtime binding storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());

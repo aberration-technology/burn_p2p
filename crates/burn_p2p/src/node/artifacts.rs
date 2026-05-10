@@ -572,6 +572,24 @@ pub(crate) fn fair_request_timeout(
     Some(request_timeout.min(slice).min(remaining))
 }
 
+pub(crate) fn artifact_sync_attempt_timeout(
+    deadline: Instant,
+    timeout: Duration,
+    provider_count: usize,
+) -> Option<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return None;
+    }
+
+    let provider_count = provider_count.max(1) as u32;
+    let fair_transfer_slice = remaining / provider_count;
+    let minimum_transfer_slice =
+        ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
+    let transfer_budget = fair_transfer_slice.max(minimum_transfer_slice);
+    Some(transfer_budget.min(timeout).min(remaining))
+}
+
 pub(crate) fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {
     if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
         ci
