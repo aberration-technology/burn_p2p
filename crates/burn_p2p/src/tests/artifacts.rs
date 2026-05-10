@@ -61,6 +61,33 @@ fn artifact_sync_attempt_timeout_respects_remaining_budget() {
 }
 
 #[test]
+fn connected_head_artifact_providers_are_prioritized() {
+    let stale_a = crate::PeerId::new("stale-a");
+    let connected_edge = crate::PeerId::new("connected-edge");
+    let stale_b = crate::PeerId::new("stale-b");
+    let connected_trainer = crate::PeerId::new("connected-trainer");
+    let mut connected = BTreeSet::new();
+    connected.insert(connected_edge.clone());
+    connected.insert(connected_trainer.clone());
+
+    let providers = crate::node::prioritize_connected_provider_peers(
+        vec![
+            stale_a.clone(),
+            connected_edge.clone(),
+            stale_b.clone(),
+            connected_trainer.clone(),
+            connected_edge.clone(),
+        ],
+        &connected,
+    );
+
+    assert_eq!(
+        providers,
+        vec![connected_edge, connected_trainer, stale_a, stale_b]
+    );
+}
+
+#[test]
 fn persisted_runtime_binding_survives_restart_without_with_network() {
     let storage = tempdir().expect("persisted runtime binding storage");
     let storage_config = StorageConfig::new(storage.path().to_path_buf());

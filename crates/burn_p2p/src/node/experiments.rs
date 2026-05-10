@@ -446,7 +446,7 @@ impl<P> RunningNode<P> {
             }
         }
         let _ = self.assess_and_record_lag(&storage, experiment, &snapshots)?;
-        let Some((source_peer_id, head)) = resolved_head else {
+        let Some((mut source_peer_id, mut head)) = resolved_head else {
             let connected_peers = connected_peer_ids(&telemetry_snapshot);
             let bootstrap_addresses = self
                 .control
@@ -471,6 +471,31 @@ impl<P> RunningNode<P> {
         };
         let store = FsArtifactStore::new(storage.root.clone());
         if !store.has_complete_artifact(&head.artifact_id)? {
+            let bootstrap_snapshots = self.fetch_bootstrap_snapshots(ci_scaled_timeout(
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+            ))?;
+            if !bootstrap_snapshots.is_empty() {
+                let mut snapshots_by_peer = snapshots.into_iter().collect::<BTreeMap<_, _>>();
+                snapshots_by_peer.extend(bootstrap_snapshots);
+                snapshots = snapshots_by_peer.into_iter().collect();
+                let refreshed_telemetry_snapshot = self.telemetry().snapshot();
+                let canonical_snapshots = snapshots_with_local_control_plane(
+                    &snapshots,
+                    refreshed_telemetry_snapshot.local_peer_id.as_ref(),
+                    &refreshed_telemetry_snapshot.control_plane,
+                );
+                if let Some((refreshed_source_peer_id, refreshed_head)) = resolve_sync_target_head(
+                    &storage,
+                    experiment,
+                    &canonical_snapshots,
+                    &local_directory_current_head_ids,
+                    target_mode,
+                )? {
+                    source_peer_id = refreshed_source_peer_id;
+                    head = refreshed_head;
+                }
+            }
             let provider_peer_ids = head_provider_peers(
                 Some(&source_peer_id),
                 &snapshots,
@@ -479,6 +504,11 @@ impl<P> RunningNode<P> {
                 experiment,
                 &head,
             );
+            let connected_peer_ids = connected_peer_ids(&self.telemetry().snapshot())
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let provider_peer_ids =
+                prioritize_connected_provider_peers(provider_peer_ids, &connected_peer_ids);
             let deadline = Instant::now() + head_sync_wait_timeout;
             loop {
                 let result = if provider_peer_ids.is_empty() {
@@ -1218,6 +1248,22 @@ fn newer_head_candidate(
         (None, Some(right)) => Some(right),
         (None, None) => None,
     }
+}
+
+pub(crate) fn prioritize_connected_provider_peers(
+    provider_peer_ids: Vec<PeerId>,
+    connected_peer_ids: &BTreeSet<PeerId>,
+) -> Vec<PeerId> {
+    if connected_peer_ids.is_empty() {
+        return provider_peer_ids;
+    }
+
+    let connected_first = provider_peer_ids
+        .iter()
+        .filter(|peer_id| connected_peer_ids.contains(*peer_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    dedupe_peer_ids(connected_first.into_iter().chain(provider_peer_ids))
 }
 
 fn head_is_newer(candidate: &HeadDescriptor, current: &HeadDescriptor) -> bool {
