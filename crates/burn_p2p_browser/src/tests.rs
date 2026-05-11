@@ -83,6 +83,18 @@ fn assert_peer_head_artifact_ready(storage: &BrowserStorageSnapshot) {
     assert_eq!(bytes.as_slice(), b"peer-artifact");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct StaticErrorPeerArtifactFetcher(&'static str);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BrowserPeerArtifactFetcher for StaticErrorPeerArtifactFetcher {
+    fn fetch(&self, _request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
+        let message = self.0.to_owned();
+        Box::pin(async move { Err(BrowserAuthClientError::ArtifactTransport(message)) })
+    }
+}
+
 fn browser_train_command(plan: BrowserTrainingPlan) -> BrowserWorkerCommand {
     BrowserWorkerCommand::Train(Box::new(plan))
 }
@@ -6003,7 +6015,7 @@ fn browser_direct_sync_only_falls_back_to_edge_without_live_transport_or_state()
 
     runtime.transport.connected = Some(BrowserTransportKind::WebRtcDirect);
     assert!(should_fetch_direct_swarm_snapshot(&runtime));
-    assert!(!should_fallback_to_edge_control_sync(&runtime));
+    assert!(should_fallback_to_edge_control_sync(&runtime));
 
     runtime
         .config
@@ -6438,19 +6450,6 @@ fn browser_portal_client_syncs_active_head_artifact_into_worker_cache_once() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() {
-    #[derive(Clone)]
-    struct FailingPeerArtifactFetcher;
-
-    impl BrowserPeerArtifactFetcher for FailingPeerArtifactFetcher {
-        fn fetch(&self, _request: BrowserPeerArtifactRequest) -> BrowserPeerArtifactFetchFuture {
-            Box::pin(async {
-                Err(BrowserAuthClientError::ArtifactTransport(
-                    "browser direct handoff is still pending".into(),
-                ))
-            })
-        }
-    }
-
     let published = PublishedArtifactRecord {
         published_artifact_id: PublishedArtifactId::new("published-browser"),
         artifact_alias_id: None,
@@ -6505,7 +6504,9 @@ fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() 
             session_ttl_secs: 900,
         },
     )
-    .with_peer_artifact_fetcher(FailingPeerArtifactFetcher);
+    .with_peer_artifact_fetcher(StaticErrorPeerArtifactFetcher(
+        "browser direct handoff is still pending",
+    ));
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig::new(
             "https://edge.example",
@@ -6559,6 +6560,166 @@ fn browser_portal_client_defers_edge_fallback_while_direct_handoff_is_pending() 
     assert!(storage.cached_head_artifact_heads.is_empty());
     assert_eq!(storage.last_head_artifact_transport, None);
     assert!(storage.artifact_replay_checkpoint.is_some());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_portal_client_uses_edge_fallback_when_direct_swarm_has_no_service_peer() {
+    let published = PublishedArtifactRecord {
+        published_artifact_id: PublishedArtifactId::new("published-browser"),
+        artifact_alias_id: None,
+        experiment_id: ExperimentId::new("exp-browser"),
+        run_id: Some(RunId::new("run-browser")),
+        head_id: HeadId::new("head-browser"),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        object_key: "browser/head-browser.snapshot".into(),
+        content_hash: ContentId::new("content-browser"),
+        content_length: 4,
+        created_at: Utc::now(),
+        expires_at: None,
+        status: PublishedArtifactStatus::Ready,
+    };
+    let head_view = burn_p2p_publish::HeadArtifactView {
+        head: burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-browser"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 3,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        },
+        run_id: RunId::new("run-browser"),
+        eval_reports: Vec::new(),
+        aliases: Vec::new(),
+        published_artifacts: vec![published.clone()],
+        available_profiles: BTreeSet::from([ArtifactProfile::BrowserSnapshot]),
+        alias_history: Vec::new(),
+        provider_peer_ids: Vec::new(),
+    };
+    let download_ticket = burn_p2p_publish::DownloadTicketResponse {
+        ticket: DownloadTicket {
+            download_ticket_id: DownloadTicketId::new("ticket-browser"),
+            published_artifact_id: published.published_artifact_id.clone(),
+            principal_id: PrincipalId::new("principal-browser"),
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            delivery_mode: DownloadDeliveryMode::EdgeStream,
+        },
+        published_artifact: published,
+        download_path: "/artifacts/download/ticket-browser".into(),
+    };
+    let (base_url, handle) =
+        spawn_artifact_sync_server(head_view, download_ticket, b"demo".to_vec());
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(base_url),
+        BrowserEnrollmentConfig {
+            network_id: NetworkId::new("net-browser"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("family-browser"),
+            protocol_major: 0,
+            app_semver: semver::Version::new(0, 1, 0),
+            release_train_hash: ContentId::new("train-browser"),
+            target_artifact_id: "browser-wasm".into(),
+            target_artifact_hash: ContentId::new("artifact-browser"),
+            login_path: "/login".into(),
+            callback_path: "/callback".into(),
+            enroll_path: "/enroll".into(),
+            trust_bundle_path: "/trust".into(),
+            requested_scopes: BTreeSet::new(),
+            session_ttl_secs: 900,
+        },
+    )
+    .with_peer_artifact_fetcher(StaticErrorPeerArtifactFetcher(
+        "browser direct swarm has no connected peer to service the request",
+    ));
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus {
+            selected: Some(BrowserTransportKind::WebRtcDirect),
+            connected: Some(BrowserTransportKind::WssFallback),
+            connected_peer_ids: vec![PeerId::new("peer-browser-bootstrap")],
+            ..BrowserTransportStatus::default()
+        },
+    );
+    runtime.transport.active = Some(BrowserTransportKind::WebRtcDirect);
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime.storage.remember_head(HeadId::new("head-browser"));
+    let payload = sample_peer_artifact_payload("head-browser", "artifact-browser", b"demo");
+    runtime
+        .storage
+        .remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            run_id: RunId::new("run-browser"),
+            head_id: HeadId::new("head-browser"),
+            artifact_id: ArtifactId::new("artifact-browser"),
+            artifact_profile: ArtifactProfile::BrowserSnapshot,
+            publication_target_id: PublicationTargetId::new("browser-target"),
+            publication_content_hash: Some(ContentId::new("content-browser")),
+            publication_content_length: Some(4),
+            provider_peer_ids: Vec::new(),
+            artifact_descriptor: Some(payload.descriptor),
+            completed_chunks: Vec::new(),
+            edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
+            completed_bytes: 0,
+            last_attempted_at: Utc::now(),
+            attempt_count: 0,
+        });
+    let session = sample_browser_session_state("principal-browser");
+
+    let events = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async move {
+            client
+                .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
+                .await
+                .expect("edge fallback should recover when direct swarm has no service peer")
+        });
+
+    handle.join().expect("join artifact server");
+    let storage = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            BrowserWorkerEvent::StorageUpdated(storage) => Some(storage.as_ref()),
+            _ => None,
+        })
+        .expect("storage update");
+    assert!(storage.active_head_artifact_ready());
+    assert_eq!(
+        storage.last_head_artifact_transport.as_deref(),
+        Some("edge-download-ticket")
+    );
+    let (_, descriptor, bytes) = storage
+        .active_head_artifact_bytes()
+        .expect("edge fallback artifact bytes");
+    assert_eq!(descriptor.artifact_id.as_str(), "artifact-browser");
+    assert_eq!(bytes.as_slice(), b"demo");
+    let diagnostic = storage
+        .last_head_artifact_sync
+        .as_ref()
+        .expect("active head artifact sync diagnostic");
+    assert_eq!(diagnostic.route_kind, BrowserArtifactRouteKind::EdgeHttp);
+    assert_eq!(diagnostic.last_error, None);
 }
 
 #[test]

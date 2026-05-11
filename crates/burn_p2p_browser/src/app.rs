@@ -1187,9 +1187,13 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
                         .await
                     {
                         Ok(artifact_events) => events.extend(artifact_events),
-                        Err(error) => events.push(BrowserWorkerEvent::Error {
-                            message: format!("browser artifact sync failed: {error}"),
-                        }),
+                        Err(error) => {
+                            if !should_fallback_to_edge_control_sync(runtime) {
+                                events.push(BrowserWorkerEvent::Error {
+                                    message: format!("browser artifact sync failed: {error}"),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1252,7 +1256,11 @@ pub(crate) fn should_fallback_to_edge_control_sync(runtime: &BrowserWorkerRuntim
         return true;
     }
 
-    missing_control_state
+    let missing_active_head_artifact = runtime_syncs_active_head_artifact(runtime)
+        && runtime.storage.last_head_id.is_some()
+        && !runtime.storage.active_head_artifact_ready();
+
+    missing_control_state || missing_active_head_artifact
 }
 
 #[cfg(target_arch = "wasm32")]

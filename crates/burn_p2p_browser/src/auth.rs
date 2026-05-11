@@ -459,6 +459,12 @@ pub(crate) fn artifact_route_kind_for_error(
     }
 }
 
+fn peer_artifact_transport_has_no_connected_service_peer(error: &BrowserAuthClientError) -> bool {
+    error
+        .to_string()
+        .contains("has no connected peer to service the request")
+}
+
 /// Complete artifact payload returned by a browser-native peer transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserPeerArtifactPayload {
@@ -714,7 +720,14 @@ impl BrowserEdgeClient {
         runtime.transport.connected.is_some()
     }
 
-    fn should_defer_edge_artifact_fallback(runtime: &BrowserWorkerRuntime) -> bool {
+    fn should_defer_edge_artifact_fallback(
+        runtime: &BrowserWorkerRuntime,
+        peer_transport_error: Option<&BrowserAuthClientError>,
+    ) -> bool {
+        if peer_transport_error.is_some_and(peer_artifact_transport_has_no_connected_service_peer) {
+            return false;
+        }
+
         let swarm_status = runtime.swarm_status();
         let direct_selected = matches!(
             swarm_status.desired_transport,
@@ -929,7 +942,8 @@ impl BrowserEdgeClient {
 
         if transport.is_none() {
             if let Some(edge_fallback) = plan.edge_fallback.as_ref() {
-                if Self::should_defer_edge_artifact_fallback(runtime) {
+                if Self::should_defer_edge_artifact_fallback(runtime, peer_transport_error.as_ref())
+                {
                     return Ok(Self::storage_update_if_changed(runtime, previous_storage));
                 }
                 let (Some(session), Some(principal_id)) =
