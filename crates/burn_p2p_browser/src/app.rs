@@ -873,6 +873,7 @@ pub(crate) async fn refresh_worker_runtime_preferring_direct_swarm(
     direct_swarm_runtime: Option<&mut WasmBrowserSwarmRuntime>,
     include_leaderboard: bool,
 ) -> (Vec<BrowserWorkerEvent>, Option<BrowserAuthClientError>) {
+    let cached_active_head = cached_active_head_artifact_for_restore(runtime);
     let mut events = apply_direct_swarm_status_snapshot(runtime, direct_swarm_runtime.as_deref());
 
     if let Some(direct_swarm_runtime) = direct_swarm_runtime {
@@ -910,9 +911,29 @@ pub(crate) async fn refresh_worker_runtime_preferring_direct_swarm(
     {
         Ok(edge_events) => {
             events.extend(edge_events);
+            restore_cached_active_head_artifact_after_unready_sync(
+                runtime,
+                cached_active_head.as_ref(),
+                &mut events,
+            );
             (events, None)
         }
-        Err(error) => (events, Some(error)),
+        Err(error) => {
+            if restore_cached_active_head_artifact_after_unready_sync(
+                runtime,
+                cached_active_head.as_ref(),
+                &mut events,
+            ) {
+                events.push(BrowserWorkerEvent::Error {
+                    message: format!(
+                        "browser control sync failed; keeping cached active head artifact: {error}"
+                    ),
+                });
+                (events, None)
+            } else {
+                (events, Some(error))
+            }
+        }
     }
 }
 
@@ -1277,6 +1298,21 @@ pub(crate) fn restore_cached_active_head_artifact(
             .unwrap_or_else(|| "peer-cache".into()),
     );
     runtime.storage.active_head_artifact_ready()
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn restore_cached_active_head_artifact_after_unready_sync(
+    runtime: &mut BrowserWorkerRuntime,
+    cached: Option<&CachedActiveHeadArtifact>,
+    events: &mut Vec<BrowserWorkerEvent>,
+) -> bool {
+    if !restore_cached_active_head_artifact(runtime, cached) {
+        return false;
+    }
+    events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
+        runtime.storage.clone(),
+    )));
+    true
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]

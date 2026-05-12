@@ -1,8 +1,9 @@
 use super::*;
 use crate::app::{
     cached_active_head_artifact_for_restore, restore_cached_active_head_artifact,
-    should_fallback_to_edge_control_sync, should_fetch_direct_swarm_snapshot,
-    should_sync_active_head_artifact, should_wait_for_direct_swarm_bootstrap,
+    restore_cached_active_head_artifact_after_unready_sync, should_fallback_to_edge_control_sync,
+    should_fetch_direct_swarm_snapshot, should_sync_active_head_artifact,
+    should_wait_for_direct_swarm_bootstrap,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1036,6 +1037,83 @@ fn browser_runtime_restores_cached_head_when_new_direct_head_lacks_bytes() {
         .expect("cached head should remain trainable");
     assert_eq!(descriptor.artifact_id.as_str(), "artifact-ready");
     assert_eq!(bytes, b"headdata");
+}
+
+#[test]
+fn browser_runtime_restores_cached_head_after_edge_refresh_leaves_unready_head() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::enabled(true, true, true).connected_via(
+            BrowserTransportKind::WebRtcDirect,
+            vec![PeerId::new("peer-native")],
+        ),
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime
+        .storage
+        .remember_head_descriptor(burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-ready"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-ready"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 1,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        });
+    remember_complete_active_head_artifact(
+        &mut runtime.storage,
+        "head-ready",
+        "artifact-ready",
+        "peer-native",
+    );
+    let cached = cached_active_head_artifact_for_restore(&runtime);
+
+    runtime
+        .storage
+        .remember_head_descriptor(burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-edge-announced-before-artifact"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-unavailable"),
+            parent_head_id: Some(HeadId::new("head-ready")),
+            global_step: 2,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        });
+    assert!(!runtime.storage.active_head_artifact_ready());
+
+    let mut events = Vec::new();
+    assert!(restore_cached_active_head_artifact_after_unready_sync(
+        &mut runtime,
+        cached.as_ref(),
+        &mut events,
+    ));
+    assert_eq!(
+        runtime.storage.last_head_id.as_ref().map(HeadId::as_str),
+        Some("head-ready")
+    );
+    assert!(runtime.storage.active_head_artifact_ready());
+    assert!(matches!(
+        events.last(),
+        Some(BrowserWorkerEvent::StorageUpdated(storage))
+            if storage.last_head_id.as_ref().map(HeadId::as_str) == Some("head-ready")
+    ));
 }
 
 #[test]
