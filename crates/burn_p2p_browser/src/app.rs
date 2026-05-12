@@ -1,3 +1,5 @@
+#[cfg(any(test, target_arch = "wasm32"))]
+use burn_p2p::{ArtifactId, HeadDescriptor, HeadId};
 use burn_p2p::{
     BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, NetworkId,
     RevisionId,
@@ -1156,6 +1158,7 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
     session: Option<&BrowserSessionState>,
     direct_runtime: &mut WasmBrowserSwarmRuntime,
 ) -> Result<Vec<BrowserWorkerEvent>, BrowserAuthClientError> {
+    let cached_active_head = cached_active_head_artifact_for_restore(runtime);
     let mut events = runtime.apply_command(
         BrowserWorkerCommand::ApplySwarmStatus(Box::new(direct_runtime.status())),
         None,
@@ -1195,6 +1198,13 @@ pub(crate) async fn sync_worker_runtime_from_direct_swarm(
                             }
                         }
                     }
+                    if !runtime.storage.active_head_artifact_ready()
+                        && restore_cached_active_head_artifact(runtime, cached_active_head.as_ref())
+                    {
+                        events.push(BrowserWorkerEvent::StorageUpdated(Box::new(
+                            runtime.storage.clone(),
+                        )));
+                    }
                 }
             }
         }
@@ -1208,6 +1218,65 @@ pub(crate) fn should_fetch_direct_swarm_snapshot(runtime: &BrowserWorkerRuntime)
         return true;
     }
     should_sync_active_head_artifact(runtime, runtime.storage.last_head_id.as_ref())
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub(crate) struct CachedActiveHeadArtifact {
+    head_id: HeadId,
+    artifact_id: ArtifactId,
+    head_descriptor: Option<HeadDescriptor>,
+    transport: Option<String>,
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn cached_active_head_artifact_for_restore(
+    runtime: &BrowserWorkerRuntime,
+) -> Option<CachedActiveHeadArtifact> {
+    if !runtime.storage.active_head_artifact_ready() {
+        return None;
+    }
+    let (head_id, descriptor, bytes) = runtime.storage.active_head_artifact_bytes()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(CachedActiveHeadArtifact {
+        head_descriptor: runtime
+            .storage
+            .last_head_descriptor
+            .clone()
+            .filter(|head| head.head_id == head_id),
+        head_id,
+        artifact_id: descriptor.artifact_id,
+        transport: runtime.storage.last_head_artifact_transport.clone(),
+    })
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn restore_cached_active_head_artifact(
+    runtime: &mut BrowserWorkerRuntime,
+    cached: Option<&CachedActiveHeadArtifact>,
+) -> bool {
+    if runtime.storage.active_head_artifact_ready() {
+        return false;
+    }
+    let Some(cached) = cached else {
+        return false;
+    };
+    if let Some(head) = cached.head_descriptor.clone() {
+        runtime.storage.remember_head_descriptor(head);
+    } else {
+        runtime.storage.remember_head(cached.head_id.clone());
+    }
+    runtime.storage.remember_synced_head_artifact(
+        cached.head_id.clone(),
+        cached.artifact_id.clone(),
+        cached
+            .transport
+            .clone()
+            .unwrap_or_else(|| "peer-cache".into()),
+    );
+    runtime.storage.active_head_artifact_ready()
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]

@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::{
+    cached_active_head_artifact_for_restore, restore_cached_active_head_artifact,
     should_fallback_to_edge_control_sync, should_fetch_direct_swarm_snapshot,
     should_sync_active_head_artifact, should_wait_for_direct_swarm_bootstrap,
 };
@@ -81,6 +82,69 @@ fn assert_peer_head_artifact_ready(storage: &BrowserStorageSnapshot) {
         .expect("peer artifact bytes should be retained for training");
     assert_eq!(descriptor.artifact_id.as_str(), "artifact-browser");
     assert_eq!(bytes.as_slice(), b"peer-artifact");
+}
+
+fn remember_complete_active_head_artifact(
+    storage: &mut BrowserStorageSnapshot,
+    head_id: &str,
+    artifact_id: &str,
+    transport: &str,
+) {
+    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        run_id: RunId::new("run-browser"),
+        head_id: HeadId::new(head_id),
+        artifact_id: ArtifactId::new(artifact_id),
+        artifact_profile: ArtifactProfile::BrowserSnapshot,
+        publication_target_id: PublicationTargetId::new("browser-target"),
+        publication_content_hash: None,
+        publication_content_length: None,
+        provider_peer_ids: vec![PeerId::new("peer-native")],
+        artifact_descriptor: None,
+        completed_chunks: Vec::new(),
+        edge_download_prefix: None,
+        edge_download_segments: Vec::new(),
+        completed_bytes: 0,
+        last_attempted_at: Utc::now(),
+        attempt_count: 1,
+    });
+    storage.remember_artifact_replay_descriptor(burn_p2p::ArtifactDescriptor {
+        artifact_id: ArtifactId::new(artifact_id),
+        kind: burn_p2p::ArtifactKind::FullHead,
+        head_id: Some(HeadId::new(head_id)),
+        base_head_id: Some(HeadId::new("head-parent")),
+        precision: Precision::Fp16,
+        model_schema_hash: ContentId::new("schema-browser"),
+        record_format: "burn-record:bytes-mpk".into(),
+        bytes_len: 8,
+        chunks: vec![
+            ChunkDescriptor {
+                chunk_id: burn_p2p::ChunkId::new("chunk-a"),
+                offset_bytes: 0,
+                length_bytes: 4,
+                chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
+                    b"head",
+                )),
+            },
+            ChunkDescriptor {
+                chunk_id: burn_p2p::ChunkId::new("chunk-b"),
+                offset_bytes: 4,
+                length_bytes: 4,
+                chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
+                    b"data",
+                )),
+            },
+        ],
+        root_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(b"headdata")),
+    });
+    storage.remember_artifact_replay_chunk(burn_p2p::ChunkId::new("chunk-a"), b"head".to_vec());
+    storage.remember_artifact_replay_chunk(burn_p2p::ChunkId::new("chunk-b"), b"data".to_vec());
+    storage.remember_synced_head_artifact(
+        HeadId::new(head_id),
+        ArtifactId::new(artifact_id),
+        transport,
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -878,59 +942,10 @@ fn browser_storage_tracks_partial_artifact_replay_chunks() {
 fn browser_storage_returns_active_head_artifact_bytes_after_sync() {
     let mut storage = BrowserStorageSnapshot::default();
     storage.remember_head(HeadId::new("head-browser"));
-    storage.remember_artifact_replay_checkpoint(BrowserArtifactReplayCheckpoint {
-        experiment_id: ExperimentId::new("exp-browser"),
-        revision_id: RevisionId::new("rev-browser"),
-        run_id: RunId::new("run-browser"),
-        head_id: HeadId::new("head-browser"),
-        artifact_id: ArtifactId::new("artifact-browser"),
-        artifact_profile: ArtifactProfile::BrowserSnapshot,
-        publication_target_id: PublicationTargetId::new("browser-target"),
-        publication_content_hash: None,
-        publication_content_length: None,
-        provider_peer_ids: vec![PeerId::new("peer-a")],
-        artifact_descriptor: None,
-        completed_chunks: Vec::new(),
-        edge_download_prefix: None,
-        edge_download_segments: Vec::new(),
-        completed_bytes: 0,
-        last_attempted_at: Utc::now(),
-        attempt_count: 1,
-    });
-    storage.remember_artifact_replay_descriptor(burn_p2p::ArtifactDescriptor {
-        artifact_id: ArtifactId::new("artifact-browser"),
-        kind: burn_p2p::ArtifactKind::FullHead,
-        head_id: Some(HeadId::new("head-browser")),
-        base_head_id: Some(HeadId::new("head-parent")),
-        precision: Precision::Fp16,
-        model_schema_hash: ContentId::new("schema-browser"),
-        record_format: "burn-record:bytes-mpk".into(),
-        bytes_len: 8,
-        chunks: vec![
-            ChunkDescriptor {
-                chunk_id: burn_p2p::ChunkId::new("chunk-a"),
-                offset_bytes: 0,
-                length_bytes: 4,
-                chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
-                    b"head",
-                )),
-            },
-            ChunkDescriptor {
-                chunk_id: burn_p2p::ChunkId::new("chunk-b"),
-                offset_bytes: 4,
-                length_bytes: 4,
-                chunk_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(
-                    b"data",
-                )),
-            },
-        ],
-        root_hash: ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(b"headdata")),
-    });
-    storage.remember_artifact_replay_chunk(burn_p2p::ChunkId::new("chunk-a"), b"head".to_vec());
-    storage.remember_artifact_replay_chunk(burn_p2p::ChunkId::new("chunk-b"), b"data".to_vec());
-    storage.remember_synced_head_artifact(
-        HeadId::new("head-browser"),
-        ArtifactId::new("artifact-browser"),
+    remember_complete_active_head_artifact(
+        &mut storage,
+        "head-browser",
+        "artifact-browser",
         "peer-swarm",
     );
 
@@ -940,6 +955,86 @@ fn browser_storage_returns_active_head_artifact_bytes_after_sync() {
         .expect("active head bytes retained");
     assert_eq!(head_id.as_str(), "head-browser");
     assert_eq!(descriptor.artifact_id.as_str(), "artifact-browser");
+    assert_eq!(bytes, b"headdata");
+}
+
+#[test]
+fn browser_runtime_restores_cached_head_when_new_direct_head_lacks_bytes() {
+    let mut runtime = BrowserWorkerRuntime::start(
+        BrowserRuntimeConfig::new(
+            "https://edge.example",
+            NetworkId::new("net-browser"),
+            ContentId::new("train-browser"),
+            "browser-wasm",
+            ContentId::new("artifact-browser"),
+        ),
+        BrowserCapabilityReport::default(),
+        BrowserTransportStatus::enabled(true, true, true).connected_via(
+            BrowserTransportKind::WebRtcDirect,
+            vec![PeerId::new("peer-native")],
+        ),
+    );
+    runtime
+        .storage
+        .remember_assignment(BrowserStoredAssignment {
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+        });
+    runtime
+        .storage
+        .remember_head_descriptor(burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-ready"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-ready"),
+            parent_head_id: Some(HeadId::new("head-parent")),
+            global_step: 1,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        });
+    remember_complete_active_head_artifact(
+        &mut runtime.storage,
+        "head-ready",
+        "artifact-ready",
+        "peer-native",
+    );
+    let cached = cached_active_head_artifact_for_restore(&runtime);
+    assert!(cached.is_some());
+
+    runtime
+        .storage
+        .remember_head_descriptor(burn_p2p::HeadDescriptor {
+            head_id: HeadId::new("head-announced-before-artifact"),
+            study_id: StudyId::new("study-browser"),
+            experiment_id: ExperimentId::new("exp-browser"),
+            revision_id: RevisionId::new("rev-browser"),
+            artifact_id: ArtifactId::new("artifact-unavailable"),
+            parent_head_id: Some(HeadId::new("head-ready")),
+            global_step: 2,
+            created_at: Utc::now(),
+            metrics: BTreeMap::new(),
+        });
+    assert!(!runtime.storage.active_head_artifact_ready());
+
+    assert!(restore_cached_active_head_artifact(
+        &mut runtime,
+        cached.as_ref()
+    ));
+    assert_eq!(
+        runtime.storage.last_head_id.as_ref().map(HeadId::as_str),
+        Some("head-ready")
+    );
+    assert_eq!(
+        runtime.storage.last_head_artifact_transport.as_deref(),
+        Some("peer-native")
+    );
+    let (_, descriptor, bytes) = runtime
+        .storage
+        .active_head_artifact_bytes()
+        .expect("cached head should remain trainable");
+    assert_eq!(descriptor.artifact_id.as_str(), "artifact-ready");
     assert_eq!(bytes, b"headdata");
 }
 

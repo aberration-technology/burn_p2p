@@ -231,6 +231,10 @@ impl BrowserSessionRuntimeHandle {
     pub async fn ensure_active_head_artifact_cached(
         &mut self,
     ) -> Result<(HeadId, ArtifactDescriptor, Vec<u8>), BrowserSessionRuntimeError> {
+        if let Some(artifact) = self.active_head_artifact_bytes() {
+            return Ok(artifact);
+        }
+
         self.refresh().await?;
         if let Some(artifact) = self.active_head_artifact_bytes() {
             return Ok(artifact);
