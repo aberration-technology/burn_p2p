@@ -937,6 +937,7 @@ impl BrowserStorageSnapshot {
     /// complete descriptor and byte payload in memory.
     pub fn active_head_artifact_bytes(&self) -> Option<(HeadId, ArtifactDescriptor, Vec<u8>)> {
         if let Some(cache) = self.active_head_artifact_cache.as_ref()
+            && self.last_head_id.as_ref() == Some(&cache.head_id)
             && let Some(bytes) = active_head_artifact_cache_bytes(cache)
             && self.cached_head_artifact_heads.contains(&cache.head_id)
         {
@@ -948,6 +949,9 @@ impl BrowserStorageSnapshot {
             .head_id
             .clone()
             .or_else(|| self.last_head_id.clone())?;
+        if self.last_head_id.as_ref() != Some(&head_id) {
+            return None;
+        }
         if !self.cached_head_artifact_heads.contains(&head_id) {
             return None;
         }
@@ -1031,6 +1035,7 @@ impl BrowserStorageSnapshot {
     /// externalized to IndexedDB metadata records.
     pub fn durable_replay_snapshot(&self) -> Self {
         let mut snapshot = self.clone();
+        snapshot.active_head_artifact_cache = None;
         if let Some(checkpoint) = snapshot.artifact_replay_checkpoint.as_mut() {
             for chunk in &mut checkpoint.completed_chunks {
                 if !chunk.chunk_bytes.is_empty() {
@@ -1089,7 +1094,6 @@ impl BrowserStorageSnapshot {
             })
             .filter(|completed_bytes| *completed_bytes > 0);
         self.remember_active_head_artifact_cache(&head_id, &artifact_id);
-        self.artifact_replay_checkpoint = None;
         self.cached_head_artifact_heads.insert(head_id);
         self.cached_chunk_artifacts.insert(artifact_id);
         self.last_head_artifact_transport = Some(transport.clone());
@@ -1107,6 +1111,69 @@ impl BrowserStorageSnapshot {
             diagnostic.last_error = None;
         }
         self.updated_at = Utc::now();
+    }
+
+    /// Restores a complete active-head payload from an in-memory handoff cache.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub(crate) fn remember_active_head_artifact_payload(
+        &mut self,
+        head_id: HeadId,
+        descriptor: ArtifactDescriptor,
+        bytes: Vec<u8>,
+        transport: impl Into<String>,
+    ) -> bool {
+        if bytes.len() as u64 != descriptor.bytes_len {
+            return false;
+        }
+        let root_hash = ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&bytes));
+        if root_hash != descriptor.root_hash {
+            return false;
+        }
+
+        let mut chunks = descriptor.chunks.clone();
+        chunks.sort_by_key(|chunk| chunk.offset_bytes);
+        let mut completed_chunks = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            let start = match usize::try_from(chunk.offset_bytes) {
+                Ok(start) => start,
+                Err(_) => return false,
+            };
+            let len = match usize::try_from(chunk.length_bytes) {
+                Ok(len) => len,
+                Err(_) => return false,
+            };
+            let end = match start.checked_add(len) {
+                Some(end) => end,
+                None => return false,
+            };
+            let Some(chunk_bytes) = bytes.get(start..end).map(Vec::from) else {
+                return false;
+            };
+            let chunk_hash =
+                ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+            if chunk_hash != chunk.chunk_hash {
+                return false;
+            }
+            completed_chunks.push(BrowserArtifactReplayChunk {
+                chunk_id: chunk.chunk_id.clone(),
+                storage: BrowserArtifactReplayChunkStorage::Inline,
+                persisted_bytes: chunk_bytes.len() as u64,
+                chunk_bytes,
+            });
+        }
+
+        self.active_head_artifact_cache = Some(BrowserActiveHeadArtifactCache {
+            head_id: head_id.clone(),
+            descriptor: descriptor.clone(),
+            completed_chunks,
+            edge_download_prefix: None,
+            edge_download_segments: Vec::new(),
+        });
+        self.cached_head_artifact_heads.insert(head_id);
+        self.cached_chunk_artifacts.insert(descriptor.artifact_id);
+        self.last_head_artifact_transport = Some(transport.into());
+        self.updated_at = Utc::now();
+        true
     }
 
     fn remember_active_head_artifact_cache(&mut self, head_id: &HeadId, artifact_id: &ArtifactId) {

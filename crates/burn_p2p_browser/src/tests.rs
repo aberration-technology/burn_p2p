@@ -960,6 +960,61 @@ fn browser_storage_returns_active_head_artifact_bytes_after_sync() {
 }
 
 #[test]
+fn browser_storage_keeps_synced_head_checkpoint_for_durable_training_runtime() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_head(HeadId::new("head-browser"));
+    remember_complete_active_head_artifact(
+        &mut storage,
+        "head-browser",
+        "artifact-browser",
+        "peer-swarm",
+    );
+
+    assert!(storage.active_head_artifact_ready());
+    assert!(
+        storage.artifact_replay_checkpoint.is_some(),
+        "synced active-head bytes must remain describable for a later training runtime"
+    );
+
+    let durable = storage.durable_replay_snapshot();
+    let checkpoint = durable
+        .artifact_replay_checkpoint
+        .as_ref()
+        .expect("durable active-head checkpoint");
+    assert_eq!(checkpoint.artifact_id.as_str(), "artifact-browser");
+    assert!(checkpoint.completed_chunks.iter().all(|chunk| {
+        chunk.storage == BrowserArtifactReplayChunkStorage::IndexedDb
+            && chunk.chunk_bytes.is_empty()
+            && chunk.persisted_bytes == 4
+    }));
+    assert!(
+        !durable.active_head_artifact_ready(),
+        "durable snapshots externalize bytes; the loader must hydrate them before training"
+    );
+}
+
+#[test]
+fn browser_storage_active_head_bytes_do_not_return_stale_cache_after_head_advances() {
+    let mut storage = BrowserStorageSnapshot::default();
+    storage.remember_head(HeadId::new("head-browser"));
+    remember_complete_active_head_artifact(
+        &mut storage,
+        "head-browser",
+        "artifact-browser",
+        "peer-swarm",
+    );
+    assert!(storage.active_head_artifact_bytes().is_some());
+
+    storage.remember_head(HeadId::new("head-next"));
+
+    assert!(!storage.active_head_artifact_ready());
+    assert!(
+        storage.active_head_artifact_bytes().is_none(),
+        "active-head bytes must follow the current head, not the previous in-memory cache"
+    );
+}
+
+#[test]
 fn browser_runtime_restores_cached_head_when_new_direct_head_lacks_bytes() {
     let mut runtime = BrowserWorkerRuntime::start(
         BrowserRuntimeConfig::new(
@@ -7013,8 +7068,13 @@ fn browser_portal_client_resumes_edge_download_after_partial_failure() {
                     .sync_active_head_artifact_into_worker(&mut runtime, Some(&session))
                     .await
                     .expect("second sync should resume edge download");
-                let checkpoint_cleared = runtime.storage.artifact_replay_checkpoint.clone();
-                assert!(checkpoint_cleared.is_none());
+                let checkpoint_after_success = runtime.storage.artifact_replay_checkpoint.clone();
+                assert!(
+                    checkpoint_after_success
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.edge_download_prefix.as_ref())
+                        .is_some_and(|prefix| prefix.bytes == b"demodata".to_vec())
+                );
                 (first, checkpoint, second)
             });
 
@@ -8066,7 +8126,7 @@ fn browser_portal_client_reuses_replay_checkpoint_provider_order_and_clears_it_o
             _ => None,
         })
         .expect("storage update");
-    assert!(storage.artifact_replay_checkpoint.is_none());
+    assert!(storage.artifact_replay_checkpoint.is_some());
     assert_peer_head_artifact_ready(storage);
 }
 
@@ -8238,7 +8298,15 @@ fn browser_portal_client_does_not_reuse_checkpoint_when_publication_metadata_cha
         storage.last_head_artifact_transport.as_deref(),
         Some("peer-native")
     );
-    assert!(storage.artifact_replay_checkpoint.is_none());
+    let checkpoint = storage
+        .artifact_replay_checkpoint
+        .as_ref()
+        .expect("successful sync keeps durable replay checkpoint");
+    assert_eq!(
+        checkpoint.publication_content_hash,
+        Some(ContentId::new("content-browser-new"))
+    );
+    assert_eq!(checkpoint.publication_content_length, Some(4));
     assert_peer_head_artifact_ready(storage);
 }
 

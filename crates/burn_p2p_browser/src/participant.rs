@@ -153,6 +153,13 @@ impl BrowserSessionRuntimeHandle {
             config.capability,
             BrowserTransportStatus::from_transport_surface(&snapshot.transports),
         );
+        runtime.storage = crate::durability::load_durable_browser_storage(&snapshot.network_id)
+            .await
+            .map_err(BrowserSessionRuntimeError::Worker)?;
+        runtime.storage.pending_receipts =
+            crate::durability::load_durable_receipt_outbox(&snapshot.network_id)
+                .await
+                .map_err(BrowserSessionRuntimeError::Worker)?;
         runtime.remember_session(session.clone());
         #[cfg(target_arch = "wasm32")]
         let mut direct_swarm_runtime = if config.enable_direct_swarm {

@@ -1,9 +1,9 @@
-#[cfg(any(test, target_arch = "wasm32"))]
-use burn_p2p::{ArtifactId, HeadDescriptor, HeadId};
 use burn_p2p::{
     BrowserMode, ContentId, ExperimentDirectoryEntry, ExperimentId, MetricValue, NetworkId,
     RevisionId,
 };
+#[cfg(any(test, target_arch = "wasm32"))]
+use burn_p2p::{HeadDescriptor, HeadId};
 use burn_p2p_metrics::{
     MetricsCatchupBundle, derive_canonical_head_adoption_curves,
     derive_latest_canonical_head_population_histograms,
@@ -1245,7 +1245,8 @@ pub(crate) fn should_fetch_direct_swarm_snapshot(runtime: &BrowserWorkerRuntime)
 #[derive(Clone, Debug)]
 pub(crate) struct CachedActiveHeadArtifact {
     head_id: HeadId,
-    artifact_id: ArtifactId,
+    descriptor: burn_p2p::ArtifactDescriptor,
+    bytes: Vec<u8>,
     head_descriptor: Option<HeadDescriptor>,
     transport: Option<String>,
 }
@@ -1268,7 +1269,8 @@ pub(crate) fn cached_active_head_artifact_for_restore(
             .clone()
             .filter(|head| head.head_id == head_id),
         head_id,
-        artifact_id: descriptor.artifact_id,
+        descriptor,
+        bytes,
         transport: runtime.storage.last_head_artifact_transport.clone(),
     })
 }
@@ -1289,9 +1291,11 @@ pub(crate) fn restore_cached_active_head_artifact(
     } else {
         runtime.storage.remember_head(cached.head_id.clone());
     }
-    runtime.storage.remember_synced_head_artifact(
+    runtime.storage.clear_artifact_replay_checkpoint();
+    runtime.storage.remember_active_head_artifact_payload(
         cached.head_id.clone(),
-        cached.artifact_id.clone(),
+        cached.descriptor.clone(),
+        cached.bytes.clone(),
         cached
             .transport
             .clone()

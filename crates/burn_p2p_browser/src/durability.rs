@@ -1,3 +1,5 @@
+#[cfg(target_arch = "wasm32")]
+use burn_p2p::ContentId;
 use burn_p2p::{ArtifactId, ChunkId};
 use burn_p2p_core::NetworkId;
 
@@ -887,10 +889,11 @@ pub async fn load_durable_receipt_outbox(
 pub async fn load_durable_browser_storage(
     network_id: &NetworkId,
 ) -> Result<BrowserStorageSnapshot, String> {
-    if let Some(snapshot) = load_indexed_db_storage_snapshot(network_id).await? {
+    if let Some(mut snapshot) = load_indexed_db_storage_snapshot(network_id).await? {
+        hydrate_durable_browser_storage(network_id, &mut snapshot).await?;
         return Ok(snapshot);
     }
-    if let Some(snapshot) = load_local_storage_storage_snapshot(network_id)? {
+    if let Some(mut snapshot) = load_local_storage_storage_snapshot(network_id)? {
         if browser_indexed_db_factory().is_some()
             && persist_indexed_db_artifact_replay_chunks(
                 network_id,
@@ -908,11 +911,81 @@ pub async fn load_durable_browser_storage(
                 .await
                 .is_ok()
         {
+            hydrate_durable_browser_storage(network_id, &mut snapshot).await?;
             return Ok(snapshot);
         }
+        hydrate_durable_browser_storage(network_id, &mut snapshot).await?;
         return Ok(snapshot);
     }
     Ok(BrowserStorageSnapshot::default())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn hydrate_durable_browser_storage(
+    network_id: &NetworkId,
+    snapshot: &mut BrowserStorageSnapshot,
+) -> Result<(), String> {
+    if snapshot.active_head_artifact_ready() {
+        return Ok(());
+    }
+    let Some(checkpoint) = snapshot.artifact_replay_checkpoint.clone() else {
+        return Ok(());
+    };
+
+    if let Some(prefix) = load_durable_browser_artifact_replay_prefix(network_id, &checkpoint)
+        .await?
+        .filter(|prefix| !prefix.is_empty())
+    {
+        let total_bytes = checkpoint
+            .edge_download_prefix
+            .as_ref()
+            .and_then(|prefix| prefix.total_bytes)
+            .or_else(|| {
+                checkpoint
+                    .edge_download_segments
+                    .iter()
+                    .find_map(|segment| segment.total_bytes)
+            });
+        snapshot.remember_artifact_replay_edge_prefix(total_bytes, prefix);
+    }
+
+    let Some(descriptor) = checkpoint.artifact_descriptor.as_ref() else {
+        return Ok(());
+    };
+    let chunks_to_hydrate = checkpoint
+        .completed_chunks
+        .iter()
+        .filter(|chunk| chunk.chunk_bytes.is_empty() && chunk.persisted_bytes > 0)
+        .map(|chunk| chunk.chunk_id.clone())
+        .collect::<Vec<_>>();
+    for chunk_id in chunks_to_hydrate {
+        let Some(chunk_bytes) = load_durable_browser_artifact_replay_chunk(
+            network_id,
+            &checkpoint.artifact_id,
+            &chunk_id,
+        )
+        .await?
+        else {
+            continue;
+        };
+        let Some(chunk) = descriptor
+            .chunks
+            .iter()
+            .find(|candidate| candidate.chunk_id == chunk_id)
+        else {
+            continue;
+        };
+        if chunk_bytes.len() as u64 != chunk.length_bytes {
+            continue;
+        }
+        let chunk_hash =
+            ContentId::from_multihash(burn_p2p_core::codec::multihash_sha256(&chunk_bytes));
+        if chunk_hash != chunk.chunk_hash {
+            continue;
+        }
+        snapshot.remember_artifact_replay_chunk(chunk_id, chunk_bytes);
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1006,6 +1079,14 @@ pub async fn load_durable_browser_storage(
     _network_id: &NetworkId,
 ) -> Result<BrowserStorageSnapshot, String> {
     Ok(BrowserStorageSnapshot::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn hydrate_durable_browser_storage(
+    _network_id: &NetworkId,
+    _snapshot: &mut BrowserStorageSnapshot,
+) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
