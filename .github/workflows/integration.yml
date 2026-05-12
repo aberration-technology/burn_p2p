@@ -69,7 +69,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask setup browser
       - run: cargo xtask e2e mixed --profile ci-integration --keep-artifacts
-      - run: cargo xtask stress multiprocess --profile ci-integration --peers 8 --duration 90s --keep-artifacts
+      - run: cargo xtask stress multiprocess --profile ci-integration --peers 8 --duration 90s --windows 2 --keep-artifacts
       - if: always()
         uses: actions/upload-artifact@v4
         with:
