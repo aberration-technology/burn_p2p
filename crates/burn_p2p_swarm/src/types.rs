@@ -363,8 +363,11 @@ pub struct RuntimeTransportPolicy {
     pub export_openmetrics: bool,
 }
 
+const DEFAULT_PEER_RELAY_CIRCUIT_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_BOOTSTRAP_RELAY_CIRCUIT_BYTES: u64 = 256 * 1024 * 1024;
+
 fn default_max_relay_circuit_bytes() -> u64 {
-    64 * 1024 * 1024
+    DEFAULT_PEER_RELAY_CIRCUIT_BYTES
 }
 
 impl RuntimeTransportPolicy {
@@ -405,9 +408,13 @@ impl RuntimeTransportPolicy {
             } else {
                 Some(32)
             },
-            max_established_per_peer: Some(1),
+            max_established_per_peer: if bootstrap { Some(4) } else { Some(1) },
             max_relay_circuits: if bootstrap { Some(128) } else { None },
-            max_relay_circuit_bytes: 64 * 1024 * 1024,
+            max_relay_circuit_bytes: if bootstrap {
+                DEFAULT_BOOTSTRAP_RELAY_CIRCUIT_BYTES
+            } else {
+                DEFAULT_PEER_RELAY_CIRCUIT_BYTES
+            },
             enable_local_discovery: false,
             enable_relay_client: true,
             enable_relay_server: bootstrap,

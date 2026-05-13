@@ -239,7 +239,9 @@ fn bootstrap_transport_policy_targets_more_mesh_peers_with_connection_caps() {
     assert_eq!(policy.target_bootstrap_seed_connections, 0);
     assert_eq!(policy.max_established_incoming, Some(96));
     assert_eq!(policy.max_established_total, Some(128));
-    assert_eq!(policy.max_established_per_peer, Some(1));
+    assert_eq!(policy.max_established_per_peer, Some(4));
+    assert_eq!(policy.max_relay_circuits, Some(128));
+    assert_eq!(policy.max_relay_circuit_bytes, 256 * 1024 * 1024);
     assert!(!policy.enable_local_discovery);
     assert!(policy.enable_relay_client);
     assert!(policy.enable_relay_server);
