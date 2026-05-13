@@ -2440,13 +2440,14 @@ fn wait_for_artifact_from_fixed_providers<P>(
     timeout: Duration,
     failure_message: &str,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None::<String>;
     let mut staged_provider_peer_ids = provider_peer_ids.to_vec();
 
-    while Instant::now() < deadline {
-        let mut all_ready = true;
-        for (label, consumer) in consumers {
+    for (label, consumer) in consumers {
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None::<String>;
+        let mut ready = false;
+
+        while Instant::now() < deadline {
             if record_artifact_provider(
                 label,
                 consumer,
@@ -2454,11 +2455,11 @@ fn wait_for_artifact_from_fixed_providers<P>(
                 &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
-                continue;
+                ready = true;
+                break;
             }
 
             let Some(attempt_timeout) = artifact_sync_attempt_timeout_before(deadline) else {
-                all_ready = false;
                 break;
             };
 
@@ -2469,7 +2470,6 @@ fn wait_for_artifact_from_fixed_providers<P>(
             ) {
                 Ok(_) => {}
                 Err(error) => {
-                    all_ready = false;
                     last_error = Some(format!("{label}: {error}"));
                     continue;
                 }
@@ -2482,21 +2482,34 @@ fn wait_for_artifact_from_fixed_providers<P>(
                 &mut staged_provider_peer_ids,
                 &mut last_error,
             ) {
-                all_ready = false;
-                continue;
+                ready = true;
+                break;
             }
+
+            thread::sleep(Duration::from_millis(100));
         }
 
-        if all_ready {
-            return Ok(());
+        if !ready
+            && !record_artifact_provider(
+                label,
+                consumer,
+                artifact_id,
+                &mut staged_provider_peer_ids,
+                &mut last_error,
+            )
+        {
+            if let Some(error) = last_error {
+                anyhow::bail!("{failure_message}: {error}");
+            }
+            anyhow::bail!(
+                "{}: {label}: timed out waiting for artifact {} from providers",
+                failure_message,
+                artifact_id.as_str()
+            );
         }
-        thread::sleep(Duration::from_millis(100));
     }
 
-    if let Some(error) = last_error {
-        anyhow::bail!("{failure_message}: {error}");
-    }
-    anyhow::bail!(failure_message.to_owned())
+    Ok(())
 }
 
 fn record_artifact_provider<P>(
