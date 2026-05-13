@@ -68,6 +68,29 @@ fn test_directory_entry(experiment: &ExperimentHandle) -> ExperimentDirectoryEnt
     }
 }
 
+#[test]
+fn corrupt_control_plane_state_is_quarantined_during_restore() {
+    let storage_root = tempfile::tempdir().expect("storage tempdir");
+    let storage = StorageConfig::new(storage_root.path().to_path_buf());
+    storage.ensure_layout().expect("storage layout");
+    std::fs::write(storage.control_plane_state_path(), b"")
+        .expect("write corrupt control plane state");
+
+    let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+    let restored =
+        restore_control_plane_state(&storage, &mut snapshot).expect("restore should recover");
+
+    assert!(!restored);
+    assert!(!storage.control_plane_state_path().exists());
+    let quarantined = std::fs::read_dir(storage.state_dir())
+        .expect("state dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("control-plane-state.json.corrupt-"))
+        .collect::<Vec<_>>();
+    assert_eq!(quarantined.len(), 1, "expected one quarantined state file");
+}
+
 fn trust_score(
     peer_id: &str,
     reducer_eligible: bool,

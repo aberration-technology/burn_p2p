@@ -300,8 +300,17 @@ pub(crate) fn persist_json<T: serde::Serialize + ?Sized>(
     }
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| anyhow::anyhow!("failed to encode {}: {error}", path.display()))?;
-    fs::write(&path, bytes)
-        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", path.display()))
+    let tmp_path = atomic_write_temp_path(&path);
+    fs::write(&tmp_path, bytes)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        anyhow::anyhow!(
+            "failed to replace {} with {}: {error}",
+            path.display(),
+            tmp_path.display()
+        )
+    })
 }
 
 pub(crate) fn load_json<T: DeserializeOwned>(path: PathBuf) -> anyhow::Result<Option<T>> {
@@ -313,6 +322,60 @@ pub(crate) fn load_json<T: DeserializeOwned>(path: PathBuf) -> anyhow::Result<Op
     let value = serde_json::from_slice(&bytes)
         .map_err(|error| anyhow::anyhow!("failed to decode {}: {error}", path.display()))?;
     Ok(Some(value))
+}
+
+fn atomic_write_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    let suffix = format!(
+        ".tmp-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    );
+    path.with_file_name(format!("{file_name}{suffix}"))
+}
+
+fn corrupt_json_quarantine_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    path.with_file_name(format!(
+        "{file_name}.corrupt-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%SZ"),
+        std::process::id()
+    ))
+}
+
+fn load_json_or_quarantine_corrupt<T: DeserializeOwned>(
+    path: PathBuf,
+    label: &str,
+) -> anyhow::Result<Option<T>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Ok(Some(value)),
+        Err(decode_error) => {
+            let quarantine_path = corrupt_json_quarantine_path(&path);
+            fs::rename(&path, &quarantine_path).map_err(|rename_error| {
+                anyhow::anyhow!(
+                    "failed to quarantine corrupt {label} {} after decode error ({decode_error}): {rename_error}",
+                    path.display()
+                )
+            })?;
+            eprintln!(
+                "ignored corrupt {label} {} after decode error ({decode_error}); quarantined at {}",
+                path.display(),
+                quarantine_path.display()
+            );
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) fn persist_head_state(
@@ -499,7 +562,7 @@ pub(crate) fn persist_control_plane_state(
 pub(crate) fn load_control_plane_state(
     storage: &StorageConfig,
 ) -> anyhow::Result<Option<PersistedControlPlaneState>> {
-    load_json(storage.control_plane_state_path())
+    load_json_or_quarantine_corrupt(storage.control_plane_state_path(), "control plane state")
 }
 
 pub(crate) fn persist_artifact_transfer_state(
