@@ -72,6 +72,7 @@ impl<P> RunningNode<P> {
             artifact_provider_locate_timeout,
             artifact_chunk_fetch_timeout,
             artifact_request_timeout,
+            None,
         )
     }
 
@@ -94,6 +95,7 @@ impl<P> RunningNode<P> {
             budget,
             budget,
             request_timeout,
+            Some(budget),
         )
     }
 
@@ -104,7 +106,9 @@ impl<P> RunningNode<P> {
         artifact_provider_locate_timeout: Duration,
         artifact_chunk_fetch_timeout: Duration,
         artifact_request_timeout: Duration,
+        total_sync_timeout: Option<Duration>,
     ) -> anyhow::Result<ArtifactDescriptor> {
+        let total_sync_deadline = total_sync_timeout.map(|timeout| Instant::now() + timeout);
         let admission_policy = self.effective_admission_policy();
         let mut admitted_provider_snapshot = None;
         if let Some(policy) = admission_policy.as_ref() {
@@ -202,7 +206,10 @@ impl<P> RunningNode<P> {
             transfer_state.set_phase(ArtifactTransferPhase::LocatingProvider);
             self.record_transfer_state(transfer_state.clone());
 
-            let deadline = Instant::now() + artifact_provider_locate_timeout;
+            let deadline = bounded_deadline(
+                Instant::now() + artifact_provider_locate_timeout,
+                total_sync_deadline,
+            );
             while Instant::now() < deadline && selected_provider.is_none() {
                 self.redial_known_candidates(&transfer_state.source_peers);
                 for candidate in &transfer_state.source_peers {
@@ -386,14 +393,17 @@ impl<P> RunningNode<P> {
         }
         let provider_candidates = prioritized_source_peers;
 
-        for chunk in &descriptor.chunks {
+        for (chunk_index, chunk) in descriptor.chunks.iter().enumerate() {
             if store.has_chunk(&chunk.chunk_id) {
                 if transfer_state.note_completed_chunk(&chunk.chunk_id) {
                     self.record_transfer_state(transfer_state.clone());
                 }
                 continue;
             }
-            let chunk_deadline = Instant::now() + artifact_chunk_fetch_timeout;
+            let chunk_deadline = bounded_deadline(
+                Instant::now() + artifact_chunk_fetch_timeout,
+                total_sync_deadline,
+            );
             let mut stored = false;
             let mut candidate_attempt_counts = BTreeMap::<String, usize>::new();
             let mut candidate_last_results = BTreeMap::<String, String>::new();
@@ -418,9 +428,27 @@ impl<P> RunningNode<P> {
                         request_timeout,
                     ) {
                         Ok(Some(payload)) => {
+                            let payload_len = payload.bytes.len();
                             store.store_chunk_bytes(&payload.chunk, &payload.bytes)?;
                             transfer_state.note_completed_chunk(&payload.chunk.chunk_id);
                             self.record_transfer_state(transfer_state.clone());
+                            artifact_trace(format_args!(
+                                "chunk-stored artifact={} chunk_index={} chunks={} chunk={} bytes={} provider={} completed={} elapsed_ms={} remaining_budget_ms={}",
+                                descriptor.artifact_id.as_str(),
+                                chunk_index + 1,
+                                descriptor.chunks.len(),
+                                payload.chunk.chunk_id.as_str(),
+                                payload_len,
+                                candidate.as_str(),
+                                transfer_state.completed_chunks.len(),
+                                sync_started.elapsed().as_millis(),
+                                total_sync_deadline
+                                    .map(|deadline| deadline
+                                        .saturating_duration_since(Instant::now())
+                                        .as_millis()
+                                        .to_string())
+                                    .unwrap_or_else(|| "unbounded".to_owned())
+                            ));
                             candidate_last_results.insert(candidate_key, "ok".into());
                             stored = true;
                             break;
@@ -452,20 +480,32 @@ impl<P> RunningNode<P> {
                 ));
                 let snapshot = self.telemetry().snapshot();
                 artifact_trace(format_args!(
-                    "chunk-failed artifact={} chunk={} provider_candidates={:?} attempts={:?} last_results={:?}",
+                    "chunk-failed artifact={} chunk_index={} chunks={} chunk={} provider_candidates={:?} attempts={:?} last_results={:?} elapsed_ms={} total_budget_ms={}",
                     descriptor.artifact_id.as_str(),
+                    chunk_index + 1,
+                    descriptor.chunks.len(),
                     chunk.chunk_id.as_str(),
                     provider_candidates
                         .iter()
                         .map(|peer_id| peer_id.as_str())
                         .collect::<Vec<_>>(),
                     candidate_attempt_counts,
-                    candidate_last_results
+                    candidate_last_results,
+                    sync_started.elapsed().as_millis(),
+                    total_sync_timeout
+                        .map(|timeout| timeout.as_millis().to_string())
+                        .unwrap_or_else(|| "unbounded".to_owned())
                 ));
                 return Err(anyhow::anyhow!(
-                    "no connected peer provided chunk {} for artifact {}; provider_candidates={:?}; candidate_attempts={:?}; candidate_last_results={:?}; connected_peers={:?}; peer_directory={:?}",
+                    "no connected peer provided chunk {} ({}/{}) for artifact {}; elapsed_ms={}; total_budget_ms={}; provider_candidates={:?}; candidate_attempts={:?}; candidate_last_results={:?}; connected_peers={:?}; peer_directory={:?}",
                     chunk.chunk_id.as_str(),
+                    chunk_index + 1,
+                    descriptor.chunks.len(),
                     descriptor.artifact_id.as_str(),
+                    sync_started.elapsed().as_millis(),
+                    total_sync_timeout
+                        .map(|timeout| timeout.as_millis().to_string())
+                        .unwrap_or_else(|| "unbounded".to_owned()),
                     provider_candidates
                         .iter()
                         .map(|peer_id| peer_id.to_string())
@@ -588,6 +628,12 @@ pub(crate) fn artifact_sync_attempt_timeout(
         ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
     let transfer_budget = fair_transfer_slice.max(minimum_transfer_slice);
     Some(transfer_budget.min(timeout).min(remaining))
+}
+
+pub(crate) fn bounded_deadline(deadline: Instant, total_deadline: Option<Instant>) -> Instant {
+    total_deadline
+        .filter(|total_deadline| *total_deadline < deadline)
+        .unwrap_or(deadline)
 }
 
 pub(crate) fn ci_scaled_timeout(base: Duration, ci: Duration) -> Duration {

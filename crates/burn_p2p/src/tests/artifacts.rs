@@ -61,6 +61,30 @@ fn artifact_sync_attempt_timeout_respects_remaining_budget() {
 }
 
 #[test]
+fn bounded_artifact_sync_deadline_caps_per_chunk_deadline() {
+    let now = Instant::now();
+    let total_deadline = now + Duration::from_millis(250);
+    let per_chunk_deadline = now + Duration::from_secs(10);
+
+    assert_eq!(
+        crate::node::bounded_deadline(per_chunk_deadline, Some(total_deadline)),
+        total_deadline
+    );
+}
+
+#[test]
+fn bounded_artifact_sync_deadline_keeps_shorter_per_chunk_deadline() {
+    let now = Instant::now();
+    let total_deadline = now + Duration::from_secs(10);
+    let per_chunk_deadline = now + Duration::from_millis(250);
+
+    assert_eq!(
+        crate::node::bounded_deadline(per_chunk_deadline, Some(total_deadline)),
+        per_chunk_deadline
+    );
+}
+
+#[test]
 fn connected_head_artifact_providers_are_prioritized() {
     let stale_a = crate::PeerId::new("stale-a");
     let connected_edge = crate::PeerId::new("connected-edge");
