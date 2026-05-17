@@ -749,6 +749,31 @@ fn browser_storage_deserializes_legacy_pending_receipt_arrays() {
 }
 
 #[test]
+fn browser_session_state_checks_scope_and_refresh_deadline() {
+    let requested = BTreeSet::from([
+        ExperimentScope::Connect,
+        ExperimentScope::Train {
+            experiment_id: ExperimentId::new("exp-browser"),
+        },
+    ]);
+    let mut session = sample_browser_session_state("principal-browser");
+
+    assert!(!session.is_authenticated_for(&requested, Utc::now() + chrono::Duration::seconds(30)));
+
+    let active = session.session.as_mut().expect("session");
+    active.claims.granted_scopes = requested.clone();
+    active.expires_at = Utc::now() + chrono::Duration::minutes(10);
+    active.claims.expires_at = active.expires_at;
+
+    assert!(session.is_authenticated_for(&requested, Utc::now() + chrono::Duration::minutes(5)));
+    assert!(session.session_expires_before(Utc::now() + chrono::Duration::minutes(15)));
+
+    let active = session.session.as_mut().expect("session");
+    active.claims.expires_at = Utc::now() + chrono::Duration::seconds(10);
+    assert!(!session.is_authenticated_for(&requested, Utc::now() + chrono::Duration::seconds(30)));
+}
+
+#[test]
 fn browser_receipt_outbox_supports_structured_durable_backend() {
     let mut storage = BrowserStorageSnapshot::default();
     storage
@@ -3364,6 +3389,45 @@ fn browser_client_defers_retryable_receipt_submission_failure() {
     handle.join().expect("join receipt failure server");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn browser_client_classifies_unauthorized_receipt_submission_as_auth_failure() {
+    let (base_url, request_count, handle) =
+        spawn_retryable_receipt_failure_server("401 Unauthorized", 1);
+    let client = BrowserEdgeClient::new(
+        BrowserUiBindings::new(&base_url),
+        BrowserEnrollmentConfig::for_runtime_sync(&browser_test_edge_snapshot()),
+    );
+    let receipt = ContributionReceipt {
+        receipt_id: ContributionReceiptId::new("receipt-stale-session"),
+        peer_id: PeerId::new("peer-browser"),
+        study_id: StudyId::new("study-browser"),
+        experiment_id: ExperimentId::new("exp-browser"),
+        revision_id: RevisionId::new("rev-browser"),
+        base_head_id: HeadId::new("head-browser"),
+        artifact_id: ArtifactId::new("artifact-browser"),
+        accepted_at: Utc::now(),
+        accepted_weight: 1.0,
+        metrics: BTreeMap::new(),
+        merge_cert_id: None,
+    };
+
+    let error = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async {
+            client
+                .submit_receipts(&ContentId::new("session-stale"), &[receipt])
+                .await
+        })
+        .expect_err("stale session receipt should be unauthorized");
+
+    assert!(error.is_auth_failure());
+    assert_eq!(*request_count.lock().expect("request count"), 1);
+    handle.join().expect("join receipt failure server");
+}
+
 #[test]
 fn worker_runtime_apply_command_rejects_training_without_trainer_state() {
     let config = BrowserRuntimeConfig::new(
@@ -5212,6 +5276,7 @@ fn browser_runtime_config_materializes_swarm_bootstrap_contract() {
 
 fn sample_browser_session_state(principal_id: &str) -> BrowserSessionState {
     let now = Utc::now();
+    let expires_at = now + chrono::Duration::hours(1);
     BrowserSessionState {
         session: Some(PrincipalSession {
             session_id: ContentId::new(format!("session-{principal_id}")),
@@ -5228,10 +5293,10 @@ fn sample_browser_session_state(principal_id: &str) -> BrowserSessionState {
                 granted_scopes: BTreeSet::from([ExperimentScope::Connect]),
                 custom_claims: BTreeMap::new(),
                 issued_at: now,
-                expires_at: now,
+                expires_at,
             },
             issued_at: now,
-            expires_at: now,
+            expires_at,
         }),
         ..BrowserSessionState::default()
     }

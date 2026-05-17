@@ -294,6 +294,35 @@ impl BrowserSessionState {
         self.session.as_ref().map(|session| &session.session_id)
     }
 
+    /// Returns the earliest auth expiry carried by the active browser session.
+    pub fn session_expires_at(&self) -> Option<DateTime<Utc>> {
+        self.session
+            .as_ref()
+            .map(|session| session.expires_at.min(session.claims.expires_at))
+    }
+
+    /// Returns true when the browser session is missing or expires before the
+    /// supplied deadline.
+    pub fn session_expires_before(&self, deadline: DateTime<Utc>) -> bool {
+        self.session_expires_at()
+            .is_none_or(|expires_at| expires_at <= deadline)
+    }
+
+    /// Returns true when the browser session is present, fresh through the
+    /// supplied deadline, and grants all requested scopes.
+    pub fn is_authenticated_for(
+        &self,
+        requested_scopes: &BTreeSet<ExperimentScope>,
+        valid_through: DateTime<Utc>,
+    ) -> bool {
+        !self.session_expires_before(valid_through)
+            && self.session.as_ref().is_some_and(|session| {
+                requested_scopes
+                    .iter()
+                    .all(|scope| session.claims.granted_scopes.contains(scope))
+            })
+    }
+
     /// Performs the principal ID operation.
     pub fn principal_id(&self) -> Option<&PrincipalId> {
         self.session
@@ -533,6 +562,17 @@ pub enum BrowserAuthClientError {
 }
 
 impl BrowserAuthClientError {
+    /// Returns true when the edge rejected the current browser session or scope.
+    pub fn is_auth_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Http(error)
+                if error
+                    .status()
+                    .is_some_and(|status| matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
+        )
+    }
+
     fn is_retryable_receipt_submission(&self) -> bool {
         match self {
             Self::Http(error) => match error.status() {

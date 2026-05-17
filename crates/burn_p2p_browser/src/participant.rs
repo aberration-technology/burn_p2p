@@ -1,6 +1,7 @@
 use burn_p2p::{ArtifactDescriptor, ContentId, ExperimentId, HeadId, RevisionId};
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::{ContributionReceiptId, UpdateAnnounce, UpdateNormStats};
+use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 
 use crate::{
@@ -19,10 +20,9 @@ use burn_p2p_swarm::{ArtifactChunkPayload, UpdateEnvelopeAnnouncement};
 #[cfg(target_arch = "wasm32")]
 use burn_p2p_swarm::{BrowserSwarmRuntime, ExperimentOverlaySet, WasmBrowserSwarmRuntime};
 #[cfg(target_arch = "wasm32")]
-use chrono::Utc;
-#[cfg(target_arch = "wasm32")]
 use gloo_timers::future::TimeoutFuture;
 
+const DEFAULT_BROWSER_SESSION_REFRESH_GRACE_SECS: i64 = 120;
 #[cfg(target_arch = "wasm32")]
 const DIRECT_TRANSPORT_HANDOFF_POLL_MS: u32 = 250;
 #[cfg(target_arch = "wasm32")]
@@ -200,6 +200,11 @@ impl BrowserSessionRuntimeHandle {
 
     /// Refreshes the runtime from the edge client using the stored session.
     pub async fn refresh(&mut self) -> Result<Vec<BrowserWorkerEvent>, BrowserSessionRuntimeError> {
+        self.refresh_session_if_expiring_before(
+            Utc::now() + Duration::seconds(DEFAULT_BROWSER_SESSION_REFRESH_GRACE_SECS),
+        )
+        .await?;
+
         #[cfg(target_arch = "wasm32")]
         {
             let (events, hard_error) = refresh_worker_runtime_preferring_direct_swarm(
@@ -227,6 +232,32 @@ impl BrowserSessionRuntimeHandle {
                 .await
                 .map_err(Into::into)
         }
+    }
+
+    /// Refreshes the browser auth session immediately and updates the worker runtime.
+    pub async fn refresh_auth_session(&mut self) -> Result<(), BrowserSessionRuntimeError> {
+        let session_id = self
+            .session
+            .session_id()
+            .cloned()
+            .ok_or(BrowserSessionRuntimeError::MissingSession)?;
+        let refreshed = self.client.refresh_session(&session_id).await?;
+        self.session.session = Some(refreshed);
+        self.session.refresh_reenrollment_requirement();
+        self.runtime.remember_session(self.session.clone());
+        Ok(())
+    }
+
+    /// Refreshes the browser auth session if it will expire before `deadline`.
+    pub async fn refresh_session_if_expiring_before(
+        &mut self,
+        deadline: DateTime<Utc>,
+    ) -> Result<bool, BrowserSessionRuntimeError> {
+        if !self.session.session_expires_before(deadline) {
+            return Ok(false);
+        }
+        self.refresh_auth_session().await?;
+        Ok(true)
     }
 
     /// Returns active head artifact bytes retained by the browser replay cache.
@@ -280,6 +311,13 @@ impl BrowserSessionRuntimeHandle {
         &mut self,
         mut plan: BrowserTrainingPlan,
     ) -> Result<BrowserSessionTrainingOutcome, BrowserSessionRuntimeError> {
+        let max_window_secs = i64::try_from(plan.budget.max_window_secs)
+            .unwrap_or(i64::MAX.saturating_sub(DEFAULT_BROWSER_SESSION_REFRESH_GRACE_SECS));
+        let window_validity = Duration::seconds(
+            max_window_secs.saturating_add(DEFAULT_BROWSER_SESSION_REFRESH_GRACE_SECS),
+        );
+        self.refresh_session_if_expiring_before(Utc::now() + window_validity)
+            .await?;
         self.refresh().await?;
         #[cfg(target_arch = "wasm32")]
         self.wait_for_direct_transport_handoff().await?;
@@ -307,7 +345,18 @@ impl BrowserSessionRuntimeHandle {
             false
         };
 
-        let flush_events = self.client.flush_worker_receipts(&mut self.runtime).await?;
+        self.refresh_session_if_expiring_before(
+            Utc::now() + Duration::seconds(DEFAULT_BROWSER_SESSION_REFRESH_GRACE_SECS),
+        )
+        .await?;
+        let flush_events = match self.client.flush_worker_receipts(&mut self.runtime).await {
+            Ok(events) => events,
+            Err(error) if error.is_auth_failure() => {
+                self.refresh_auth_session().await?;
+                self.client.flush_worker_receipts(&mut self.runtime).await?
+            }
+            Err(error) => return Err(error.into()),
+        };
         let accepted_receipt_ids = flush_events
             .iter()
             .find_map(|event| match event {
