@@ -163,7 +163,7 @@ fn run_requested_probe(args: &NativeAcceleratorProbeArgs) -> NativeAcceleratorPr
 }
 
 fn attempt_cuda_probe(args: &NativeAcceleratorProbeArgs) -> NativeAcceleratorProbeSummary {
-    run_attempt(args, "cuda", || {
+    run_attempt(args, "cuda", BackendPanicOutput::Suppress, || {
         type ProbeBackend = Autodiff<Cuda>;
         let device = cuda::CudaDevice::default();
         run_backend_probe::<ProbeBackend>("cuda", &device, args)
@@ -171,7 +171,7 @@ fn attempt_cuda_probe(args: &NativeAcceleratorProbeArgs) -> NativeAcceleratorPro
 }
 
 fn attempt_wgpu_probe(args: &NativeAcceleratorProbeArgs) -> NativeAcceleratorProbeSummary {
-    run_attempt(args, "wgpu", || {
+    run_attempt(args, "wgpu", BackendPanicOutput::Inherit, || {
         type ProbeBackend = Autodiff<Wgpu>;
         let device = wgpu::WgpuDevice::default();
         wgpu::init_setup::<wgpu::graphics::AutoGraphicsApi>(&device, Default::default());
@@ -179,12 +179,31 @@ fn attempt_wgpu_probe(args: &NativeAcceleratorProbeArgs) -> NativeAcceleratorPro
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendPanicOutput {
+    Inherit,
+    Suppress,
+}
+
 fn run_attempt(
     args: &NativeAcceleratorProbeArgs,
     backend: &str,
+    panic_output: BackendPanicOutput,
     attempt: impl FnOnce() -> anyhow::Result<NativeAcceleratorProbeSummary>,
 ) -> NativeAcceleratorProbeSummary {
-    match panic::catch_unwind(AssertUnwindSafe(attempt)) {
+    let previous_hook = if panic_output == BackendPanicOutput::Suppress {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(|_| {}));
+        Some(previous)
+    } else {
+        None
+    };
+    let outcome = panic::catch_unwind(AssertUnwindSafe(attempt));
+    if let Some(previous_hook) = previous_hook {
+        panic::set_hook(previous_hook);
+    }
+
+    match outcome {
         Ok(Ok(summary)) => summary,
         Ok(Err(error)) => classify_probe_failure(args, backend, &error.to_string()),
         Err(payload) => classify_probe_failure(args, backend, &panic_payload_to_string(payload)),

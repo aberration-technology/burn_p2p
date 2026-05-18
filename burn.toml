@@ -1,0 +1,28 @@
+[fusion.beam_search]
+max_blocks = 5
+
+[fusion.logger]
+level = "disabled"
+
+[autodiff.logger]
+level = "disabled"
+
+[cubecl.autotune]
+level = "balanced"
+cache = "target"
+
+[cubecl.autotune.logger]
+level = "disabled"
+
+[cubecl.compilation]
+check_mode = "auto"
+cache = "target"
+
+[cubecl.compilation.logger]
+level = "disabled"
+
+[cubecl.streaming]
+max_streams = 128
+
+[cubecl.memory]
+persistent_memory = "enabled"
