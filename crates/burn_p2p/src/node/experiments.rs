@@ -365,8 +365,7 @@ impl<P> RunningNode<P> {
         // Head adoption may require pulling a newly promoted artifact from the
         // network. Give larger runtime payloads enough room to materialize
         // before the caller falls back to another outer retry loop.
-        let head_sync_wait_timeout =
-            ci_scaled_timeout(Duration::from_secs(60), Duration::from_secs(120));
+        let head_sync_wait_timeout = head_sync_wait_timeout();
         const HEAD_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
         let assignment = SlotAssignmentState::from_experiment(experiment);
@@ -1272,6 +1271,10 @@ fn head_is_newer(candidate: &HeadDescriptor, current: &HeadDescriptor) -> bool {
             && candidate.created_at > current.created_at)
 }
 
+fn head_sync_wait_timeout() -> Duration {
+    ci_scaled_timeout(Duration::from_secs(120), Duration::from_secs(300))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1408,5 +1411,15 @@ mod tests {
         assert_eq!(directory_current.1.head_id, stale.head_id);
         assert_eq!(latest_promoted.0, trainer);
         assert_eq!(latest_promoted.1.head_id, promoted.head_id);
+    }
+
+    #[test]
+    fn head_sync_wait_timeout_covers_large_production_checkpoints() {
+        let timeout = head_sync_wait_timeout();
+        if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
+            assert_eq!(timeout, Duration::from_secs(300));
+        } else {
+            assert_eq!(timeout, Duration::from_secs(120));
+        }
     }
 }
