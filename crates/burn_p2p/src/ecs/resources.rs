@@ -52,5 +52,5 @@ pub struct P2pWindowMetadata {
 
 #[derive(Debug, Clone, Default, Resource)]
 pub struct PendingP2pWindowMetadata {
-    pub by_window_id: BTreeMap<u64, P2pWindowMetadata>,
+    pub by_run_window_id: BTreeMap<(String, u64), P2pWindowMetadata>,
 }

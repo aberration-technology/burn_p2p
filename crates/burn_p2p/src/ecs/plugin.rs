@@ -44,8 +44,8 @@ fn mirror_p2p_window_started(
         telemetry.latest_window_id = Some(event.window_id);
         telemetry.canonical_head_id = event.canonical_head_id.clone();
         telemetry.training_head_id = event.training_head_id.clone();
-        pending.by_window_id.insert(
-            event.window_id,
+        pending.by_run_window_id.insert(
+            (event.run_id.clone(), event.window_id),
             P2pWindowMetadata {
                 experiment_id: event.experiment_id.clone(),
                 revision_id: event.revision_id.clone(),
@@ -68,16 +68,16 @@ fn attach_p2p_window_metadata(
     mut pending: ResMut<PendingP2pWindowMetadata>,
 ) {
     let attached = pending
-        .by_window_id
+        .by_run_window_id
         .iter()
-        .filter_map(|(window_id, metadata)| {
-            let entity = windows.get(*window_id)?;
+        .filter_map(|((run_id, window_id), metadata)| {
+            let entity = windows.get_for_run(run_id, *window_id)?;
             commands.entity(entity).insert(metadata.clone());
-            Some(*window_id)
+            Some((run_id.clone(), *window_id))
         })
         .collect::<Vec<_>>();
-    for window_id in attached {
-        pending.by_window_id.remove(&window_id);
+    for key in attached {
+        pending.by_run_window_id.remove(&key);
     }
 }
 
