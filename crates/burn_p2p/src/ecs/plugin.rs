@@ -1,9 +1,10 @@
 use burn_ecs::prelude::{
-    App, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, ResMut, TrainingSet, Update,
+    App, Commands, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, Res, ResMut,
+    TrainingSet, TrainingWindowEntities, Update,
 };
 
 use super::messages::{P2pCanonicalReconcileEvent, P2pWindowFinished, P2pWindowStarted};
-use super::resources::P2pTrainingTelemetryState;
+use super::resources::{P2pTrainingTelemetryState, P2pWindowMetadata, PendingP2pWindowMetadata};
 
 pub struct P2pTrainingPlugin;
 
@@ -13,6 +14,7 @@ impl Plugin for P2pTrainingPlugin {
             .add_message::<P2pWindowFinished>()
             .add_message::<P2pCanonicalReconcileEvent>()
             .init_resource::<P2pTrainingTelemetryState>()
+            .init_resource::<PendingP2pWindowMetadata>()
             .add_systems(
                 Update,
                 (
@@ -21,6 +23,10 @@ impl Plugin for P2pTrainingPlugin {
                     record_p2p_canonical_reconcile,
                 )
                     .in_set(TrainingSet::Window),
+            )
+            .add_systems(
+                Update,
+                attach_p2p_window_metadata.in_set(TrainingSet::Control),
             );
     }
 }
@@ -28,6 +34,7 @@ impl Plugin for P2pTrainingPlugin {
 fn mirror_p2p_window_started(
     mut messages: MessageReader<P2pWindowStarted>,
     mut telemetry: ResMut<P2pTrainingTelemetryState>,
+    mut pending: ResMut<PendingP2pWindowMetadata>,
     mut training_windows: MessageWriter<burn_ecs::TrainingWindowStarted>,
 ) {
     for event in messages.read() {
@@ -37,11 +44,40 @@ fn mirror_p2p_window_started(
         telemetry.latest_window_id = Some(event.window_id);
         telemetry.canonical_head_id = event.canonical_head_id.clone();
         telemetry.training_head_id = event.training_head_id.clone();
+        pending.by_window_id.insert(
+            event.window_id,
+            P2pWindowMetadata {
+                experiment_id: event.experiment_id.clone(),
+                revision_id: event.revision_id.clone(),
+                base_head_id: event.base_head_id.clone(),
+                canonical_head_id: event.canonical_head_id.clone(),
+                training_head_id: event.training_head_id.clone(),
+            },
+        );
         training_windows.write(burn_ecs::TrainingWindowStarted {
             run_id: event.run_id.clone(),
             window_id: event.window_id,
             mode: "p2p".to_string(),
         });
+    }
+}
+
+fn attach_p2p_window_metadata(
+    mut commands: Commands,
+    windows: Res<TrainingWindowEntities>,
+    mut pending: ResMut<PendingP2pWindowMetadata>,
+) {
+    let attached = pending
+        .by_window_id
+        .iter()
+        .filter_map(|(window_id, metadata)| {
+            let entity = windows.get(*window_id)?;
+            commands.entity(entity).insert(metadata.clone());
+            Some(*window_id)
+        })
+        .collect::<Vec<_>>();
+    for window_id in attached {
+        pending.by_window_id.remove(&window_id);
     }
 }
 
@@ -125,6 +161,7 @@ mod tests {
             });
         runtime.update();
         runtime.update();
+        runtime.update();
         runtime.finish();
         let state = runtime
             .app()
@@ -133,6 +170,19 @@ mod tests {
         assert_eq!(state.latest_window_id, Some(7));
         assert_eq!(state.latest_head_id.as_deref(), Some("head"));
         assert_eq!(state.published_windows, 1);
+        let window_entity = runtime
+            .app()
+            .world()
+            .resource::<TrainingWindowEntities>()
+            .get(7)
+            .expect("window entity");
+        let metadata = runtime
+            .app()
+            .world()
+            .entity(window_entity)
+            .get::<P2pWindowMetadata>()
+            .expect("p2p metadata");
+        assert_eq!(metadata.experiment_id, "exp");
         let jsonl =
             std::fs::read_to_string(dir.path().join("events/training_events.jsonl")).unwrap();
         assert!(jsonl.contains("window_started"));
