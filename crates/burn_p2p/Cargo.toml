@@ -13,6 +13,7 @@ readme = "../../README.md"
 [dependencies]
 anyhow.workspace = true
 burn = { workspace = true, optional = true }
+burn_ecs = { workspace = true, optional = true }
 chrono.workspace = true
 futures = "0.3"
 half = "2"
@@ -38,6 +39,7 @@ thiserror.workspace = true
 [features]
 default = []
 burn = ["dep:burn", "dep:burn_p2p_engine"]
+ecs = ["dep:burn_ecs"]
 
 [dev-dependencies]
 criterion.workspace = true

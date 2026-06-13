@@ -36,6 +36,8 @@ mod candidate;
 mod candidate_screening;
 mod config;
 mod diloco;
+#[cfg(feature = "ecs")]
+pub mod ecs;
 mod edge_auth;
 mod handles;
 mod metrics_runtime;

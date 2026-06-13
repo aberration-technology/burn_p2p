@@ -44,6 +44,7 @@ categories = ["network-programming", "science"]
 [workspace.dependencies]
 anyhow = "1.0"
 burn = { version = "0.21.0", default-features = false, features = ["std", "ndarray", "train", "store"] }
+burn_ecs = { version = "=0.21.8", path = "../burn_ecs", default-features = false }
 burn-store = { version = "0.21.0", default-features = false, features = ["std", "burnpack", "safetensors"] }
 burn_p2p = { version = "=0.21.8", path = "crates/burn_p2p" }
 burn_p2p_admin = { version = "=0.21.8", path = "crates/burn_p2p_admin" }
