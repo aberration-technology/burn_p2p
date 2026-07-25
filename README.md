@@ -32,11 +32,9 @@ python3 scripts/bootstrap_stack.py
 python3 scripts/bootstrap_stack.py --verify
 ```
 
-CI uses the same lock through `.github/actions/bootstrap-stack`. Because
-`burn_ecs` is a private sibling repository, the repository or organization must
-provide `BURN_STACK_TOKEN` with read-only contents access to `burn_ecs`.
-Repository-scoped `GITHUB_TOKEN` credentials do not grant cross-repository
-access and are intentionally not used as a fallback.
+CI uses the same lock through `.github/actions/bootstrap-stack` and clones the
+public provider repository over HTTPS. No cross-repository credential is
+required.
 
 ## happy path
 
