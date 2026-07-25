@@ -23,6 +23,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 const OPTIONAL_CANONICAL_ADVANCE_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_SYNTHETIC_MICROSHARD_COUNT: u32 = 2;
 
 #[cfg(feature = "native-gpu-probe")]
 use burn::{
@@ -116,6 +117,9 @@ pub struct SyntheticProcessConfig {
     pub storage_root: PathBuf,
     /// The dataset root.
     pub dataset_root: PathBuf,
+    /// Number of canonical scalar-workload microshards expected by this process.
+    #[serde(default = "default_synthetic_microshard_count")]
+    pub microshard_count: u32,
     /// The report path.
     pub report_path: PathBuf,
     /// The start sentinel.
@@ -166,6 +170,7 @@ impl SyntheticProcessConfig {
             scope: SyntheticExperimentScope::default(),
             storage_root: storage_root.into(),
             dataset_root: dataset_root.into(),
+            microshard_count: default_synthetic_microshard_count(),
             report_path: report_path.into(),
             start_sentinel: None,
             shutdown_sentinel: None,
@@ -199,6 +204,7 @@ impl SyntheticProcessConfig {
             scope: SyntheticExperimentScope::default(),
             storage_root: storage_root.into(),
             dataset_root: dataset_root.into(),
+            microshard_count: default_synthetic_microshard_count(),
             report_path: report_path.into(),
             start_sentinel: None,
             shutdown_sentinel: None,
@@ -384,6 +390,10 @@ fn default_canonical_advance_required() -> bool {
     true
 }
 
+const fn default_synthetic_microshard_count() -> u32 {
+    DEFAULT_SYNTHETIC_MICROSHARD_COUNT
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Summarizes the synthetic soak.
 pub struct SyntheticSoakSummary {
@@ -426,6 +436,7 @@ pub struct SyntheticSoakSummary {
 #[derive(Clone, Debug)]
 struct SyntheticRuntimeProject {
     dataset_root: PathBuf,
+    microshard_count: u32,
     learning_rate: f64,
     target_model: f64,
 }
@@ -530,17 +541,18 @@ impl P2pWorkload for SyntheticRuntimeProject {
         &self,
         registration: &DatasetRegistration,
     ) -> anyhow::Result<burn_p2p::MicroShardPlan> {
+        let microshard_count = self.microshard_count.max(1);
         Ok(MicroShardPlanner::new(MicroShardPlannerConfig {
             target_microshard_bytes: 10,
-            min_microshards: 2,
-            max_microshards: 2,
+            min_microshards: microshard_count,
+            max_microshards: microshard_count,
         })?
         .plan(
             &registration.view,
             DatasetSizing {
-                total_examples: 2,
-                total_tokens: 2,
-                total_bytes: 20,
+                total_examples: u64::from(microshard_count),
+                total_tokens: u64::from(microshard_count),
+                total_bytes: u64::from(microshard_count) * 10,
             },
         )?)
     }
@@ -1014,9 +1026,18 @@ fn synthetic_burn_network_manifest(
 
 /// Performs the create synthetic runtime dataset operation.
 pub fn create_synthetic_runtime_dataset(root: &Path) -> anyhow::Result<()> {
+    create_synthetic_runtime_dataset_with_microshards(root, default_synthetic_microshard_count())
+}
+
+/// Creates a scalar runtime dataset with an explicit disjoint-work capacity.
+pub fn create_synthetic_runtime_dataset_with_microshards(
+    root: &Path,
+    microshard_count: u32,
+) -> anyhow::Result<()> {
     fs::create_dir_all(root)?;
     let project = SyntheticRuntimeProject {
         dataset_root: root.to_path_buf(),
+        microshard_count: microshard_count.max(1),
         learning_rate: 1.0,
         target_model: 100.0,
     };
@@ -1123,7 +1144,10 @@ pub fn run_synthetic_process_node(
     match config.workload_kind {
         SyntheticWorkloadKind::Scalar => {
             if !config.dataset_root.join("fetch-manifest.json").exists() {
-                create_synthetic_runtime_dataset(&config.dataset_root)?;
+                create_synthetic_runtime_dataset_with_microshards(
+                    &config.dataset_root,
+                    config.microshard_count,
+                )?;
             }
             let roles = match config.mode {
                 SyntheticProcessMode::Validator => {
@@ -1140,6 +1164,7 @@ pub fn run_synthetic_process_node(
             };
             let builder = NodeBuilder::new(SyntheticRuntimeProject {
                 dataset_root: config.dataset_root.clone(),
+                microshard_count: config.microshard_count,
                 learning_rate: config.learning_rate,
                 target_model: config.target_model,
             })
@@ -2230,8 +2255,14 @@ pub fn run_synthetic_process_soak(
     }
     fs::create_dir_all(&config.root)?;
     let dataset_root = config.root.join("dataset");
+    let scalar_microshard_count = config
+        .trainer_count
+        .max(default_synthetic_microshard_count());
     match config.workload_kind {
-        SyntheticWorkloadKind::Scalar => create_synthetic_runtime_dataset(&dataset_root)?,
+        SyntheticWorkloadKind::Scalar => create_synthetic_runtime_dataset_with_microshards(
+            &dataset_root,
+            scalar_microshard_count,
+        )?,
         SyntheticWorkloadKind::BurnLinear => {
             #[cfg(feature = "native-gpu-probe")]
             {
@@ -2256,6 +2287,7 @@ pub fn run_synthetic_process_soak(
     );
     validator_config.workload_kind = config.workload_kind;
     validator_config.native_backend = config.validator_backend;
+    validator_config.microshard_count = scalar_microshard_count;
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
     validator_config.startup_timeout_secs = config.startup_timeout_secs;
     validator_config.poll_interval_ms = config.poll_interval_ms;
@@ -2295,6 +2327,7 @@ pub fn run_synthetic_process_soak(
             );
             trainer_config.workload_kind = config.workload_kind;
             trainer_config.native_backend = config.trainer_backend;
+            trainer_config.microshard_count = scalar_microshard_count;
             trainer_config.start_sentinel = Some(start_sentinel.clone());
             trainer_config.shutdown_sentinel = Some(shutdown_sentinel.clone());
             trainer_config.persist_identity = true;
@@ -2374,6 +2407,7 @@ pub fn run_synthetic_process_soak(
                 );
                 trainer_config.workload_kind = config.workload_kind;
                 trainer_config.native_backend = config.trainer_backend;
+                trainer_config.microshard_count = scalar_microshard_count;
                 trainer_config.start_sentinel = Some(round_start_sentinel.clone());
                 // Non-persistent trainers restart each round; fresh peer IDs avoid stale provider
                 // records and dead connections from previous process lifetimes.

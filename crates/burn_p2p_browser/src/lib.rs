@@ -67,8 +67,8 @@ pub use conformance::{
     browser_conformance_training_plan_with_lease, browser_conformance_transport,
 };
 pub use participant::{
-    BrowserSessionRuntimeConfig, BrowserSessionRuntimeError, BrowserSessionRuntimeHandle,
-    BrowserSessionTrainingOutcome,
+    BrowserBootstrapHead, BrowserSessionRuntimeConfig, BrowserSessionRuntimeError,
+    BrowserSessionRuntimeHandle, BrowserSessionTrainingOutcome,
 };
 pub use runtime::{
     BrowserJoinStage, BrowserRuntimeConfig, BrowserRuntimeRole, BrowserRuntimeState,

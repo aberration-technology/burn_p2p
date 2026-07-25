@@ -162,7 +162,7 @@ fn qsgd_codec_roundtrips_with_deterministic_payloads() {
 }
 
 #[test]
-fn pseudo_gradient_aggregation_is_order_invariant() {
+fn two_term_pseudo_gradient_mean_is_exact() {
     let first = FlattenedTensorPack::new(
         crate::ContentId::new("schema"),
         crate::ContentId::new("layout"),
@@ -178,6 +178,52 @@ fn pseudo_gradient_aggregation_is_order_invariant() {
     let right = crate::average_pseudo_gradients(&[second, first]).expect("average second ordering");
     assert_eq!(left, right);
     assert_eq!(left.values, vec![2.0, 2.0]);
+}
+
+#[test]
+fn peer_aggregation_uses_canonical_order_for_fp32_consensus() {
+    let contribution = |peer_id: &str, value: f32| {
+        let pack = FlattenedTensorPack::new(
+            crate::ContentId::new("schema"),
+            crate::ContentId::new("layout"),
+            vec![value],
+        );
+        let encoded = crate::encode_pseudo_gradient(
+            ExperimentId::new("exp"),
+            RevisionId::new("rev"),
+            PeerId::new(peer_id),
+            crate::RoundCursor::new(BaseCheckpointId::new("base"), 1),
+            GradientCodec::Fp32,
+            &pack,
+            16,
+        )
+        .expect("encode contribution");
+        crate::DiLoCoPeerContribution {
+            peer_id: PeerId::new(peer_id),
+            encoded,
+            decoded_gradient: pack,
+        }
+    };
+    let canonical = [
+        contribution("peer-a", 1.0e20),
+        contribution("peer-b", -1.0e20),
+        contribution("peer-c", 1.0),
+    ];
+    let reversed = [
+        canonical[2].clone(),
+        canonical[1].clone(),
+        canonical[0].clone(),
+    ];
+
+    let left =
+        super::engine::aggregate_peer_contributions(&DiLoCoAggregationPolicy::Mean, &canonical)
+            .expect("aggregate canonical order");
+    let right =
+        super::engine::aggregate_peer_contributions(&DiLoCoAggregationPolicy::Mean, &reversed)
+            .expect("aggregate reversed order");
+
+    assert_eq!(left, right);
+    assert_eq!(left.values, vec![1.0 / 3.0]);
 }
 
 #[test]

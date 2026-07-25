@@ -5,6 +5,8 @@
 pub mod auth;
 /// Robustness screening, bounded influence, and quarantine helpers.
 pub mod robust;
+/// Canonical authority signing and verification helpers.
+pub mod signed_payload;
 
 pub use auth::{
     AdmissionPolicy, AuthError, CallbackPayload, IdentityConnector, LoginRequest, LoginStart,
@@ -17,6 +19,11 @@ pub use robust::{
     TrustUpdateInput, aggregate_updates_with_policy, coordinate_median, extract_feature_sketch,
     filter_update_sketches_with_policy, multi_krum_indices, should_quarantine, trimmed_mean,
     updated_trust_score,
+};
+pub use signed_payload::{
+    SignedPayloadError, sign_canonical_payload, sign_model_genesis, sign_payload,
+    sign_revision_contract_bundle, verify_canonical_signature, verify_revision_contract_bundle,
+    verify_revision_contract_with_trust_bundle, verify_signed_payload,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

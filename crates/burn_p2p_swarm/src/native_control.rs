@@ -32,10 +32,24 @@ pub struct NativeControlPlaneShell {
     next_rendezvous_refresh_at: Instant,
     subscribed_topics: BTreeSet<String>,
     pending_events: VecDeque<LiveControlPlaneEvent>,
+    established_connections:
+        BTreeMap<Libp2pPeerId, BTreeMap<libp2p_swarm::ConnectionId, EstablishedConnectionRoute>>,
+    connection_reconciliation_deadlines: BTreeMap<Libp2pPeerId, Instant>,
+    pending_outbound_requests: BTreeMap<String, Libp2pPeerId>,
+    pending_inbound_responses: BTreeMap<String, Libp2pPeerId>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EstablishedConnectionRoute {
+    relayed: bool,
+    dialer: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 const RENDEZVOUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const RENDEZVOUS_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
 #[cfg(not(target_arch = "wasm32"))]
 const KADEMLIA_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,6 +58,79 @@ const KADEMLIA_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
 const PEER_DIRECTORY_RECORD_LOOKUP_DEBOUNCE: Duration = Duration::from_secs(30);
 #[cfg(not(target_arch = "wasm32"))]
 const PEER_DIRECTORY_RECORD_TTL: Duration = Duration::from_secs(90);
+#[cfg(not(target_arch = "wasm32"))]
+const FETCH_SIDECAR_AGENT_VERSION: &str = "burn-p2p/fetch-sidecar/1";
+#[cfg(not(target_arch = "wasm32"))]
+const ROUTE_RECONCILIATION_GRACE: Duration = Duration::from_secs(2);
+#[cfg(not(target_arch = "wasm32"))]
+const ROUTE_RECONCILIATION_RETRY: Duration = Duration::from_millis(250);
+#[cfg(not(target_arch = "wasm32"))]
+fn control_yamux_config() -> yamux::Config {
+    // Keep libp2p-yamux on its current auto-tuned implementation. Calling the
+    // deprecated per-stream window setters converts this config to the legacy
+    // Yamux implementation and causes severe multi-stream head-of-line stalls.
+    yamux::Config::default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn excess_connection_ids(
+    connections: &BTreeMap<libp2p_swarm::ConnectionId, EstablishedConnectionRoute>,
+    maximum: usize,
+    prefer_dialer: bool,
+) -> Vec<libp2p_swarm::ConnectionId> {
+    let mut ranked = connections
+        .iter()
+        .map(|(connection_id, route)| {
+            (route.relayed, route.dialer != prefer_dialer, *connection_id)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort();
+    ranked
+        .into_iter()
+        .skip(maximum)
+        .map(|(_, _, connection_id)| connection_id)
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn connection_limit_with_reconciliation_slack(maximum: Option<u32>) -> Option<u32> {
+    maximum.map(|maximum| maximum.saturating_add(1))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn observed_address_is_reachable(route: Option<&EstablishedConnectionRoute>) -> bool {
+    route.is_some_and(|route| !route.dialer)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn peer_has_pending_control_exchange(
+    peer_id: &Libp2pPeerId,
+    pending_outbound_requests: &BTreeMap<String, Libp2pPeerId>,
+    pending_inbound_responses: &BTreeMap<String, Libp2pPeerId>,
+) -> bool {
+    pending_outbound_requests
+        .values()
+        .chain(pending_inbound_responses.values())
+        .any(|pending_peer_id| pending_peer_id == peer_id)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_low_value_maintenance_event(event: &LiveControlPlaneEvent) -> bool {
+    match event {
+        LiveControlPlaneEvent::PeersDiscovered { peers }
+        | LiveControlPlaneEvent::PeersExpired { peers } => peers.is_empty(),
+        LiveControlPlaneEvent::Other { kind } => {
+            kind.starts_with("ping:")
+                || kind.starts_with("identify-pushed:")
+                || kind.starts_with("identify-sent:")
+                || kind.starts_with("kademlia:InboundRequest")
+                || kind.starts_with("kademlia:Bootstrap(")
+                || kind == "kademlia-peer-directory-record-finished"
+                || kind.starts_with("autonat:OutboundProbe")
+        }
+        _ => false,
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn build_native_webrtc_transport(
@@ -70,7 +157,7 @@ fn build_native_browser_websocket_transport(
         ))
         .upgrade(libp2p::core::upgrade::Version::V1)
         .authenticate(libp2p::noise::Config::new(keypair)?)
-        .multiplex(libp2p::yamux::Config::default())
+        .multiplex(control_yamux_config())
         .boxed(),
     )
 }
@@ -214,10 +301,18 @@ impl NativeControlPlaneShell {
             })
             .build()
             .map_err(|error| SwarmError::Runtime(error.to_string()))?;
+        let identify_agent_version = if transport_policy.advertise_for_discovery {
+            format!("burn-p2p/native-control/{}", env!("CARGO_PKG_VERSION"))
+        } else {
+            FETCH_SIDECAR_AGENT_VERSION.to_owned()
+        };
         let identify_config = identify::Config::new(
             format!("{}/identify/1.0.0", control_protocol.as_str()),
             keypair.public(),
-        );
+        )
+        .with_agent_version(identify_agent_version);
+        let idle_connection_timeout =
+            Duration::from_millis(transport_policy.idle_connection_timeout_ms.max(1));
         let gossipsub_behaviour = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(behaviour_keypair),
             gossip_config.clone(),
@@ -291,7 +386,7 @@ impl NativeControlPlaneShell {
                     .with_tcp(
                         libp2p::tcp::Config::default(),
                         tls_config,
-                        yamux::Config::default,
+                        control_yamux_config,
                     )
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_quic()
@@ -303,12 +398,13 @@ impl NativeControlPlaneShell {
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_dns()
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
-                    .with_relay_client(tls_config, yamux::Config::default)
+                    .with_relay_client(tls_config, control_yamux_config)
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
                     .with_behaviour(move |_, relay_client| NativeControlPlaneBehaviour {
                         request_response: request_response::cbor::Behaviour::new(
                             [(protocol, ProtocolSupport::Full)],
-                            request_response::Config::default(),
+                            request_response::Config::default()
+                                .with_request_timeout(CONTROL_REQUEST_RESPONSE_TIMEOUT),
                         ),
                         gossipsub: gossipsub_behaviour,
                         identify: identify::Behaviour::new(identify_config.clone()),
@@ -327,13 +423,18 @@ impl NativeControlPlaneShell {
                                 )
                                 .with_max_established(transport_policy.max_established_total)
                                 .with_max_established_per_peer(
-                                    transport_policy.max_established_per_peer,
+                                    connection_limit_with_reconciliation_slack(
+                                        transport_policy.max_established_per_peer,
+                                    ),
                                 ),
                         ),
                         #[cfg(not(target_arch = "wasm32"))]
                         mdns: mdns_behaviour.into(),
                     })
                     .map_err(|error| SwarmError::Runtime(error.to_string()))?
+                    .with_swarm_config(|config| {
+                        config.with_idle_connection_timeout(idle_connection_timeout)
+                    })
                     .build(),
             )
         })?;
@@ -359,12 +460,88 @@ impl NativeControlPlaneShell {
             next_rendezvous_refresh_at: Instant::now(),
             subscribed_topics: BTreeSet::new(),
             pending_events: VecDeque::new(),
+            established_connections: BTreeMap::new(),
+            connection_reconciliation_deadlines: BTreeMap::new(),
+            pending_outbound_requests: BTreeMap::new(),
+            pending_inbound_responses: BTreeMap::new(),
         })
     }
 
     /// Performs the local peer ID operation.
     pub fn local_peer_id(&self) -> &Libp2pPeerId {
         &self.local_peer_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn established_connection_count(&self, peer_id: &str) -> usize {
+        peer_id
+            .parse::<Libp2pPeerId>()
+            .ok()
+            .and_then(|peer_id| self.established_connections.get(&peer_id))
+            .map(BTreeMap::len)
+            .unwrap_or_default()
+    }
+
+    fn send_control_request(
+        &mut self,
+        peer_id: Libp2pPeerId,
+        request: ControlPlaneRequest,
+    ) -> String {
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer_id, request)
+            .to_string();
+        self.pending_outbound_requests
+            .insert(request_id.clone(), peer_id);
+        request_id
+    }
+
+    fn reconcile_due_connections(&mut self) {
+        let now = Instant::now();
+        let due_peer_ids = self
+            .connection_reconciliation_deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(peer_id, _)| *peer_id)
+            .collect::<Vec<_>>();
+
+        for peer_id in due_peer_ids {
+            if peer_has_pending_control_exchange(
+                &peer_id,
+                &self.pending_outbound_requests,
+                &self.pending_inbound_responses,
+            ) {
+                self.connection_reconciliation_deadlines
+                    .insert(peer_id, now + ROUTE_RECONCILIATION_RETRY);
+                continue;
+            }
+
+            self.connection_reconciliation_deadlines.remove(&peer_id);
+            let prefer_dialer = self.local_peer_id < peer_id;
+            let maximum = self
+                .transport_policy
+                .max_established_per_peer
+                .map(|maximum| maximum as usize)
+                .unwrap_or(usize::MAX);
+            let excess = self
+                .established_connections
+                .get(&peer_id)
+                .map(|connections| excess_connection_ids(connections, maximum, prefer_dialer))
+                .unwrap_or_default();
+            for connection_id in &excess {
+                self.swarm.close_connection(*connection_id);
+            }
+            if !excess.is_empty() {
+                self.pending_events
+                    .push_back(LiveControlPlaneEvent::Other {
+                        kind: format!(
+                            "connection-reconciled:{peer_id}:prefer_dialer={prefer_dialer}:closed={excess:?}"
+                        ),
+                    });
+            }
+        }
     }
 
     fn maybe_request_relay_reservation(
@@ -831,21 +1008,84 @@ impl NativeControlPlaneShell {
         self.diloco.publish_gradient(manifest, chunks);
     }
 
+    /// Publishes one reduced pseudo-gradient and its exact cohort commitment.
+    pub fn publish_diloco_aggregate(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+    ) {
+        self.diloco.publish_aggregate(
+            manifest,
+            chunks,
+            participant_peer_ids,
+            contribution_manifest_ids,
+        );
+    }
+
+    pub fn diloco_aggregate_ready(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+        reducer_peer_id: &PeerId,
+        round_cursor: &RoundCursor,
+    ) -> Option<DiLoCoAggregateReady> {
+        self.diloco
+            .aggregate_ready(experiment_id, revision_id, reducer_peer_id, round_cursor)
+    }
+
     pub(crate) fn request_diloco_id(
         &mut self,
         peer_id: &str,
         request: DiLoCoRequest,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)))
-            .to_string())
+        self.start_diloco_request(peer_id, request)
+    }
+
+    /// Starts a DiLoCo request without blocking the swarm event loop.
+    pub fn start_diloco_request(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
+        let request_kind = diloco_request_kind(&request);
+        let request_id =
+            self.send_control_request(peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)));
+        if std::env::var_os("BURN_P2P_DILOCO_TRACE").is_some() {
+            let routes = self
+                .established_connections
+                .get(&peer_id)
+                .map(|connections| {
+                    connections
+                        .iter()
+                        .map(|(connection_id, route)| {
+                            format!(
+                                "{connection_id:?}:relayed={}:dialer={}",
+                                route.relayed, route.dialer
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            eprintln!(
+                "[burn_p2p swarm] diloco-request peer={peer_id} kind={request_kind} request={request_id} routes={routes:?}"
+            );
+        }
+        Ok(request_id)
+    }
+
+    /// Takes a completed DiLoCo response produced while polling swarm events.
+    pub fn take_diloco_response(&mut self, request_id: &str) -> Option<(String, DiLoCoResponse)> {
+        self.completed_diloco_responses.remove(request_id)
+    }
+
+    pub(crate) fn discard_completed_diloco_responses(&mut self) -> usize {
+        let discarded = self.completed_diloco_responses.len();
+        self.completed_diloco_responses.clear();
+        discarded
     }
 
     pub fn fetch_diloco(
@@ -872,7 +1112,9 @@ impl NativeControlPlaneShell {
                 }
                 return Ok(response);
             }
-            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+            if let Some(event) =
+                self.wait_live_event_with_discovery(Duration::from_millis(50), false)
+            {
                 match event {
                     LiveControlPlaneEvent::RequestFailure {
                         request_id: Some(failure_id),
@@ -898,15 +1140,8 @@ impl NativeControlPlaneShell {
 
     pub(crate) fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&peer_id, ControlPlaneRequest::Snapshot)
-            .to_string())
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
+        Ok(self.send_control_request(peer_id, ControlPlaneRequest::Snapshot))
     }
 
     /// Performs the request artifact manifest operation.
@@ -925,18 +1160,11 @@ impl NativeControlPlaneShell {
         artifact_id: ArtifactId,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(
-                &peer_id,
-                ControlPlaneRequest::ArtifactManifest { artifact_id },
-            )
-            .to_string())
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
+        Ok(self.send_control_request(
+            peer_id,
+            ControlPlaneRequest::ArtifactManifest { artifact_id },
+        ))
     }
 
     /// Performs the request artifact chunk operation.
@@ -957,21 +1185,14 @@ impl NativeControlPlaneShell {
         chunk_id: ChunkId,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
-        Ok(self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(
-                &peer_id,
-                ControlPlaneRequest::ArtifactChunk {
-                    artifact_id,
-                    chunk_id,
-                },
-            )
-            .to_string())
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
+        Ok(self.send_control_request(
+            peer_id,
+            ControlPlaneRequest::ArtifactChunk {
+                artifact_id,
+                chunk_id,
+            },
+        ))
     }
 
     /// Fetches the snapshot.
@@ -986,7 +1207,9 @@ impl NativeControlPlaneShell {
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+            if let Some(event) =
+                self.wait_live_event_with_discovery(Duration::from_millis(50), false)
+            {
                 match event {
                     LiveControlPlaneEvent::SnapshotReceived {
                         request_id: response_id,
@@ -1027,7 +1250,9 @@ impl NativeControlPlaneShell {
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+            if let Some(event) =
+                self.wait_live_event_with_discovery(Duration::from_millis(50), false)
+            {
                 match event {
                     LiveControlPlaneEvent::ArtifactManifestReceived {
                         request_id: response_id,
@@ -1069,7 +1294,9 @@ impl NativeControlPlaneShell {
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Some(event) = self.wait_live_event(Duration::from_millis(50)) {
+            if let Some(event) =
+                self.wait_live_event_with_discovery(Duration::from_millis(50), false)
+            {
                 match event {
                     LiveControlPlaneEvent::ArtifactChunkReceived {
                         request_id: response_id,
@@ -1132,9 +1359,16 @@ impl NativeControlPlaneShell {
         }
     }
 
-    fn wait_live_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
-        self.maybe_refresh_background_discovery();
-        self.runtime.block_on(async {
+    fn wait_live_event_with_discovery(
+        &mut self,
+        duration: Duration,
+        refresh_discovery: bool,
+    ) -> Option<LiveControlPlaneEvent> {
+        self.reconcile_due_connections();
+        if refresh_discovery {
+            self.maybe_refresh_background_discovery();
+        }
+        let event = self.runtime.block_on(async {
             timeout(duration, self.swarm.select_next_some())
                 .await
                 .ok()
@@ -1144,7 +1378,9 @@ impl NativeControlPlaneShell {
                             request_response::Event::Message { peer, message, .. } => match message
                             {
                                 request_response::Message::Request {
-                                    request, channel, ..
+                                    request_id,
+                                    request,
+                                    channel,
                                 } => match request {
                                     ControlPlaneRequest::Snapshot => {
                                         let response =
@@ -1155,9 +1391,13 @@ impl NativeControlPlaneShell {
                                             .request_response
                                             .send_response(channel, response)
                                         {
-                                            Ok(()) => LiveControlPlaneEvent::SnapshotRequested {
-                                                peer_id: peer.to_string(),
-                                            },
+                                            Ok(()) => {
+                                                self.pending_inbound_responses
+                                                    .insert(request_id.to_string(), peer);
+                                                LiveControlPlaneEvent::SnapshotRequested {
+                                                    peer_id: peer.to_string(),
+                                                }
+                                            }
                                             Err(_) => LiveControlPlaneEvent::ResponseSendFailure {
                                                 peer_id: peer.to_string(),
                                                 message: "snapshot response channel closed".into(),
@@ -1175,6 +1415,8 @@ impl NativeControlPlaneShell {
                                             .send_response(channel, response)
                                         {
                                             Ok(()) => {
+                                                self.pending_inbound_responses
+                                                    .insert(request_id.to_string(), peer);
                                                 LiveControlPlaneEvent::ArtifactManifestRequested {
                                                     peer_id: peer.to_string(),
                                                     artifact_id,
@@ -1204,6 +1446,8 @@ impl NativeControlPlaneShell {
                                             .send_response(channel, response)
                                         {
                                             Ok(()) => {
+                                                self.pending_inbound_responses
+                                                    .insert(request_id.to_string(), peer);
                                                 LiveControlPlaneEvent::ArtifactChunkRequested {
                                                     peer_id: peer.to_string(),
                                                     artifact_id,
@@ -1218,6 +1462,7 @@ impl NativeControlPlaneShell {
                                         }
                                     }
                                     ControlPlaneRequest::DiLoCo(request) => {
+                                        let request_kind = diloco_request_kind(&request);
                                         let response = ControlPlaneResponse::DiLoCo(Box::new(
                                             self.diloco.respond(*request),
                                         ));
@@ -1227,12 +1472,15 @@ impl NativeControlPlaneShell {
                                             .request_response
                                             .send_response(channel, response)
                                         {
-                                            Ok(()) => LiveControlPlaneEvent::Other {
-                                                kind: format!(
-                                                    "responded to DiLoCo request from {}",
-                                                    peer
-                                                ),
-                                            },
+                                            Ok(()) => {
+                                                self.pending_inbound_responses
+                                                    .insert(request_id.to_string(), peer);
+                                                LiveControlPlaneEvent::Other {
+                                                    kind: format!(
+                                                        "responded to DiLoCo {request_kind} request from {peer}"
+                                                    ),
+                                                }
+                                            }
                                             Err(_) => LiveControlPlaneEvent::ResponseSendFailure {
                                                 peer_id: peer.to_string(),
                                                 message: "DiLoCo response channel closed".into(),
@@ -1243,7 +1491,10 @@ impl NativeControlPlaneShell {
                                 request_response::Message::Response {
                                     request_id,
                                     response,
-                                } => match response {
+                                } => {
+                                    self.pending_outbound_requests
+                                        .remove(&request_id.to_string());
+                                    match response {
                                     ControlPlaneResponse::Snapshot(snapshot) => {
                                         LiveControlPlaneEvent::SnapshotReceived {
                                             peer_id: peer.to_string(),
@@ -1266,38 +1517,53 @@ impl NativeControlPlaneShell {
                                         }
                                     }
                                     ControlPlaneResponse::DiLoCo(response) => {
+                                        let response_kind = diloco_response_kind(&response);
                                         self.completed_diloco_responses.insert(
                                             request_id.to_string(),
                                             (peer.to_string(), *response),
                                         );
                                         LiveControlPlaneEvent::Other {
                                             kind: format!(
-                                                "received DiLoCo response {} from {}",
-                                                request_id,
-                                                peer
+                                                "received DiLoCo {response_kind} response {request_id} from {peer}"
                                             ),
                                         }
                                     }
-                                },
+                                }
+                                }
                             },
                             request_response::Event::OutboundFailure {
                                 peer,
                                 request_id,
                                 error,
                                 ..
-                            } => LiveControlPlaneEvent::RequestFailure {
-                                peer_id: peer.to_string(),
-                                request_id: Some(request_id.to_string()),
-                                kind: None,
-                                message: error.to_string(),
-                            },
-                            request_response::Event::InboundFailure { peer, error, .. } => {
+                            } => {
+                                self.pending_outbound_requests
+                                    .remove(&request_id.to_string());
+                                LiveControlPlaneEvent::RequestFailure {
+                                    peer_id: peer.to_string(),
+                                    request_id: Some(request_id.to_string()),
+                                    kind: None,
+                                    message: error.to_string(),
+                                }
+                            }
+                            request_response::Event::InboundFailure {
+                                peer,
+                                request_id,
+                                error,
+                                ..
+                            } => {
+                                self.pending_inbound_responses
+                                    .remove(&request_id.to_string());
                                 LiveControlPlaneEvent::InboundFailure {
                                     peer_id: peer.to_string(),
                                     message: error.to_string(),
                                 }
                             }
-                            request_response::Event::ResponseSent { peer, .. } => {
+                            request_response::Event::ResponseSent {
+                                peer, request_id, ..
+                            } => {
+                                self.pending_inbound_responses
+                                    .remove(&request_id.to_string());
                                 LiveControlPlaneEvent::SnapshotResponseSent {
                                     peer_id: peer.to_string(),
                                 }
@@ -1350,72 +1616,93 @@ impl NativeControlPlaneShell {
                             },
                         },
                         NativeControlPlaneBehaviourEvent::Identify(event) => match *event {
-                            identify::Event::Received { peer_id, info, .. } => {
-                                let listen_addrs = info.listen_addrs;
-                                let observed_addr = info.observed_addr;
-                                let protocols = info
-                                    .protocols
-                                    .into_iter()
-                                    .map(|protocol| protocol.to_string())
-                                    .collect::<Vec<_>>();
-                                let relay_hop_supported = protocol_supports_relay_hop(&protocols);
-                                let rendezvous_supported =
-                                    protocol_supports_rendezvous(&protocols);
-                                self.swarm
-                                    .behaviour_mut()
-                                    .gossipsub
-                                    .add_explicit_peer(&peer_id);
-                                self.swarm.add_external_address(observed_addr);
-                                Self::note_kademlia_addresses(
-                                    &mut self.swarm,
-                                    &peer_id,
-                                    listen_addrs.iter().cloned(),
-                                );
-                                if self.transport_policy.enable_kademlia {
-                                    let scheduled =
-                                        Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
-                                    if self.next_kademlia_refresh_at > scheduled {
-                                        self.next_kademlia_refresh_at = scheduled;
+                            identify::Event::Received {
+                                peer_id,
+                                connection_id,
+                                info,
+                            } => {
+                                if info.agent_version == FETCH_SIDECAR_AGENT_VERSION {
+                                    LiveControlPlaneEvent::Other {
+                                        kind: format!("ephemeral-fetch-sidecar-identified:{peer_id}"),
                                     }
-                                }
-                                if rendezvous_supported {
-                                    self.rendezvous_known_servers.insert(peer_id);
-                                    Self::refresh_rendezvous_server(
-                                        &mut self.swarm,
-                                        &self.transport_policy,
-                                        self.rendezvous_namespace.as_ref(),
-                                        &mut self.rendezvous_discovery_cookies,
-                                        &mut self.pending_events,
-                                        peer_id,
-                                    );
                                 } else {
-                                    self.rendezvous_known_servers.remove(&peer_id);
-                                    self.rendezvous_discovery_cookies.remove(&peer_id);
-                                }
-                                if relay_hop_supported {
-                                    if self.transport_policy.enable_autonat
-                                        && let Some(address) = listen_addrs.first().cloned()
-                                        && let Some(autonat) =
-                                            self.swarm.behaviour_mut().autonat.as_mut()
-                                    {
-                                        autonat.add_server(peer_id, Some(address));
-                                    }
-                                    Self::maybe_request_relay_reservation(
-                                        &mut self.swarm,
-                                        &self.transport_policy,
-                                        &mut self.relay_reservation_requests,
-                                        &mut self.pending_events,
-                                        &peer_id,
-                                        &listen_addrs,
-                                    );
-                                }
-                                LiveControlPlaneEvent::PeerIdentified {
-                                    peer_id: peer_id.to_string(),
-                                    listen_addresses: listen_addrs
+                                    let observed_addr = info.observed_addr;
+                                    let listen_addrs = info.listen_addrs;
+                                    let protocols = info
+                                        .protocols
                                         .into_iter()
-                                        .map(|address| SwarmAddress(address.to_string()))
-                                        .collect(),
-                                    protocols,
+                                        .map(|protocol| protocol.to_string())
+                                        .collect::<Vec<_>>();
+                                    let relay_hop_supported =
+                                        protocol_supports_relay_hop(&protocols);
+                                    let rendezvous_supported =
+                                        protocol_supports_rendezvous(&protocols);
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .gossipsub
+                                        .add_explicit_peer(&peer_id);
+                                    // A remote peer's observation is a reachable local
+                                    // address only when that peer dialed this exact
+                                    // connection. On outbound TCP connections it is an
+                                    // ephemeral source port and must not be advertised.
+                                    let route = self
+                                        .established_connections
+                                        .get(&peer_id)
+                                        .and_then(|connections| connections.get(&connection_id));
+                                    if observed_address_is_reachable(route) {
+                                        self.swarm.add_external_address(observed_addr);
+                                    }
+                                    Self::note_kademlia_addresses(
+                                        &mut self.swarm,
+                                        &peer_id,
+                                        listen_addrs.iter().cloned(),
+                                    );
+                                    if self.transport_policy.enable_kademlia {
+                                        let scheduled =
+                                            Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
+                                        if self.next_kademlia_refresh_at > scheduled {
+                                            self.next_kademlia_refresh_at = scheduled;
+                                        }
+                                    }
+                                    if rendezvous_supported {
+                                        self.rendezvous_known_servers.insert(peer_id);
+                                        Self::refresh_rendezvous_server(
+                                            &mut self.swarm,
+                                            &self.transport_policy,
+                                            self.rendezvous_namespace.as_ref(),
+                                            &mut self.rendezvous_discovery_cookies,
+                                            &mut self.pending_events,
+                                            peer_id,
+                                        );
+                                    } else {
+                                        self.rendezvous_known_servers.remove(&peer_id);
+                                        self.rendezvous_discovery_cookies.remove(&peer_id);
+                                    }
+                                    if relay_hop_supported {
+                                        if self.transport_policy.enable_autonat
+                                            && let Some(address) = listen_addrs.first().cloned()
+                                            && let Some(autonat) =
+                                                self.swarm.behaviour_mut().autonat.as_mut()
+                                        {
+                                            autonat.add_server(peer_id, Some(address));
+                                        }
+                                        Self::maybe_request_relay_reservation(
+                                            &mut self.swarm,
+                                            &self.transport_policy,
+                                            &mut self.relay_reservation_requests,
+                                            &mut self.pending_events,
+                                            &peer_id,
+                                            &listen_addrs,
+                                        );
+                                    }
+                                    LiveControlPlaneEvent::PeerIdentified {
+                                        peer_id: peer_id.to_string(),
+                                        listen_addresses: listen_addrs
+                                            .into_iter()
+                                            .map(|address| SwarmAddress(address.to_string()))
+                                            .collect(),
+                                        protocols,
+                                    }
                                 }
                             }
                             identify::Event::Pushed { peer_id, .. } => {
@@ -1797,30 +2084,122 @@ impl NativeControlPlaneShell {
                                 self.next_kademlia_refresh_at = scheduled;
                             }
                         }
-                        if self.transport_policy.enable_rendezvous_client
-                            && self.next_rendezvous_refresh_at > Instant::now()
-                        {
-                            self.next_rendezvous_refresh_at = Instant::now();
+                        if self.transport_policy.enable_rendezvous_client {
+                            let scheduled = Instant::now() + RENDEZVOUS_REFRESH_DEBOUNCE;
+                            if self.next_rendezvous_refresh_at > scheduled {
+                                self.next_rendezvous_refresh_at = scheduled;
+                            }
                         }
                         LiveControlPlaneEvent::ReachableAddressExpired { address }
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    SwarmEvent::ListenerClosed {
+                        listener_id,
+                        addresses,
+                        reason,
+                    } => LiveControlPlaneEvent::Other {
+                        kind: format!(
+                            "listener-closed:{listener_id:?}:addresses={addresses:?}:reason={reason:?}"
+                        ),
+                    },
+                    SwarmEvent::ListenerError { listener_id, error } => {
+                        LiveControlPlaneEvent::Other {
+                            kind: format!("listener-error:{listener_id:?}:{error}"),
+                        }
+                    }
+                    SwarmEvent::ConnectionEstablished {
+                        peer_id,
+                        connection_id,
+                        endpoint,
+                        num_established,
+                        ..
+                    } => {
+                        let relayed = endpoint.is_relayed();
+                        let dialer = endpoint.is_dialer();
+                        // Both endpoints must retain the same physical route. The lower peer ID
+                        // prefers its dialed route; the higher peer ID prefers that route as a
+                        // listener. Local connection IDs cannot provide this symmetry.
+                        let prefer_dialer = self.local_peer_id < peer_id;
+                        let maximum = self
+                            .transport_policy
+                            .max_established_per_peer
+                            .map(|maximum| maximum as usize)
+                            .unwrap_or(usize::MAX);
+                        let (tracked, excess) = {
+                            let connections =
+                                self.established_connections.entry(peer_id).or_default();
+                            connections.insert(connection_id, EstablishedConnectionRoute {
+                                relayed,
+                                dialer,
+                            });
+                            (
+                                connections.len(),
+                                excess_connection_ids(connections, maximum, prefer_dialer),
+                            )
+                        };
+                        if !excess.is_empty() {
+                            self.connection_reconciliation_deadlines
+                                .insert(peer_id, Instant::now() + ROUTE_RECONCILIATION_GRACE);
+                        }
+                        self.pending_events
+                            .push_back(LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "connection-established-detail:{peer_id}:connection={connection_id:?}:relayed={relayed}:dialer={dialer}:prefer_dialer={prefer_dialer}:reported={num_established}:tracked={}:reconcile={excess:?}",
+                                    tracked
+                                ),
+                            });
                         LiveControlPlaneEvent::ConnectionEstablished {
                             peer_id: peer_id.to_string(),
                         }
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    SwarmEvent::ConnectionClosed {
+                        peer_id,
+                        connection_id,
+                        num_established,
+                        cause,
+                        ..
+                    } => {
+                        let remove_peer_connections =
+                            if let Some(connections) =
+                                self.established_connections.get_mut(&peer_id)
+                            {
+                                connections.remove(&connection_id);
+                                connections.is_empty()
+                            } else {
+                                false
+                            };
+                        if remove_peer_connections {
+                            self.established_connections.remove(&peer_id);
+                        }
+                        let maximum = self
+                            .transport_policy
+                            .max_established_per_peer
+                            .map(|maximum| maximum as usize)
+                            .unwrap_or(usize::MAX);
+                        if self
+                            .established_connections
+                            .get(&peer_id)
+                            .is_none_or(|connections| connections.len() <= maximum)
+                        {
+                            self.connection_reconciliation_deadlines.remove(&peer_id);
+                        }
                         if self.transport_policy.enable_kademlia {
                             let scheduled = Instant::now() + KADEMLIA_REFRESH_DEBOUNCE;
                             if self.next_kademlia_refresh_at > scheduled {
                                 self.next_kademlia_refresh_at = scheduled;
                             }
                         }
-                        if self.transport_policy.enable_rendezvous_client
-                            && self.next_rendezvous_refresh_at > Instant::now()
-                        {
-                            self.next_rendezvous_refresh_at = Instant::now();
+                        if self.transport_policy.enable_rendezvous_client {
+                            let scheduled = Instant::now() + RENDEZVOUS_REFRESH_DEBOUNCE;
+                            if self.next_rendezvous_refresh_at > scheduled {
+                                self.next_rendezvous_refresh_at = scheduled;
+                            }
                         }
+                        self.pending_events
+                            .push_back(LiveControlPlaneEvent::Other {
+                                kind: format!(
+                                    "connection-closed-detail:{peer_id}:remaining={num_established}:cause={cause:?}"
+                                ),
+                            });
                         LiveControlPlaneEvent::ConnectionClosed {
                             peer_id: peer_id.to_string(),
                         }
@@ -1831,11 +2210,6 @@ impl NativeControlPlaneShell {
                             if self.next_kademlia_refresh_at > scheduled {
                                 self.next_kademlia_refresh_at = scheduled;
                             }
-                        }
-                        if self.transport_policy.enable_rendezvous_client
-                            && self.next_rendezvous_refresh_at > Instant::now()
-                        {
-                            self.next_rendezvous_refresh_at = Instant::now();
                         }
                         LiveControlPlaneEvent::OutgoingConnectionError {
                             peer_id: peer_id.map(|peer_id| peer_id.to_string()),
@@ -1851,23 +2225,192 @@ impl NativeControlPlaneShell {
                         kind: other_native_control_name(&other).to_owned(),
                     },
                 })
-        })
+        });
+        self.reconcile_due_connections();
+        event
     }
 
     fn settle_request_response(&mut self) {
         let deadline = Instant::now() + Duration::from_millis(250);
         while Instant::now() < deadline {
-            match self.wait_live_event(Duration::from_millis(5)) {
-                Some(event) => self.pending_events.push_back(event),
+            match self.wait_live_event_with_discovery(Duration::from_millis(5), false) {
+                Some(event) if !is_low_value_maintenance_event(&event) => {
+                    self.pending_events.push_back(event);
+                }
+                Some(_) => {}
                 None => break,
+            }
+        }
+    }
+
+    fn wait_actionable_event(
+        &mut self,
+        duration: Duration,
+        refresh_discovery: bool,
+    ) -> Option<LiveControlPlaneEvent> {
+        while let Some(event) = self.pending_events.pop_front() {
+            if !is_low_value_maintenance_event(&event) {
+                return Some(event);
+            }
+        }
+
+        let deadline = Instant::now() + duration;
+        let mut refresh_discovery = refresh_discovery;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let event = self.wait_live_event_with_discovery(remaining, refresh_discovery)?;
+            refresh_discovery = false;
+            if !is_low_value_maintenance_event(&event) {
+                return Some(event);
             }
         }
     }
 
     /// Performs the wait event operation.
     pub fn wait_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
-        self.wait_live_event(duration)
-            .or_else(|| self.pending_events.pop_front())
+        self.wait_actionable_event(duration, true)
+    }
+
+    /// Waits for an event without scheduling background discovery work.
+    pub fn wait_priority_event(&mut self, duration: Duration) -> Option<LiveControlPlaneEvent> {
+        self.wait_actionable_event(duration, false)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_event_priority_tests {
+    use super::*;
+
+    #[test]
+    fn connection_pruning_prefers_direct_then_symmetric_direction() {
+        let direct_listener = libp2p_swarm::ConnectionId::new_unchecked(1);
+        let relay_listener = libp2p_swarm::ConnectionId::new_unchecked(2);
+        let direct_dialer = libp2p_swarm::ConnectionId::new_unchecked(3);
+        let connections = BTreeMap::from([
+            (
+                direct_listener,
+                EstablishedConnectionRoute {
+                    relayed: false,
+                    dialer: false,
+                },
+            ),
+            (
+                relay_listener,
+                EstablishedConnectionRoute {
+                    relayed: true,
+                    dialer: false,
+                },
+            ),
+            (
+                direct_dialer,
+                EstablishedConnectionRoute {
+                    relayed: false,
+                    dialer: true,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            excess_connection_ids(&connections, 1, true),
+            vec![direct_listener, relay_listener]
+        );
+        assert_eq!(
+            excess_connection_ids(&connections, 1, false),
+            vec![direct_dialer, relay_listener]
+        );
+        assert_eq!(
+            excess_connection_ids(&connections, 2, true),
+            vec![relay_listener]
+        );
+    }
+
+    #[test]
+    fn connection_limit_allows_one_route_for_reconciliation() {
+        assert_eq!(connection_limit_with_reconciliation_slack(Some(1)), Some(2));
+        assert_eq!(
+            connection_limit_with_reconciliation_slack(Some(u32::MAX)),
+            Some(u32::MAX)
+        );
+        assert_eq!(connection_limit_with_reconciliation_slack(None), None);
+    }
+
+    #[test]
+    fn observed_addresses_are_only_reachable_on_inbound_connections() {
+        assert!(observed_address_is_reachable(Some(
+            &EstablishedConnectionRoute {
+                relayed: false,
+                dialer: false,
+            }
+        )));
+        assert!(!observed_address_is_reachable(Some(
+            &EstablishedConnectionRoute {
+                relayed: false,
+                dialer: true,
+            }
+        )));
+        assert!(!observed_address_is_reachable(None));
+    }
+
+    #[test]
+    fn connection_reconciliation_waits_for_control_exchanges() {
+        let peer_id = Libp2pPeerId::random();
+        let other_peer_id = Libp2pPeerId::random();
+        let mut outbound = BTreeMap::new();
+        let mut inbound = BTreeMap::new();
+
+        assert!(!peer_has_pending_control_exchange(
+            &peer_id, &outbound, &inbound
+        ));
+        outbound.insert("outbound".into(), peer_id);
+        assert!(peer_has_pending_control_exchange(
+            &peer_id, &outbound, &inbound
+        ));
+        outbound.insert("other".into(), other_peer_id);
+        outbound.remove("outbound");
+        inbound.insert("inbound".into(), peer_id);
+        assert!(peer_has_pending_control_exchange(
+            &peer_id, &outbound, &inbound
+        ));
+    }
+
+    #[test]
+    fn filters_only_non_actionable_native_maintenance_events() {
+        for kind in [
+            "ping:Event { peer: 12D3KooW }",
+            "identify-pushed:12D3KooW",
+            "identify-sent:12D3KooW",
+            "kademlia:InboundRequest { request: FindNode }",
+            "kademlia:Bootstrap(Ok(()))",
+            "kademlia-peer-directory-record-finished",
+            "autonat:OutboundProbe(Error(NoServer))",
+        ] {
+            assert!(is_low_value_maintenance_event(
+                &LiveControlPlaneEvent::Other { kind: kind.into() }
+            ));
+        }
+
+        for kind in [
+            "identify-error:12D3KooW:protocol",
+            "kademlia-peer-directory-decode-error:invalid",
+            "rendezvous-registered:12D3KooW:dragon:30",
+            "rendezvous-discover-failed:12D3KooW:dragon:timeout",
+        ] {
+            assert!(!is_low_value_maintenance_event(
+                &LiveControlPlaneEvent::Other { kind: kind.into() }
+            ));
+        }
+
+        assert!(is_low_value_maintenance_event(
+            &LiveControlPlaneEvent::PeersDiscovered { peers: Vec::new() }
+        ));
+        assert!(!is_low_value_maintenance_event(
+            &LiveControlPlaneEvent::ConnectionEstablished {
+                peer_id: "peer-a".into(),
+            }
+        ));
     }
 }
 
@@ -2100,6 +2643,32 @@ impl NativeControlPlaneShell {
         self.inner.publish_diloco_gradient(manifest, chunks);
     }
 
+    pub fn publish_diloco_aggregate(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+    ) {
+        self.inner.publish_diloco_aggregate(
+            manifest,
+            chunks,
+            participant_peer_ids,
+            contribution_manifest_ids,
+        );
+    }
+
+    pub fn diloco_aggregate_ready(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+        reducer_peer_id: &PeerId,
+        round_cursor: &RoundCursor,
+    ) -> Option<DiLoCoAggregateReady> {
+        self.inner
+            .diloco_aggregate_ready(experiment_id, revision_id, reducer_peer_id, round_cursor)
+    }
+
     pub fn fetch_diloco(
         &mut self,
         peer_id: &str,
@@ -2107,6 +2676,22 @@ impl NativeControlPlaneShell {
         timeout: Duration,
     ) -> Result<DiLoCoResponse, SwarmError> {
         self.inner.fetch_diloco(peer_id, request, timeout)
+    }
+
+    pub fn start_diloco_request(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        self.inner.start_diloco_request(peer_id, request)
+    }
+
+    pub fn take_diloco_response(&mut self, request_id: &str) -> Option<(String, DiLoCoResponse)> {
+        self.inner.take_diloco_response(request_id)
+    }
+
+    pub(crate) fn discard_completed_diloco_responses(&mut self) -> usize {
+        self.inner.discard_completed_diloco_responses()
     }
 
     pub fn request_snapshot(&mut self, peer_id: &str) -> Result<(), SwarmError> {
@@ -2187,5 +2772,9 @@ impl NativeControlPlaneShell {
 
     pub fn wait_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
         self.inner.wait_event(timeout)
+    }
+
+    pub fn wait_priority_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        self.inner.wait_priority_event(timeout)
     }
 }

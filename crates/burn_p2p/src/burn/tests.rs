@@ -313,6 +313,187 @@ fn burn_sharded_dataset_roundtrips_local_metadata() {
     assert_eq!(reloaded.shard_examples(), dataset.shard_examples());
 }
 
+#[test]
+fn burn_sharded_dataset_group_balancing_preserves_groups_and_spreads_work() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [10.0, 11.0, 20.0, 21.0, 30.0, 31.0, 40.0, 41.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local_grouped_by(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("group-balanced-dataset").with_microshards(2),
+        "tiny-group-balanced-v1",
+        |_, item| item.value as u32 / 10,
+    )
+    .expect("group-balanced dataset");
+    let manifest: crate::ShardFetchManifest = serde_json::from_slice(
+        &fs::read(dataset_root.path().join("fetch-manifest.json")).expect("manifest bytes"),
+    )
+    .expect("manifest");
+    let shard_records = manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            serde_json::from_slice::<Vec<TinyLearnerItem>>(
+                &fs::read(dataset_root.path().join(&entry.locator)).expect("shard bytes"),
+            )
+            .expect("shard records")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        dataset
+            .registration()
+            .view
+            .metadata
+            .get("partitioning")
+            .map(String::as_str),
+        Some("tiny-group-balanced-v1")
+    );
+    assert!(shard_records.iter().all(|shard| shard.len() == 4));
+    for group in 1..=4 {
+        assert_eq!(
+            shard_records
+                .iter()
+                .filter(|shard| { shard.iter().any(|item| item.value as u32 / 10 == group) })
+                .count(),
+            1,
+            "group {group} must remain in exactly one shard"
+        );
+    }
+}
+
+#[test]
+fn burn_sharded_dataset_group_balancing_packs_largest_groups_first() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [10.0, 20.0, 30.0, 31.0, 32.0, 33.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local_grouped_by(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("uneven-group-balanced-dataset").with_microshards(2),
+        "tiny-largest-group-first-v1",
+        |_, item| item.value as u32 / 10,
+    )
+    .expect("group-balanced dataset");
+    let mut shard_sizes = dataset
+        .shard_examples()
+        .values()
+        .copied()
+        .collect::<Vec<_>>();
+    shard_sizes.sort_unstable();
+
+    assert_eq!(shard_sizes, [2, 4]);
+}
+
+#[test]
+fn burn_sharded_dataset_caps_shards_to_nonempty_record_partitions() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [1.0, 2.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("nonempty-record-shards").with_microshards(8),
+    )
+    .expect("sharded dataset");
+
+    assert_eq!(dataset.microshard_plan().microshards.len(), records.len());
+    assert!(
+        dataset
+            .shard_examples()
+            .values()
+            .all(|example_count| *example_count > 0)
+    );
+}
+
+#[test]
+fn burn_sharded_dataset_caps_grouped_shards_to_indivisible_groups() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [10.0, 11.0, 12.0, 20.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local_grouped_by(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("nonempty-grouped-shards").with_microshards(8),
+        "nonempty-grouped-v1",
+        |_, item| item.value as u32 / 10,
+    )
+    .expect("grouped sharded dataset");
+
+    assert_eq!(dataset.microshard_plan().microshards.len(), 2);
+    assert!(
+        dataset
+            .shard_examples()
+            .values()
+            .all(|example_count| *example_count > 0)
+    );
+}
+
+#[test]
+fn burn_sharded_dataset_identity_is_content_bound_and_location_independent() {
+    let first_root = tempdir().expect("first dataset root");
+    let mirror_root = tempdir().expect("mirror dataset root");
+    let changed_root = tempdir().expect("changed dataset root");
+    let records = vec![
+        TinyLearnerItem { value: 1.0 },
+        TinyLearnerItem { value: 2.0 },
+        TinyLearnerItem { value: 3.0 },
+    ];
+    let changed_records = vec![
+        TinyLearnerItem { value: 1.0 },
+        TinyLearnerItem { value: 2.0 },
+        TinyLearnerItem { value: 4.0 },
+    ];
+    let write_dataset = |root: &Path, records: &[TinyLearnerItem]| {
+        BurnShardedDataset::write_local(
+            root,
+            records,
+            BurnShardedDatasetConfig::new("content-bound-dataset").with_microshards(2),
+        )
+        .expect("write content-bound dataset")
+    };
+
+    let first = write_dataset(first_root.path(), &records);
+    let mirror = write_dataset(mirror_root.path(), &records);
+    let changed = write_dataset(changed_root.path(), &changed_records);
+
+    assert_eq!(
+        first.registration().view.dataset_view_id,
+        mirror.registration().view.dataset_view_id
+    );
+    assert_eq!(
+        first.registration().manifest.manifest_hash,
+        mirror.registration().manifest.manifest_hash
+    );
+    assert_eq!(first.microshard_plan(), mirror.microshard_plan());
+    assert_ne!(
+        first.registration().manifest.source_uri,
+        mirror.registration().manifest.source_uri
+    );
+
+    assert_ne!(
+        first.registration().view.dataset_view_id,
+        changed.registration().view.dataset_view_id
+    );
+    assert_ne!(
+        first.registration().manifest.manifest_hash,
+        changed.registration().manifest.manifest_hash
+    );
+    assert_ne!(
+        first.microshard_plan().microshards,
+        changed.microshard_plan().microshards
+    );
+}
+
 fn tiny_assignment_lease() -> AssignmentLease {
     AssignmentLease {
         lease_id: crate::LeaseId::new("lease-1"),
@@ -432,6 +613,48 @@ fn burn_workload_adapter_derives_schema_and_manifest() {
         ContentId::new("tiny-burnpack")
     );
     assert!(!adapter.model_schema_hash().as_str().is_empty());
+}
+
+#[test]
+fn burn_workload_adapter_honors_semantic_schema_for_tensor_identity() {
+    let supported_workload = SupportedWorkload {
+        workload_id: crate::WorkloadId::new("tiny-semantic-workload"),
+        workload_name: "Tiny Semantic Burn Workload".into(),
+        model_program_hash: ContentId::new("tiny-program"),
+        checkpoint_format_hash: ContentId::new("tiny-burnpack"),
+        supported_revision_family: ContentId::new("tiny-family"),
+        resource_class: "cpu".into(),
+    };
+    let semantic_schema = ContentId::new("cross-backend-semantic-schema");
+    let adapter = TinyBurnWorkload
+        .into_p2p_workload(
+            BurnWorkloadConfig::standard(supported_workload)
+                .with_model_schema_hash(semantic_schema.clone()),
+        )
+        .expect("adapter should build");
+    let model = adapter.init_model(&adapter.runtime_device());
+
+    assert_eq!(adapter.model_schema_hash(), semantic_schema);
+    assert_eq!(
+        adapter
+            .model_tensor_digest(&model)
+            .expect("adapter tensor digest"),
+        module_tensor_digest::<TestBackend, _>(&model, adapter.model_schema_hash())
+            .expect("engine tensor digest"),
+    );
+
+    let artifact_root = tempdir().expect("artifact root");
+    let artifact_store = FsArtifactStore::new(artifact_root.path());
+    let descriptor = adapter
+        .materialize_model_artifact(
+            &model,
+            ArtifactKind::FullHead,
+            HeadId::new("semantic-schema-head"),
+            None,
+            &artifact_store,
+        )
+        .expect("materialize semantic-schema artifact");
+    assert_eq!(descriptor.model_schema_hash, semantic_schema);
 }
 
 #[test]

@@ -179,6 +179,16 @@ fn resolve_operator_state_backend(
     })
 }
 
+fn revision_contract_paths_from_env() -> Vec<PathBuf> {
+    std::env::var_os("BURN_P2P_REVISION_CONTRACT_FILES")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = std::env::args_os()
         .nth(1)
@@ -282,6 +292,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(auth) = auth_state.as_ref() {
         sync_trust_bundle(auth, &state);
+    }
+    {
+        let paths = revision_contract_paths_from_env();
+        let mut state_lock = state
+            .lock()
+            .map_err(|_| std::io::Error::other("bootstrap daemon state lock poisoned"))?;
+        if !paths.is_empty() {
+            let loaded = state_lock.load_revision_contract_files(paths)?;
+            eprintln!("loaded {loaded} authority-signed revision contract(s)");
+        }
+        state_lock.validate_revision_contracts()?;
     }
     let control_handle = embedded_runtime
         .as_ref()

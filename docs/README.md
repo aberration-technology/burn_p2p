@@ -14,6 +14,8 @@ truth. docs here should stay short and code-adjacent.
   `burn_p2p` into a Burn project
 - [learning-dynamics.md](learning-dynamics.md): how windowed p2p averaging
   learns, how contributions are weighted, and where it differs from sync ddp
+- [training-contracts.md](training-contracts.md): signed semantic revisions,
+  trusted genesis, compact update codecs, and native/ECS observation
 - [protocol-shape.md](protocol-shape.md): reducer vs validator authority,
   canonical promotion, and the intended trust boundary
 - [browser-transport-backend.md](browser-transport-backend.md): browser
@@ -69,6 +71,8 @@ for implementation-heavy areas, prefer the code directly:
 - backend-neutral workload seam and python adapter:
   `crates/burn_p2p_workload/src/`,
   `crates/burn_p2p_python/src/`
+- cross-backend signed model identity:
+  `crates/burn_p2p_tensor_identity/src/`
 - dataloader planning and cache/fetch flow: `crates/burn_p2p_dataloader/src/`
 - deployment examples: `crates/burn_p2p_bootstrap/examples/` and
   `deploy/`

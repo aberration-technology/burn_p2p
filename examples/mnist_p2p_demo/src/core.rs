@@ -4272,6 +4272,7 @@ where
             input.low_lr_genesis.clone(),
             input.low_lr_head.clone(),
         ],
+        revision_contracts: Vec::new(),
         leaderboard_entries: leaderboard,
         metrics_catchup: browser_metrics_catchup,
         selected_head_id: input.baseline_head.head_id.clone(),

@@ -215,6 +215,8 @@ pub enum RequestFailureOperation {
     DiLoCoGradientManifestFetch,
     /// Fetching a DiLoCo pseudo-gradient chunk.
     DiLoCoGradientChunkFetch,
+    /// Fetching a reduced DiLoCo aggregate chunk.
+    DiLoCoAggregateChunkFetch,
     /// Sending a DiLoCo round-control request.
     DiLoCoRoundRequest,
     /// Sending an outbound request whose semantic operation is not known locally.
@@ -606,6 +608,59 @@ pub struct ValidationQuorumCertificate {
     pub reduction_ids: Vec<ContentId>,
     /// The issued at.
     pub issued_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Structural error in a validator-quorum certificate.
+pub enum ValidationQuorumCertificateError {
+    #[error("validation quorum certificate must use validator-quorum promotion")]
+    InvalidPromotionMode,
+    #[error("validation quorum certificate declares a zero validator quorum")]
+    ZeroQuorum,
+    #[error("validation quorum certificate has {found} distinct attesters but requires {required}")]
+    InsufficientAttesters { found: usize, required: usize },
+    #[error("validation quorum coordinator is not one of the attesting validators")]
+    CoordinatorDidNotAttest,
+    #[error(
+        "validation quorum certificate has {found} distinct reduction ids but requires {required}"
+    )]
+    InsufficientReductionEvidence { found: usize, required: usize },
+}
+
+impl ValidationQuorumCertificate {
+    /// Verifies architecture-neutral quorum structure before a certificate is observed.
+    ///
+    /// Validator-set membership and signatures remain runtime admission concerns because
+    /// they depend on the active authority epoch and merge window.
+    pub fn validate_structure(&self) -> Result<(), ValidationQuorumCertificateError> {
+        if self.promotion_mode != HeadPromotionMode::ValidatorQuorum {
+            return Err(ValidationQuorumCertificateError::InvalidPromotionMode);
+        }
+        let required = usize::from(self.validator_quorum);
+        if required == 0 {
+            return Err(ValidationQuorumCertificateError::ZeroQuorum);
+        }
+        let attesters = self.attesting_validators.iter().collect::<BTreeSet<_>>();
+        if attesters.len() < required {
+            return Err(ValidationQuorumCertificateError::InsufficientAttesters {
+                found: attesters.len(),
+                required,
+            });
+        }
+        if !attesters.contains(&self.coordinator) {
+            return Err(ValidationQuorumCertificateError::CoordinatorDidNotAttest);
+        }
+        let reduction_ids = self.reduction_ids.iter().collect::<BTreeSet<_>>();
+        if reduction_ids.len() < required {
+            return Err(
+                ValidationQuorumCertificateError::InsufficientReductionEvidence {
+                    found: reduction_ids.len(),
+                    required,
+                },
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -12,7 +12,8 @@ use anyhow::Context;
 use burn_p2p::SwarmAddress;
 use burn_p2p_testkit::multiprocess::{
     SyntheticNativeBackend, SyntheticProcessConfig, SyntheticProcessReport, SyntheticSoakConfig,
-    SyntheticWorkloadKind, create_synthetic_runtime_dataset, run_synthetic_process_soak,
+    SyntheticWorkloadKind, create_synthetic_runtime_dataset,
+    create_synthetic_runtime_dataset_with_microshards, run_synthetic_process_soak,
 };
 use tempfile::tempdir;
 
@@ -337,7 +338,7 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
     let trainer_count = 3_u32;
     let root = tempdir()?;
     let dataset_root = root.path().join("dataset");
-    create_synthetic_runtime_dataset(&dataset_root)?;
+    create_synthetic_runtime_dataset_with_microshards(&dataset_root, trainer_count)?;
 
     let validator_report_path = root.path().join("validator-report.json");
     let validator_config_path = root.path().join("validator.json");
@@ -347,6 +348,7 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
         dataset_root.clone(),
         validator_report_path.clone(),
     );
+    validator_config.microshard_count = trainer_count;
     validator_config.shutdown_sentinel = Some(validator_shutdown.clone());
     fs::write(
         &validator_config_path,
@@ -371,6 +373,7 @@ fn validator_can_fan_in_many_process_trainers() -> anyhow::Result<()> {
             report_path,
             vec![validator_addr.clone()],
         );
+        config.microshard_count = trainer_count;
         config.start_sentinel = Some(start_sentinel.clone());
         config.startup_timeout_secs = 30;
         config.sync_timeout_secs = 30;

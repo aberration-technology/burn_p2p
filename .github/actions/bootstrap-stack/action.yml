@@ -1,0 +1,9 @@
+name: bootstrap locked sibling stack
+description: Materialize burn_p2p path dependencies from stack.lock.toml
+
+runs:
+  using: composite
+  steps:
+    - name: bootstrap locked sibling repositories
+      shell: bash
+      run: python3 "${{ github.workspace }}/scripts/bootstrap_stack.py" --repair-existing

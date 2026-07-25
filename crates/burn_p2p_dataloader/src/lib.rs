@@ -267,6 +267,51 @@ mod tests {
     }
 
     #[test]
+    fn lease_planner_rotates_bounded_microshard_slices_across_windows() {
+        let microshards = MicroShardPlanner::new(MicroShardPlannerConfig {
+            target_microshard_bytes: 1,
+            min_microshards: 6,
+            max_microshards: 6,
+        })
+        .expect("microshard planner")
+        .plan(
+            &dataset_view(),
+            DatasetSizing {
+                total_examples: 96,
+                total_tokens: 6_144,
+                total_bytes: 6,
+            },
+        )
+        .expect("microshard plan")
+        .microshards;
+        let planner = LeasePlanner::new(LeasePlannerConfig {
+            max_microshards_per_lease: 2,
+            ..LeasePlannerConfig::default()
+        })
+        .expect("lease planner");
+        let select = |window_id| {
+            planner
+                .select_microshards_for_window(
+                    &burn_p2p_core::PeerId::new("peer-1"),
+                    WindowId(window_id),
+                    64,
+                    &microshards,
+                )
+                .expect("window selection")
+                .microshards
+                .into_iter()
+                .map(|microshard| microshard.microshard_id)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+
+        let first = select(1);
+        let second = select(2);
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert!(first.is_disjoint(&second));
+    }
+
+    #[test]
     fn lease_cache_indexes_by_window_and_peer() {
         let planner = LeasePlanner::default();
         let microshards = MicroShardPlanner::default()

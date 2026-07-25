@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -60,13 +60,29 @@ pub fn multihash_sha256(bytes: &[u8]) -> [u8; SHA2_256_MULTIHASH_LEN] {
     multihash_from_sha256_digest(Sha256::digest(bytes))
 }
 
+struct Sha256Writer(Sha256);
+
+impl Write for Sha256Writer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Computes the canonical content identifier for a serializable value.
 pub fn content_id_for<T>(value: &T) -> Result<ContentId, SchemaError>
 where
     T: Serialize + ?Sized,
 {
-    let bytes = deterministic_cbor(value)?;
-    Ok(ContentId::from_multihash(multihash_sha256(&bytes)))
+    let mut writer = Sha256Writer(Sha256::new());
+    ciborium::ser::into_writer(value, &mut writer)?;
+    Ok(ContentId::from_multihash(multihash_from_sha256_digest(
+        writer.0.finalize(),
+    )))
 }
 
 /// Provides canonical encoding and content-addressing helpers for schema types.
@@ -86,7 +102,10 @@ impl<T> CanonicalSchema for T where T: Serialize {}
 
 #[cfg(test)]
 mod tests {
-    use super::{multihash_from_sha256_digest, multihash_sha256};
+    use super::{
+        content_id_for, deterministic_cbor, multihash_from_sha256_digest, multihash_sha256,
+    };
+    use crate::ContentId;
     use sha2::Digest;
 
     #[test]
@@ -104,6 +123,22 @@ mod tests {
         assert_eq!(
             hex::encode(multihash_sha256(b"abc")),
             "1220ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn streaming_content_id_matches_buffered_canonical_cbor_hash() {
+        let value = (
+            "streaming-content-id",
+            vec![1_u64, 2, 3, 5, 8],
+            Some("stable"),
+        );
+        let buffered = deterministic_cbor(&value).expect("canonical CBOR");
+        let expected = ContentId::from_multihash(multihash_sha256(&buffered));
+
+        assert_eq!(
+            content_id_for(&value).expect("streaming content identifier"),
+            expected
         );
     }
 }

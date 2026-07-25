@@ -129,6 +129,7 @@ fn update_announcement(index: usize) -> UpdateEnvelopeAnnouncement {
             ],
             announced_at: Utc::now(),
         },
+        workload_update: None,
     }
 }
 
@@ -374,7 +375,7 @@ fn bench_pubsub_envelope_roundtrip(c: &mut Criterion) {
             "update",
             PubsubEnvelope {
                 topic_path: topics.telemetry.path.clone(),
-                payload: PubsubPayload::Update(update_announcement(0)),
+                payload: PubsubPayload::Update(Box::new(update_announcement(0))),
                 published_at: Utc::now(),
             },
         ),

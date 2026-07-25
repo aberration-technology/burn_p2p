@@ -1,6 +1,229 @@
 use super::support::*;
 use burn_p2p_core::PeerWindowStatus;
 
+#[derive(Clone, Debug, Default)]
+struct RecordingTrainingWindowObserver {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl crate::TrainingWindowObserver for RecordingTrainingWindowObserver {
+    fn window_started(&self, event: &crate::TrainingWindowStartedEvent) {
+        self.events
+            .lock()
+            .expect("observer events")
+            .push(format!("start:{}", event.window_id.0));
+    }
+
+    fn window_completed(&self, event: &crate::TrainingWindowCompletedEvent) {
+        self.events
+            .lock()
+            .expect("observer events")
+            .push(format!("complete:{}", event.window_id.0));
+    }
+}
+
+#[test]
+fn runtime_role_downgrade_blocks_new_training_windows_until_restored() {
+    let dataset_dir = tempdir().expect("dataset dir");
+    let storage_root = tempdir().expect("storage root");
+    create_runtime_dataset(dataset_dir.path());
+    let mut running = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_roles(crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]))
+    .with_storage(StorageConfig::new(storage_root.path()))
+    .spawn()
+    .expect("runtime spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().local_peer_id.is_some(),
+        "runtime did not start",
+    );
+    let control = running.control_handle();
+    control
+        .update_roles(
+            crate::PeerRoleSet::new([crate::PeerRole::Viewer]),
+            Duration::from_secs(2),
+        )
+        .expect("runtime downgrade");
+    let error = running
+        .train_window_once(&experiment())
+        .expect_err("read-only peer must reject training");
+    assert!(
+        error
+            .to_string()
+            .contains("not currently participating as a trainer"),
+        "{error:#}"
+    );
+
+    control
+        .update_roles(
+            crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]),
+            Duration::from_secs(2),
+        )
+        .expect("runtime trainer restore");
+    running
+        .train_window_once(&experiment())
+        .expect("training after capability restore");
+
+    running.shutdown().expect("runtime shutdown");
+    let _ = running.await_termination().expect("runtime termination");
+}
+
+#[test]
+fn training_window_observers_cover_one_shot_and_continuous_paths() {
+    let dataset_dir = tempdir().expect("dataset dir");
+    let storage_root = tempdir().expect("storage root");
+    create_runtime_dataset(dataset_dir.path());
+    let first_observer = RecordingTrainingWindowObserver::default();
+    let first_observed = Arc::clone(&first_observer.events);
+    let second_observer = RecordingTrainingWindowObserver::default();
+    let second_observed = Arc::clone(&second_observer.events);
+    let mut running = NodeBuilder::new(SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    })
+    .with_mainnet(mainnet().genesis.clone())
+    .with_storage(StorageConfig::new(storage_root.path()))
+    .with_training_window_observer(first_observer)
+    .with_training_window_observer(second_observer)
+    .spawn()
+    .expect("observer runtime spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().local_peer_id.is_some(),
+        "observer runtime did not start",
+    );
+
+    let experiment = experiment();
+    running
+        .train_window_once(&experiment)
+        .expect("one-shot window");
+    {
+        let mut trainer = running
+            .continuous_trainer(&experiment)
+            .expect("continuous trainer");
+        trainer.train_next_window().expect("continuous window");
+    }
+
+    let expected = ["start:1", "complete:1", "start:2", "complete:2"];
+    assert_eq!(
+        first_observed
+            .lock()
+            .expect("first observer events")
+            .as_slice(),
+        expected
+    );
+    assert_eq!(
+        second_observed
+            .lock()
+            .expect("second observer events")
+            .as_slice(),
+        expected
+    );
+    running.shutdown().expect("observer runtime shutdown");
+    let _ = running
+        .await_termination()
+        .expect("observer runtime termination");
+}
+
+#[test]
+fn strict_node_rejects_initialization_without_signed_revision_contract() {
+    let dataset_dir = tempdir().expect("dataset dir");
+    let storage_root = tempdir().expect("storage root");
+    let project = SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    };
+    create_runtime_dataset(dataset_dir.path());
+
+    let mut running = NodeBuilder::new(project)
+        .with_mainnet(mainnet().genesis.clone())
+        .with_storage(StorageConfig::new(storage_root.path()))
+        .require_signed_revision_contracts(true)
+        .spawn()
+        .expect("strict runtime spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(5),
+        || telemetry.snapshot().local_peer_id.is_some(),
+        "strict runtime did not start",
+    );
+
+    let error = running
+        .initialize_local_head(&experiment())
+        .expect_err("unsigned revision should fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("no authority-signed training contract"),
+        "{error:#}"
+    );
+
+    running.shutdown().expect("strict runtime shutdown");
+    let _ = running
+        .await_termination()
+        .expect("strict runtime termination");
+}
+
+#[test]
+fn local_development_genesis_identity_is_peer_independent() {
+    let artifact_loads_before = SYNTHETIC_MODEL_ARTIFACT_LOADS.load(Ordering::SeqCst);
+    let dataset_dir = tempdir().expect("dataset dir");
+    create_runtime_dataset(dataset_dir.path());
+    let project = SyntheticRuntimeProject {
+        dataset_root: dataset_dir.path().to_path_buf(),
+        learning_rate: 1.0,
+        target_model: 10.0,
+    };
+
+    let initialize = |storage_root: &std::path::Path| {
+        let mut running = NodeBuilder::new(project.clone())
+            .with_mainnet(mainnet().genesis.clone())
+            .with_storage(StorageConfig::new(storage_root))
+            .spawn()
+            .expect("development runtime spawn");
+        let telemetry = running.telemetry();
+        wait_for(
+            Duration::from_secs(5),
+            || telemetry.snapshot().local_peer_id.is_some(),
+            "development runtime did not start",
+        );
+        let peer_id = telemetry
+            .snapshot()
+            .local_peer_id
+            .expect("development peer id");
+        let head = running
+            .initialize_local_head(&experiment())
+            .expect("development genesis");
+        running.shutdown().expect("development runtime shutdown");
+        let _ = running
+            .await_termination()
+            .expect("development runtime termination");
+        (peer_id, head)
+    };
+
+    let first_storage = tempdir().expect("first storage");
+    let second_storage = tempdir().expect("second storage");
+    let (first_peer, first_head) = initialize(first_storage.path());
+    let (second_peer, second_head) = initialize(second_storage.path());
+
+    assert_ne!(first_peer, second_peer);
+    assert_eq!(first_head.head_id, second_head.head_id);
+    assert_eq!(first_head.artifact_id, second_head.artifact_id);
+    assert!(
+        SYNTHETIC_MODEL_ARTIFACT_LOADS.load(Ordering::SeqCst) >= artifact_loads_before + 2,
+        "each genesis creator must reload its canonical serialized artifact"
+    );
+}
+
 #[test]
 fn train_window_once_rejects_diloco_revisions() {
     let dataset_dir = tempdir().expect("dataset dir");

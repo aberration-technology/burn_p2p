@@ -209,6 +209,11 @@ fn local_candidate_head_for_update(
     expected_global_step: u64,
     update: &UpdateAnnounce,
 ) -> Option<ValidationCandidateHead> {
+    let workload_update = snapshot
+        .update_announcements
+        .iter()
+        .find(|announcement| announcement.update == *update)
+        .and_then(|announcement| announcement.workload_update.clone());
     let announced = snapshot
         .head_announcements
         .iter()
@@ -229,6 +234,7 @@ fn local_candidate_head_for_update(
             provider_peer_ids: vec![local_peer_id.clone()],
             head: announcement.head.clone(),
             update: update.clone(),
+            workload_update: workload_update.clone(),
         });
     if announced.is_some() {
         return announced;
@@ -266,6 +272,7 @@ fn local_candidate_head_for_update(
             metrics: BTreeMap::new(),
         },
         update: update.clone(),
+        workload_update,
     })
 }
 
@@ -1399,6 +1406,10 @@ where
                     .node
                     .as_mut()
                     .expect("running node should retain prepared node");
+                let revision_contract = node
+                    .revision_contracts
+                    .get(&experiment.revision_id)
+                    .cloned();
                 let project = &mut node.project;
                 let device = project.runtime_device();
                 load_validation_candidate_model(
@@ -1408,11 +1419,15 @@ where
                         store: &store,
                         device: &device,
                         current_head: &current_head,
+                        revision_contract: revision_contract.as_ref(),
                         baseline_metrics: base_evaluation
                             .as_ref()
                             .map(|evaluation| &evaluation.metrics),
                         canary_threshold,
                         evaluate_candidates: true,
+                        replay_snapshots: &candidate_snapshots,
+                        dataset_cache_dir: storage.dataset_cache_dir(),
+                        validator_peer_id: local_peer_id,
                     },
                     candidate_head,
                 )?
@@ -1521,6 +1536,7 @@ where
                         sample_weight: candidate.sample_weight * effective_weight.max(0.01),
                         quality_weight: candidate.quality_weight,
                         model: &candidate.model,
+                        update_evidence: candidate.update_evidence.as_ref(),
                     })
             })
             .collect::<Vec<_>>();

@@ -317,6 +317,10 @@ pub struct RuntimeTransportPolicy {
     pub preferred_transports: Vec<TransportKind>,
     /// The target number of direct peers to maintain before the runtime stops proactive dialing.
     pub target_connected_peers: usize,
+    #[serde(default = "default_idle_connection_timeout_ms")]
+    /// Idle connection lifetime. Keep this above the control-plane ping cadence so long local
+    /// model steps do not tear down the data-plane mesh before aggregation.
+    pub idle_connection_timeout_ms: u64,
     #[serde(default)]
     /// The number of bootstrap/coherence-seed connections to keep once a healthy non-bootstrap
     /// mesh has formed. Most peers can drop to zero and reconnect only when rediscovery is needed.
@@ -359,6 +363,9 @@ pub struct RuntimeTransportPolicy {
     #[serde(default)]
     /// Enables Kademlia-backed native peer discovery and routing-table learning.
     pub enable_kademlia: bool,
+    #[serde(default = "default_advertise_for_discovery")]
+    /// Advertises this runtime as a durable peer that may be learned by remote discovery.
+    pub advertise_for_discovery: bool,
     /// The export openmetrics.
     pub export_openmetrics: bool,
 }
@@ -368,6 +375,14 @@ const DEFAULT_BOOTSTRAP_RELAY_CIRCUIT_BYTES: u64 = 256 * 1024 * 1024;
 
 fn default_max_relay_circuit_bytes() -> u64 {
     DEFAULT_PEER_RELAY_CIRCUIT_BYTES
+}
+
+fn default_advertise_for_discovery() -> bool {
+    true
+}
+
+fn default_idle_connection_timeout_ms() -> u64 {
+    super::CONTROL_IDLE_CONNECTION_TIMEOUT.as_millis() as u64
 }
 
 impl RuntimeTransportPolicy {
@@ -392,6 +407,7 @@ impl RuntimeTransportPolicy {
             } else {
                 4
             },
+            idle_connection_timeout_ms: default_idle_connection_timeout_ms(),
             target_bootstrap_seed_connections: 0,
             supports_direct_streams: true,
             max_established_incoming: if bootstrap {
@@ -423,6 +439,7 @@ impl RuntimeTransportPolicy {
             enable_rendezvous_client: true,
             enable_rendezvous_server: bootstrap,
             enable_kademlia: true,
+            advertise_for_discovery: true,
             export_openmetrics: true,
         }
     }
@@ -437,6 +454,7 @@ impl RuntimeTransportPolicy {
                 TransportKind::WebSocket,
             ],
             target_connected_peers: 3,
+            idle_connection_timeout_ms: default_idle_connection_timeout_ms(),
             target_bootstrap_seed_connections: 0,
             supports_direct_streams: true,
             max_established_incoming: None,
@@ -452,6 +470,7 @@ impl RuntimeTransportPolicy {
             enable_rendezvous_client: false,
             enable_rendezvous_server: false,
             enable_kademlia: false,
+            advertise_for_discovery: true,
             export_openmetrics: true,
         }
     }

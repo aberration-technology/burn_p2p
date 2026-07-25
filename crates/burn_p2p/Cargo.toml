@@ -13,6 +13,7 @@ readme = "../../README.md"
 [dependencies]
 anyhow.workspace = true
 burn = { workspace = true, optional = true }
+burn_ecs = { workspace = true, optional = true }
 chrono.workspace = true
 futures = "0.3"
 half = "2"
@@ -21,10 +22,9 @@ libp2p-identity = "0.2.13"
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
-sysinfo = "0.38.4"
 burn_p2p_checkpoint.workspace = true
 burn_p2p_engine = { workspace = true, optional = true }
+burn_p2p_tensor_identity = { workspace = true, optional = true }
 burn_p2p_core.workspace = true
 burn_p2p_dataloader.workspace = true
 burn_p2p_experiment.workspace = true
@@ -35,9 +35,18 @@ burn_p2p_views.workspace = true
 burn_p2p_workload.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+sysinfo = "0.38.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
 [features]
 default = []
-burn = ["dep:burn", "dep:burn_p2p_engine"]
+burn = ["dep:burn", "dep:burn_p2p_engine", "tensor-identity"]
+ecs = ["dep:burn_ecs"]
+tensor-identity = ["dep:burn_p2p_tensor_identity"]
 
 [dev-dependencies]
 criterion.workspace = true

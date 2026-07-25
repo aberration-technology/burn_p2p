@@ -6,7 +6,7 @@ use crate::{
     FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
     NetworkManifest, NodeBuilder, OuterOptimizerPolicy, P2pWorkload, PatchOutcome, PatchSupport,
     ProjectFamilyId, RuntimePatch, StateBlob, SupportedWorkload, TrainerCanonicalReconcileStrategy,
-    WindowCtx, WindowReport, WorkloadId,
+    ValidatedWorkloadUpdate, WindowCtx, WindowReport, WorkloadId, WorkloadUpdateValidationContext,
 };
 
 /// Groups one or more compatible workloads under a single project family.
@@ -234,6 +234,32 @@ where
             .load_model_artifact(model, descriptor, store, device)
     }
 
+    fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
+        self.workload.model_tensor_digest(model)
+    }
+
+    fn apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        update: &crate::WorkloadUpdateEnvelope,
+        contract: &crate::TrainingContractManifest,
+        store: &FsArtifactStore,
+        device: &Self::Device,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload
+            .apply_workload_update(base_model, descriptor, update, contract, store, device)
+    }
+
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, Self::Device>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        self.workload
+            .validate_and_apply_workload_update(base_model, context)
+    }
+
     fn materialize_model_artifact(
         &self,
         model: &Self::Model,
@@ -438,6 +464,32 @@ where
             .load_model_artifact(model, descriptor, store, device)
     }
 
+    fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
+        self.workload.model_tensor_digest(model)
+    }
+
+    fn apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        update: &crate::WorkloadUpdateEnvelope,
+        contract: &crate::TrainingContractManifest,
+        store: &FsArtifactStore,
+        device: &Self::Device,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload
+            .apply_workload_update(base_model, descriptor, update, contract, store, device)
+    }
+
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, Self::Device>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        self.workload
+            .validate_and_apply_workload_update(base_model, context)
+    }
+
     fn materialize_model_artifact(
         &self,
         model: &Self::Model,
@@ -636,7 +688,12 @@ where
             project: selected,
             genesis: Some(genesis),
             roles: self.roles,
+            role_capabilities: self.role_capabilities,
             config,
+            revision_contracts: self.revision_contracts,
+            revision_contract_trusted_issuers: self.revision_contract_trusted_issuers,
+            require_signed_revision_contracts: self.require_signed_revision_contracts,
+            training_window_observers: self.training_window_observers,
         })
     }
 
@@ -650,7 +707,12 @@ where
             project,
             genesis,
             roles,
+            role_capabilities,
             mut config,
+            revision_contracts,
+            revision_contract_trusted_issuers,
+            require_signed_revision_contracts,
+            training_window_observers,
         } = self;
         let selected = SelectedWorkloadProject::new(project, workload_id.clone())?;
         config.selected_workload_id = Some(workload_id);
@@ -660,7 +722,12 @@ where
             project: selected,
             genesis,
             roles,
+            role_capabilities,
             config,
+            revision_contracts,
+            revision_contract_trusted_issuers,
+            require_signed_revision_contracts,
+            training_window_observers,
         })
     }
 }

@@ -1225,11 +1225,60 @@ fn reducer_authority_promotes_without_validators_and_skips_head_eval() {
         trainers.push(trainer);
     }
 
-    wait_for(
-        Duration::from_secs(15),
-        || bootstrap_telemetry.snapshot().connected_peers >= 3,
-        "bootstrap did not connect to reducer and trainers",
-    );
+    let bootstrap_connect_deadline = Instant::now() + test_timeout(Duration::from_secs(15));
+    while bootstrap_telemetry.snapshot().connected_peers < 3
+        && Instant::now() < bootstrap_connect_deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if bootstrap_telemetry.snapshot().connected_peers < 3 {
+        let peer_debug = std::iter::once(("bootstrap", bootstrap_telemetry.snapshot()))
+            .chain(std::iter::once(("reducer", reducer_telemetry.snapshot())))
+            .chain(
+                trainers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, trainer)| {
+                        (
+                            if index == 0 { "trainer-a" } else { "trainer-b" },
+                            trainer.telemetry().snapshot(),
+                        )
+                    }),
+            )
+            .map(|(label, snapshot)| {
+                (
+                    label,
+                    snapshot.local_peer_id,
+                    snapshot.connected_peer_ids,
+                    snapshot.last_error,
+                    snapshot
+                        .recent_events
+                        .into_iter()
+                        .rev()
+                        .filter(|event| {
+                            matches!(
+                                event,
+                                crate::LiveControlPlaneEvent::ConnectionEstablished { .. }
+                                    | crate::LiveControlPlaneEvent::ConnectionClosed { .. }
+                                    | crate::LiveControlPlaneEvent::OutgoingConnectionError { .. }
+                                    | crate::LiveControlPlaneEvent::IncomingConnectionError { .. }
+                                    | crate::LiveControlPlaneEvent::DirectConnectionUpgradeSucceeded { .. }
+                                    | crate::LiveControlPlaneEvent::DirectConnectionUpgradeFailed { .. }
+                            ) || matches!(
+                                event,
+                                crate::LiveControlPlaneEvent::Other { kind }
+                                    if kind.starts_with("connection-")
+                                        || kind == "dialing"
+                                        || kind == "incoming-connection"
+                            )
+                        })
+                        .take(32)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        panic!("bootstrap did not connect to reducer and trainers; peer_debug={peer_debug:#?}");
+    }
     wait_for(
         Duration::from_secs(15),
         || reducer_telemetry.snapshot().connected_peers >= 3,

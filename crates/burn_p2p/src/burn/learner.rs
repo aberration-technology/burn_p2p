@@ -35,6 +35,8 @@ where
     data_pipeline: BurnLearnerDataPipeline<LC>,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
+    apply_workload_update: Option<Arc<LearnerWorkloadUpdateFn<LC>>>,
+    validate_workload_update: Option<Arc<LearnerWorkloadUpdateValidationFn<LC>>>,
 }
 
 impl<LC> Clone for BurnLearnerProject<LC>
@@ -50,6 +52,8 @@ where
             data_pipeline: self.data_pipeline.clone(),
             after_train_step: Arc::clone(&self.after_train_step),
             after_window: Arc::clone(&self.after_window),
+            apply_workload_update: self.apply_workload_update.clone(),
+            validate_workload_update: self.validate_workload_update.clone(),
         }
     }
 }
@@ -95,6 +99,8 @@ where
     local_dataset: BurnLocalDatasetConfig,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
+    apply_workload_update: Option<Arc<LearnerWorkloadUpdateFn<LC>>>,
+    validate_workload_update: Option<Arc<LearnerWorkloadUpdateValidationFn<LC>>>,
 }
 
 /// Starts the recommended burn integration path from an existing [`BurnLearner`].
@@ -193,6 +199,8 @@ where
             local_dataset: BurnLocalDatasetConfig::default(),
             after_train_step: Arc::new(default_learner_step_metrics::<LC>),
             after_window: Arc::new(default_learner_window_metrics::<LC>),
+            apply_workload_update: None,
+            validate_workload_update: None,
         }
     }
 
@@ -304,6 +312,40 @@ where
         self
     }
 
+    /// Installs a workload-specific decoder for contract-bound compact updates.
+    pub fn with_workload_update_applier(
+        mut self,
+        apply: impl Fn(
+            BurnLearnerModel<LC>,
+            &ArtifactDescriptor,
+            &WorkloadUpdateEnvelope,
+            &TrainingContractManifest,
+            &FsArtifactStore,
+            &BurnLearnerDevice<LC>,
+        ) -> anyhow::Result<BurnLearnerModel<LC>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.apply_workload_update = Some(Arc::new(apply));
+        self
+    }
+
+    /// Installs workload-specific independent validation for typed updates.
+    pub fn with_workload_update_validator(
+        mut self,
+        validate: impl Fn(
+            BurnLearnerModel<LC>,
+            WorkloadUpdateValidationContext<'_, BurnLearnerDevice<LC>>,
+        ) -> anyhow::Result<ValidatedWorkloadUpdate<BurnLearnerModel<LC>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.validate_workload_update = Some(Arc::new(validate));
+        self
+    }
+
     /// Finalizes the learner-backed workload.
     pub fn build(self) -> anyhow::Result<BurnLearnerProject<LC>> {
         self.build_with_training_hooks(true)
@@ -324,6 +366,8 @@ where
             local_dataset,
             after_train_step,
             after_window,
+            apply_workload_update,
+            validate_workload_update,
         } = self;
         let local_data_pipeline = if data_pipeline.is_none() {
             if let Some(train_loader) = train_loader.as_ref() {
@@ -369,6 +413,8 @@ where
                 })?,
             after_train_step,
             after_window,
+            apply_workload_update,
+            validate_workload_update,
         })
     }
 
@@ -487,7 +533,7 @@ where
     let inventory = inspect_module::<BurnLearnerBackend<LC>, _>(model);
     crate::CapabilityEstimate {
         preferred_backends: vec!["burn".into()],
-        work_units_per_second: inventory.parameter_count.max(1) as f64,
+        work_units_per_second: inventory.total_scalar_parameters.max(1) as f64,
         target_window_seconds: 1,
     }
 }
@@ -501,10 +547,16 @@ where
     let inventory =
         inspect_module::<<BurnLearnerBackend<LC> as AutodiffBackend>::InnerBackend, _>(model);
     MetricReport {
-        metrics: BTreeMap::from([(
-            "parameter_count".into(),
-            MetricValue::Integer(inventory.parameter_count as i64),
-        )]),
+        metrics: BTreeMap::from([
+            (
+                "parameter_count".into(),
+                MetricValue::Integer(inventory.total_scalar_parameters as i64),
+            ),
+            (
+                "parameter_tensor_count".into(),
+                MetricValue::Integer(inventory.parameter_count as i64),
+            ),
+        ]),
         captured_at: Utc::now(),
     }
 }
@@ -583,6 +635,10 @@ where
     let inventory = inspect_module::<BurnLearnerBackend<LC>, _>(&learner.model());
     metrics.insert(
         "parameter_count".into(),
+        MetricValue::Integer(inventory.total_scalar_parameters as i64),
+    );
+    metrics.insert(
+        "parameter_tensor_count".into(),
         MetricValue::Integer(inventory.parameter_count as i64),
     );
     Ok(())
@@ -799,6 +855,56 @@ where
     ) -> anyhow::Result<Vec<Self::Batch>> {
         self.data_pipeline
             .load_batches(lease, cached_microshards, &self.device)
+    }
+
+    fn apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        update: &WorkloadUpdateEnvelope,
+        contract: &TrainingContractManifest,
+        store: &FsArtifactStore,
+        device: &BurnLearnerDevice<LC>,
+    ) -> anyhow::Result<Self::Model> {
+        self.apply_workload_update.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "burn learner project does not support typed update artifact {}",
+                descriptor.artifact_id.as_str()
+            )
+        })?(base_model, descriptor, update, contract, store, device)
+    }
+
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, BurnLearnerDevice<LC>>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        if let Some(validate) = self.validate_workload_update.as_ref() {
+            return validate(base_model, context);
+        }
+        let WorkloadUpdateValidationContext {
+            descriptor,
+            update,
+            contract,
+            store,
+            device,
+            replay,
+        } = context;
+        let model =
+            self.apply_workload_update(base_model, descriptor, update, contract, store, device)?;
+        Ok(ValidatedWorkloadUpdate {
+            model,
+            evidence: crate::ValidatedUpdateEvidence {
+                update_envelope_id: ContentId::derive(update)?,
+                norm_stats: None,
+                feature_sketch: None,
+                reconstruction_verified: true,
+                replay_verified: !contract.update_codec.requires_independent_replay(),
+                replay_stats: None,
+                validator_peer_id: replay.validator_peer_id.clone(),
+                validated_at: Utc::now(),
+            },
+        })
     }
 
     fn contribution_metrics(

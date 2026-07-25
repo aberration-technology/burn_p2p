@@ -1,0 +1,26 @@
+[package]
+name = "burn_p2p_tensor_identity"
+description = "Backend-generic canonical Burn model tensor identity for burn_p2p."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+burn = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-store = { version = "0.21.0", default-features = false, features = ["std"] }
+burn_p2p_core.workspace = true
+ciborium.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+burn = { version = "0.21.0", default-features = false, features = ["ndarray", "std"] }
+
+[lints]
+workspace = true

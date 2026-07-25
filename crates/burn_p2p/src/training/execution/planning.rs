@@ -76,10 +76,23 @@ impl<P> RunningNode<P> {
             experiment,
             Some(&base_head_id),
         );
-        let assignment_peers = runtime_training_assignment_peers(
+        let observed_assignment_peers = runtime_training_assignment_peers(
             &prepared.telemetry_snapshot,
             &prepared.mainnet_roles,
             &prepared.local_peer_id,
+        );
+        let assignment_peers = canonical_training_assignment_peers(
+            &prepared.telemetry_snapshot,
+            experiment,
+            window_id,
+            &base_head_id,
+        )
+        .unwrap_or(observed_assignment_peers);
+        anyhow::ensure!(
+            assignment_peers.contains(&prepared.local_peer_id),
+            "local peer {} is not assigned to training window {}",
+            prepared.local_peer_id.as_str(),
+            window_id.0,
         );
         let topology_peers = runtime_topology_peers(
             &prepared.telemetry_snapshot,
@@ -137,26 +150,24 @@ impl<P> RunningNode<P> {
                 )?),
             )
         };
-        let lease_microshards = unleased_microshards_for_window(
+        let unleased_microshards = unleased_microshards_for_window(
             &prepared.telemetry_snapshot,
             experiment,
             window_id,
             &prepared.local_peer_id,
             &microshard_plan.microshards,
         );
-        let lease_microshards = if lease_microshards.len() == microshard_plan.microshards.len() {
-            preferred_microshards_for_peer(
-                &assignment_peers,
-                &prepared.local_peer_id,
-                &lease_microshards,
-            )
-        } else {
-            lease_microshards
-        };
-        let budget_work_units = fair_share_budget_work_units(
-            assignment_peers.len(),
-            lease_microshards.len(),
-            budget_work_units,
+        let lease_microshards = preferred_unleased_microshards_for_peer(
+            &assignment_peers,
+            &prepared.local_peer_id,
+            &microshard_plan.microshards,
+            &unleased_microshards,
+        );
+        anyhow::ensure!(
+            !lease_microshards.is_empty(),
+            "no unleased canonical microshards remain for peer {} in window {}",
+            prepared.local_peer_id.as_str(),
+            window_id.0,
         );
         let lease = if let Some(prefetched_lease) = self.take_ready_training_prefetch(
             experiment,
@@ -173,7 +184,7 @@ impl<P> RunningNode<P> {
                 .max_microshards_per_lease
                 .min(adaptive_microshard_cap(
                     scheduled_microshard_cap(
-                        fair_share_microshard_cap(assignment_peers.len(), lease_microshards.len()),
+                        lease_microshards.len(),
                         schedule_hint.microshard_scale,
                     ),
                     adaptation_factor,

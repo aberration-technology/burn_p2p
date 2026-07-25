@@ -21,6 +21,21 @@ core shape:
 burn_p2p = { version = "=0.21.2", features = ["burn"] }
 ```
 
+## development stack
+
+The in-flight `burn_ecs` integration remains a local sibling path dependency so
+P2P can validate the exact provider revision before it is published. The
+immutable revision and expected sibling path live in `stack.lock.toml`:
+
+```bash
+python3 scripts/bootstrap_stack.py
+python3 scripts/bootstrap_stack.py --verify
+```
+
+CI uses the same lock through `.github/actions/bootstrap-stack` and clones the
+public provider repository over HTTPS. No cross-repository credential is
+required.
+
 ## happy path
 
 ```rust
@@ -64,12 +79,21 @@ do not share an ambiguous return contract.
 `burn_p2p` handles:
 
 - head sync
+- authority-signed semantic revision and model-genesis verification
 - lease-scoped shard assignment
 - window-by-window training publication
+- full, dense, quantized, seeded low-rank, and subspace update contracts
 - checkpoint/artifact movement
 - reducer proposal flow
 - validator attestation and promotion
 - peer discovery, relay fallback, and control-plane sync
+
+With the optional `ecs` feature, `P2pTrainingIngressPlugin` projects protocol
+events into typed `burn_ecs` run entities. Its producer is bounded and
+non-blocking, and exposes queue pressure counters so a slow dashboard cannot
+silently become an unbounded training-path allocation. Dragon/model state does
+not move into `burn_p2p`; downstream plugins retain ownership of model,
+optimizer, recurrent state, and data.
 
 ## safety boundary
 
@@ -173,6 +197,7 @@ crates:
 - `burn_p2p_security`: auth connectors, admission policy, certificate issuance, and peer auth verification
 - `burn_p2p_social`: social/profile/feed-facing data surface
 - `burn_p2p_swarm`: native libp2p transport, discovery, relay/rendezvous, and control-plane sync
+- `burn_p2p_tensor_identity`: lightweight native/WASM canonical Burn tensor digest
 - `burn_p2p_testkit`: deterministic harnesses, multiprocess soak tools, and integration support
 - `burn_p2p_views`: query/view models used by app/bootstrap/social surfaces
 - `burn_p2p_workload`: backend-neutral workload and lease-data-pipeline seam
@@ -208,6 +233,7 @@ best follow-up docs:
 
 - [docs/examples/mnist.md](docs/examples/mnist.md)
 - [docs/downstream-burn-guide.md](docs/downstream-burn-guide.md)
+- [docs/training-contracts.md](docs/training-contracts.md)
 - [docs/learning-dynamics.md](docs/learning-dynamics.md)
 - [docs/protocol-shape.md](docs/protocol-shape.md)
 - [docs/formal-verification-plan.md](docs/formal-verification-plan.md)

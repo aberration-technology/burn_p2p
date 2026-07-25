@@ -6,6 +6,7 @@ fn synthesize_candidate_head(
     update: &UpdateAnnounce,
     local_peer_id: &PeerId,
     fallback_global_step: u64,
+    workload_update: Option<WorkloadUpdateEnvelope>,
 ) -> Option<ValidationCandidateHead> {
     let provider_peer_ids = dedupe_peer_ids(
         std::iter::once(update.peer_id.clone())
@@ -20,6 +21,7 @@ fn synthesize_candidate_head(
         origin_peer_id: update.peer_id.clone(),
         provider_peer_ids,
         update: update.clone(),
+        workload_update,
         head: HeadDescriptor {
             head_id: HeadId::new(format!(
                 "{}-{}-window-{}",
@@ -37,6 +39,19 @@ fn synthesize_candidate_head(
             metrics: BTreeMap::new(),
         },
     })
+}
+
+fn matching_workload_update(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    update: &UpdateAnnounce,
+) -> Option<WorkloadUpdateEnvelope> {
+    let mut matches = snapshots
+        .iter()
+        .flat_map(|(_, snapshot)| snapshot.update_announcements.iter())
+        .filter(|announcement| announcement.update == *update)
+        .filter_map(|announcement| announcement.workload_update.clone());
+    let first = matches.next()?;
+    matches.all(|candidate| candidate == first).then_some(first)
 }
 
 fn experiment_updates_from_snapshots(
@@ -78,6 +93,7 @@ fn matching_candidate_head_for_update(
     expected_global_step: u64,
     update: &UpdateAnnounce,
 ) -> Option<ValidationCandidateHead> {
+    let workload_update = matching_workload_update(snapshots, update);
     let mut matches = snapshots
         .iter()
         .flat_map(|(peer_id, snapshot)| {
@@ -142,6 +158,7 @@ fn matching_candidate_head_for_update(
             provider_peer_ids,
             head,
             update: update.clone(),
+            workload_update: workload_update.clone(),
         })
     } else {
         synthesize_candidate_head(
@@ -150,6 +167,7 @@ fn matching_candidate_head_for_update(
             update,
             local_peer_id,
             expected_global_step,
+            workload_update,
         )
     }
 }
@@ -256,7 +274,7 @@ pub(crate) fn collect_validation_candidate_heads(
         let mut chained_updates = vec![candidate.update.clone()];
         let mut latest_window_id = candidate.update.window_id;
 
-        loop {
+        while candidate.workload_update.is_none() {
             let descendants = all_updates
                 .iter()
                 .filter(|next| {
@@ -280,6 +298,9 @@ pub(crate) fn collect_validation_candidate_heads(
             ) else {
                 break;
             };
+            if next_candidate.workload_update.is_some() {
+                break;
+            }
             if next_candidate.head.parent_head_id.as_ref() != Some(&candidate.head.head_id) {
                 break;
             }

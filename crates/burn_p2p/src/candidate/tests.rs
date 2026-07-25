@@ -279,10 +279,12 @@ fn candidate_heads_collapse_linear_same_peer_descendants_into_rooted_candidate()
                 UpdateEnvelopeAnnouncement {
                     overlay: experiment.overlay_set().expect("overlay").heads.clone(),
                     update: root_update.clone(),
+                    workload_update: None,
                 },
                 UpdateEnvelopeAnnouncement {
                     overlay: experiment.overlay_set().expect("overlay").heads,
                     update: descendant_update.clone(),
+                    workload_update: None,
                 },
             ],
             ..ControlPlaneSnapshot::default()
@@ -329,6 +331,228 @@ fn candidate_heads_collapse_linear_same_peer_descendants_into_rooted_candidate()
             .map(|peer_id| peer_id.as_str().to_owned())
             .collect::<Vec<_>>(),
         vec!["trainer-a", "provider-b", "provider-c"]
+    );
+}
+
+#[test]
+fn typed_candidate_heads_are_not_collapsed_without_sequential_payloads() {
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let root_update = UpdateAnnounce {
+        peer_id: PeerId::new("trainer-a"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        window_id: WindowId(1),
+        base_head_id: HeadId::new("head-base"),
+        lease_id: Some(LeaseId::new("lease-a")),
+        delta_artifact_id: ArtifactId::new("artifact-a"),
+        sample_weight: 1.0,
+        quality_weight: 1.0,
+        norm_stats: UpdateNormStats {
+            l2_norm: 1.0,
+            max_abs: 1.0,
+            clipped: false,
+            non_finite_tensors: 0,
+        },
+        feature_sketch: None,
+        receipt_root: ContentId::new("receipt-a"),
+        receipt_ids: vec![ContributionReceiptId::new("receipt-a")],
+        providers: vec![PeerId::new("trainer-a")],
+        announced_at: Utc::now(),
+    };
+    let descendant_update = UpdateAnnounce {
+        window_id: WindowId(2),
+        base_head_id: HeadId::new("exp-a-trainer-a-window-1"),
+        lease_id: Some(LeaseId::new("lease-b")),
+        delta_artifact_id: ArtifactId::new("artifact-b"),
+        receipt_root: ContentId::new("receipt-b"),
+        receipt_ids: vec![ContributionReceiptId::new("receipt-b")],
+        announced_at: root_update.announced_at + chrono::Duration::milliseconds(1),
+        ..root_update.clone()
+    };
+    let descriptor = ArtifactDescriptor {
+        artifact_id: root_update.delta_artifact_id.clone(),
+        kind: ArtifactKind::DeltaPack,
+        head_id: Some(HeadId::new("exp-a-trainer-a-window-1")),
+        base_head_id: Some(root_update.base_head_id.clone()),
+        precision: Precision::Fp32,
+        model_schema_hash: ContentId::new("schema"),
+        record_format: "compact-test".into(),
+        bytes_len: 1,
+        chunks: Vec::new(),
+        root_hash: ContentId::new("root"),
+    };
+    let workload_update = WorkloadUpdateEnvelope {
+        training_contract_id: ContentId::new("contract"),
+        revision_id: experiment.revision_id.clone(),
+        base_head_id: root_update.base_head_id.clone(),
+        window_id: root_update.window_id,
+        lease_id: root_update.lease_id.clone().expect("lease"),
+        codec: UpdateCodec::DenseDelta,
+        artifact: descriptor,
+        decoded_tensor_digest: None,
+        claimed_norm_stats: None,
+        claimed_feature_sketch: None,
+    };
+    let snapshots = vec![(
+        PeerId::new("observer"),
+        ControlPlaneSnapshot {
+            update_announcements: vec![
+                UpdateEnvelopeAnnouncement {
+                    overlay: experiment.overlay_set().expect("overlay").heads.clone(),
+                    update: root_update.clone(),
+                    workload_update: Some(workload_update),
+                },
+                UpdateEnvelopeAnnouncement {
+                    overlay: experiment.overlay_set().expect("overlay").heads,
+                    update: descendant_update,
+                    workload_update: None,
+                },
+            ],
+            ..ControlPlaneSnapshot::default()
+        },
+    )];
+
+    let candidates = collect_validation_candidate_heads(
+        &experiment,
+        &snapshots,
+        &PeerId::new("validator"),
+        Some(&HeadId::new("head-base")),
+        1,
+        &[root_update],
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].update.delta_artifact_id,
+        ArtifactId::new("artifact-a")
+    );
+    assert!(candidates[0].workload_update.is_some());
+}
+
+#[test]
+fn authenticated_update_lease_fails_closed_on_missing_conflicting_or_wrong_identity() {
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let trainer = PeerId::new("trainer-a");
+    let dataset_view_id = DatasetViewId::new("view-a");
+    let lease_id = LeaseId::new("lease-a");
+    let window_id = WindowId(3);
+    let descriptor = ArtifactDescriptor {
+        artifact_id: ArtifactId::new("artifact-a"),
+        kind: ArtifactKind::DeltaPack,
+        head_id: Some(HeadId::new("head-a")),
+        base_head_id: Some(HeadId::new("head-base")),
+        precision: Precision::Fp32,
+        model_schema_hash: ContentId::new("schema"),
+        record_format: "compact-test".into(),
+        bytes_len: 1,
+        chunks: Vec::new(),
+        root_hash: ContentId::new("root"),
+    };
+    let update = WorkloadUpdateEnvelope {
+        training_contract_id: ContentId::new("contract"),
+        revision_id: experiment.revision_id.clone(),
+        base_head_id: HeadId::new("head-base"),
+        window_id,
+        lease_id: lease_id.clone(),
+        codec: UpdateCodec::DenseDelta,
+        artifact: descriptor,
+        decoded_tensor_digest: None,
+        claimed_norm_stats: None,
+        claimed_feature_sketch: None,
+    };
+
+    let missing =
+        model::authenticated_update_lease(&[], &experiment, &trainer, &update, &dataset_view_id)
+            .expect_err("an update without a gossiped lease must fail closed");
+    assert!(
+        missing
+            .to_string()
+            .contains("missing its authenticated lease")
+    );
+
+    let now = Utc::now();
+    let lease = AssignmentLease {
+        lease_id,
+        network_id: experiment.network_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        peer_id: trainer.clone(),
+        dataset_view_id: dataset_view_id.clone(),
+        window_id,
+        granted_at: now,
+        expires_at: now + chrono::Duration::minutes(1),
+        budget_work_units: 4,
+        microshards: vec![MicroShardId::new("micro-a")],
+        assignment_hash: ContentId::new("assignment-a"),
+    };
+    let overlay = experiment.overlay_set().expect("overlay").leases;
+    let snapshot = |leases: Vec<AssignmentLease>| {
+        vec![(
+            PeerId::new("observer"),
+            ControlPlaneSnapshot {
+                lease_announcements: leases
+                    .into_iter()
+                    .map(|lease| LeaseAnnouncement {
+                        overlay: overlay.clone(),
+                        lease,
+                        announced_at: now,
+                    })
+                    .collect(),
+                ..ControlPlaneSnapshot::default()
+            },
+        )]
+    };
+
+    let accepted = model::authenticated_update_lease(
+        &snapshot(vec![lease.clone()]),
+        &experiment,
+        &trainer,
+        &update,
+        &dataset_view_id,
+    )
+    .expect("one exact lease should authenticate");
+    assert_eq!(accepted.assignment_hash, lease.assignment_hash);
+
+    let mut conflicting = lease.clone();
+    conflicting.assignment_hash = ContentId::new("assignment-b");
+    let conflict = model::authenticated_update_lease(
+        &snapshot(vec![lease.clone(), conflicting]),
+        &experiment,
+        &trainer,
+        &update,
+        &dataset_view_id,
+    )
+    .expect_err("conflicting lease bodies must fail closed");
+    assert!(
+        conflict
+            .to_string()
+            .contains("conflicting lease announcements")
+    );
+
+    let identity = model::authenticated_update_lease(
+        &snapshot(vec![lease]),
+        &experiment,
+        &PeerId::new("different-trainer"),
+        &update,
+        &dataset_view_id,
+    )
+    .expect_err("lease ownership must match the candidate origin");
+    assert!(
+        identity
+            .to_string()
+            .contains("lease identity does not match")
     );
 }
 
@@ -440,6 +664,115 @@ impl P2pWorkload for NoopCandidateWorkload {
 }
 
 #[test]
+fn delta_pack_candidate_without_typed_envelope_is_rejected() {
+    let root = std::env::temp_dir().join(format!(
+        "burn-p2p-candidate-delta-envelope-{}",
+        Utc::now().timestamp_nanos_opt().expect("nanos")
+    ));
+    let store = FsArtifactStore::new(&root);
+    let base_head_id = HeadId::new("head-base");
+    let candidate_head_id = HeadId::new("head-candidate");
+    let descriptor = store
+        .store_artifact_reader(
+            &ArtifactBuildSpec::new(
+                ArtifactKind::DeltaPack,
+                Precision::Fp32,
+                ContentId::new("schema"),
+                "compact-test",
+            )
+            .with_head(candidate_head_id.clone())
+            .with_base_head(base_head_id.clone()),
+            std::io::Cursor::new([7_u8]),
+            ChunkingScheme::new(1).expect("chunking"),
+        )
+        .expect("store candidate");
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let base_head = HeadDescriptor {
+        head_id: base_head_id.clone(),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("base-artifact"),
+        parent_head_id: None,
+        global_step: 0,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    let update = UpdateAnnounce {
+        peer_id: PeerId::new("trainer"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        window_id: WindowId(1),
+        base_head_id: base_head_id.clone(),
+        lease_id: Some(LeaseId::new("lease")),
+        delta_artifact_id: descriptor.artifact_id.clone(),
+        sample_weight: 1.0,
+        quality_weight: 1.0,
+        norm_stats: UpdateNormStats {
+            l2_norm: 0.0,
+            max_abs: 0.0,
+            clipped: false,
+            non_finite_tensors: 0,
+        },
+        feature_sketch: None,
+        receipt_root: ContentId::new("receipt"),
+        receipt_ids: Vec::new(),
+        providers: Vec::new(),
+        announced_at: Utc::now(),
+    };
+    let head = HeadDescriptor {
+        head_id: candidate_head_id,
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: descriptor.artifact_id.clone(),
+        parent_head_id: Some(base_head_id),
+        global_step: 1,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    let current_head = Some((PeerId::new("base-provider"), base_head));
+    let mut project = NoopCandidateWorkload;
+    let error = load_validation_candidate_model(
+        &mut project,
+        ValidationCandidateLoadArgs {
+            experiment: &experiment,
+            store: &store,
+            device: &(),
+            current_head: &current_head,
+            revision_contract: None,
+            baseline_metrics: None,
+            canary_threshold: 0.0,
+            evaluate_candidates: false,
+            replay_snapshots: &[],
+            dataset_cache_dir: root.join("dataset-cache"),
+            validator_peer_id: &PeerId::new("validator"),
+        },
+        ValidationCandidateHead {
+            origin_peer_id: PeerId::new("trainer"),
+            provider_peer_ids: Vec::new(),
+            head,
+            update,
+            workload_update: None,
+        },
+    )
+    .err()
+    .expect("delta pack without typed envelope must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("missing a typed workload update envelope")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn direct_diffusion_promotion_surfaces_evaluation_metrics_on_head() {
     let experiment = ExperimentHandle {
         network_id: NetworkId::new("net-a"),
@@ -510,6 +843,7 @@ fn direct_diffusion_promotion_surfaces_evaluation_metrics_on_head() {
         sample_weight: 1.0,
         quality_weight: 1.0,
         model: &(),
+        update_evidence: None,
     };
     let mut project = NoopCandidateWorkload;
     let store = FsArtifactStore::new(std::env::temp_dir().join(format!(

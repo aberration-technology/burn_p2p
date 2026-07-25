@@ -631,6 +631,7 @@ pub struct StateBlob {
     /// Human-readable encoding label.
     pub encoding: String,
     /// Serialized bytes.
+    #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
 }
 
@@ -808,9 +809,53 @@ pub struct PseudoGradientChunk {
     /// Zero-based chunk index.
     pub chunk_index: u32,
     /// Raw encoded bytes.
+    #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     /// Timestamp when the chunk was produced.
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Carries a verified manifest together with one encoded pseudo-gradient chunk.
+pub struct DiLoCoGradientSlice {
+    /// Manifest describing the complete pseudo-gradient payload.
+    pub manifest: PseudoGradientManifest,
+    /// Requested chunk from the manifest.
+    pub chunk: PseudoGradientChunk,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Carries one chunk of a reduced DiLoCo aggregate and its cohort commitment.
+pub struct DiLoCoAggregateSlice {
+    /// Manifest describing the complete reduced pseudo-gradient payload.
+    pub manifest: PseudoGradientManifest,
+    /// Requested chunk from the aggregate manifest.
+    pub chunk: PseudoGradientChunk,
+    /// Canonically ordered peers whose local gradients formed the aggregate.
+    pub participant_peer_ids: Vec<PeerId>,
+    /// Local gradient manifest identifiers aligned with `participant_peer_ids`.
+    pub contribution_manifest_ids: Vec<ContentId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Releases a cohort to fetch one fully published reduced aggregate.
+pub struct DiLoCoAggregateReady {
+    /// Experiment scope for the aggregate.
+    pub experiment_id: ExperimentId,
+    /// Revision scope for the aggregate.
+    pub revision_id: RevisionId,
+    /// Reducer that published the aggregate.
+    pub reducer_peer_id: PeerId,
+    /// Exact completed inner-loop round being reduced.
+    pub round_cursor: RoundCursor,
+    /// Published aggregate manifest identifier.
+    pub aggregate_manifest_id: ContentId,
+    /// Canonically ordered participant cohort.
+    pub participant_peer_ids: Vec<PeerId>,
+    /// Local gradient manifest identifiers aligned with the cohort.
+    pub contribution_manifest_ids: Vec<ContentId>,
+    /// Timestamp when the aggregate became fetchable.
+    pub emitted_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,7 +878,9 @@ pub struct DiLoCoStateSnapshot {
     /// Checksum of the current local parameter state, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_parameter_checksum: Option<ContentId>,
-    /// Serialized outer optimizer state.
+    /// Serialized outer optimizer state when a self-contained checkpoint needs
+    /// it. Live control-plane snapshots may omit this field and serve the state
+    /// through the dedicated optimizer-state request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outer_optimizer_state: Option<StateBlob>,
     /// Signatures attesting to this state snapshot.
@@ -841,6 +888,17 @@ pub struct DiLoCoStateSnapshot {
     pub signature_bundle: Vec<SignatureMetadata>,
     /// Snapshot timestamp.
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Carries one coherent live state image for DiLoCo rejoin/bootstrap.
+pub struct DiLoCoStateBundle {
+    /// Signed metadata and round cursor for the state image.
+    pub snapshot: DiLoCoStateSnapshot,
+    /// Current deterministic parameter pack.
+    pub current_parameters: FlattenedTensorPack,
+    /// Serialized outer optimizer state associated with the parameters.
+    pub outer_optimizer_state: StateBlob,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -913,6 +971,13 @@ pub enum DiLoCoRequest {
         /// Revision scope.
         revision_id: RevisionId,
     },
+    /// Request one coherent snapshot, parameter pack, and outer optimizer state.
+    StateBundle {
+        /// Experiment scope.
+        experiment_id: ExperimentId,
+        /// Revision scope.
+        revision_id: RevisionId,
+    },
     /// Request the latest outer optimizer state blob.
     OuterOptimizerState {
         /// Experiment scope.
@@ -939,6 +1004,30 @@ pub enum DiLoCoRequest {
         /// Chunk index.
         chunk_index: u32,
     },
+    /// Request one round-scoped manifest and chunk in a single exchange.
+    GradientSlice {
+        /// Experiment scope.
+        experiment_id: ExperimentId,
+        /// Revision scope.
+        revision_id: RevisionId,
+        /// Exact completed inner-loop round being collected.
+        round_cursor: RoundCursor,
+        /// Chunk index.
+        chunk_index: u32,
+    },
+    /// Request one round-scoped reduced aggregate manifest and chunk.
+    AggregateSlice {
+        /// Experiment scope.
+        experiment_id: ExperimentId,
+        /// Revision scope.
+        revision_id: RevisionId,
+        /// Exact completed inner-loop round being reduced.
+        round_cursor: RoundCursor,
+        /// Chunk index.
+        chunk_index: u32,
+    },
+    /// Notify one follower that the reduced aggregate is fully published.
+    AggregateReady(Box<DiLoCoAggregateReady>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -956,6 +1045,8 @@ pub enum DiLoCoResponse {
     },
     /// Returns one durable DiLoCo state snapshot.
     StateSnapshot(Option<DiLoCoStateSnapshot>),
+    /// Returns one coherent live state image.
+    StateBundle(Option<Box<DiLoCoStateBundle>>),
     /// Returns one serialized outer optimizer state blob.
     OuterOptimizerState(Option<StateBlob>),
     /// Returns one pseudo-gradient manifest.
@@ -964,9 +1055,75 @@ pub enum DiLoCoResponse {
     CurrentParameters(Option<FlattenedTensorPack>),
     /// Returns one pseudo-gradient chunk.
     GradientChunk(Option<PseudoGradientChunk>),
+    /// Returns one round-scoped manifest and pseudo-gradient chunk.
+    GradientSlice(Option<Box<DiLoCoGradientSlice>>),
+    /// Returns one round-scoped reduced aggregate chunk and cohort commitment.
+    AggregateSlice(Option<Box<DiLoCoAggregateSlice>>),
     /// Returns one unconfigured/unavailable message.
     Unavailable {
         /// Human-readable reason.
         message: String,
     },
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[derive(serde::Serialize)]
+    struct LegacyPseudoGradientChunk {
+        manifest_id: ContentId,
+        chunk_index: u32,
+        bytes: Vec<u8>,
+        generated_at: DateTime<Utc>,
+    }
+
+    #[test]
+    fn pseudo_gradient_chunk_uses_compact_cbor_byte_strings() {
+        let payload = vec![0xff; 1024 * 1024];
+        let chunk = PseudoGradientChunk {
+            manifest_id: ContentId::new("manifest"),
+            chunk_index: 0,
+            bytes: payload.clone(),
+            generated_at: Utc::now(),
+        };
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&chunk, &mut encoded).expect("encode chunk");
+        let mut legacy_encoded = Vec::new();
+        ciborium::ser::into_writer(
+            &LegacyPseudoGradientChunk {
+                manifest_id: chunk.manifest_id.clone(),
+                chunk_index: chunk.chunk_index,
+                bytes: chunk.bytes.clone(),
+                generated_at: chunk.generated_at,
+            },
+            &mut legacy_encoded,
+        )
+        .expect("encode legacy chunk");
+
+        assert!(
+            encoded.len() < payload.len() + 256,
+            "opaque byte payload expanded from {} to {} bytes",
+            payload.len(),
+            encoded.len()
+        );
+        assert!(
+            legacy_encoded.len() > encoded.len() * 3 / 2,
+            "legacy byte array unexpectedly compact: legacy={} compact={}",
+            legacy_encoded.len(),
+            encoded.len()
+        );
+        eprintln!(
+            "gradient_chunk_cbor payload={} compact={} legacy={} compact_to_legacy={:.3}",
+            payload.len(),
+            encoded.len(),
+            legacy_encoded.len(),
+            encoded.len() as f64 / legacy_encoded.len() as f64,
+        );
+        let decoded: PseudoGradientChunk =
+            ciborium::de::from_reader(Cursor::new(encoded)).expect("decode chunk");
+        assert_eq!(decoded, chunk);
+    }
 }

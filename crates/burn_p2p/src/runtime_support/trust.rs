@@ -410,6 +410,14 @@ fn reverify_admitted_peers(
 ) {
     let peer_ids = snapshot.admitted_peers.keys().cloned().collect::<Vec<_>>();
     for peer_id in peer_ids {
+        // Restored admission records may describe offline peers whose auth
+        // envelopes are not in the fresh process-local control snapshot yet.
+        // Preserve that history until the peer reconnects; runtime eligibility
+        // still requires live presence, and reconnect snapshot handling invokes
+        // this verification again with current evidence.
+        if latest_auth_from_snapshot(&snapshot.control_plane, &peer_id).is_none() {
+            continue;
+        }
         match verify_snapshot_admission(admission_policy, &peer_id, &snapshot.control_plane) {
             Ok(report) if matches!(report.decision(), AdmissionDecision::Allow) => {
                 note_admitted_peer(snapshot, report);

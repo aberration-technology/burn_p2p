@@ -14,11 +14,20 @@ pub(super) fn validation_blocked_reason(lag_assessment: &LagAssessment) -> Strin
     }
 }
 
+fn promotion_peer_allowed(window: &MergeWindowState, peer_id: &PeerId) -> bool {
+    match head_promotion_mode(window) {
+        HeadPromotionMode::ValidatorQuorum => window.validators.contains(peer_id),
+        HeadPromotionMode::ReducerAuthority => window.reducers.contains(peer_id),
+        HeadPromotionMode::DiffusionSteadyState => false,
+    }
+}
+
 fn reduction_attestations_from_snapshot(
     snapshot: &ControlPlaneSnapshot,
     overlay: &OverlayTopic,
     experiment: &ExperimentHandle,
     aggregate_id: &ContentId,
+    merge_window: Option<&MergeWindowState>,
 ) -> BTreeMap<PeerId, ContentId> {
     snapshot
         .reduction_certificate_announcements
@@ -29,6 +38,14 @@ fn reduction_attestations_from_snapshot(
                 && announcement.certificate.experiment_id == experiment.experiment_id
                 && announcement.certificate.revision_id == experiment.revision_id
                 && announcement.certificate.aggregate_id == *aggregate_id
+                && merge_window.is_none_or(|window| {
+                    announcement.certificate.window_id == window.window_id
+                        && announcement.certificate.base_head_id == window.base_head_id
+                        && promotion_peer_allowed(
+                            window,
+                            &announcement.certificate.promoter_peer_id,
+                        )
+                })
         })
         .map(|announcement| {
             (
@@ -62,6 +79,7 @@ fn merge_announced_in_snapshot(
     overlay: &OverlayTopic,
     experiment: &ExperimentHandle,
     merged_head_id: &HeadId,
+    merge_window: Option<&MergeWindowState>,
 ) -> bool {
     snapshot.merge_announcements.iter().any(|announcement| {
         announcement.overlay == *overlay
@@ -69,15 +87,21 @@ fn merge_announced_in_snapshot(
             && announcement.certificate.experiment_id == experiment.experiment_id
             && announcement.certificate.revision_id == experiment.revision_id
             && announcement.certificate.merged_head_id == *merged_head_id
+            && merge_window.is_none_or(|window| {
+                announcement.certificate.base_head_id == window.base_head_id
+                    && announcement.certificate.promotion_mode == head_promotion_mode(window)
+                    && promotion_peer_allowed(window, &announcement.certificate.promoter_peer_id)
+            })
     })
 }
 
-fn validation_quorum_announced_in_snapshot(
+pub(super) fn validation_quorum_announced_in_snapshot(
     snapshot: &ControlPlaneSnapshot,
     overlay: &OverlayTopic,
     experiment: &ExperimentHandle,
     aggregate_id: &ContentId,
     merged_head_id: &HeadId,
+    merge_window: Option<&MergeWindowState>,
 ) -> bool {
     snapshot
         .validation_quorum_announcements
@@ -89,14 +113,27 @@ fn validation_quorum_announced_in_snapshot(
                 && announcement.certificate.revision_id == experiment.revision_id
                 && announcement.certificate.aggregate_id == *aggregate_id
                 && announcement.certificate.merged_head_id == *merged_head_id
+                && announcement.certificate.validate_structure().is_ok()
+                && merge_window.is_none_or(|window| {
+                    announcement.certificate.window_id == window.window_id
+                        && announcement.certificate.base_head_id == window.base_head_id
+                        && usize::from(announcement.certificate.validator_quorum)
+                            == effective_validator_quorum(window)
+                        && announcement
+                            .certificate
+                            .attesting_validators
+                            .iter()
+                            .all(|peer_id| window.validators.contains(peer_id))
+                })
         })
 }
 
-fn merge_certificate_from_snapshot(
+pub(super) fn merge_certificate_from_snapshot(
     snapshot: &ControlPlaneSnapshot,
     overlay: &OverlayTopic,
     experiment: &ExperimentHandle,
     merged_head_id: &HeadId,
+    merge_window: Option<&MergeWindowState>,
 ) -> Option<MergeCertificate> {
     snapshot
         .merge_announcements
@@ -106,8 +143,16 @@ fn merge_certificate_from_snapshot(
                 && announcement.certificate.study_id == experiment.study_id
                 && announcement.certificate.experiment_id == experiment.experiment_id
                 && announcement.certificate.revision_id == experiment.revision_id
-                && announcement.certificate.merged_head_id == *merged_head_id)
-                .then(|| announcement.certificate.clone())
+                && announcement.certificate.merged_head_id == *merged_head_id
+                && merge_window.is_none_or(|window| {
+                    announcement.certificate.base_head_id == window.base_head_id
+                        && announcement.certificate.promotion_mode == head_promotion_mode(window)
+                        && promotion_peer_allowed(
+                            window,
+                            &announcement.certificate.promoter_peer_id,
+                        )
+                }))
+            .then(|| announcement.certificate.clone())
         })
 }
 
@@ -118,9 +163,12 @@ fn collect_validation_coordination_from_snapshots<'a>(
     aggregate_id: &ContentId,
     merged_head_id: &HeadId,
     local_attestation: Option<(PeerId, ContentId)>,
+    merge_window: Option<&MergeWindowState>,
 ) -> ValidationCoordinationState {
     let mut attestations = BTreeMap::new();
-    if let Some((peer_id, reduction_id)) = local_attestation {
+    if let Some((peer_id, reduction_id)) = local_attestation
+        && merge_window.is_none_or(|window| promotion_peer_allowed(window, &peer_id))
+    {
         attestations.insert(peer_id, reduction_id);
     }
     let mut aggregate_proposal_announced = false;
@@ -133,6 +181,7 @@ fn collect_validation_coordination_from_snapshots<'a>(
             overlay,
             experiment,
             aggregate_id,
+            merge_window,
         ));
         aggregate_proposal_announced |=
             aggregate_proposal_announced_in_snapshot(snapshot, overlay, experiment, aggregate_id);
@@ -142,13 +191,31 @@ fn collect_validation_coordination_from_snapshots<'a>(
             experiment,
             aggregate_id,
             merged_head_id,
+            merge_window,
         );
-        merge_announced |=
-            merge_announced_in_snapshot(snapshot, overlay, experiment, merged_head_id);
+        merge_announced |= merge_announced_in_snapshot(
+            snapshot,
+            overlay,
+            experiment,
+            merged_head_id,
+            merge_window,
+        );
         if merge_certificate.is_none() {
-            merge_certificate =
-                merge_certificate_from_snapshot(snapshot, overlay, experiment, merged_head_id);
+            merge_certificate = merge_certificate_from_snapshot(
+                snapshot,
+                overlay,
+                experiment,
+                merged_head_id,
+                merge_window,
+            );
         }
+    }
+    if merge_window
+        .is_some_and(|window| head_promotion_mode(window) == HeadPromotionMode::ValidatorQuorum)
+        && !quorum_announced
+    {
+        merge_announced = false;
+        merge_certificate = None;
     }
     ValidationCoordinationState {
         attesters: attestations.keys().cloned().collect(),
@@ -198,6 +265,7 @@ impl<P> RunningNode<P> {
             experiment,
             aggregate_id,
             merged_head_id,
+            None,
             None,
         ))
     }
@@ -280,6 +348,7 @@ impl<P> RunningNode<P> {
                 prepared.local_peer_id.clone(),
                 execution.reduction_certificate.reduction_id.clone(),
             )),
+            Some(&prepared.merge_window),
         ))
     }
 

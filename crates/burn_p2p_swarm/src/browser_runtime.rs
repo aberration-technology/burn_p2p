@@ -16,8 +16,9 @@ use crate::runtime_helpers::stream_protocol;
 use crate::{ArtifactChunkPayload, ControlPlaneSnapshot, SwarmError, UpdateEnvelopeAnnouncement};
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    ControlPlaneRequest, ControlPlaneResponse, ProtocolSet, PubsubEnvelope, PubsubPayload,
-    apply_pubsub_payload, pubsub_semantic_message_id,
+    CONTROL_IDLE_CONNECTION_TIMEOUT, CONTROL_REQUEST_RESPONSE_TIMEOUT, ControlPlaneRequest,
+    ControlPlaneResponse, ProtocolSet, PubsubEnvelope, PubsubPayload, apply_pubsub_payload,
+    pubsub_semantic_message_id,
 };
 use crate::{OverlayChannel, OverlayTopic};
 
@@ -1173,7 +1174,7 @@ async fn run_wasm_browser_swarm_task(
                             &mut current_snapshot,
                             current_bootstrap.as_ref(),
                             topic,
-                            PubsubPayload::Update(announcement),
+                            PubsubPayload::Update(Box::new(announcement)),
                         );
                         let _ = response_tx.send(result);
                     }
@@ -1901,16 +1902,19 @@ fn build_wasm_browser_swarm(
                     control_protocol,
                     libp2p_request_response::ProtocolSupport::Outbound,
                 )],
-                libp2p_request_response::Config::default(),
+                libp2p_request_response::Config::default()
+                    .with_request_timeout(CONTROL_REQUEST_RESPONSE_TIMEOUT),
             ),
         })
         .map_err(|error| SwarmError::Runtime(error.to_string()))
         .map(|builder| {
             builder
                 .with_swarm_config(|config| {
-                    config.with_dial_concurrency_factor(
-                        NonZeroU8::new(16).expect("browser dial concurrency factor"),
-                    )
+                    config
+                        .with_dial_concurrency_factor(
+                            NonZeroU8::new(16).expect("browser dial concurrency factor"),
+                        )
+                        .with_idle_connection_timeout(CONTROL_IDLE_CONNECTION_TIMEOUT)
                 })
                 .with_connection_timeout(WASM_BROWSER_CONNECTION_TIMEOUT)
                 .build()

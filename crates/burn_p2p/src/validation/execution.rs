@@ -563,6 +563,10 @@ impl<P> RunningNode<P> {
                     .node
                     .as_mut()
                     .expect("running node should retain prepared node");
+                let revision_contract = node
+                    .revision_contracts
+                    .get(&experiment.revision_id)
+                    .cloned();
                 let project = &mut node.project;
                 let device = project.runtime_device();
                 load_validation_candidate_model(
@@ -572,6 +576,7 @@ impl<P> RunningNode<P> {
                         store: &prepared.store,
                         device: &device,
                         current_head: &prepared.current_head,
+                        revision_contract: revision_contract.as_ref(),
                         baseline_metrics: None,
                         canary_threshold: prepared
                             .robustness_policy
@@ -580,12 +585,16 @@ impl<P> RunningNode<P> {
                         evaluate_candidates: !reducer_authority_promotion_enabled(
                             &prepared.merge_window,
                         ),
+                        replay_snapshots: &prepared.visible_snapshots,
+                        dataset_cache_dir: prepared.storage.dataset_cache_dir(),
+                        validator_peer_id: &prepared.local_peer_id,
                     },
                     ValidationCandidateHead {
                         origin_peer_id: candidate.origin_peer_id.clone(),
                         provider_peer_ids: candidate.provider_peer_ids.clone(),
                         head: candidate.head.clone(),
                         update: candidate.update.clone(),
+                        workload_update: candidate.workload_update.clone(),
                     },
                 )?
             };
@@ -701,6 +710,7 @@ impl<P> RunningNode<P> {
                         sample_weight: candidate.sample_weight * effective_weight.max(0.01),
                         quality_weight: candidate.quality_weight,
                         model: candidate.model,
+                        update_evidence: candidate.update_evidence,
                     })
             })
             .collect::<Vec<_>>();

@@ -131,6 +131,14 @@ pub enum FormalTraceConformanceError {
         aggregate_artifact_id: ArtifactId,
     },
     #[error(
+        "quorum certificate repeats validator `{validator_peer_id}` for window `{window_id:?}` aggregate `{aggregate_artifact_id}`"
+    )]
+    DuplicateQuorumValidator {
+        validator_peer_id: PeerId,
+        window_id: WindowId,
+        aggregate_artifact_id: ArtifactId,
+    },
+    #[error(
         "quorum certificate references validator `{validator_peer_id}` without a prior attestation"
     )]
     MissingAttestationForQuorum {
@@ -436,12 +444,22 @@ pub fn check_protocol_trace(
                         aggregate_artifact_id: aggregate_artifact_id.clone(),
                     });
                 }
+                let mut certificate_validators = BTreeSet::new();
+                for validator_peer_id in validator_peer_ids {
+                    if !certificate_validators.insert(validator_peer_id.clone()) {
+                        return Err(FormalTraceConformanceError::DuplicateQuorumValidator {
+                            validator_peer_id: validator_peer_id.clone(),
+                            window_id: *window_id,
+                            aggregate_artifact_id: aggregate_artifact_id.clone(),
+                        });
+                    }
+                }
                 let key = (*window_id, aggregate_artifact_id.clone());
                 let known = attestations.get(&key).cloned().unwrap_or_default();
-                for validator_peer_id in validator_peer_ids {
-                    if !known.contains(validator_peer_id) {
+                for validator_peer_id in certificate_validators {
+                    if !known.contains(&validator_peer_id) {
                         return Err(FormalTraceConformanceError::MissingAttestationForQuorum {
-                            validator_peer_id: validator_peer_id.clone(),
+                            validator_peer_id,
                             window_id: *window_id,
                             aggregate_artifact_id: aggregate_artifact_id.clone(),
                         });

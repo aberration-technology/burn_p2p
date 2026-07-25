@@ -3,7 +3,15 @@ use super::*;
 #[derive(Debug)]
 pub(crate) enum RuntimeCommand {
     SubscribeTopic(OverlayTopic),
-    PublishControl(ControlAnnouncement),
+    UpdateRoles {
+        roles: PeerRoleSet,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    AcknowledgeRuntimeError {
+        expected: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    PublishControl(Box<ControlAnnouncement>),
     PublishLifecycle(Box<ExperimentLifecycleAnnouncement>),
     PublishSchedule(Box<FleetScheduleAnnouncement>),
     PublishHead(HeadAnnouncement),
@@ -11,7 +19,7 @@ pub(crate) enum RuntimeCommand {
     PublishMerge(MergeAnnouncement),
     PublishMergeWindow(MergeWindowAnnouncement),
     PublishReducerAssignment(ReducerAssignmentAnnouncement),
-    PublishUpdate(UpdateEnvelopeAnnouncement),
+    PublishUpdate(Box<UpdateEnvelopeAnnouncement>),
     PublishTrainerPromotionAttestation(TrainerPromotionAttestationAnnouncement),
     PublishDiffusionPromotionCertificate(DiffusionPromotionCertificateAnnouncement),
     PublishAggregateProposal(AggregateProposalAnnouncement),
@@ -25,10 +33,27 @@ pub(crate) enum RuntimeCommand {
         snapshot: DiLoCoStateSnapshot,
         outer_optimizer_state: Option<StateBlob>,
         current_parameters: Option<FlattenedTensorPack>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     PublishDiLoCoGradient {
         manifest: PseudoGradientManifest,
         chunks: Vec<PseudoGradientChunk>,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    WaitDiLoCoAggregateReady {
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        reducer_peer_id: PeerId,
+        round_cursor: RoundCursor,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<DiLoCoAggregateReady, String>>,
+    },
+    PublishDiLoCoAggregate {
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     PublishArtifact {
         descriptor: ArtifactDescriptor,

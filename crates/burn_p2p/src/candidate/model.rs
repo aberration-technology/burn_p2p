@@ -7,6 +7,45 @@ fn empty_metric_report() -> MetricReport {
     }
 }
 
+pub(super) fn authenticated_update_lease(
+    snapshots: &[(PeerId, ControlPlaneSnapshot)],
+    experiment: &ExperimentHandle,
+    origin_peer_id: &PeerId,
+    update: &WorkloadUpdateEnvelope,
+    dataset_view_id: &DatasetViewId,
+) -> anyhow::Result<AssignmentLease> {
+    let mut matching = snapshots
+        .iter()
+        .flat_map(|(_, snapshot)| snapshot.lease_announcements.iter())
+        .map(|announcement| &announcement.lease)
+        .filter(|lease| lease.lease_id == update.lease_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !matching.is_empty(),
+        "typed workload update {} is missing its authenticated lease announcement",
+        update.artifact.artifact_id.as_str(),
+    );
+    matching.sort_by(|left, right| left.assignment_hash.cmp(&right.assignment_hash));
+    matching.dedup();
+    anyhow::ensure!(
+        matching.len() == 1,
+        "typed workload update {} has conflicting lease announcements",
+        update.artifact.artifact_id.as_str(),
+    );
+    let lease = matching.pop().expect("non-empty checked above");
+    anyhow::ensure!(
+        lease.peer_id == *origin_peer_id
+            && lease.study_id == experiment.study_id
+            && lease.experiment_id == experiment.experiment_id
+            && lease.revision_id == update.revision_id
+            && lease.window_id == update.window_id
+            && lease.dataset_view_id == *dataset_view_id,
+        "typed workload update lease identity does not match its candidate and contract"
+    );
+    Ok(lease)
+}
+
 pub(crate) fn load_validation_base_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
@@ -16,20 +55,19 @@ pub(crate) fn load_validation_base_model<P>(
 where
     P: P2pWorkload,
 {
-    Ok(if let Some((_, base_head)) = current_head.as_ref() {
-        match store.load_manifest(&base_head.artifact_id) {
-            Ok(descriptor) => project.load_model_artifact(
-                project.init_model(device),
-                &descriptor,
-                store,
-                device,
-            )?,
-            Err(_) if base_head.global_step == 0 => project.init_model(device),
-            Err(error) => return Err(error.into()),
-        }
-    } else {
-        project.init_model(device)
-    })
+    let (_, base_head) = current_head
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("validation requires a materialized canonical base head"))?;
+    let descriptor = store
+        .load_manifest(&base_head.artifact_id)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "missing artifact {} for validation base head {}: {error}",
+                base_head.artifact_id.as_str(),
+                base_head.head_id.as_str(),
+            )
+        })?;
+    project.load_model_artifact(project.init_model(device), &descriptor, store, device)
 }
 
 pub(crate) fn load_validation_candidate_model<P>(
@@ -43,14 +81,116 @@ where
     let peer_id = candidate_head.origin_peer_id;
     let head = candidate_head.head;
     let update = candidate_head.update;
+    let workload_update = candidate_head.workload_update;
     let descriptor = args.store.load_manifest(&head.artifact_id)?;
-    let model = project.load_model_artifact(
-        project.init_model(args.device),
-        &descriptor,
-        args.store,
-        args.device,
-    )?;
-    let (evaluation, canary_report) = if args.evaluate_candidates {
+    let (model, update_evidence) = match workload_update {
+        Some(workload_update) => {
+            anyhow::ensure!(
+                descriptor.kind == ArtifactKind::DeltaPack,
+                "typed workload update artifact {} must be a delta pack",
+                descriptor.artifact_id.as_str(),
+            );
+            let revision_contract = args.revision_contract.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "typed workload update {} requires an authority-signed revision contract",
+                    descriptor.artifact_id.as_str(),
+                )
+            })?;
+            revision_contract.validate()?;
+            workload_update.validate_against(
+                &revision_contract.training_contract_id,
+                &revision_contract.training,
+            )?;
+            let (_, current_head) = args.current_head.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("typed workload update requires a canonical base head")
+            })?;
+            anyhow::ensure!(
+                workload_update.revision_id == args.experiment.revision_id
+                    && workload_update.base_head_id == current_head.head_id
+                    && workload_update.base_head_id == update.base_head_id
+                    && workload_update.window_id == update.window_id
+                    && update.lease_id.as_ref() == Some(&workload_update.lease_id)
+                    && workload_update.artifact == descriptor
+                    && update.delta_artifact_id == descriptor.artifact_id,
+                "typed workload update identities do not match its candidate announcement"
+            );
+            let base_model =
+                load_validation_base_model(project, args.current_head, args.store, args.device)?;
+            let lease = authenticated_update_lease(
+                args.replay_snapshots,
+                args.experiment,
+                &peer_id,
+                &workload_update,
+                &revision_contract.training.dataset_view_id,
+            )?;
+            let cached_microshards = if revision_contract
+                .training
+                .update_codec
+                .requires_independent_replay()
+            {
+                let registration = project.dataset_registration()?;
+                anyhow::ensure!(
+                    registration.view.dataset_view_id == lease.dataset_view_id,
+                    "validator dataset view does not match the authenticated update lease"
+                );
+                let microshard_plan = project.microshard_plan(&registration)?;
+                ShardCache::new(args.dataset_cache_dir.clone()).fetch_lease_microshards(
+                    &registration,
+                    &microshard_plan,
+                    &lease,
+                )?
+            } else {
+                Vec::new()
+            };
+            let validated = project.validate_and_apply_workload_update(
+                base_model,
+                WorkloadUpdateValidationContext {
+                    descriptor: &descriptor,
+                    update: &workload_update,
+                    contract: &revision_contract.training,
+                    store: args.store,
+                    device: args.device,
+                    replay: WorkloadUpdateReplayContext {
+                        lease: &lease,
+                        cached_microshards: &cached_microshards,
+                        validator_peer_id: args.validator_peer_id,
+                    },
+                },
+            )?;
+            anyhow::ensure!(
+                validated.evidence.update_envelope_id == ContentId::derive(&workload_update)?
+                    && validated.evidence.validator_peer_id == *args.validator_peer_id
+                    && validated.evidence.reconstruction_verified,
+                "workload update validator returned inconsistent reconstruction evidence"
+            );
+            anyhow::ensure!(
+                !revision_contract
+                    .training
+                    .update_codec
+                    .requires_independent_replay()
+                    || validated.evidence.replay_verified,
+                "workload update failed required independent replay"
+            );
+            (validated.model, Some(validated.evidence))
+        }
+        None => {
+            anyhow::ensure!(
+                descriptor.kind != ArtifactKind::DeltaPack,
+                "delta-pack candidate {} is missing a typed workload update envelope",
+                descriptor.artifact_id.as_str(),
+            );
+            (
+                project.load_model_artifact(
+                    project.init_model(args.device),
+                    &descriptor,
+                    args.store,
+                    args.device,
+                )?,
+                None,
+            )
+        }
+    };
+    let (mut evaluation, canary_report) = if args.evaluate_candidates {
         let evaluation = project.evaluate(&model, EvalSplit::Validation);
         let canary_report = Some(match args.baseline_metrics {
             Some(baseline_metrics) => build_validation_canary_report_against_baseline(
@@ -75,6 +215,34 @@ where
     } else {
         (empty_metric_report(), None)
     };
+    if let Some(evidence) = update_evidence.as_ref() {
+        evaluation.metrics.insert(
+            "update_reconstruction_verified".into(),
+            MetricValue::Bool(evidence.reconstruction_verified),
+        );
+        evaluation.metrics.insert(
+            "update_replay_verified".into(),
+            MetricValue::Bool(evidence.replay_verified),
+        );
+        if let Some(replay) = evidence.replay_stats.as_ref() {
+            evaluation.metrics.insert(
+                "update_replay_generations_checked".into(),
+                MetricValue::Integer(i64::from(replay.generations_checked)),
+            );
+            evaluation.metrics.insert(
+                "update_replay_pairs_checked".into(),
+                MetricValue::Integer(i64::from(replay.pairs_checked)),
+            );
+            evaluation.metrics.insert(
+                "update_replay_max_absolute_error".into(),
+                MetricValue::Float(replay.max_absolute_error),
+            );
+            evaluation.metrics.insert(
+                "update_replay_max_relative_error".into(),
+                MetricValue::Float(replay.max_relative_error),
+            );
+        }
+    }
     let quality = if update.quality_weight.is_finite() {
         update.quality_weight
     } else {
@@ -90,6 +258,7 @@ where
         sample_weight,
         quality_weight: quality,
         model,
+        update_evidence,
     })
 }
 
@@ -166,7 +335,6 @@ where
     };
 
     if let Some(merged_model) = merged_model {
-        let evaluation = project.evaluate(&merged_model, EvalSplit::Validation);
         let merged_head_id = HeadId::new(format!(
             "{}-merged-window-{}",
             experiment.experiment_id.as_str(),
@@ -179,6 +347,10 @@ where
             Some(base_head_id.clone()),
             store,
         )?;
+        let device = project.runtime_device();
+        let materialized_model =
+            project.load_model_artifact(merged_model, &artifact, store, &device)?;
+        let evaluation = project.evaluate(&materialized_model, EvalSplit::Validation);
         let merged_head = HeadDescriptor {
             head_id: merged_head_id,
             study_id: experiment.study_id.clone(),
@@ -226,6 +398,10 @@ where
         Some(base_head_id.clone()),
         store,
     )?;
+    let device = project.runtime_device();
+    let materialized_model =
+        project.load_model_artifact(project.init_model(&device), &artifact, store, &device)?;
+    let evaluation = project.evaluate(&materialized_model, EvalSplit::Validation);
     Ok((
         candidate.peer_id.clone(),
         HeadDescriptor {
@@ -331,6 +507,14 @@ where
             store,
         )?,
     };
+    let device = project.runtime_device();
+    let materialized_model = project.load_model_artifact(
+        merged_model.unwrap_or_else(|| project.init_model(&device)),
+        &artifact,
+        store,
+        &device,
+    )?;
+    let evaluation = project.evaluate(&materialized_model, EvalSplit::Validation);
     Ok((
         source_peer_id,
         HeadDescriptor {
@@ -342,8 +526,8 @@ where
             parent_head_id: Some(base_head_id.clone()),
             global_step: expected_global_step,
             created_at: Utc::now(),
-            metrics: BTreeMap::new(),
+            metrics: evaluation.metrics.clone(),
         },
-        empty_metric_report(),
+        evaluation,
     ))
 }

@@ -127,6 +127,17 @@ impl LeasePlanner {
         budget_work_units: u64,
         microshards: &[MicroShard],
     ) -> Result<LeaseSelection, DataloaderError> {
+        self.select_microshards_for_window(peer_id, WindowId(1), budget_work_units, microshards)
+    }
+
+    /// Selects a deterministic, window-rotating subset of microshards.
+    pub fn select_microshards_for_window(
+        &self,
+        peer_id: &PeerId,
+        window_id: WindowId,
+        budget_work_units: u64,
+        microshards: &[MicroShard],
+    ) -> Result<LeaseSelection, DataloaderError> {
         if budget_work_units == 0 {
             return Err(DataloaderError::InvalidBudget);
         }
@@ -151,6 +162,16 @@ impl LeasePlanner {
                 .cmp(left.0.as_str())
                 .then(left.1.ordinal.cmp(&right.1.ordinal))
         });
+        let rotation_stride = self
+            .config
+            .max_microshards_per_lease
+            .max(1)
+            .min(ranked.len());
+        let rotation = usize::try_from(window_id.0.saturating_sub(1))
+            .unwrap_or(usize::MAX)
+            .saturating_mul(rotation_stride)
+            % ranked.len();
+        ranked.rotate_left(rotation);
 
         let mut selected = Vec::new();
         let mut estimated_work_units = 0_u64;
@@ -200,7 +221,12 @@ impl LeasePlanner {
         budget_work_units: u64,
         microshards: &[MicroShard],
     ) -> Result<PlannedLease, DataloaderError> {
-        let selection = self.select_microshards(&peer_id, budget_work_units, microshards)?;
+        let selection = self.select_microshards_for_window(
+            &peer_id,
+            window_id,
+            budget_work_units,
+            microshards,
+        )?;
         let microshard_ids = selection
             .microshards
             .iter()

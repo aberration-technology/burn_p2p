@@ -300,7 +300,7 @@ pub(super) fn build_validation_quorum_certificate(
     let mut reduction_ids = reduction_ids.to_vec();
     sort_and_dedup(&mut attesting_validators);
     sort_and_dedup(&mut reduction_ids);
-    Ok(ValidationQuorumCertificate {
+    let certificate = ValidationQuorumCertificate {
         quorum_cert_id: ContentId::derive(&(
             experiment.study_id.as_str(),
             experiment.experiment_id.as_str(),
@@ -323,7 +323,9 @@ pub(super) fn build_validation_quorum_certificate(
         attesting_validators,
         reduction_ids,
         issued_at: Utc::now(),
-    })
+    };
+    certificate.validate_structure()?;
+    Ok(certificate)
 }
 
 pub(super) fn build_validation_reducer_load(

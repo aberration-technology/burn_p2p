@@ -296,6 +296,7 @@ pub(crate) fn all_admin_capabilities() -> BTreeSet<AdminCapability> {
         AdminCapability::RolloutAuthPolicy,
         AdminCapability::RetireTrustedIssuers,
         AdminCapability::RotateAuthorityMaterial,
+        AdminCapability::RolloutRevisionContracts,
         AdminCapability::OperatorRetentionPrune,
     ])
 }
@@ -326,6 +327,9 @@ pub(crate) fn parse_admin_capability_token(token: &str) -> Option<AdminCapabilit
         }
         "rotateauthoritymaterial" | "rotate_authority_material" => {
             Some(AdminCapability::RotateAuthorityMaterial)
+        }
+        "rolloutrevisioncontracts" | "rollout_revision_contracts" => {
+            Some(AdminCapability::RolloutRevisionContracts)
         }
         _ => None,
     }

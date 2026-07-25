@@ -4781,7 +4781,7 @@ fn generate_chaos_events(seed: u64, count: u32, peer_count: u32) -> Vec<ChaosEve
     (0..count)
         .map(|index| {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let fault = faults[(state as usize) % faults.len()].clone();
+            let fault = faults[(state as usize) % faults.len()];
             let peer_ix = (state.rotate_left(7) as u32) % peer_count.max(1);
             ChaosEvent {
                 window_id: WindowId((index + 1).into()),

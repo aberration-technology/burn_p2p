@@ -4,7 +4,7 @@
 use burn_p2p::{ExperimentDirectoryEntry, HeadAnnouncement, TrustedIssuer};
 use burn_p2p_core::{
     BrowserDirectorySnapshot, BrowserEdgeSnapshot, ContentId, HeadId, PeerId, ReenrollmentStatus,
-    RevocationEpoch, SchemaEnvelope, SignedPayload,
+    RevisionContractBundle, RevocationEpoch, SchemaEnvelope, SignedPayload,
 };
 use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
@@ -39,6 +39,13 @@ pub enum AdminAction {
     RolloutAuthPolicy(AuthPolicyRollout),
     /// Registers one live head announcement directly on the edge.
     RegisterLiveHead(HeadAnnouncement),
+    /// Atomically publishes new contracts or authority-signature rotations.
+    RolloutRevisionContracts {
+        /// Contracts to verify and publish.
+        contracts: Vec<RevisionContractBundle>,
+        /// Allows replacement only when the semantic authority payload is unchanged.
+        allow_signature_rotation: bool,
+    },
 }
 
 /// Downstream-facing admin result subset returned by `/admin`.
@@ -67,6 +74,15 @@ pub enum AdminResult {
         head_id: HeadId,
         /// Provider peers visible for the head.
         provider_peer_ids: Vec<PeerId>,
+    },
+    /// Result summary for revision-contract rollout.
+    RevisionContractsRolledOut {
+        /// Newly inserted contracts.
+        inserted: usize,
+        /// Existing contracts re-signed by an accepted authority.
+        signature_rotations: usize,
+        /// Total active contracts after the transaction.
+        total: usize,
     },
 }
 
@@ -210,6 +226,19 @@ impl AdminClient {
     ) -> Result<AdminResult, AdminClientError> {
         self.post_action(&AdminAction::RegisterLiveHead(announcement))
             .await
+    }
+
+    /// Publishes signed revision contracts through one atomic edge action.
+    pub async fn rollout_revision_contracts(
+        &self,
+        contracts: Vec<RevisionContractBundle>,
+        allow_signature_rotation: bool,
+    ) -> Result<AdminResult, AdminClientError> {
+        self.post_action(&AdminAction::RolloutRevisionContracts {
+            contracts,
+            allow_signature_rotation,
+        })
+        .await
     }
 
     /// Inserts or replaces one directory entry within an in-memory vector.

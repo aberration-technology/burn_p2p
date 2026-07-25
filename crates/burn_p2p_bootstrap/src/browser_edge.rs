@@ -8,8 +8,8 @@ use crate::{
 use burn_p2p::{ContentId, HeadDescriptor};
 use burn_p2p_core::{
     BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardSnapshot,
-    BrowserLoginProvider, BrowserMode, BrowserTransportSurface, NetworkId, ProfileMode, SocialMode,
-    TrustBundleExport,
+    BrowserLoginProvider, BrowserMode, BrowserTransportSurface, NetworkId, ProfileMode,
+    RevisionContractBundle, SocialMode, TrustBundleExport,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,9 @@ pub struct BrowserEdgeSnapshot {
     pub directory: BrowserDirectorySnapshot,
     /// The heads.
     pub heads: Vec<HeadDescriptor>,
+    /// Authority-signed revision contracts required for canonical training.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revision_contracts: Vec<RevisionContractBundle>,
     /// The leaderboard.
     pub leaderboard: BrowserLeaderboardSnapshot,
     /// The trust bundle.
@@ -138,6 +141,7 @@ impl BootstrapAdminState {
             diagnostics: self.diagnostics(plan, config.captured_at, config.remaining_work_units),
             directory: config.directory,
             heads: self.export_heads(&crate::HeadQuery::default()),
+            revision_contracts: self.revision_contracts.clone(),
             leaderboard: self.leaderboard_snapshot(plan, config.captured_at),
             trust_bundle: self.trust_bundle.clone(),
             captured_at: config.captured_at,

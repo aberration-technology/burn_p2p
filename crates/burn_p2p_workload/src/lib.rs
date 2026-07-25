@@ -2,17 +2,20 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod compact_update;
 mod data_pipeline;
 mod diloco;
 mod directory_metadata;
 mod execution;
+mod window_executor;
 
 use std::{collections::BTreeMap, path::PathBuf};
 
 use burn_p2p_checkpoint::FsArtifactStore;
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CapabilityEstimate, ContentId, HeadId,
-    MergePolicy, MetricValue, RevisionManifest, SupportedWorkload,
+    MergePolicy, MetricValue, PeerId, RevisionManifest, SupportedWorkload,
+    TrainingContractManifest, ValidatedUpdateEvidence, WorkloadUpdateEnvelope,
 };
 use burn_p2p_dataloader::{CachedMicroShard, DatasetRegistration, MicroShardPlan, UpstreamAdapter};
 use burn_p2p_experiment::{PatchSupport, RuntimePatch};
@@ -22,6 +25,11 @@ pub use backend::{
     ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy, TrainingWindowOutcome,
     TrainingWindowTiming, ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome,
     WindowCtx, WindowReport,
+};
+pub use compact_update::{
+    CompactUpdateReconstructor, MAX_COMPACT_UPDATE_BYTES, SeededSubspaceReconstructor,
+    ValidatedCompactUpdate, average_subspace_updates, decode_compact_update, encode_compact_update,
+    reconstructed_update_norm_stats,
 };
 pub use data_pipeline::{
     GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
@@ -37,6 +45,10 @@ pub use execution::{
     WorkloadTrainingBudget, WorkloadTrainingContribution, WorkloadTrainingLease,
     WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadValidationPlan,
     WorkloadValidationProgress, WorkloadValidationResult,
+};
+pub use window_executor::{
+    WindowExecutorLifecycle, WindowExecutorSession, WindowExecutorSessionError,
+    WorkloadExecutionObserver, WorkloadWindowExecutor,
 };
 
 /// Returns the local filesystem root for one dataset registration when the
@@ -92,6 +104,40 @@ pub fn standard_contribution_weight(metrics: &BTreeMap<String, MetricValue>) -> 
     }
 
     None
+}
+
+/// Exact validator-owned inputs for replaying one typed workload update.
+pub struct WorkloadUpdateReplayContext<'a> {
+    /// Authenticated assignment lease that authorized the contribution.
+    pub lease: &'a AssignmentLease,
+    /// Content-verified shards selected by that lease.
+    pub cached_microshards: &'a [CachedMicroShard],
+    /// Validator producing the evidence.
+    pub validator_peer_id: &'a PeerId,
+}
+
+/// Contract-bound inputs for independently validating one typed workload update.
+pub struct WorkloadUpdateValidationContext<'a, D> {
+    /// Content-addressed descriptor for the typed update artifact.
+    pub descriptor: &'a ArtifactDescriptor,
+    /// Typed update envelope announced by the contributing peer.
+    pub update: &'a WorkloadUpdateEnvelope,
+    /// Authority-signed training contract governing reconstruction and replay.
+    pub contract: &'a TrainingContractManifest,
+    /// Artifact store containing the content-verified update payload.
+    pub store: &'a FsArtifactStore,
+    /// Backend device used for deterministic reconstruction and replay.
+    pub device: &'a D,
+    /// Validator-owned lease, data, and identity inputs.
+    pub replay: WorkloadUpdateReplayContext<'a>,
+}
+
+/// Candidate model plus validator-owned reconstruction and replay evidence.
+pub struct ValidatedWorkloadUpdate<M> {
+    /// Model reconstructed from the canonical base and typed update.
+    pub model: M,
+    /// Evidence computed locally by the validator.
+    pub evidence: ValidatedUpdateEvidence,
 }
 
 /// Defines one executable workload inside a project family.
@@ -151,6 +197,73 @@ pub trait P2pWorkload {
         store: &FsArtifactStore,
         device: &Self::Device,
     ) -> anyhow::Result<Self::Model>;
+
+    /// Computes the canonical tensor digest for a decoded model.
+    ///
+    /// Workloads participating in authority-signed revisions must implement
+    /// this hook. The default fails closed rather than trusting an artifact
+    /// envelope without checking the decoded weights.
+    fn model_tensor_digest(&self, _model: &Self::Model) -> anyhow::Result<ContentId> {
+        anyhow::bail!(
+            "workload {} does not implement canonical model tensor digests",
+            self.workload_id().as_str(),
+        )
+    }
+
+    /// Reconstructs one contract-bound typed update from its canonical base model.
+    ///
+    /// The runtime calls this only after validating the envelope against the
+    /// authority-signed training contract and matching its artifact descriptor.
+    fn apply_workload_update(
+        &self,
+        _base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        _update: &WorkloadUpdateEnvelope,
+        _contract: &TrainingContractManifest,
+        _store: &FsArtifactStore,
+        _device: &Self::Device,
+    ) -> anyhow::Result<Self::Model> {
+        anyhow::bail!(
+            "workload {} does not support typed update artifact {}",
+            self.workload_id().as_str(),
+            descriptor.artifact_id.as_str(),
+        )
+    }
+
+    /// Validates and applies one typed update using authenticated replay inputs.
+    ///
+    /// Workloads with replay-sensitive codecs should override this method.
+    /// The default reconstructs the model but deliberately leaves replay
+    /// unverified, causing replay-required codecs to fail candidate admission.
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, Self::Device>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        let WorkloadUpdateValidationContext {
+            descriptor,
+            update,
+            contract,
+            store,
+            device,
+            replay,
+        } = context;
+        let model =
+            self.apply_workload_update(base_model, descriptor, update, contract, store, device)?;
+        Ok(ValidatedWorkloadUpdate {
+            model,
+            evidence: ValidatedUpdateEvidence {
+                update_envelope_id: ContentId::derive(update)?,
+                norm_stats: None,
+                feature_sketch: None,
+                reconstruction_verified: true,
+                replay_verified: !contract.update_codec.requires_independent_replay(),
+                replay_stats: None,
+                validator_peer_id: replay.validator_peer_id.clone(),
+                validated_at: chrono::Utc::now(),
+            },
+        })
+    }
 
     /// Materializes a model artifact into the checkpoint store.
     fn materialize_model_artifact(

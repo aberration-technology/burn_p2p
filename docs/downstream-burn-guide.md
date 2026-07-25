@@ -328,6 +328,15 @@ for DiLoCo pseudo-gradient transport; workloads that need persistent inner
 optimizer state or non-SGD outer semantics should override the default
 `DiLoCoWorkload` hooks.
 
+Long-running trainer services should dispatch through `train_protocol_once()`
+on every iteration rather than selecting a protocol from local CLI defaults.
+Pause work whenever the live role set no longer contains a trainer role, back
+off boundedly on disconnection or protocol failure, and reconcile the
+canonical head before beginning another artifact window. This keeps live
+capability downgrade/upgrade and signed revision rollout on the same path as
+one-shot execution. A service must not silently run artifact-window training
+against a DiLoCo revision, or vice versa.
+
 one important point: a trainer is not enough by itself. a validator / authority
 path must already exist in the network to initialize the revision head and
 validate/promote candidate updates.

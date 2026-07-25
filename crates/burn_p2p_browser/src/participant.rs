@@ -1,4 +1,6 @@
-use burn_p2p::{ArtifactDescriptor, ContentId, ExperimentId, HeadId, RevisionId};
+use burn_p2p::{
+    ArtifactDescriptor, ArtifactKind, ContentId, ExperimentId, HeadDescriptor, HeadId, RevisionId,
+};
 #[cfg(target_arch = "wasm32")]
 use burn_p2p::{ContributionReceiptId, UpdateAnnounce, UpdateNormStats};
 use chrono::{DateTime, Duration, Utc};
@@ -28,6 +30,95 @@ const DIRECT_TRANSPORT_HANDOFF_POLL_MS: u32 = 250;
 #[cfg(target_arch = "wasm32")]
 const DIRECT_TRANSPORT_HANDOFF_WAIT_MS: u32 = 8_000;
 
+#[derive(Clone, Debug, PartialEq)]
+/// A caller-verified full model head that may bootstrap an otherwise headless
+/// browser experiment.
+///
+/// The browser runtime validates the structural binding and pins the exact
+/// artifact descriptor. Signature and authority verification remain the
+/// responsibility of the caller that obtained this generic contract object.
+pub struct BrowserBootstrapHead {
+    /// Canonical head metadata.
+    pub head: HeadDescriptor,
+    /// Exact full-head artifact authorized for this head.
+    pub artifact: ArtifactDescriptor,
+}
+
+impl BrowserBootstrapHead {
+    fn validate(
+        &self,
+        snapshot: &BrowserEdgeSnapshot,
+        selected_experiment: Option<&ExperimentId>,
+        selected_revision: Option<&RevisionId>,
+    ) -> Result<(), BrowserSessionRuntimeError> {
+        if self.artifact.kind != ArtifactKind::FullHead
+            || self.artifact.base_head_id.is_some()
+            || self.artifact.head_id.as_ref() != Some(&self.head.head_id)
+            || self.artifact.artifact_id != self.head.artifact_id
+        {
+            return Err(BrowserSessionRuntimeError::InvalidBootstrapHead(
+                "bootstrap artifact must be a base-less full head bound to the supplied head"
+                    .into(),
+            ));
+        }
+        if selected_experiment.is_some_and(|selected| selected != &self.head.experiment_id)
+            || selected_revision.is_some_and(|selected| selected != &self.head.revision_id)
+        {
+            return Err(BrowserSessionRuntimeError::InvalidBootstrapHead(
+                "bootstrap head does not match the selected experiment revision".into(),
+            ));
+        }
+
+        let Some(entry) = snapshot.directory.entries.iter().find(|entry| {
+            entry.study_id == self.head.study_id
+                && entry.experiment_id == self.head.experiment_id
+                && entry.current_revision_id == self.head.revision_id
+        }) else {
+            return Err(BrowserSessionRuntimeError::InvalidBootstrapHead(
+                "bootstrap head has no matching browser directory entry".into(),
+            ));
+        };
+        if entry.model_schema_hash != self.artifact.model_schema_hash {
+            return Err(BrowserSessionRuntimeError::InvalidBootstrapHead(
+                "bootstrap artifact model schema does not match the browser directory".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn is_canonical_for_snapshot(&self, snapshot: &BrowserEdgeSnapshot) -> bool {
+        snapshot.directory.entries.iter().any(|entry| {
+            entry.study_id == self.head.study_id
+                && entry.experiment_id == self.head.experiment_id
+                && entry.current_revision_id == self.head.revision_id
+                && entry
+                    .current_head_id
+                    .as_ref()
+                    .is_none_or(|head_id| head_id == &self.head.head_id)
+        })
+    }
+
+    fn install_if_canonical(
+        &self,
+        runtime: &mut BrowserWorkerRuntime,
+        snapshot: &BrowserEdgeSnapshot,
+    ) {
+        if !self.is_canonical_for_snapshot(snapshot) {
+            return;
+        }
+        if runtime
+            .storage
+            .active_head_artifact_bytes()
+            .is_some_and(|(head_id, descriptor, _)| {
+                head_id == self.head.head_id && descriptor != self.artifact
+            })
+        {
+            runtime.storage.clear_artifact_replay_checkpoint();
+        }
+        runtime.storage.remember_head_descriptor(self.head.clone());
+    }
+}
+
 #[derive(Clone, Debug)]
 /// Generic configuration for bootstrapping one browser worker runtime from an
 /// authenticated browser session.
@@ -56,6 +147,9 @@ pub struct BrowserSessionRuntimeConfig {
     pub enable_direct_swarm: bool,
     /// Whether this runtime should cache the active head artifact during refresh.
     pub sync_active_head_artifact: bool,
+    /// Optional caller-verified genesis/full head used only when the directory
+    /// does not advertise a newer canonical head.
+    pub bootstrap_head: Option<BrowserBootstrapHead>,
 }
 
 impl BrowserSessionRuntimeConfig {
@@ -90,6 +184,9 @@ pub enum BrowserSessionRuntimeError {
     /// One browser worker command failed.
     #[error("browser worker command failed: {0}")]
     Worker(String),
+    /// The supplied caller-verified bootstrap head was structurally inconsistent.
+    #[error("invalid browser bootstrap head: {0}")]
+    InvalidBootstrapHead(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +225,7 @@ pub struct BrowserSessionRuntimeHandle {
     /// The wrapped browser worker runtime.
     pub runtime: BrowserWorkerRuntime,
     include_leaderboard: bool,
+    bootstrap_head: Option<BrowserBootstrapHead>,
     #[cfg(target_arch = "wasm32")]
     direct_swarm_runtime: Option<WasmBrowserSwarmRuntime>,
 }
@@ -142,6 +240,13 @@ impl BrowserSessionRuntimeHandle {
     ) -> Result<Self, BrowserSessionRuntimeError> {
         if session.session.is_none() {
             return Err(BrowserSessionRuntimeError::MissingSession);
+        }
+        if let Some(bootstrap_head) = config.bootstrap_head.as_ref() {
+            bootstrap_head.validate(
+                snapshot,
+                config.selected_experiment.as_ref(),
+                config.selected_revision.as_ref(),
+            )?;
         }
 
         let client = BrowserEdgeClient::new(
@@ -160,6 +265,9 @@ impl BrowserSessionRuntimeHandle {
             crate::durability::load_durable_receipt_outbox(&snapshot.network_id)
                 .await
                 .map_err(BrowserSessionRuntimeError::Worker)?;
+        if let Some(bootstrap_head) = config.bootstrap_head.as_ref() {
+            bootstrap_head.install_if_canonical(&mut runtime, snapshot);
+        }
         runtime.remember_session(session.clone());
         #[cfg(target_arch = "wasm32")]
         let mut direct_swarm_runtime = if config.enable_direct_swarm {
@@ -188,14 +296,17 @@ impl BrowserSessionRuntimeHandle {
             .sync_worker_runtime(&mut runtime, Some(&session), config.include_leaderboard)
             .await?;
 
-        Ok(Self {
+        let handle = Self {
             client,
             session,
             runtime,
             include_leaderboard: config.include_leaderboard,
+            bootstrap_head: config.bootstrap_head,
             #[cfg(target_arch = "wasm32")]
             direct_swarm_runtime,
-        })
+        };
+        handle.validated_active_head_artifact()?;
+        Ok(handle)
     }
 
     /// Refreshes the runtime from the edge client using the stored session.
@@ -265,16 +376,34 @@ impl BrowserSessionRuntimeHandle {
         self.runtime.storage.active_head_artifact_bytes()
     }
 
+    fn validated_active_head_artifact(
+        &self,
+    ) -> Result<Option<(HeadId, ArtifactDescriptor, Vec<u8>)>, BrowserSessionRuntimeError> {
+        let Some(artifact) = self.active_head_artifact_bytes() else {
+            return Ok(None);
+        };
+        if let Some(bootstrap_head) = self.bootstrap_head.as_ref()
+            && artifact.0 == bootstrap_head.head.head_id
+            && artifact.1 != bootstrap_head.artifact
+        {
+            return Err(BrowserSessionRuntimeError::Worker(format!(
+                "cached bootstrap artifact descriptor for head {} differs from the caller-verified descriptor",
+                artifact.0.as_str()
+            )));
+        }
+        Ok(Some(artifact))
+    }
+
     /// Refreshes the runtime and requires the active head artifact to be locally available.
     pub async fn ensure_active_head_artifact_cached(
         &mut self,
     ) -> Result<(HeadId, ArtifactDescriptor, Vec<u8>), BrowserSessionRuntimeError> {
-        if let Some(artifact) = self.active_head_artifact_bytes() {
+        if let Some(artifact) = self.validated_active_head_artifact()? {
             return Ok(artifact);
         }
 
         self.refresh().await?;
-        if let Some(artifact) = self.active_head_artifact_bytes() {
+        if let Some(artifact) = self.validated_active_head_artifact()? {
             return Ok(artifact);
         }
 
@@ -282,7 +411,7 @@ impl BrowserSessionRuntimeHandle {
         {
             self.wait_for_direct_transport_handoff().await?;
             self.refresh().await?;
-            if let Some(artifact) = self.active_head_artifact_bytes() {
+            if let Some(artifact) = self.validated_active_head_artifact()? {
                 return Ok(artifact);
             }
         }
@@ -413,6 +542,11 @@ impl BrowserSessionRuntimeHandle {
             return Ok(());
         };
         if contribution.published_artifact.is_none() {
+            if contribution.workload_update.is_some() {
+                return Err(BrowserSessionRuntimeError::Worker(
+                    "browser contract update requires a materialized update artifact".into(),
+                ));
+            }
             return Ok(());
         }
         if plan.lease.is_none() {
@@ -437,6 +571,30 @@ impl BrowserSessionRuntimeHandle {
         }
         if self.runtime.storage.session.session.is_none() {
             return Err(BrowserSessionRuntimeError::MissingSession);
+        }
+        if let Some(workload_update) = contribution.workload_update.as_ref() {
+            let descriptor = &contribution
+                .published_artifact
+                .as_ref()
+                .expect("published artifact checked above")
+                .descriptor;
+            let lease = plan.lease.as_ref().expect("training lease checked above");
+            if workload_update.revision_id != plan.revision_id
+                || workload_update.window_id != lease.window_id
+                || workload_update.lease_id != lease.lease_id
+                || workload_update.base_head_id
+                    != contribution
+                        .base_head_id
+                        .clone()
+                        .or_else(|| descriptor.base_head_id.clone())
+                        .expect("base head checked above")
+                || workload_update.artifact != *descriptor
+            {
+                return Err(BrowserSessionRuntimeError::Worker(
+                    "browser contract update metadata does not match its plan, lease, base head, or artifact"
+                        .into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -609,6 +767,7 @@ impl BrowserSessionRuntimeHandle {
                     providers: vec![peer_id],
                     announced_at: Utc::now(),
                 },
+                workload_update: contribution.workload_update.clone(),
             };
             let direct_swarm = self.direct_swarm_runtime.as_mut().ok_or_else(|| {
                 BrowserSessionRuntimeError::Worker(
@@ -671,4 +830,182 @@ fn worker_error_message(events: &[BrowserWorkerEvent]) -> Option<String> {
         BrowserWorkerEvent::Error { message } => Some(message.clone()),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use burn_p2p::{
+        ArtifactId, BrowserMode, DatasetViewId, ExperimentDirectoryEntry, ExperimentOptInPolicy,
+        ExperimentResourceRequirements, ExperimentVisibility, NetworkId, PeerRoleSet, Precision,
+        ProfileMode, SocialMode, StudyId, WorkloadId,
+    };
+    use semver::Version;
+
+    use crate::{
+        BrowserDirectorySnapshot, BrowserEdgeMode, BrowserEdgePaths, BrowserLeaderboardSnapshot,
+        BrowserLoginProvider, BrowserTransportSurface,
+    };
+
+    fn snapshot(current_head_id: Option<HeadId>) -> BrowserEdgeSnapshot {
+        BrowserEdgeSnapshot {
+            network_id: NetworkId::new("network"),
+            protocol_major: 0,
+            minimum_client_version: Version::new(0, 0, 0),
+            edge_mode: BrowserEdgeMode::Peer,
+            browser_mode: BrowserMode::Trainer,
+            social_mode: SocialMode::Public,
+            profile_mode: ProfileMode::Public,
+            transports: BrowserTransportSurface {
+                webrtc_direct: true,
+                webtransport_gateway: true,
+                wss_fallback: true,
+            },
+            paths: BrowserEdgePaths::default(),
+            auth_enabled: false,
+            login_providers: Vec::<BrowserLoginProvider>::new(),
+            required_release_train_hash: None,
+            allowed_target_artifact_hashes: BTreeSet::new(),
+            directory: BrowserDirectorySnapshot {
+                network_id: NetworkId::new("network"),
+                generated_at: Utc::now(),
+                entries: vec![ExperimentDirectoryEntry {
+                    network_id: NetworkId::new("network"),
+                    study_id: StudyId::new("study"),
+                    experiment_id: ExperimentId::new("experiment"),
+                    workload_id: WorkloadId::new("workload"),
+                    display_name: "experiment".into(),
+                    model_schema_hash: ContentId::new("model-schema"),
+                    dataset_view_id: DatasetViewId::new("dataset"),
+                    resource_requirements: ExperimentResourceRequirements {
+                        minimum_roles: BTreeSet::new(),
+                        minimum_device_memory_bytes: None,
+                        minimum_system_memory_bytes: None,
+                        estimated_download_bytes: 0,
+                        estimated_window_seconds: 1,
+                    },
+                    visibility: ExperimentVisibility::Public,
+                    opt_in_policy: ExperimentOptInPolicy::Open,
+                    current_revision_id: RevisionId::new("revision"),
+                    current_head_id,
+                    allowed_roles: PeerRoleSet::default(),
+                    allowed_scopes: BTreeSet::new(),
+                    training_protocol: Default::default(),
+                    metadata: BTreeMap::new(),
+                }],
+            },
+            heads: Vec::new(),
+            revision_contracts: Vec::new(),
+            leaderboard: BrowserLeaderboardSnapshot {
+                network_id: NetworkId::new("network"),
+                score_version: "v1".into(),
+                entries: Vec::new(),
+                captured_at: Utc::now(),
+            },
+            trust_bundle: None,
+            captured_at: Utc::now(),
+        }
+    }
+
+    fn bootstrap_head() -> BrowserBootstrapHead {
+        BrowserBootstrapHead {
+            head: HeadDescriptor {
+                head_id: HeadId::new("genesis"),
+                study_id: StudyId::new("study"),
+                experiment_id: ExperimentId::new("experiment"),
+                revision_id: RevisionId::new("revision"),
+                artifact_id: ArtifactId::new("genesis-artifact"),
+                parent_head_id: None,
+                global_step: 0,
+                created_at: Utc::now(),
+                metrics: BTreeMap::new(),
+            },
+            artifact: ArtifactDescriptor {
+                artifact_id: ArtifactId::new("genesis-artifact"),
+                kind: ArtifactKind::FullHead,
+                head_id: Some(HeadId::new("genesis")),
+                base_head_id: None,
+                precision: Precision::Fp32,
+                model_schema_hash: ContentId::new("model-schema"),
+                record_format: "test".into(),
+                bytes_len: 1,
+                chunks: Vec::new(),
+                root_hash: ContentId::new("root"),
+            },
+        }
+    }
+
+    #[test]
+    fn verified_bootstrap_head_fills_headless_directory() {
+        let snapshot = snapshot(None);
+        let bootstrap = bootstrap_head();
+        bootstrap
+            .validate(
+                &snapshot,
+                Some(&ExperimentId::new("experiment")),
+                Some(&RevisionId::new("revision")),
+            )
+            .expect("valid bootstrap");
+        assert!(bootstrap.is_canonical_for_snapshot(&snapshot));
+
+        let mut runtime = BrowserWorkerRuntime::start(
+            BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("network"),
+                ContentId::new("release"),
+                "target",
+                ContentId::new("target-hash"),
+            ),
+            BrowserCapabilityReport::default(),
+            BrowserTransportStatus::default(),
+        );
+        bootstrap.install_if_canonical(&mut runtime, &snapshot);
+        assert_eq!(
+            runtime.storage.last_head_descriptor.as_ref(),
+            Some(&bootstrap.head)
+        );
+    }
+
+    #[test]
+    fn verified_bootstrap_head_never_replaces_newer_directory_head() {
+        let snapshot = snapshot(Some(HeadId::new("newer-head")));
+        let bootstrap = bootstrap_head();
+        assert!(!bootstrap.is_canonical_for_snapshot(&snapshot));
+
+        let mut runtime = BrowserWorkerRuntime::start(
+            BrowserRuntimeConfig::new(
+                "https://edge.example",
+                NetworkId::new("network"),
+                ContentId::new("release"),
+                "target",
+                ContentId::new("target-hash"),
+            ),
+            BrowserCapabilityReport::default(),
+            BrowserTransportStatus::default(),
+        );
+        runtime.storage.remember_head(HeadId::new("newer-head"));
+        bootstrap.install_if_canonical(&mut runtime, &snapshot);
+        assert_eq!(
+            runtime.storage.last_head_id.as_ref(),
+            Some(&HeadId::new("newer-head"))
+        );
+    }
+
+    #[test]
+    fn bootstrap_head_rejects_descriptor_identity_drift() {
+        let snapshot = snapshot(None);
+        let mut bootstrap = bootstrap_head();
+        bootstrap.artifact.artifact_id = ArtifactId::new("other-artifact");
+        assert!(
+            bootstrap
+                .validate(
+                    &snapshot,
+                    Some(&ExperimentId::new("experiment")),
+                    Some(&RevisionId::new("revision")),
+                )
+                .is_err()
+        );
+    }
 }

@@ -14,4 +14,4 @@ pub use engine::{
     DiLoCoPeerContribution, DiLoCoReferenceCheckpoint, DiLoCoReferenceCoordinator,
     DiLoCoReferencePeer, DiLoCoReferenceRoundOutcome,
 };
-pub use network::DiLoCoRoundOutcome;
+pub use network::{DiLoCoRoundOutcome, DiLoCoRoundTiming};

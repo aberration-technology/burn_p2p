@@ -279,6 +279,54 @@ impl ControlPlaneShell {
         }
     }
 
+    /// Publishes one reduced pseudo-gradient and its exact cohort commitment.
+    pub fn publish_diloco_aggregate(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+    ) {
+        match self {
+            Self::Memory(shell) => shell.publish_diloco_aggregate(
+                manifest,
+                chunks,
+                participant_peer_ids,
+                contribution_manifest_ids,
+            ),
+            Self::Native(shell) => shell.publish_diloco_aggregate(
+                manifest,
+                chunks,
+                participant_peer_ids,
+                contribution_manifest_ids,
+            ),
+        }
+    }
+
+    /// Returns a locally received aggregate-ready release for one exact round.
+    pub fn diloco_aggregate_ready(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+        reducer_peer_id: &PeerId,
+        round_cursor: &RoundCursor,
+    ) -> Option<DiLoCoAggregateReady> {
+        match self {
+            Self::Memory(shell) => shell.diloco_aggregate_ready(
+                experiment_id,
+                revision_id,
+                reducer_peer_id,
+                round_cursor,
+            ),
+            Self::Native(shell) => shell.diloco_aggregate_ready(
+                experiment_id,
+                revision_id,
+                reducer_peer_id,
+                round_cursor,
+            ),
+        }
+    }
+
     /// Fetches one DiLoCo request/response payload from the remote peer.
     pub fn fetch_diloco(
         &mut self,
@@ -289,6 +337,35 @@ impl ControlPlaneShell {
         match self {
             Self::Memory(shell) => shell.fetch_diloco(peer_id, request, timeout),
             Self::Native(shell) => shell.fetch_diloco(peer_id, request, timeout),
+        }
+    }
+
+    /// Starts one DiLoCo request without blocking event processing.
+    pub fn start_diloco_request(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        match self {
+            Self::Memory(shell) => shell.start_diloco_request(peer_id, request),
+            Self::Native(shell) => shell.start_diloco_request(peer_id, request),
+        }
+    }
+
+    /// Takes one completed asynchronous DiLoCo response.
+    pub fn take_diloco_response(&mut self, request_id: &str) -> Option<(String, DiLoCoResponse)> {
+        match self {
+            Self::Memory(shell) => shell.take_diloco_response(request_id),
+            Self::Native(shell) => shell.take_diloco_response(request_id),
+        }
+    }
+
+    /// Discards asynchronous DiLoCo responses whose logical request has expired.
+    #[doc(hidden)]
+    pub fn discard_completed_diloco_responses(&mut self) -> usize {
+        match self {
+            Self::Memory(shell) => shell.discard_completed_diloco_responses(),
+            Self::Native(shell) => shell.discard_completed_diloco_responses(),
         }
     }
 
@@ -426,6 +503,14 @@ impl ControlPlaneShell {
         match self {
             Self::Memory(shell) => shell.wait_event(timeout),
             Self::Native(shell) => shell.wait_event(timeout),
+        }
+    }
+
+    /// Waits for a latency-sensitive event without scheduling discovery maintenance.
+    pub fn wait_priority_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        match self {
+            Self::Memory(shell) => shell.wait_priority_event(timeout),
+            Self::Native(shell) => shell.wait_priority_event(timeout),
         }
     }
 }

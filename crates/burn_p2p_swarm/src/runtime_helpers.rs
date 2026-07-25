@@ -7,7 +7,9 @@ use std::net::{TcpListener, UdpSocket};
 use libp2p::multiaddr::Protocol as MultiaddrProtocol;
 use libp2p::{Multiaddr, StreamProtocol};
 #[cfg(not(target_arch = "wasm32"))]
-use libp2p_identity::{Keypair, PeerId as Libp2pPeerId};
+use libp2p_identity::Keypair;
+#[cfg(not(target_arch = "wasm32"))]
+use libp2p_identity::PeerId as Libp2pPeerId;
 #[cfg(not(target_arch = "wasm32"))]
 use libp2p_kad as kad;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,6 +99,22 @@ pub(crate) fn other_native_control_name<T>(_event: &SwarmEvent<T>) -> &'static s
 pub(crate) fn stream_protocol(protocol: &ProtocolId) -> Result<StreamProtocol, SwarmError> {
     StreamProtocol::try_from_owned(protocol.as_str().to_owned())
         .map_err(|_| SwarmError::InvalidProtocolId(protocol.as_str().to_owned()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn parse_remote_peer_id(
+    local_peer_id: &Libp2pPeerId,
+    peer_id: &str,
+) -> Result<Libp2pPeerId, SwarmError> {
+    let remote_peer_id = peer_id
+        .parse::<Libp2pPeerId>()
+        .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+    if &remote_peer_id == local_peer_id {
+        return Err(SwarmError::Request(format!(
+            "refusing control-plane request to local peer {peer_id}"
+        )));
+    }
+    Ok(remote_peer_id)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -277,4 +295,35 @@ pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, 
 #[allow(dead_code)]
 pub(crate) fn materialize_listen_addr(address: &Multiaddr) -> Result<Multiaddr, std::io::Error> {
     Ok(address.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p_identity::Keypair;
+
+    #[test]
+    fn remote_peer_parser_rejects_local_identity() {
+        let local = Keypair::generate_ed25519().public().to_peer_id();
+        let error = parse_remote_peer_id(&local, &local.to_string())
+            .expect_err("local identity must never be a request target");
+
+        assert_eq!(
+            error,
+            SwarmError::Request(format!(
+                "refusing control-plane request to local peer {local}"
+            ))
+        );
+    }
+
+    #[test]
+    fn remote_peer_parser_accepts_distinct_identity() {
+        let local = Keypair::generate_ed25519().public().to_peer_id();
+        let remote = Keypair::generate_ed25519().public().to_peer_id();
+
+        assert_eq!(
+            parse_remote_peer_id(&local, &remote.to_string()).expect("remote identity"),
+            remote
+        );
+    }
 }

@@ -81,6 +81,7 @@ impl<P> RunningNode<P> {
         let state_for_thread = Arc::clone(&shared_state);
         let auth = node.config.auth.clone();
         let storage = node.config.storage.clone();
+        let role_capabilities = node.role_capabilities.clone();
 
         let runtime_thread = thread::Builder::new()
             .name("burn-p2p-runtime".into())
@@ -92,6 +93,7 @@ impl<P> RunningNode<P> {
                     auth,
                     command_rx,
                     state_for_thread,
+                    role_capabilities,
                 )
             })
             .map_err(|error| anyhow::anyhow!("failed to spawn runtime thread: {error}"))?;

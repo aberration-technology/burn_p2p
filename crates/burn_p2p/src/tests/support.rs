@@ -6,7 +6,7 @@ pub(super) use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -75,6 +75,8 @@ pub(super) struct SyntheticRuntimeProject {
     pub(super) learning_rate: f64,
     pub(super) target_model: f64,
 }
+
+pub(super) static SYNTHETIC_MODEL_ARTIFACT_LOADS: AtomicUsize = AtomicUsize::new(0);
 
 impl crate::P2pWorkload for SyntheticRuntimeProject {
     type Device = String;
@@ -176,17 +178,23 @@ impl crate::P2pWorkload for SyntheticRuntimeProject {
         &self,
         registration: &DatasetRegistration,
     ) -> anyhow::Result<crate::MicroShardPlan> {
+        let microshard_count = fs::read(self.dataset_root.join("fetch-manifest.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ShardFetchManifest>(&bytes).ok())
+            .and_then(|manifest| u32::try_from(manifest.entries.len()).ok())
+            .filter(|count| *count > 0)
+            .unwrap_or(2);
         Ok(crate::MicroShardPlanner::new(MicroShardPlannerConfig {
             target_microshard_bytes: 10,
-            min_microshards: 2,
-            max_microshards: 2,
+            min_microshards: microshard_count,
+            max_microshards: microshard_count,
         })?
         .plan(
             &registration.view,
             DatasetSizing {
-                total_examples: 2,
-                total_tokens: 2,
-                total_bytes: 20,
+                total_examples: u64::from(microshard_count),
+                total_tokens: u64::from(microshard_count),
+                total_bytes: u64::from(microshard_count) * 10,
             },
         )?)
     }
@@ -213,6 +221,7 @@ impl crate::P2pWorkload for SyntheticRuntimeProject {
         store: &FsArtifactStore,
         _device: &String,
     ) -> anyhow::Result<Self::Model> {
+        SYNTHETIC_MODEL_ARTIFACT_LOADS.fetch_add(1, Ordering::SeqCst);
         Ok(serde_json::from_slice(
             &store.materialize_artifact_bytes(descriptor)?,
         )?)
@@ -1107,7 +1116,11 @@ pub(super) fn metric_float(metrics: &BTreeMap<String, MetricValue>, key: &str) -
 }
 
 pub(super) fn create_runtime_dataset(root: &std::path::Path) {
-    let shard_count = 2;
+    create_runtime_dataset_with_shards(root, 2);
+}
+
+pub(super) fn create_runtime_dataset_with_shards(root: &std::path::Path, shard_count: u32) {
+    let shard_count = shard_count.max(1);
     let registration = SyntheticRuntimeProject {
         dataset_root: root.to_path_buf(),
         learning_rate: 1.0,
@@ -1115,12 +1128,20 @@ pub(super) fn create_runtime_dataset(root: &std::path::Path) {
     }
     .dataset_registration()
     .expect("registration");
-    let plan = SyntheticRuntimeProject {
-        dataset_root: root.to_path_buf(),
-        learning_rate: 1.0,
-        target_model: 10.0,
-    }
-    .microshard_plan(&registration)
+    let plan = crate::MicroShardPlanner::new(MicroShardPlannerConfig {
+        target_microshard_bytes: 10,
+        min_microshards: shard_count,
+        max_microshards: shard_count,
+    })
+    .expect("runtime dataset planner")
+    .plan(
+        &registration.view,
+        DatasetSizing {
+            total_examples: u64::from(shard_count),
+            total_tokens: u64::from(shard_count),
+            total_bytes: u64::from(shard_count) * 10,
+        },
+    )
     .expect("plan");
     let manifest =
         ShardFetchManifest::from_microshards(&plan.dataset_view, &plan.microshards, |ordinal| {

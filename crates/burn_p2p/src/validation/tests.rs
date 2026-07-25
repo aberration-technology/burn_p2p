@@ -112,6 +112,144 @@ fn prepared_state() -> ValidationPreparedState {
     }
 }
 
+#[test]
+fn quorum_observation_requires_active_window_membership_and_policy() {
+    let mut prepared = prepared_state();
+    prepared.merge_window.validators = vec![PeerId::new("validator-a"), PeerId::new("validator-b")];
+    prepared
+        .merge_window
+        .policy
+        .promotion_policy
+        .validator_quorum = 2;
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let aggregate_id = ContentId::new("aggregate-a");
+    let merged_head_id = HeadId::new("merged-a");
+    let certificate = |attesters: Vec<PeerId>, validator_quorum| ValidationQuorumCertificate {
+        quorum_cert_id: ContentId::new("quorum-a"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        window_id: prepared.merge_window.window_id,
+        base_head_id: prepared.merge_window.base_head_id.clone(),
+        aggregate_id: aggregate_id.clone(),
+        aggregate_artifact_id: ArtifactId::new("aggregate-artifact-a"),
+        merged_head_id: merged_head_id.clone(),
+        promotion_mode: HeadPromotionMode::ValidatorQuorum,
+        validator_quorum,
+        coordinator: PeerId::new("validator-a"),
+        attesting_validators: attesters,
+        reduction_ids: vec![ContentId::new("reduction-a"), ContentId::new("reduction-b")],
+        issued_at: Utc::now(),
+    };
+    let mut snapshot = ControlPlaneSnapshot::default();
+    snapshot
+        .validation_quorum_announcements
+        .push(ValidationQuorumAnnouncement {
+            overlay: overlay.clone(),
+            certificate: certificate(vec![PeerId::new("validator-a"), PeerId::new("attacker")], 2),
+            announced_at: Utc::now(),
+        });
+
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        &overlay,
+        &experiment,
+        &aggregate_id,
+        &merged_head_id,
+        Some(&prepared.merge_window),
+    ));
+
+    snapshot.validation_quorum_announcements[0].certificate = certificate(
+        vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
+        1,
+    );
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        &overlay,
+        &experiment,
+        &aggregate_id,
+        &merged_head_id,
+        Some(&prepared.merge_window),
+    ));
+
+    snapshot.validation_quorum_announcements[0].certificate = certificate(
+        vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
+        2,
+    );
+    assert!(coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        &overlay,
+        &experiment,
+        &aggregate_id,
+        &merged_head_id,
+        Some(&prepared.merge_window),
+    ));
+}
+
+#[test]
+fn reducer_authority_merge_certificate_requires_active_reducer() {
+    let mut prepared = prepared_state();
+    prepared.merge_window.policy.promotion_policy.mode = HeadPromotionMode::ReducerAuthority;
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let overlay = experiment.overlay_set().expect("overlay").heads;
+    let merged_head_id = HeadId::new("merged-a");
+    let certificate = |promoter_peer_id: PeerId| MergeCertificate {
+        merge_cert_id: MergeCertId::new("merge-a"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        base_head_id: prepared.merge_window.base_head_id.clone(),
+        merged_head_id: merged_head_id.clone(),
+        merged_artifact_id: ArtifactId::new("merged-artifact-a"),
+        policy: MergePolicy::QualityWeightedEma,
+        issued_at: Utc::now(),
+        promoter_peer_id,
+        promotion_mode: HeadPromotionMode::ReducerAuthority,
+        contribution_receipts: Vec::new(),
+    };
+    let mut snapshot = ControlPlaneSnapshot::default();
+    snapshot.merge_announcements.push(MergeAnnouncement {
+        overlay: overlay.clone(),
+        certificate: certificate(PeerId::new("validator-a")),
+        announced_at: Utc::now(),
+    });
+
+    assert!(
+        coordination::merge_certificate_from_snapshot(
+            &snapshot,
+            &overlay,
+            &experiment,
+            &merged_head_id,
+            Some(&prepared.merge_window),
+        )
+        .is_none()
+    );
+
+    snapshot.merge_announcements[0].certificate = certificate(PeerId::new("reducer-a"));
+    assert_eq!(
+        coordination::merge_certificate_from_snapshot(
+            &snapshot,
+            &overlay,
+            &experiment,
+            &merged_head_id,
+            Some(&prepared.merge_window),
+        )
+        .map(|certificate| certificate.promoter_peer_id),
+        Some(PeerId::new("reducer-a"))
+    );
+}
+
 fn robustness_context(prepared: &ValidationPreparedState) -> CandidateRobustnessContext<'_> {
     CandidateRobustnessContext {
         robustness_policy: &prepared.robustness_policy,
@@ -235,6 +373,7 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         },
         ValidationCandidate {
             peer_id: PeerId::new("peer-replay"),
@@ -278,6 +417,7 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         },
     ];
 
@@ -386,6 +526,7 @@ fn candidate_robustness_allows_peer_after_inactive_quarantine_expires() {
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
+        update_evidence: None,
     };
 
     let engine = burn_p2p_security::RobustnessEngine::new(prepared.robustness_policy.clone());
@@ -543,6 +684,7 @@ fn candidate_robustness_caps_surviving_updates_to_maximum_cohort_size() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         };
     let candidates = [
         candidate("peer-a", "artifact-a", "head-a", 0.35),
@@ -690,6 +832,7 @@ fn candidate_robustness_caps_browser_contribution_weight() {
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
+        update_evidence: None,
     }];
 
     let engine = burn_p2p_security::RobustnessEngine::new(prepared.robustness_policy.clone());

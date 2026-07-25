@@ -189,6 +189,7 @@ fn browser_test_edge_snapshot() -> BrowserEdgeSnapshot {
             entries: Vec::new(),
         },
         heads: Vec::new(),
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: NetworkId::new("net-browser"),
             score_version: "leaderboard_score_v1".into(),
@@ -2783,6 +2784,7 @@ fn worker_runtime_training_uses_contribution_receipt_metrics() {
                 artifact_published: true,
                 base_head_id: Some(HeadId::new("head-before")),
                 published_artifact: None,
+                workload_update: None,
                 metadata: BTreeMap::from([
                     ("backend".into(), "burn-webgpu-wasm".into()),
                     ("receipt_payload_version".into(), "browser-window-v1".into()),
@@ -3601,6 +3603,7 @@ fn enrollment_config_and_bindings_can_be_derived_from_edge_snapshot() {
             entries: Vec::new(),
         },
         heads: Vec::new(),
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: NetworkId::new("net-browser"),
             score_version: "leaderboard_score_v1".into(),
@@ -3701,6 +3704,7 @@ fn provider_specific_portal_snapshot_prefers_primary_login_provider() {
             entries: Vec::new(),
         },
         heads: Vec::new(),
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: NetworkId::new("net-browser"),
             score_version: "leaderboard_score_v1".into(),
@@ -6024,6 +6028,7 @@ fn browser_app_controller_exposes_persisted_active_training_lease() {
             entries: Vec::new(),
         },
         heads: Vec::new(),
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: NetworkId::new("net-browser"),
             score_version: "leaderboard_score_v1".into(),

@@ -4,7 +4,8 @@ namespace BurnP2P.Protocol
 
 def hasValidatorQuorum (s : State) : Prop :=
   s.validatorQuorumSize > 0 ∧
-    s.validatorAttestations.length >= s.validatorQuorumSize
+    (s.validatorAttestations.map (·.validatorPeerId)).eraseDups.length >=
+      s.validatorQuorumSize
 
 def promotedHeadRequiresValidatorQuorum (s : State) : Prop :=
   s.promotedHead.isNone ∨ hasValidatorQuorum s
