@@ -4,8 +4,8 @@ use anyhow::Context;
 use burn_p2p::{
     ArtifactDescriptor, ArtifactId, BrowserEdgeSnapshot, ClientReleaseManifest, ContentId,
     ExperimentDirectoryEntry, ExperimentId, ExperimentScope, HeadDescriptor, HeadId, LeaseId,
-    MicroShardId, NetworkManifest, PeerId, PeerRole, PeerRoleSet, PrincipalId, RevisionId,
-    WorkloadId, WorkloadTrainingLease,
+    MicroShardId, NetworkManifest, PeerId, PeerRole, PeerRoleSet, PrincipalId,
+    RevisionContractBundle, RevisionId, WorkloadId, WorkloadTrainingLease,
 };
 use burn_p2p_browser::{
     BrowserCapabilityReport, BrowserEdgeClient, BrowserEnrollmentConfig, BrowserGpuSupport,
@@ -185,6 +185,8 @@ pub struct LiveBrowserEdgeConfig {
     pub principal_id: PrincipalId,
     pub directory_entries: Vec<ExperimentDirectoryEntry>,
     pub heads: Vec<HeadDescriptor>,
+    #[serde(default)]
+    pub revision_contracts: Vec<RevisionContractBundle>,
     pub leaderboard_entries: Vec<BrowserLeaderboardEntry>,
     pub metrics_catchup: Vec<MetricsCatchupBundle>,
     pub selected_head_id: HeadId,
@@ -312,6 +314,7 @@ pub async fn start_live_browser_participant(
             capability: capability.clone(),
             include_leaderboard: true,
             sync_active_head_artifact: true,
+            bootstrap_head: None,
             enable_direct_swarm: !should_inject_live_browser_fixture_transport(
                 &config.edge_base_url,
             ),
@@ -865,6 +868,7 @@ fn build_snapshot(
             entries: config.directory_entries.clone(),
         },
         heads: config.heads.clone(),
+        revision_contracts: config.revision_contracts.clone(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: config.network_manifest.network_id.clone(),
             score_version: "leaderboard_score_v1".into(),
@@ -1772,6 +1776,7 @@ mod tests {
             principal_id: PrincipalId::new("fixture-principal"),
             directory_entries: vec![directory_entry],
             heads: vec![head.clone()],
+            revision_contracts: Vec::new(),
             leaderboard_entries: Vec::new(),
             metrics_catchup: Vec::new(),
             selected_head_id: head_id,

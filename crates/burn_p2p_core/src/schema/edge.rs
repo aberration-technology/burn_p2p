@@ -526,6 +526,9 @@ pub struct BrowserEdgeSnapshot {
     pub directory: BrowserDirectorySnapshot,
     /// The heads.
     pub heads: Vec<HeadDescriptor>,
+    /// Authority-signed revision contracts required for canonical training.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revision_contracts: Vec<RevisionContractBundle>,
     /// The leaderboard.
     pub leaderboard: BrowserLeaderboardSnapshot,
     /// The trust bundle.

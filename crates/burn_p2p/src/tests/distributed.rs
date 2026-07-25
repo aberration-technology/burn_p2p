@@ -34,7 +34,7 @@ fn diffusion_runtime_directory_entry(
 fn native_runtime_training_and_validation_progresses_across_peers() {
     let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
-    create_runtime_dataset(dataset_dir.path());
+    create_runtime_dataset_with_shards(dataset_dir.path(), 3);
 
     let validator_storage = std::env::temp_dir().join(format!(
         "burn-p2p-validator-{}",
@@ -703,7 +703,7 @@ fn validator_restart_restores_canonical_head_for_late_joiners() {
 fn validator_can_fan_in_many_native_trainers_in_one_round() {
     let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
-    create_runtime_dataset(dataset_dir.path());
+    create_runtime_dataset_with_shards(dataset_dir.path(), 7);
     let experiment = experiment();
 
     let validator = NodeBuilder::new(SyntheticRuntimeProject {
@@ -851,7 +851,7 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
 fn same_window_training_leases_are_fair_share_capped() {
     let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
-    create_runtime_dataset(dataset_dir.path());
+    create_runtime_dataset_with_shards(dataset_dir.path(), 4);
     let experiment = experiment();
 
     let validator = NodeBuilder::new(SyntheticRuntimeProject {
@@ -897,6 +897,42 @@ fn same_window_training_leases_are_fair_share_capped() {
         Duration::from_secs(5),
         || validator_telemetry.snapshot().connected_peers >= trainers.len(),
         "validator did not connect to all trainers",
+    );
+    let trainer_peer_ids = trainers
+        .iter()
+        .map(|trainer| {
+            trainer
+                .telemetry()
+                .snapshot()
+                .local_peer_id
+                .expect("trainer peer id")
+        })
+        .collect::<BTreeSet<_>>();
+    wait_for(
+        Duration::from_secs(15),
+        || {
+            trainers.iter().all(|trainer| {
+                let snapshot = trainer.telemetry().snapshot();
+                let announced_trainers = snapshot
+                    .control_plane
+                    .peer_directory_announcements
+                    .iter()
+                    .filter(|announcement| {
+                        announcement.advertised_roles.as_ref().is_some_and(|roles| {
+                            roles.contains(&crate::PeerRole::TrainerCpu)
+                                || roles.contains(&crate::PeerRole::TrainerGpu)
+                                || roles.contains(&crate::PeerRole::BrowserTrainerWgpu)
+                        })
+                    })
+                    .map(|announcement| announcement.peer_id.clone())
+                    .collect::<BTreeSet<_>>();
+                trainer_peer_ids
+                    .iter()
+                    .filter(|peer_id| snapshot.local_peer_id.as_ref() != Some(*peer_id))
+                    .all(|peer_id| announced_trainers.contains(peer_id))
+            })
+        },
+        "trainer role announcements did not converge before fair-share planning",
     );
 
     let mut lease_lengths = Vec::new();
@@ -1017,7 +1053,7 @@ fn training_rejects_insufficient_throughput_for_estimated_window() {
 fn diffusion_steady_state_converges_across_trainer_peers() {
     let _guard = native_swarm_test_guard();
     let dataset_dir = tempdir().expect("dataset dir");
-    create_runtime_dataset(dataset_dir.path());
+    create_runtime_dataset_with_shards(dataset_dir.path(), 3);
 
     let experiment = experiment();
     let auth = crate::AuthConfig::new()

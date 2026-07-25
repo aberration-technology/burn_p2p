@@ -1,5 +1,377 @@
 use super::*;
 
+enum PendingControlRequest {
+    Snapshot {
+        peer_id: String,
+        deadline: Instant,
+        reply: mpsc::Sender<Result<ControlPlaneSnapshot, String>>,
+    },
+    ArtifactManifest {
+        peer_id: String,
+        deadline: Instant,
+        reply: mpsc::Sender<Result<Option<ArtifactDescriptor>, String>>,
+    },
+    ArtifactChunk {
+        peer_id: String,
+        deadline: Instant,
+        reply: mpsc::Sender<Result<Option<ArtifactChunkPayload>, String>>,
+    },
+    DiLoCo {
+        peer_id: String,
+        coalesce_key: String,
+        deadline: Instant,
+        replies: Vec<mpsc::Sender<Result<DiLoCoResponse, String>>>,
+    },
+}
+
+impl PendingControlRequest {
+    fn deadline(&self) -> Instant {
+        match self {
+            Self::Snapshot { deadline, .. }
+            | Self::ArtifactManifest { deadline, .. }
+            | Self::ArtifactChunk { deadline, .. }
+            | Self::DiLoCo { deadline, .. } => *deadline,
+        }
+    }
+
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Snapshot { .. } => "snapshot",
+            Self::ArtifactManifest { .. } => "artifact manifest",
+            Self::ArtifactChunk { .. } => "artifact chunk",
+            Self::DiLoCo { .. } => "diloco",
+        }
+    }
+
+    fn fail(self, message: String) {
+        match self {
+            Self::Snapshot { reply, .. } => {
+                let _ = reply.send(Err(message));
+            }
+            Self::ArtifactManifest { reply, .. } => {
+                let _ = reply.send(Err(message));
+            }
+            Self::ArtifactChunk { reply, .. } => {
+                let _ = reply.send(Err(message));
+            }
+            Self::DiLoCo { replies, .. } => {
+                for reply in replies {
+                    let _ = reply.send(Err(message.clone()));
+                }
+            }
+        }
+    }
+}
+
+struct PendingDiLoCoAggregateReady {
+    experiment_id: ExperimentId,
+    revision_id: RevisionId,
+    reducer_peer_id: PeerId,
+    round_cursor: RoundCursor,
+    deadline: Instant,
+    reply: mpsc::Sender<Result<DiLoCoAggregateReady, String>>,
+}
+
+fn settle_pending_diloco_aggregate_ready(
+    shell: &ControlPlaneShell,
+    pending: &mut Vec<PendingDiLoCoAggregateReady>,
+) {
+    let mut index = pending.len();
+    while index > 0 {
+        index -= 1;
+        let ready = {
+            let waiter = &pending[index];
+            shell.diloco_aggregate_ready(
+                &waiter.experiment_id,
+                &waiter.revision_id,
+                &waiter.reducer_peer_id,
+                &waiter.round_cursor,
+            )
+        };
+        if ready.is_none() && Instant::now() < pending[index].deadline {
+            continue;
+        }
+        let waiter = pending.swap_remove(index);
+        let result = ready.ok_or_else(|| {
+            format!(
+                "timed out waiting for aggregate-ready release from reducer {} for round {}",
+                waiter.reducer_peer_id.as_str(),
+                waiter.round_cursor.round_id
+            )
+        });
+        let _ = waiter.reply.send(result);
+    }
+}
+
+fn diloco_request_coalesce_key(peer_id: &str, request: &DiLoCoRequest) -> String {
+    let semantic_request = match request {
+        DiLoCoRequest::RoundOffer(offer) => serde_json::json!({
+            "kind": "round-offer",
+            "experiment_id": offer.experiment_id,
+            "revision_id": offer.revision_id,
+            "peer_id": offer.peer_id,
+            "round_cursor": offer.round_cursor,
+            "target_group_size": offer.target_group_size,
+        }),
+        DiLoCoRequest::RoundHeartbeat(heartbeat) => serde_json::json!({
+            "kind": "round-heartbeat",
+            "experiment_id": heartbeat.experiment_id,
+            "revision_id": heartbeat.revision_id,
+            "peer_id": heartbeat.peer_id,
+            "round_cursor": heartbeat.round_cursor,
+            "observed_participants": heartbeat.observed_participants,
+        }),
+        DiLoCoRequest::RoundFinalize(finalize) => serde_json::json!({
+            "kind": "round-finalize",
+            "experiment_id": finalize.experiment_id,
+            "revision_id": finalize.revision_id,
+            "peer_id": finalize.peer_id,
+            "round_cursor": finalize.round_cursor,
+            "participant_count": finalize.participant_count,
+            "aggregate_checksum": finalize.aggregate_checksum,
+        }),
+        _ => serde_json::to_value(request).unwrap_or_else(|_| {
+            serde_json::json!({
+                "debug": format!("{request:?}"),
+            })
+        }),
+    };
+    ContentId::derive(&(peer_id, semantic_request))
+        .map(|content_id| format!("diloco:{peer_id}:{}", content_id.as_str()))
+        .unwrap_or_else(|_| format!("diloco:{peer_id}:{request:?}"))
+}
+
+fn attach_to_pending_diloco_request(
+    pending: &mut BTreeMap<String, PendingControlRequest>,
+    pending_diloco_request_ids_by_key: &BTreeMap<String, String>,
+    coalesce_key: &str,
+    reply: mpsc::Sender<Result<DiLoCoResponse, String>>,
+) -> Result<(), mpsc::Sender<Result<DiLoCoResponse, String>>> {
+    let Some(request_id) = pending_diloco_request_ids_by_key.get(coalesce_key) else {
+        return Err(reply);
+    };
+    let Some(PendingControlRequest::DiLoCo { replies, .. }) = pending.get_mut(request_id) else {
+        return Err(reply);
+    };
+    replies.push(reply);
+    Ok(())
+}
+
+fn remove_pending_control_request(
+    pending: &mut BTreeMap<String, PendingControlRequest>,
+    pending_diloco_request_ids_by_key: &mut BTreeMap<String, String>,
+    request_id: &str,
+) -> Option<PendingControlRequest> {
+    let request = pending.remove(request_id)?;
+    if let PendingControlRequest::DiLoCo { coalesce_key, .. } = &request {
+        pending_diloco_request_ids_by_key.remove(coalesce_key);
+    }
+    Some(request)
+}
+
+fn settle_pending_control_requests(
+    shell: &mut ControlPlaneShell,
+    pending: &mut BTreeMap<String, PendingControlRequest>,
+    pending_diloco_request_ids_by_key: &mut BTreeMap<String, String>,
+) {
+    let request_ids = pending.keys().cloned().collect::<Vec<_>>();
+    for request_id in request_ids {
+        let response = pending
+            .get(&request_id)
+            .is_some_and(|request| matches!(request, PendingControlRequest::DiLoCo { .. }))
+            .then(|| shell.take_diloco_response(&request_id))
+            .flatten();
+        let timed_out = pending
+            .get(&request_id)
+            .is_some_and(|request| Instant::now() >= request.deadline());
+        if response.is_none() && !timed_out {
+            continue;
+        }
+        let Some(request) =
+            remove_pending_control_request(pending, pending_diloco_request_ids_by_key, &request_id)
+        else {
+            continue;
+        };
+        match request {
+            PendingControlRequest::DiLoCo {
+                peer_id, replies, ..
+            } => {
+                let result = match response {
+                    Some((response_peer_id, response)) if response_peer_id == peer_id => {
+                        Ok(response)
+                    }
+                    Some((response_peer_id, _)) => Err(format!(
+                        "DiLoCo response peer mismatch: expected {peer_id}, got {response_peer_id}"
+                    )),
+                    None => Err("timed out waiting for diloco".into()),
+                };
+                for reply in replies {
+                    let _ = reply.send(result.clone());
+                }
+            }
+            request => {
+                let operation = request.operation();
+                request.fail(format!("timed out waiting for {operation}"));
+            }
+        }
+    }
+    // The transport may still deliver a response after its logical request
+    // deadline. No future retry may consume that stale payload.
+    shell.discard_completed_diloco_responses();
+}
+
+fn route_pending_control_response(
+    pending: &mut BTreeMap<String, PendingControlRequest>,
+    pending_diloco_request_ids_by_key: &mut BTreeMap<String, String>,
+    event: LiveControlPlaneEvent,
+) -> Option<LiveControlPlaneEvent> {
+    if let LiveControlPlaneEvent::RequestFailure {
+        request_id: Some(request_id),
+        message,
+        ..
+    } = &event
+    {
+        if let Some(request) =
+            remove_pending_control_request(pending, pending_diloco_request_ids_by_key, request_id)
+        {
+            request.fail(message.clone());
+        }
+        return Some(event);
+    }
+
+    match event {
+        LiveControlPlaneEvent::SnapshotReceived {
+            peer_id,
+            request_id,
+            snapshot,
+        } => {
+            let Some(request) = remove_pending_control_request(
+                pending,
+                pending_diloco_request_ids_by_key,
+                &request_id,
+            ) else {
+                return Some(LiveControlPlaneEvent::SnapshotReceived {
+                    peer_id,
+                    request_id,
+                    snapshot,
+                });
+            };
+            match request {
+                PendingControlRequest::Snapshot {
+                    peer_id: expected,
+                    reply,
+                    ..
+                } => {
+                    let result = if peer_id == expected {
+                        Ok(snapshot)
+                    } else {
+                        Err(format!(
+                            "snapshot response peer mismatch: expected {expected}, got {peer_id}"
+                        ))
+                    };
+                    let _ = reply.send(result);
+                    None
+                }
+                other => {
+                    other.fail("snapshot response type did not match pending request".into());
+                    Some(LiveControlPlaneEvent::SnapshotReceived {
+                        peer_id,
+                        request_id,
+                        snapshot,
+                    })
+                }
+            }
+        }
+        LiveControlPlaneEvent::ArtifactManifestReceived {
+            peer_id,
+            request_id,
+            descriptor,
+        } => {
+            let Some(request) = remove_pending_control_request(
+                pending,
+                pending_diloco_request_ids_by_key,
+                &request_id,
+            ) else {
+                return Some(LiveControlPlaneEvent::ArtifactManifestReceived {
+                    peer_id,
+                    request_id,
+                    descriptor,
+                });
+            };
+            match request {
+                PendingControlRequest::ArtifactManifest {
+                    peer_id: expected,
+                    reply,
+                    ..
+                } => {
+                    let result = if peer_id == expected {
+                        Ok(descriptor)
+                    } else {
+                        Err(format!(
+                            "artifact manifest response peer mismatch: expected {expected}, got {peer_id}"
+                        ))
+                    };
+                    let _ = reply.send(result);
+                    None
+                }
+                other => {
+                    other.fail(
+                        "artifact manifest response type did not match pending request".into(),
+                    );
+                    Some(LiveControlPlaneEvent::ArtifactManifestReceived {
+                        peer_id,
+                        request_id,
+                        descriptor,
+                    })
+                }
+            }
+        }
+        LiveControlPlaneEvent::ArtifactChunkReceived {
+            peer_id,
+            request_id,
+            payload,
+        } => {
+            let Some(request) = remove_pending_control_request(
+                pending,
+                pending_diloco_request_ids_by_key,
+                &request_id,
+            ) else {
+                return Some(LiveControlPlaneEvent::ArtifactChunkReceived {
+                    peer_id,
+                    request_id,
+                    payload,
+                });
+            };
+            match request {
+                PendingControlRequest::ArtifactChunk {
+                    peer_id: expected,
+                    reply,
+                    ..
+                } => {
+                    let result = if peer_id == expected {
+                        Ok(payload)
+                    } else {
+                        Err(format!(
+                            "artifact chunk response peer mismatch: expected {expected}, got {peer_id}"
+                        ))
+                    };
+                    let _ = reply.send(result);
+                    None
+                }
+                other => {
+                    other.fail("artifact chunk response type did not match pending request".into());
+                    Some(LiveControlPlaneEvent::ArtifactChunkReceived {
+                        peer_id,
+                        request_id,
+                        payload,
+                    })
+                }
+            }
+        }
+        event => Some(event),
+    }
+}
+
 pub(crate) fn run_control_plane(
     boundary: RuntimeBoundary,
     keypair: Keypair,
@@ -7,12 +379,14 @@ pub(crate) fn run_control_plane(
     auth: Option<AuthConfig>,
     command_rx: mpsc::Receiver<RuntimeCommand>,
     state: Arc<Mutex<NodeTelemetrySnapshot>>,
+    startup_roles: PeerRoleSet,
 ) {
     const CONNECTIVITY_REPAIR_INTERVAL: Duration = Duration::from_secs(1);
     const PEER_DIRECTORY_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
     const TRUST_BUNDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
     const DIFFUSION_SETTLEMENT_INTERVAL: Duration = Duration::from_millis(100);
-    const PENDING_DIAL_DEBOUNCE: Duration = Duration::from_secs(5);
+    const PENDING_DIAL_DEBOUNCE: Duration = Duration::from_secs(30);
+    const COMMAND_BATCH_LIMIT: usize = 128;
     let signing_keypair = keypair.clone();
     let mut auth = auth;
     let mut diffusion_state = crate::promotion::diffusion::DiffusionStateCache::default();
@@ -186,9 +560,13 @@ pub(crate) fn run_control_plane(
     let mut last_diffusion_settlement_at = Instant::now()
         .checked_sub(DIFFUSION_SETTLEMENT_INTERVAL)
         .unwrap_or_else(Instant::now);
+    let mut pending_control_requests = BTreeMap::<String, PendingControlRequest>::new();
+    let mut pending_diloco_request_ids_by_key = BTreeMap::<String, String>::new();
+    let mut pending_diloco_aggregate_ready = Vec::<PendingDiLoCoAggregateReady>::new();
+    let mut snapshot_synchronized_peers = BTreeSet::<PeerId>::new();
     loop {
         let mut shutdown_requested = false;
-        loop {
+        for _ in 0..COMMAND_BATCH_LIMIT {
             match command_rx.try_recv() {
                 Ok(RuntimeCommand::SubscribeTopic(topic)) => {
                     if let Err(error) = shell.subscribe_topic(topic.clone()) {
@@ -199,11 +577,36 @@ pub(crate) fn run_control_plane(
                         snapshot.last_error = Some(error.to_string());
                     }
                 }
+                Ok(RuntimeCommand::UpdateRoles { roles, reply }) => {
+                    let result = apply_runtime_role_update(
+                        &mut shell,
+                        &boundary,
+                        &state,
+                        storage.as_ref(),
+                        &startup_roles,
+                        roles,
+                    );
+                    let _ = reply.send(result.map_err(|error| error.to_string()));
+                }
+                Ok(RuntimeCommand::AcknowledgeRuntimeError { expected, reply }) => {
+                    let mut snapshot = lock_telemetry_state(&state);
+                    let result = if snapshot.last_error.as_deref() == Some(expected.as_str()) {
+                        snapshot.last_error = None;
+                        snapshot.updated_at = Utc::now();
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "runtime error changed before it could be acknowledged"
+                        ))
+                    };
+                    let _ = reply.send(result.map_err(|error| error.to_string()));
+                }
                 Ok(RuntimeCommand::PublishControl(announcement)) => {
+                    let announcement = *announcement;
                     shell.publish_control(announcement.clone());
                     if let Err(error) = shell.publish_pubsub(
                         boundary.control_overlay.clone(),
-                        PubsubPayload::Control(announcement),
+                        PubsubPayload::Control(Box::new(announcement)),
                     ) {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error = Some(error.to_string());
@@ -316,11 +719,12 @@ pub(crate) fn run_control_plane(
                     snapshot.updated_at = Utc::now();
                 }
                 Ok(RuntimeCommand::PublishUpdate(announcement)) => {
+                    let announcement = *announcement;
                     let overlay = announcement.overlay.clone();
                     let _ = shell.subscribe_topic(overlay.clone());
                     shell.publish_update(announcement.clone());
                     if let Err(error) =
-                        shell.publish_pubsub(overlay, PubsubPayload::Update(announcement))
+                        shell.publish_pubsub(overlay, PubsubPayload::Update(Box::new(announcement)))
                     {
                         let mut snapshot = lock_telemetry_state(&state);
                         snapshot.last_error = Some(error.to_string());
@@ -499,6 +903,7 @@ pub(crate) fn run_control_plane(
                     snapshot: diloco_snapshot,
                     outer_optimizer_state,
                     current_parameters,
+                    reply,
                 }) => {
                     let mut diloco_snapshot = diloco_snapshot;
                     if let Ok(signature) =
@@ -511,8 +916,13 @@ pub(crate) fn run_control_plane(
                         outer_optimizer_state,
                         current_parameters,
                     );
+                    let _ = reply.send(Ok(()));
                 }
-                Ok(RuntimeCommand::PublishDiLoCoGradient { manifest, chunks }) => {
+                Ok(RuntimeCommand::PublishDiLoCoGradient {
+                    manifest,
+                    chunks,
+                    reply,
+                }) => {
                     let mut manifest = manifest;
                     if let Ok(signature) =
                         sign_diloco_gradient_manifest(&signing_keypair, &manifest)
@@ -520,6 +930,54 @@ pub(crate) fn run_control_plane(
                         manifest.signature_bundle.push(signature);
                     }
                     shell.publish_diloco_gradient(manifest, chunks);
+                    let _ = reply.send(Ok(()));
+                }
+                Ok(RuntimeCommand::WaitDiLoCoAggregateReady {
+                    experiment_id,
+                    revision_id,
+                    reducer_peer_id,
+                    round_cursor,
+                    timeout,
+                    reply,
+                }) => {
+                    if let Some(ready) = shell.diloco_aggregate_ready(
+                        &experiment_id,
+                        &revision_id,
+                        &reducer_peer_id,
+                        &round_cursor,
+                    ) {
+                        let _ = reply.send(Ok(ready));
+                    } else {
+                        pending_diloco_aggregate_ready.push(PendingDiLoCoAggregateReady {
+                            experiment_id,
+                            revision_id,
+                            reducer_peer_id,
+                            round_cursor,
+                            deadline: Instant::now() + timeout.max(Duration::from_millis(1)),
+                            reply,
+                        });
+                    }
+                }
+                Ok(RuntimeCommand::PublishDiLoCoAggregate {
+                    manifest,
+                    chunks,
+                    participant_peer_ids,
+                    contribution_manifest_ids,
+                    reply,
+                }) => {
+                    let mut manifest = manifest;
+                    if let Ok(signature) =
+                        sign_diloco_gradient_manifest(&signing_keypair, &manifest)
+                    {
+                        manifest.signature_bundle.push(signature);
+                    }
+                    shell.publish_diloco_aggregate(
+                        manifest,
+                        chunks,
+                        participant_peer_ids,
+                        contribution_manifest_ids,
+                    );
+                    let _ = reply.send(Ok(()));
                 }
                 Ok(RuntimeCommand::PublishArtifact {
                     descriptor,
@@ -533,45 +991,98 @@ pub(crate) fn run_control_plane(
                     peer_id,
                     timeout,
                     reply,
-                }) => {
-                    let result = shell
-                        .fetch_snapshot(&peer_id, timeout)
-                        .map_err(|error| error.to_string());
-                    let _ = reply.send(result);
-                }
+                }) => match shell.request_snapshot_id(&peer_id) {
+                    Ok(request_id) => {
+                        pending_control_requests.insert(
+                            request_id,
+                            PendingControlRequest::Snapshot {
+                                peer_id,
+                                deadline: Instant::now() + timeout.max(Duration::from_millis(1)),
+                                reply,
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                    }
+                },
                 Ok(RuntimeCommand::FetchArtifactManifest {
                     peer_id,
                     artifact_id,
                     timeout,
                     reply,
-                }) => {
-                    let result = shell
-                        .fetch_artifact_manifest(&peer_id, artifact_id, timeout)
-                        .map_err(|error| error.to_string());
-                    let _ = reply.send(result);
-                }
+                }) => match shell.request_artifact_manifest_id(&peer_id, artifact_id) {
+                    Ok(request_id) => {
+                        pending_control_requests.insert(
+                            request_id,
+                            PendingControlRequest::ArtifactManifest {
+                                peer_id,
+                                deadline: Instant::now() + timeout.max(Duration::from_millis(1)),
+                                reply,
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                    }
+                },
                 Ok(RuntimeCommand::FetchArtifactChunk {
                     peer_id,
                     artifact_id,
                     chunk_id,
                     timeout,
                     reply,
-                }) => {
-                    let result = shell
-                        .fetch_artifact_chunk(&peer_id, artifact_id, chunk_id, timeout)
-                        .map_err(|error| error.to_string());
-                    let _ = reply.send(result);
-                }
+                }) => match shell.request_artifact_chunk_id(&peer_id, artifact_id, chunk_id) {
+                    Ok(request_id) => {
+                        pending_control_requests.insert(
+                            request_id,
+                            PendingControlRequest::ArtifactChunk {
+                                peer_id,
+                                deadline: Instant::now() + timeout.max(Duration::from_millis(1)),
+                                reply,
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                    }
+                },
                 Ok(RuntimeCommand::FetchDiLoCo {
                     peer_id,
                     request,
                     timeout,
                     reply,
                 }) => {
-                    let result = shell
-                        .fetch_diloco(&peer_id, request, timeout)
-                        .map_err(|error| error.to_string());
-                    let _ = reply.send(result);
+                    let coalesce_key = diloco_request_coalesce_key(&peer_id, &request);
+                    let reply = match attach_to_pending_diloco_request(
+                        &mut pending_control_requests,
+                        &pending_diloco_request_ids_by_key,
+                        &coalesce_key,
+                        reply,
+                    ) {
+                        Ok(()) => continue,
+                        Err(reply) => reply,
+                    };
+                    pending_diloco_request_ids_by_key.remove(&coalesce_key);
+                    match shell.start_diloco_request(&peer_id, request) {
+                        Ok(request_id) => {
+                            pending_diloco_request_ids_by_key
+                                .insert(coalesce_key.clone(), request_id.clone());
+                            pending_control_requests.insert(
+                                request_id,
+                                PendingControlRequest::DiLoCo {
+                                    peer_id,
+                                    coalesce_key,
+                                    deadline: Instant::now()
+                                        + timeout.max(Duration::from_millis(1)),
+                                    replies: vec![reply],
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                        }
+                    }
                 }
                 Ok(RuntimeCommand::DialAddress { address }) => {
                     if let Err(error) = shell.dial(address.clone()) {
@@ -612,6 +1123,15 @@ pub(crate) fn run_control_plane(
         }
 
         if shutdown_requested {
+            for (_, request) in std::mem::take(&mut pending_control_requests) {
+                request.fail("control plane shut down during network request".into());
+            }
+            pending_diloco_request_ids_by_key.clear();
+            for waiter in pending_diloco_aggregate_ready.drain(..) {
+                let _ = waiter.reply.send(Err(
+                    "control plane shut down while waiting for DiLoCo aggregate readiness".into(),
+                ));
+            }
             let peer_ids = {
                 let snapshot = lock_telemetry_state(&state);
                 connected_peer_ids(&snapshot)
@@ -636,18 +1156,33 @@ pub(crate) fn run_control_plane(
             snapshot.connected_peer_ids.clear();
             snapshot.status = RuntimeStatus::Stopped;
             snapshot.updated_at = Utc::now();
+            if let Some(storage) = storage.as_ref()
+                && let Err(error) = persist_runtime_security_state(storage, &snapshot)
+            {
+                snapshot.last_error = Some(format!(
+                    "failed to persist security state during shutdown: {error}"
+                ));
+            }
             return;
         }
+
+        settle_pending_diloco_aggregate_ready(&shell, &mut pending_diloco_aggregate_ready);
+        let latency_sensitive =
+            !pending_control_requests.is_empty() || !pending_diloco_aggregate_ready.is_empty();
 
         if last_connectivity_repair_at.elapsed() >= CONNECTIVITY_REPAIR_INTERVAL {
             pending_dial_keys.retain(|_, expires_at| *expires_at > Instant::now());
             let pending_dial_key_set = pending_dial_keys.keys().cloned().collect::<BTreeSet<_>>();
             let (dial_targets, offload_targets) = {
                 let snapshot = lock_telemetry_state(&state);
-                let mut offload_targets = bootstrap_offload_targets(&boundary, &snapshot);
-                offload_targets.extend(excess_connected_peer_offload_targets(&boundary, &snapshot));
-                offload_targets.sort();
-                offload_targets.dedup();
+                let mut offload_targets = Vec::new();
+                if !latency_sensitive {
+                    offload_targets = bootstrap_offload_targets(&boundary, &snapshot);
+                    offload_targets
+                        .extend(excess_connected_peer_offload_targets(&boundary, &snapshot));
+                    offload_targets.sort();
+                    offload_targets.dedup();
+                }
                 (
                     connectivity_repair_targets(
                         &boundary,
@@ -658,6 +1193,9 @@ pub(crate) fn run_control_plane(
                     offload_targets,
                 )
             };
+            // A collective must be able to recover a dropped cohort connection
+            // while requests are pending. Offloading remains an idle-path task
+            // so maintenance never intentionally disconnects an active round.
             for address in dial_targets {
                 if shell.dial(address.clone()).is_ok() {
                     pending_dial_keys.insert(
@@ -672,7 +1210,9 @@ pub(crate) fn run_control_plane(
             last_connectivity_repair_at = Instant::now();
         }
 
-        if last_peer_directory_reannounce_at.elapsed() >= PEER_DIRECTORY_REANNOUNCE_INTERVAL {
+        if !latency_sensitive
+            && last_peer_directory_reannounce_at.elapsed() >= PEER_DIRECTORY_REANNOUNCE_INTERVAL
+        {
             let mut snapshot = lock_telemetry_state(&state);
             publish_local_peer_directory(&mut shell, &boundary, &mut snapshot);
             if let Some(storage) = storage.as_ref()
@@ -684,7 +1224,9 @@ pub(crate) fn run_control_plane(
             last_peer_directory_reannounce_at = Instant::now();
         }
 
-        if last_trust_bundle_sync_at.elapsed() >= TRUST_BUNDLE_REFRESH_INTERVAL {
+        if !latency_sensitive
+            && last_trust_bundle_sync_at.elapsed() >= TRUST_BUNDLE_REFRESH_INTERVAL
+        {
             let mut snapshot = lock_telemetry_state(&state);
             let trust_bundle_changed =
                 reconcile_remote_trust_bundle(&mut auth, &mut snapshot, storage.as_ref());
@@ -701,7 +1243,9 @@ pub(crate) fn run_control_plane(
             last_trust_bundle_sync_at = Instant::now();
         }
 
-        if last_diffusion_settlement_at.elapsed() >= DIFFUSION_SETTLEMENT_INTERVAL {
+        if !latency_sensitive
+            && last_diffusion_settlement_at.elapsed() >= DIFFUSION_SETTLEMENT_INTERVAL
+        {
             let shell_snapshot = shell.snapshot().clone();
             let (network_id, local_peer_id) = {
                 let snapshot = lock_telemetry_state(&state);
@@ -740,29 +1284,80 @@ pub(crate) fn run_control_plane(
         }
 
         let mut processed_event = false;
-        for batch_index in 0..32 {
+        // Responders do not have an outbound request in `pending_diloco_requests`,
+        // so they must retain enough event budget to service request-response
+        // traffic even while discovery protocols have queued background events.
+        let event_batch_limit = 256;
+        for batch_index in 0..event_batch_limit {
             let wait = if batch_index == 0 {
-                Duration::from_millis(50)
+                if latency_sensitive {
+                    Duration::from_millis(10)
+                } else {
+                    Duration::from_millis(50)
+                }
             } else {
                 Duration::from_millis(1)
             };
-            let Some(event) = shell.wait_event(wait) else {
+            let event = if latency_sensitive {
+                shell.wait_priority_event(wait)
+            } else {
+                shell.wait_event(wait)
+            };
+            let Some(event) = event else {
                 break;
             };
             processed_event = true;
-            handle_control_plane_event(
+            if event_releases_pending_dial_debounce(&event) {
+                // `Swarm::dial` only confirms that a dial was queued. An
+                // asynchronous transport failure must make the target eligible
+                // for the next connectivity-repair pass instead of suppressing
+                // startup recovery for the full successful-dial debounce.
+                pending_dial_keys.clear();
+            }
+            // DiLoCo payloads are deposited in the shell before the observable
+            // event is returned. Complete their reply channels before telemetry
+            // processing or persistence can add unbounded latency.
+            settle_pending_control_requests(
                 &mut shell,
-                &boundary,
-                storage.as_ref(),
-                &mut auth,
-                &state,
+                &mut pending_control_requests,
+                &mut pending_diloco_request_ids_by_key,
+            );
+            settle_pending_diloco_aggregate_ready(&shell, &mut pending_diloco_aggregate_ready);
+            if let Some(event) = route_pending_control_response(
+                &mut pending_control_requests,
+                &mut pending_diloco_request_ids_by_key,
                 event,
+            ) {
+                handle_control_plane_event(
+                    &mut shell,
+                    &boundary,
+                    storage.as_ref(),
+                    &mut auth,
+                    &state,
+                    &mut snapshot_synchronized_peers,
+                    event,
+                );
+            }
+            settle_pending_control_requests(
+                &mut shell,
+                &mut pending_control_requests,
+                &mut pending_diloco_request_ids_by_key,
             );
         }
+        settle_pending_control_requests(
+            &mut shell,
+            &mut pending_control_requests,
+            &mut pending_diloco_request_ids_by_key,
+        );
+        settle_pending_diloco_aggregate_ready(&shell, &mut pending_diloco_aggregate_ready);
         if !processed_event {
             thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+fn event_releases_pending_dial_debounce(event: &LiveControlPlaneEvent) -> bool {
+    matches!(event, LiveControlPlaneEvent::OutgoingConnectionError { .. })
 }
 
 fn sync_connected_peer_snapshot(snapshot: &mut NodeTelemetrySnapshot, shell: &ControlPlaneShell) {
@@ -808,45 +1403,83 @@ fn publish_diffusion_settlement(
     snapshot.updated_at = Utc::now();
 }
 
+fn peer_directory_announcement_adds_information(
+    snapshot: &ControlPlaneSnapshot,
+    announcement: &PeerDirectoryAnnouncement,
+) -> bool {
+    let Some(current) = snapshot
+        .peer_directory_announcements
+        .iter()
+        .find(|current| {
+            current.network_id == announcement.network_id && current.peer_id == announcement.peer_id
+        })
+    else {
+        return true;
+    };
+
+    current.advertised_roles != announcement.advertised_roles
+        || announcement
+            .addresses
+            .iter()
+            .any(|address| !current.addresses.contains(address))
+}
+
+fn snapshot_sync_peer<'a>(
+    event: &'a LiveControlPlaneEvent,
+    local_peer_id: &str,
+) -> Option<&'a str> {
+    match event {
+        LiveControlPlaneEvent::PeerIdentified {
+            peer_id,
+            listen_addresses,
+            ..
+        } if peer_id != local_peer_id && !listen_addresses.is_empty() => Some(peer_id),
+        _ => None,
+    }
+}
+
 fn handle_control_plane_event(
     shell: &mut ControlPlaneShell,
     boundary: &RuntimeBoundary,
     storage: Option<&StorageConfig>,
     auth: &mut Option<AuthConfig>,
     state: &Arc<Mutex<NodeTelemetrySnapshot>>,
+    snapshot_synchronized_peers: &mut BTreeSet<PeerId>,
     event: LiveControlPlaneEvent,
 ) {
+    let persist_security_state = event_requires_security_state_persistence(&event);
     let mut connection_request_error = None;
-    match &event {
-        LiveControlPlaneEvent::ConnectionEstablished { peer_id }
-        | LiveControlPlaneEvent::PeerIdentified { peer_id, .. } => {
-            if let Err(error) = shell.request_snapshot(peer_id) {
-                connection_request_error = Some((peer_id.clone(), error.to_string()));
-            }
+    // Identify classifies fetch sidecars and transport probes before they can
+    // be admitted as durable control-plane peers. Requesting a full snapshot
+    // at ConnectionEstablished races that classification.
+    if let Some(peer_id) = snapshot_sync_peer(&event, &shell.local_peer_id().to_string()) {
+        let peer_id = PeerId::new(peer_id.to_owned());
+        if snapshot_synchronized_peers.insert(peer_id.clone())
+            && let Err(error) = shell.request_snapshot(peer_id.as_str())
+        {
+            snapshot_synchronized_peers.remove(&peer_id);
+            connection_request_error = Some((peer_id.as_str().to_owned(), error.to_string()));
         }
-        _ => {}
+    } else if let LiveControlPlaneEvent::ConnectionClosed { peer_id } = &event {
+        let peer_id = PeerId::new(peer_id.clone());
+        if !shell.connected_peer_ids().contains(&peer_id) {
+            snapshot_synchronized_peers.remove(&peer_id);
+        }
     }
 
     let mut snapshot = lock_telemetry_state(state);
     sync_connected_peer_snapshot(&mut snapshot, shell);
-    snapshot.control_plane = shell.snapshot().clone();
-    let should_persist_control_plane = matches!(
-        &event,
-        LiveControlPlaneEvent::PubsubMessage { kind, .. }
-            if kind == "control"
-                || kind == "auth"
-                || kind == "directory"
-                || kind == "peer-directory"
-                || kind == "lease"
-    ) || matches!(
-        event,
-        LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
-    );
-    if should_persist_control_plane
-        && let Some(storage) = storage
-        && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
-    {
-        snapshot.last_error = Some(format!("failed to persist control plane state: {error}"));
+    // The swarm applies every decoded pubsub payload before emitting the event.
+    // Refresh the public projection for every payload kind, not only the
+    // discovery/control subset, or heads and training updates remain hidden
+    // until an unrelated snapshot happens to refresh telemetry.
+    let control_plane_changed = matches!(event, LiveControlPlaneEvent::PubsubMessage { .. })
+        || matches!(
+            event,
+            LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
+        );
+    if control_plane_changed {
+        snapshot.control_plane = shell.snapshot().clone();
     }
     if let Some((peer_id, message)) = connection_request_error {
         snapshot.push_event(LiveControlPlaneEvent::RequestFailure {
@@ -865,12 +1498,6 @@ fn handle_control_plane_event(
             publish_configured_external_addresses(shell, boundary, &mut snapshot, address);
             publish_local_peer_directory(shell, boundary, &mut snapshot);
             snapshot.control_plane = shell.snapshot().clone();
-            if let Some(storage) = storage
-                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
-            {
-                snapshot.last_error =
-                    Some(format!("failed to persist control plane state: {error}"));
-            }
         }
         LiveControlPlaneEvent::ReachableAddressConfirmed { address } => {
             if !snapshot.listen_addresses.contains(address) {
@@ -878,12 +1505,6 @@ fn handle_control_plane_event(
             }
             publish_local_peer_directory(shell, boundary, &mut snapshot);
             snapshot.control_plane = shell.snapshot().clone();
-            if let Some(storage) = storage
-                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
-            {
-                snapshot.last_error =
-                    Some(format!("failed to persist control plane state: {error}"));
-            }
         }
         LiveControlPlaneEvent::ReachableAddressExpired { address } => {
             if let Some(position) = snapshot
@@ -924,10 +1545,10 @@ fn handle_control_plane_event(
                 .peer_directory_announcements
                 .iter()
                 .filter(|announcement| {
-                    !snapshot
-                        .control_plane
-                        .peer_directory_announcements
-                        .contains(announcement)
+                    peer_directory_announcement_adds_information(
+                        &snapshot.control_plane,
+                        announcement,
+                    )
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -961,12 +1582,6 @@ fn handle_control_plane_event(
             );
             snapshot.last_snapshot_peer_id = Some(PeerId::new(peer_id.clone()));
             snapshot.last_snapshot = Some(remote_snapshot.clone());
-            if let Some(storage) = storage
-                && let Err(error) = persist_control_plane_state(storage, &snapshot.control_plane)
-            {
-                snapshot.last_error =
-                    Some(format!("failed to persist control plane state: {error}"));
-            }
             if let Some(policy) = auth
                 .as_ref()
                 .and_then(|auth| auth.admission_policy.as_ref())
@@ -1069,11 +1684,28 @@ fn handle_control_plane_event(
         }
     }
     snapshot.push_event(event);
-    if let Some(storage) = storage
+    if persist_security_state
+        && let Some(storage) = storage
         && let Err(error) = persist_runtime_security_state(storage, &snapshot)
     {
         snapshot.last_error = Some(format!("failed to persist security state: {error}"));
     }
+}
+
+fn event_requires_security_state_persistence(event: &LiveControlPlaneEvent) -> bool {
+    matches!(event, LiveControlPlaneEvent::SnapshotReceived { .. })
+        || matches!(
+            event,
+            LiveControlPlaneEvent::PubsubMessage { kind, .. }
+                if matches!(
+                    kind.as_str(),
+                    "control" | "auth" | "directory" | "peer-directory"
+                )
+        )
+        || matches!(
+            event,
+            LiveControlPlaneEvent::PeerDirectoryRecordReceived { .. }
+        )
 }
 
 fn subscribe_experiment_directory_topics(
@@ -1098,6 +1730,321 @@ fn subscribe_experiment_directory_topics(
     Ok(())
 }
 
+#[cfg(test)]
+mod pending_request_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_response_completes_typed_pending_request_without_retaining_payload_event() {
+        let (reply, response) = mpsc::channel();
+        let mut pending = BTreeMap::from([(
+            "request-1".into(),
+            PendingControlRequest::Snapshot {
+                peer_id: "peer-a".into(),
+                deadline: Instant::now() + Duration::from_secs(1),
+                reply,
+            },
+        )]);
+        let snapshot = ControlPlaneSnapshot::default();
+        let mut pending_diloco_request_ids_by_key = BTreeMap::new();
+
+        let routed = route_pending_control_response(
+            &mut pending,
+            &mut pending_diloco_request_ids_by_key,
+            LiveControlPlaneEvent::SnapshotReceived {
+                peer_id: "peer-a".into(),
+                request_id: "request-1".into(),
+                snapshot: snapshot.clone(),
+            },
+        );
+
+        assert!(routed.is_none());
+        assert!(pending.is_empty());
+        assert_eq!(
+            response
+                .recv_timeout(Duration::from_secs(1))
+                .expect("snapshot reply")
+                .expect("successful snapshot reply"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn request_failure_completes_any_typed_pending_request_and_remains_observable() {
+        let (reply, response) = mpsc::channel();
+        let mut pending = BTreeMap::from([(
+            "request-2".into(),
+            PendingControlRequest::ArtifactManifest {
+                peer_id: "peer-b".into(),
+                deadline: Instant::now() + Duration::from_secs(1),
+                reply,
+            },
+        )]);
+        let mut pending_diloco_request_ids_by_key = BTreeMap::new();
+
+        let routed = route_pending_control_response(
+            &mut pending,
+            &mut pending_diloco_request_ids_by_key,
+            LiveControlPlaneEvent::RequestFailure {
+                peer_id: "peer-b".into(),
+                request_id: Some("request-2".into()),
+                kind: None,
+                message: "transport closed".into(),
+            },
+        );
+
+        assert!(matches!(
+            routed,
+            Some(LiveControlPlaneEvent::RequestFailure { .. })
+        ));
+        assert!(pending.is_empty());
+        assert_eq!(
+            response
+                .recv_timeout(Duration::from_secs(1))
+                .expect("failure reply")
+                .expect_err("request should fail"),
+            "transport closed"
+        );
+    }
+
+    #[test]
+    fn duplicate_diloco_fetches_share_one_transport_request() {
+        let request = DiLoCoRequest::StateSnapshot {
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+        };
+        let coalesce_key = diloco_request_coalesce_key("peer-c", &request);
+        let (first_reply, first_response) = mpsc::channel();
+        let (second_reply, second_response) = mpsc::channel();
+        let mut pending = BTreeMap::from([(
+            "request-3".into(),
+            PendingControlRequest::DiLoCo {
+                peer_id: "peer-c".into(),
+                coalesce_key: coalesce_key.clone(),
+                deadline: Instant::now() + Duration::from_secs(30),
+                replies: vec![first_reply],
+            },
+        )]);
+        let mut pending_diloco_request_ids_by_key =
+            BTreeMap::from([(coalesce_key.clone(), "request-3".into())]);
+
+        attach_to_pending_diloco_request(
+            &mut pending,
+            &pending_diloco_request_ids_by_key,
+            &coalesce_key,
+            second_reply,
+        )
+        .expect("duplicate should attach");
+
+        assert!(matches!(
+            pending.get("request-3"),
+            Some(PendingControlRequest::DiLoCo { replies, .. }) if replies.len() == 2
+        ));
+        remove_pending_control_request(
+            &mut pending,
+            &mut pending_diloco_request_ids_by_key,
+            "request-3",
+        )
+        .expect("pending request")
+        .fail("shared failure".into());
+        assert!(pending_diloco_request_ids_by_key.is_empty());
+        for response in [first_response, second_response] {
+            assert_eq!(
+                response
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("coalesced reply")
+                    .expect_err("shared request should fail"),
+                "shared failure"
+            );
+        }
+    }
+
+    #[test]
+    fn diloco_round_retry_keys_ignore_observation_timestamps() {
+        let mut cursor = RoundCursor::new(BaseCheckpointId::new("base"), 4);
+        cursor.group_id = Some(GroupId::new("group"));
+        cursor.phase = RoundPhase::BuildPseudoGradient;
+        let heartbeat = DiLoCoRoundHeartbeat {
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+            peer_id: PeerId::new("peer-a"),
+            round_cursor: cursor.clone(),
+            observed_participants: 3,
+            emitted_at: Utc::now(),
+        };
+        let mut later = heartbeat.clone();
+        later.emitted_at += chrono::Duration::seconds(1);
+
+        assert_eq!(
+            diloco_request_coalesce_key(
+                "peer-b",
+                &DiLoCoRequest::RoundHeartbeat(Box::new(heartbeat))
+            ),
+            diloco_request_coalesce_key("peer-b", &DiLoCoRequest::RoundHeartbeat(Box::new(later)))
+        );
+
+        cursor.group_id = Some(GroupId::new("other-group"));
+        let other_group = DiLoCoRoundHeartbeat {
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+            peer_id: PeerId::new("peer-a"),
+            round_cursor: cursor,
+            observed_participants: 3,
+            emitted_at: Utc::now(),
+        };
+        assert_ne!(
+            diloco_request_coalesce_key(
+                "peer-b",
+                &DiLoCoRequest::RoundHeartbeat(Box::new(other_group))
+            ),
+            diloco_request_coalesce_key(
+                "peer-b",
+                &DiLoCoRequest::RoundHeartbeat(Box::new(DiLoCoRoundHeartbeat {
+                    experiment_id: ExperimentId::new("experiment"),
+                    revision_id: RevisionId::new("revision"),
+                    peer_id: PeerId::new("peer-a"),
+                    round_cursor: RoundCursor {
+                        round_id: RoundId::new(0),
+                        group_id: Some(GroupId::new("group")),
+                        base_checkpoint_id: BaseCheckpointId::new("base"),
+                        phase: RoundPhase::BuildPseudoGradient,
+                        num_inner_steps: 4,
+                    },
+                    observed_participants: 3,
+                    emitted_at: Utc::now(),
+                }))
+            )
+        );
+    }
+
+    #[test]
+    fn peer_directory_snapshot_diff_ignores_timestamp_only_updates() {
+        let current = PeerDirectoryAnnouncement {
+            network_id: NetworkId::new("network"),
+            peer_id: PeerId::new("peer-a"),
+            addresses: vec![SwarmAddress::new("/memory/1").expect("address")],
+            advertised_roles: None,
+            announced_at: Utc::now(),
+        };
+        let snapshot = ControlPlaneSnapshot {
+            peer_directory_announcements: vec![current.clone()],
+            ..ControlPlaneSnapshot::default()
+        };
+        let mut timestamp_only = current.clone();
+        timestamp_only.announced_at = timestamp_only.announced_at + chrono::Duration::seconds(1);
+        assert!(!peer_directory_announcement_adds_information(
+            &snapshot,
+            &timestamp_only
+        ));
+
+        let mut new_address = timestamp_only;
+        new_address
+            .addresses
+            .push(SwarmAddress::new("/memory/2").expect("address"));
+        assert!(peer_directory_announcement_adds_information(
+            &snapshot,
+            &new_address
+        ));
+    }
+
+    #[test]
+    fn snapshot_sync_waits_for_durable_peer_identification() {
+        assert!(
+            snapshot_sync_peer(
+                &LiveControlPlaneEvent::ConnectionEstablished {
+                    peer_id: "ephemeral".into(),
+                },
+                "local",
+            )
+            .is_none()
+        );
+        assert!(
+            snapshot_sync_peer(
+                &LiveControlPlaneEvent::PeerIdentified {
+                    peer_id: "ephemeral".into(),
+                    listen_addresses: Vec::new(),
+                    protocols: Vec::new(),
+                },
+                "local",
+            )
+            .is_none()
+        );
+        assert_eq!(
+            snapshot_sync_peer(
+                &LiveControlPlaneEvent::PeerIdentified {
+                    peer_id: "durable".into(),
+                    listen_addresses: vec![
+                        SwarmAddress::new("/memory/1").expect("durable address")
+                    ],
+                    protocols: Vec::new(),
+                },
+                "local",
+            ),
+            Some("durable")
+        );
+        assert!(
+            snapshot_sync_peer(
+                &LiveControlPlaneEvent::PeerIdentified {
+                    peer_id: "local".into(),
+                    listen_addresses: vec![
+                        SwarmAddress::new("/memory/1").expect("durable address")
+                    ],
+                    protocols: Vec::new(),
+                },
+                "local",
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn security_persistence_is_limited_to_security_relevant_events() {
+        assert!(event_requires_security_state_persistence(
+            &LiveControlPlaneEvent::SnapshotReceived {
+                peer_id: "peer-a".into(),
+                request_id: "request-a".into(),
+                snapshot: ControlPlaneSnapshot::default(),
+            }
+        ));
+        for kind in ["control", "auth", "directory", "peer-directory"] {
+            assert!(event_requires_security_state_persistence(
+                &LiveControlPlaneEvent::PubsubMessage {
+                    peer_id: "peer-a".into(),
+                    topic: "control".into(),
+                    kind: kind.into(),
+                }
+            ));
+        }
+        assert!(!event_requires_security_state_persistence(
+            &LiveControlPlaneEvent::PubsubMessage {
+                peer_id: "peer-a".into(),
+                topic: "updates".into(),
+                kind: "update".into(),
+            }
+        ));
+        assert!(!event_requires_security_state_persistence(
+            &LiveControlPlaneEvent::ConnectionEstablished {
+                peer_id: "peer-a".into(),
+            }
+        ));
+    }
+
+    #[test]
+    fn asynchronous_dial_failure_releases_connectivity_repair_debounce() {
+        assert!(event_releases_pending_dial_debounce(
+            &LiveControlPlaneEvent::OutgoingConnectionError {
+                peer_id: None,
+                message: "connection refused".into(),
+            }
+        ));
+        assert!(!event_releases_pending_dial_debounce(
+            &LiveControlPlaneEvent::ConnectionClosed {
+                peer_id: "peer-a".into(),
+            }
+        ));
+    }
+}
+
 fn connectivity_repair_targets(
     boundary: &RuntimeBoundary,
     snapshot: &NodeTelemetrySnapshot,
@@ -1112,6 +2059,7 @@ fn connectivity_repair_targets(
     }
 
     let now = Utc::now();
+    let local_peer_id = snapshot.local_peer_id.as_ref();
     let bootstrap_addresses = boundary
         .bootstrap_addresses
         .iter()
@@ -1148,6 +2096,7 @@ fn connectivity_repair_targets(
         .peer_directory_announcements
         .iter()
         .filter(|announcement| announcement.announced_at + STALE_PEER_DIRECTORY_AFTER > now)
+        .filter(|announcement| local_peer_id.is_none_or(|local| local != &announcement.peer_id))
         .filter(|announcement| !connected_peer_ids.contains(&announcement.peer_id))
         .filter_map(|announcement| {
             announcement
@@ -1167,6 +2116,9 @@ fn connectivity_repair_targets(
     let mut known_peer_targets = snapshot
         .known_peer_addresses
         .iter()
+        .filter(|address| {
+            !local_peer_id.is_some_and(|peer_id| address_targets_peer(address, peer_id))
+        })
         .filter(|address| !bootstrap_addresses.contains(*address))
         .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
         .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
@@ -1176,6 +2128,9 @@ fn connectivity_repair_targets(
     let mut bootstrap_targets = boundary
         .bootstrap_addresses
         .iter()
+        .filter(|address| {
+            !local_peer_id.is_some_and(|peer_id| address_targets_peer(address, peer_id))
+        })
         .filter(|address| !connected_peer_address_keys.contains(&connectivity_address_key(address)))
         .filter(|address| !listen_address_keys.contains(&connectivity_address_key(address)))
         .filter(|address| !pending_dial_keys.contains(&connectivity_address_key(address)))
@@ -1228,6 +2183,13 @@ fn connectivity_address_key(address: &SwarmAddress) -> String {
         .filter(|(_, suffix)| !suffix.contains('/'))
         .map(|(prefix, _)| prefix.to_owned())
         .unwrap_or_else(|| address.as_str().to_owned())
+}
+
+fn address_targets_peer(address: &SwarmAddress, peer_id: &PeerId) -> bool {
+    address
+        .as_str()
+        .strip_suffix(peer_id.as_str())
+        .is_some_and(|prefix| prefix.ends_with("/p2p/"))
 }
 
 fn publish_configured_external_addresses(
@@ -1412,6 +2374,48 @@ fn protected_connected_peer_ids(
         .collect()
 }
 
+fn apply_runtime_role_update(
+    shell: &mut ControlPlaneShell,
+    boundary: &RuntimeBoundary,
+    state: &Arc<Mutex<NodeTelemetrySnapshot>>,
+    storage: Option<&StorageConfig>,
+    startup_roles: &PeerRoleSet,
+    roles: PeerRoleSet,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!roles.roles.is_empty(), "runtime roles cannot be empty");
+    anyhow::ensure!(
+        roles.roles.iter().all(|role| {
+            startup_roles.roles.contains(role)
+                || matches!(
+                    role,
+                    PeerRole::Viewer | PeerRole::BrowserObserver | PeerRole::BrowserFallback
+                )
+        }),
+        "runtime role update requested a role outside the startup capability set"
+    );
+
+    let mut snapshot = lock_telemetry_state(state);
+    if snapshot.configured_roles == roles {
+        return Ok(());
+    }
+    snapshot.configured_roles = roles;
+    if !matches!(
+        snapshot.node_state,
+        NodeRuntimeState::TrainingWindow
+            | NodeRuntimeState::PublishingUpdate
+            | NodeRuntimeState::Quarantined
+            | NodeRuntimeState::Revoked
+            | NodeRuntimeState::ShuttingDown
+    ) {
+        snapshot.node_state = default_node_runtime_state(&snapshot.configured_roles);
+    }
+    publish_local_peer_directory(shell, boundary, &mut snapshot);
+    if let Some(storage) = storage {
+        persist_control_plane_state(storage, &snapshot.control_plane)?;
+    }
+    Ok(())
+}
+
 fn publish_local_peer_directory(
     shell: &mut ControlPlaneShell,
     boundary: &RuntimeBoundary,
@@ -1467,7 +2471,12 @@ pub(crate) fn remember_known_peer_addresses(
 ) {
     let mut changed = false;
     for address in addresses {
-        if snapshot.listen_addresses.contains(&address) {
+        if snapshot.listen_addresses.contains(&address)
+            || snapshot
+                .local_peer_id
+                .as_ref()
+                .is_some_and(|peer_id| address_targets_peer(&address, peer_id))
+        {
             continue;
         }
         if snapshot.known_peer_addresses.insert(address) {
@@ -1603,6 +2612,54 @@ mod tests {
             &BTreeSet::new(),
         );
         assert_eq!(targets, vec![trainer]);
+    }
+
+    #[test]
+    fn connectivity_repair_never_dials_the_local_peer_identity() {
+        let local_peer = PeerId::new(
+            libp2p_identity::PeerId::from_public_key(
+                &libp2p_identity::Keypair::generate_ed25519().public(),
+            )
+            .to_string(),
+        );
+        let remote_peer = PeerId::new(
+            libp2p_identity::PeerId::from_public_key(
+                &libp2p_identity::Keypair::generate_ed25519().public(),
+            )
+            .to_string(),
+        );
+        let local = SwarmAddress::new(format!(
+            "/dns4/local.example/tcp/41001/p2p/{}",
+            local_peer.as_str()
+        ))
+        .expect("local");
+        let remote = SwarmAddress::new(format!(
+            "/ip4/127.0.0.1/tcp/41002/p2p/{}",
+            remote_peer.as_str()
+        ))
+        .expect("remote");
+        let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+        snapshot.local_peer_id = Some(local_peer.clone());
+        snapshot.control_plane.peer_directory_announcements.extend([
+            peer_directory_record(
+                local_peer.clone(),
+                vec![local.clone()],
+                [PeerRole::TrainerCpu],
+            ),
+            peer_directory_record(remote_peer, vec![remote.clone()], [PeerRole::TrainerCpu]),
+        ]);
+        snapshot.known_peer_addresses.insert(local);
+        snapshot.known_peer_addresses.insert(remote.clone());
+
+        let targets =
+            connectivity_repair_targets(&test_boundary(Vec::new()), &snapshot, 0, &BTreeSet::new());
+
+        assert_eq!(targets, vec![remote]);
+        assert!(
+            targets
+                .iter()
+                .all(|address| !address_targets_peer(address, &local_peer))
+        );
     }
 
     #[test]
@@ -1983,5 +3040,26 @@ mod tests {
                 .iter()
                 .all(|peer_id| [trainer_a.clone(), trainer_b.clone()].contains(peer_id))
         );
+    }
+
+    #[test]
+    fn diloco_coalescing_keeps_chunk_indices_distinct() {
+        let peer_id = "12D3KooWChunkKeyPeer111111111111111111111111111111";
+        let cursor = RoundCursor::new(BaseCheckpointId::new("base"), 1);
+        let keys = (0..16)
+            .map(|chunk_index| {
+                diloco_request_coalesce_key(
+                    peer_id,
+                    &DiLoCoRequest::GradientSlice {
+                        experiment_id: ExperimentId::new("experiment"),
+                        revision_id: RevisionId::new("revision"),
+                        round_cursor: cursor.clone(),
+                        chunk_index,
+                    },
+                )
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(keys.len(), 16);
     }
 }

@@ -6,7 +6,7 @@ use burn_ecs::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Resource, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Component, Deserialize, Serialize, PartialEq, Eq)]
 pub struct P2pTrainingTelemetryState {
     pub run_id: Option<String>,
     pub experiment_id: Option<String>,
@@ -18,6 +18,9 @@ pub struct P2pTrainingTelemetryState {
     pub training_head_id: Option<String>,
     pub published_windows: u64,
     pub reconciliations: u64,
+    pub participation: Option<burn_ecs::PipelineParticipation>,
+    pub compute: Option<burn_ecs::PipelineComputeClass>,
+    pub capability_transitions: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +42,11 @@ impl<M> Default for P2pContinuousTrainerState<M> {
     }
 }
 
-impl<M: Send + Sync + 'static> burn_ecs::prelude::Resource for P2pContinuousTrainerState<M> {}
+impl<M: Send + Sync + 'static> burn_ecs::prelude::Component for P2pContinuousTrainerState<M> {
+    const STORAGE_TYPE: bevy_ecs::component::StorageType = bevy_ecs::component::StorageType::Table;
+
+    type Mutability = bevy_ecs::component::Mutable;
+}
 
 #[derive(Debug, Clone, Component, Deserialize, Serialize, PartialEq, Eq)]
 pub struct P2pWindowMetadata {

@@ -210,6 +210,10 @@ fn main() -> anyhow::Result<()> {
             let inventory = inspect_module::<RuntimeBackend, _>(&learner.model());
             metrics.insert(
                 "parameter_count".into(),
+                MetricValue::Integer(inventory.total_scalar_parameters as i64),
+            );
+            metrics.insert(
+                "parameter_tensor_count".into(),
                 MetricValue::Integer(inventory.parameter_count as i64),
             );
             Ok(())

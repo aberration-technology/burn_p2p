@@ -1095,3 +1095,63 @@ pub(crate) fn runtime_training_assignment_peers(
     });
     selected
 }
+
+pub(crate) fn canonical_training_assignment_peers(
+    snapshot: &NodeTelemetrySnapshot,
+    experiment: &ExperimentHandle,
+    window_id: WindowId,
+    base_head_id: &HeadId,
+) -> Option<Vec<PeerId>> {
+    if let Some(epoch) =
+        effective_fleet_schedule_epoch(&snapshot.control_plane, &experiment.network_id, window_id)
+    {
+        let mut assignments = epoch
+            .assignments
+            .iter()
+            .filter(|assignment| {
+                assignment.study_id == experiment.study_id
+                    && assignment.experiment_id == experiment.experiment_id
+                    && assignment.revision_id == experiment.revision_id
+            })
+            .map(|assignment| (assignment.slot_index, assignment.peer_id.clone()))
+            .collect::<Vec<_>>();
+        assignments.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        let mut peers = assignments
+            .into_iter()
+            .map(|(_, peer_id)| peer_id)
+            .collect::<Vec<_>>();
+        let mut seen = BTreeSet::new();
+        peers.retain(|peer_id| seen.insert(peer_id.clone()));
+        return Some(peers);
+    }
+
+    let previous_window = window_id.0.checked_sub(1).map(WindowId)?;
+    let certificate = snapshot
+        .control_plane
+        .diffusion_promotion_certificate_announcements
+        .iter()
+        .filter(|announcement| {
+            announcement.certificate.study_id == experiment.study_id
+                && announcement.certificate.experiment_id == experiment.experiment_id
+                && announcement.certificate.revision_id == experiment.revision_id
+                && announcement.certificate.window_id == previous_window
+                && announcement.certificate.merged_head_id == *base_head_id
+                && announcement.certificate.promotion_mode
+                    == HeadPromotionMode::DiffusionSteadyState
+        })
+        .max_by(|left, right| {
+            left.certificate
+                .settled_at
+                .cmp(&right.certificate.settled_at)
+                .then(left.announced_at.cmp(&right.announced_at))
+                .then(
+                    left.certificate
+                        .promoter_peer_id
+                        .cmp(&right.certificate.promoter_peer_id),
+                )
+        })?;
+    let mut peers = certificate.certificate.attesting_trainers.clone();
+    peers.sort();
+    peers.dedup();
+    (!peers.is_empty()).then_some(peers)
+}

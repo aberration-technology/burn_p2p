@@ -23,6 +23,8 @@ use burn_p2p_core::{
 use burn_store::{BurnpackStore, Collector, ModuleSnapshot, SafetensorsStore, TensorSnapshot};
 use serde::{Deserialize, Serialize};
 
+pub use burn_p2p_tensor_identity::module_tensor_digest;
+
 pub use burn::train::checkpoint::Checkpointer as BurnCheckpointer;
 pub use burn::train::{
     Evaluator as BurnEvaluator, Learner as BurnLearner,
@@ -248,6 +250,19 @@ pub struct RecordArtifactFileOptions {
 }
 
 #[derive(Clone, Debug)]
+/// Represents record-bytes artifact options with an explicit model schema.
+pub struct RecordArtifactBytesOptions {
+    /// The format.
+    pub format: BurnRecordBytesFormat,
+    /// The precision.
+    pub precision: BurnRecordPrecision,
+    /// The artifact identity and chunking options.
+    pub artifact: BurnArtifactOptions,
+    /// The application-defined semantic model schema.
+    pub model_schema_hash: ContentId,
+}
+
+#[derive(Clone, Debug)]
 /// Represents a store artifact file options.
 pub struct StoreArtifactFileOptions {
     /// The base path.
@@ -258,6 +273,19 @@ pub struct StoreArtifactFileOptions {
     pub declared_precision: Precision,
     /// The artifact.
     pub artifact: BurnArtifactOptions,
+}
+
+#[derive(Clone, Debug)]
+/// Represents store-bytes artifact options with an explicit model schema.
+pub struct StoreArtifactBytesOptions {
+    /// The format.
+    pub format: BurnStoreFormat,
+    /// The precision declared by the store.
+    pub declared_precision: Precision,
+    /// The artifact identity and chunking options.
+    pub artifact: BurnArtifactOptions,
+    /// The application-defined semantic model schema.
+    pub model_schema_hash: ContentId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1114,18 +1142,53 @@ where
     M: Module<B>,
 {
     let schema_hash = module_schema_hash::<B, M>(&module)?;
+    materialize_record_bytes_artifact_with_schema::<B, M>(
+        module,
+        RecordArtifactBytesOptions {
+            format,
+            precision,
+            artifact: BurnArtifactOptions {
+                artifact_kind,
+                head_id,
+                base_head_id,
+                chunking,
+            },
+            model_schema_hash: schema_hash,
+        },
+    )
+}
+
+/// Materializes a record-bytes artifact with an application-defined semantic schema.
+///
+/// This is the cross-backend counterpart to [`materialize_record_bytes_artifact`].
+/// The caller owns the semantic schema contract; the encoded record bytes and
+/// chunk identities are still derived from the concrete module.
+pub fn materialize_record_bytes_artifact_with_schema<B, M>(
+    module: M,
+    options: RecordArtifactBytesOptions,
+) -> Result<BurnArtifactBytes, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    let RecordArtifactBytesOptions {
+        format,
+        precision,
+        artifact,
+        model_schema_hash,
+    } = options;
     let bytes = encode_record_bytes::<B, M>(module, format, precision)?;
     let descriptor = build_artifact_descriptor_from_bytes(
         &artifact_build_spec(
-            artifact_kind,
-            head_id,
-            base_head_id,
+            artifact.artifact_kind,
+            artifact.head_id,
+            artifact.base_head_id,
             precision.as_checkpoint_precision(),
-            schema_hash,
+            model_schema_hash,
             format.record_format_name(),
         ),
         &bytes,
-        chunking,
+        artifact.chunking,
     )?;
 
     Ok(BurnArtifactBytes { descriptor, bytes })
@@ -1179,18 +1242,52 @@ where
     M: BurnModuleTarget<B>,
 {
     let schema_hash = module_schema_hash::<B, M>(module)?;
+    materialize_store_bytes_artifact_with_schema::<B, M>(
+        module,
+        StoreArtifactBytesOptions {
+            format,
+            declared_precision,
+            artifact: BurnArtifactOptions {
+                artifact_kind,
+                head_id,
+                base_head_id,
+                chunking,
+            },
+            model_schema_hash: schema_hash,
+        },
+    )
+}
+
+/// Materializes a store-bytes artifact with an application-defined semantic schema.
+///
+/// The semantic identity can therefore remain stable across compatible Burn
+/// backends while the artifact bytes remain content addressed.
+pub fn materialize_store_bytes_artifact_with_schema<B, M>(
+    module: &M,
+    options: StoreArtifactBytesOptions,
+) -> Result<BurnArtifactBytes, EngineError>
+where
+    B: Backend,
+    M: BurnModuleTarget<B>,
+{
+    let StoreArtifactBytesOptions {
+        format,
+        declared_precision,
+        artifact,
+        model_schema_hash,
+    } = options;
     let bytes = encode_store_bytes::<B, M>(module, format)?;
     let descriptor = build_artifact_descriptor_from_bytes(
         &artifact_build_spec(
-            artifact_kind,
-            head_id,
-            base_head_id,
+            artifact.artifact_kind,
+            artifact.head_id,
+            artifact.base_head_id,
             declared_precision,
-            schema_hash,
+            model_schema_hash,
             format.record_format_name(),
         ),
         &bytes,
-        chunking,
+        artifact.chunking,
     )?;
 
     Ok(BurnArtifactBytes { descriptor, bytes })
@@ -1307,10 +1404,10 @@ mod tests {
         BurnRecordPrecision, BurnStoreFormat, RecordArtifactFileOptions, apply_root_ema_modules,
         encode_record_bytes, encode_store_bytes, inspect_module, load_record_bytes,
         load_store_bytes, materialize_record_file_artifact, materialize_store_bytes_artifact,
-        merge_weighted_mean_modules, module_schema_hash,
+        merge_weighted_mean_modules, module_schema_hash, module_tensor_digest,
     };
     use burn_p2p_checkpoint::ChunkingScheme;
-    use burn_p2p_core::ArtifactKind;
+    use burn_p2p_core::{ArtifactKind, ContentId};
 
     #[derive(Module, Debug)]
     struct TinyModel<B: Backend> {
@@ -1434,6 +1531,35 @@ mod tests {
         let second_hash = module_schema_hash::<TestBackend, _>(&second).expect("hash");
 
         assert_eq!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn streaming_tensor_digest_matches_flattened_pack_checksum() {
+        let device = BackendDevice::<TestBackend>::default();
+        let schema_hash = ContentId::new("semantic-schema");
+        let model = fill_model(TinyModel::<TestBackend>::new(&device), 0.25);
+        let flattened =
+            super::flatten_module_float_parameters::<TestBackend, _>(&model, schema_hash.clone())
+                .expect("flatten");
+
+        assert_eq!(
+            module_tensor_digest::<TestBackend, _>(&model, schema_hash).expect("streaming digest"),
+            flattened.checksum().expect("flattened checksum"),
+        );
+    }
+
+    #[test]
+    fn tensor_digest_changes_when_model_values_change() {
+        let device = BackendDevice::<TestBackend>::default();
+        let schema_hash = ContentId::new("semantic-schema");
+        let first = fill_model(TinyModel::<TestBackend>::new(&device), 0.25);
+        let second = fill_model(TinyModel::<TestBackend>::new(&device), 0.5);
+
+        assert_ne!(
+            module_tensor_digest::<TestBackend, _>(&first, schema_hash.clone())
+                .expect("first digest"),
+            module_tensor_digest::<TestBackend, _>(&second, schema_hash).expect("second digest"),
+        );
     }
 
     #[test]

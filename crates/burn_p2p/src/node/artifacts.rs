@@ -16,6 +16,51 @@ impl<P> RunningNode<P> {
             .map(|storage| FsArtifactStore::new(storage.root.clone()))
     }
 
+    /// Loads and evaluates the decoded model represented by a materialized head.
+    ///
+    /// This is the verifier-facing inspection path. It evaluates the model
+    /// actually stored under the head artifact rather than a speculative
+    /// in-memory trainer model.
+    pub fn evaluate_materialized_head(
+        &mut self,
+        head: &HeadDescriptor,
+        split: EvalSplit,
+    ) -> anyhow::Result<MetricReport>
+    where
+        P: P2pWorkload,
+    {
+        let store = self
+            .artifact_store()
+            .ok_or_else(|| anyhow::anyhow!("head evaluation requires configured storage"))?;
+        let node = self
+            .node
+            .as_mut()
+            .expect("running node should retain prepared node");
+        let device = node.project.runtime_device();
+        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        Ok(node.project.evaluate(&model, split))
+    }
+
+    /// Computes the canonical decoded-tensor digest of a materialized head.
+    pub fn materialized_head_tensor_digest(
+        &mut self,
+        head: &HeadDescriptor,
+    ) -> anyhow::Result<ContentId>
+    where
+        P: P2pWorkload,
+    {
+        let store = self
+            .artifact_store()
+            .ok_or_else(|| anyhow::anyhow!("head digest requires configured storage"))?;
+        let node = self
+            .node
+            .as_mut()
+            .expect("running node should retain prepared node");
+        let device = node.project.runtime_device();
+        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        node.project.model_tensor_digest(&model)
+    }
+
     /// Performs the publish artifact from store operation.
     pub fn publish_artifact_from_store(
         &self,

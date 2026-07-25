@@ -27,17 +27,19 @@ use burn_p2p_core::time::Duration;
 use burn_p2p_core::time::Instant;
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ChunkId,
-    ContentId, ControlCertificate, DatasetViewId, DiLoCoRequest, DiLoCoResponse,
-    DiLoCoStateSnapshot, DiffusionPromotionCertificate, ExperimentDirectoryEntry,
-    FlattenedTensorPack, HeadDescriptor, HeadId, MergeCertificate, MergeWindowState,
+    ContentId, ControlCertificate, DatasetViewId, DiLoCoAggregateReady, DiLoCoRequest,
+    DiLoCoResponse, DiLoCoStateSnapshot, DiffusionPromotionCertificate, ExperimentDirectoryEntry,
+    ExperimentId, FlattenedTensorPack, HeadDescriptor, HeadId, MergeCertificate, MergeWindowState,
     MetricsLiveEvent, MicroShardId, NetworkId, PeerAuthEnvelope, PeerId, PeerRoleSet,
     PeerWindowPlacementHint, PseudoGradientChunk, PseudoGradientManifest, ReducerAssignment,
-    ReducerLoadReport, ReductionCertificate, StateBlob, TelemetrySummary,
+    ReducerLoadReport, ReductionCertificate, RevisionId, RoundCursor, StateBlob, TelemetrySummary,
     TrainerPromotionAttestation, UpdateAnnounce, ValidationQuorumCertificate,
+    WorkloadUpdateEnvelope,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use burn_p2p_core::{
-    DiLoCoRoundFinalize, DiLoCoRoundHeartbeat, DiLoCoRoundOffer, ExperimentId, RevisionId,
+    DiLoCoAggregateSlice, DiLoCoGradientSlice, DiLoCoRoundFinalize, DiLoCoRoundHeartbeat,
+    DiLoCoRoundOffer, DiLoCoStateBundle,
 };
 use burn_p2p_experiment::{
     ExperimentControlEnvelope, ExperimentLifecycleEnvelope, FleetScheduleEpochEnvelope,
@@ -74,6 +76,50 @@ use tokio::{
     time::timeout,
 };
 
+/// Lifetime used by the shared control-plane request/response behaviour.
+///
+/// Runtime callers may use shorter logical deadlines, but the orchestration
+/// layer keeps and coalesces their underlying requests until this transport
+/// lifetime expires.
+pub const CONTROL_REQUEST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Idle lifetime for control-plane connections.
+///
+/// This must exceed the ping cadence so model-local compute cannot make a
+/// healthy trainer link look idle between collective phases.
+pub const CONTROL_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn diloco_request_kind(request: &DiLoCoRequest) -> &'static str {
+    match request {
+        DiLoCoRequest::RoundOffer(_) => "round-offer",
+        DiLoCoRequest::RoundHeartbeat(_) => "round-heartbeat",
+        DiLoCoRequest::RoundFinalize(_) => "round-finalize",
+        DiLoCoRequest::StateSnapshot { .. } => "state-snapshot",
+        DiLoCoRequest::StateBundle { .. } => "state-bundle",
+        DiLoCoRequest::OuterOptimizerState { .. } => "outer-optimizer-state",
+        DiLoCoRequest::GradientManifest { .. } => "gradient-manifest",
+        DiLoCoRequest::CurrentParameters { .. } => "current-parameters",
+        DiLoCoRequest::GradientChunk { .. } => "gradient-chunk",
+        DiLoCoRequest::GradientSlice { .. } => "gradient-slice",
+        DiLoCoRequest::AggregateSlice { .. } => "aggregate-slice",
+        DiLoCoRequest::AggregateReady(_) => "aggregate-ready",
+    }
+}
+
+fn diloco_response_kind(response: &DiLoCoResponse) -> &'static str {
+    match response {
+        DiLoCoResponse::Ack { .. } => "ack",
+        DiLoCoResponse::StateSnapshot(_) => "state-snapshot",
+        DiLoCoResponse::StateBundle(_) => "state-bundle",
+        DiLoCoResponse::OuterOptimizerState(_) => "outer-optimizer-state",
+        DiLoCoResponse::GradientManifest(_) => "gradient-manifest",
+        DiLoCoResponse::CurrentParameters(_) => "current-parameters",
+        DiLoCoResponse::GradientChunk(_) => "gradient-chunk",
+        DiLoCoResponse::GradientSlice(_) => "gradient-slice",
+        DiLoCoResponse::AggregateSlice(_) => "aggregate-slice",
+        DiLoCoResponse::Unavailable { .. } => "unavailable",
+    }
+}
+
 pub use browser_edge::*;
 pub use browser_runtime::*;
 pub use control_shell::*;
@@ -104,7 +150,7 @@ use runtime_helpers::{
     peer_directory_record_key_for_peer, protocol_supports_relay_hop, protocol_supports_rendezvous,
     relay_reservation_listen_addr, rendezvous_namespace_for_control_protocol, tls_config,
 };
-use runtime_helpers::{other_control_name, other_name};
+use runtime_helpers::{other_control_name, other_name, parse_remote_peer_id};
 pub use stats::{
     MigrationCoordinator, MigrationPlan, PeerObservation, PeerStore, SwarmError, SwarmStats,
 };

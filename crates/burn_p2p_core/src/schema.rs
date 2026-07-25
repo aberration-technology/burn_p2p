@@ -25,6 +25,7 @@ mod primitives;
 mod publication;
 mod robustness;
 mod runtime;
+mod training_contract;
 
 pub use browser_swarm::*;
 pub use capabilities::*;
@@ -36,6 +37,7 @@ pub use primitives::*;
 pub use publication::*;
 pub use robustness::*;
 pub use runtime::*;
+pub use training_contract::*;
 
 #[cfg(test)]
 mod tests;

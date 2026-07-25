@@ -615,20 +615,45 @@ fn native_directory_seed_relays_late_head_pubsub() {
         })
         .expect("publish provider head");
 
-    wait_for(
-        Duration::from_secs(5),
-        || {
-            seed_telemetry
-                .snapshot()
-                .control_plane
-                .head_announcements
-                .iter()
-                .any(|announcement| {
-                    announcement.provider_peer_id.as_ref() == Some(&provider_peer_id)
-                        && announcement.head.head_id == head.head_id
-                })
-        },
-        "seed did not relay late provider head pubsub",
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && !seed_telemetry
+            .snapshot()
+            .control_plane
+            .head_announcements
+            .iter()
+            .any(|announcement| {
+                announcement.provider_peer_id.as_ref() == Some(&provider_peer_id)
+                    && announcement.head.head_id == head.head_id
+            })
+    {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let seed_snapshot = seed_telemetry.snapshot();
+    let provider_snapshot = provider_telemetry.snapshot();
+    assert!(
+        seed_snapshot
+            .control_plane
+            .head_announcements
+            .iter()
+            .any(|announcement| {
+                announcement.provider_peer_id.as_ref() == Some(&provider_peer_id)
+                    && announcement.head.head_id == head.head_id
+            }),
+        "seed did not relay late provider head pubsub; provider_error={:?}; provider_events={:?}; seed_events={:?}",
+        provider_snapshot.last_error,
+        provider_snapshot
+            .recent_events
+            .iter()
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>(),
+        seed_snapshot
+            .recent_events
+            .iter()
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>(),
     );
 
     provider.shutdown().expect("provider shutdown");
@@ -932,6 +957,7 @@ fn cached_connected_snapshots_filter_peer_scoped_announcements() {
                 providers: vec![peer_a.clone()],
                 announced_at: Utc::now(),
             },
+            workload_update: None,
         },
         crate::UpdateEnvelopeAnnouncement {
             overlay: overlay_set.heads.clone(),
@@ -958,6 +984,7 @@ fn cached_connected_snapshots_filter_peer_scoped_announcements() {
                 providers: vec![peer_b.clone()],
                 announced_at: Utc::now(),
             },
+            workload_update: None,
         },
         crate::UpdateEnvelopeAnnouncement {
             overlay: overlay_set.heads.clone(),
@@ -984,6 +1011,7 @@ fn cached_connected_snapshots_filter_peer_scoped_announcements() {
                 providers: vec![peer_c.clone()],
                 announced_at: Utc::now(),
             },
+            workload_update: None,
         },
     ];
     snapshot.control_plane.merge_announcements = vec![crate::MergeAnnouncement {
@@ -1560,6 +1588,7 @@ fn experiment_snapshot_peer_ids_only_include_relevant_experiment_peers() {
             providers: vec![relevant_provider.clone()],
             announced_at: Utc::now(),
         },
+        workload_update: None,
     }];
     snapshot.control_plane.merge_window_announcements = vec![crate::MergeWindowAnnouncement {
         overlay: experiment.overlay_set().expect("overlay").heads,
@@ -1738,6 +1767,7 @@ fn prioritized_experiment_snapshot_peer_ids_lead_with_merge_and_quorum_peers() {
             providers: vec![provider.clone()],
             announced_at: Utc::now(),
         },
+        workload_update: None,
     }];
     snapshot.control_plane.lease_announcements = vec![crate::LeaseAnnouncement {
         overlay: experiment.overlay_set().expect("overlay").leases,

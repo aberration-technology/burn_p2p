@@ -235,6 +235,7 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         },
         ValidationCandidate {
             peer_id: PeerId::new("peer-replay"),
@@ -278,6 +279,7 @@ fn candidate_robustness_rejects_replay_and_keeps_clean_update() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         },
     ];
 
@@ -386,6 +388,7 @@ fn candidate_robustness_allows_peer_after_inactive_quarantine_expires() {
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
+        update_evidence: None,
     };
 
     let engine = burn_p2p_security::RobustnessEngine::new(prepared.robustness_policy.clone());
@@ -543,6 +546,7 @@ fn candidate_robustness_caps_surviving_updates_to_maximum_cohort_size() {
             sample_weight: 16.0,
             quality_weight: 1.0,
             model: (),
+            update_evidence: None,
         };
     let candidates = [
         candidate("peer-a", "artifact-a", "head-a", 0.35),
@@ -690,6 +694,7 @@ fn candidate_robustness_caps_browser_contribution_weight() {
         sample_weight: 16.0,
         quality_weight: 1.0,
         model: (),
+        update_evidence: None,
     }];
 
     let engine = burn_p2p_security::RobustnessEngine::new(prepared.robustness_policy.clone());

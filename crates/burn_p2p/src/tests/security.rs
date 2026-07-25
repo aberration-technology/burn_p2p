@@ -1,6 +1,128 @@
 use super::support::*;
 
 #[test]
+fn control_handle_updates_active_roles_and_rejects_capability_escalation() {
+    let running = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_roles(crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]))
+        .with_listen_address(SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(2),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "runtime did not start",
+    );
+
+    let control = running.control_handle();
+    control
+        .update_roles(
+            crate::PeerRoleSet::new([crate::PeerRole::Viewer]),
+            Duration::from_secs(2),
+        )
+        .expect("downgrade to read-only role");
+    wait_for(
+        Duration::from_secs(2),
+        || {
+            let snapshot = telemetry.snapshot();
+            snapshot.configured_roles == crate::PeerRoleSet::new([crate::PeerRole::Viewer])
+                && snapshot
+                    .local_peer_id
+                    .as_ref()
+                    .is_some_and(|local_peer_id| {
+                        snapshot
+                            .control_plane
+                            .peer_directory_announcements
+                            .iter()
+                            .find(|announcement| &announcement.peer_id == local_peer_id)
+                            .and_then(|announcement| announcement.advertised_roles.as_ref())
+                            == Some(&crate::PeerRoleSet::new([crate::PeerRole::Viewer]))
+                    })
+        },
+        "runtime role downgrade was not reflected in telemetry and peer directory",
+    );
+    assert!(
+        control
+            .update_roles(
+                crate::PeerRoleSet::new([crate::PeerRole::Authority]),
+                Duration::from_secs(2),
+            )
+            .expect_err("role escalation must fail")
+            .to_string()
+            .contains("outside the startup capability set")
+    );
+    control
+        .update_roles(
+            crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]),
+            Duration::from_secs(2),
+        )
+        .expect("restore startup trainer role");
+    wait_for(
+        Duration::from_secs(2),
+        || {
+            let snapshot = telemetry.snapshot();
+            snapshot.configured_roles == crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu])
+                && snapshot
+                    .local_peer_id
+                    .as_ref()
+                    .is_some_and(|local_peer_id| {
+                        snapshot
+                            .control_plane
+                            .peer_directory_announcements
+                            .iter()
+                            .find(|announcement| &announcement.peer_id == local_peer_id)
+                            .and_then(|announcement| announcement.advertised_roles.as_ref())
+                            == Some(&crate::PeerRoleSet::new([crate::PeerRole::TrainerGpu]))
+                    })
+        },
+        "runtime trainer restore was not reflected in telemetry and peer directory",
+    );
+
+    running.shutdown().expect("shutdown");
+    let _ = running.await_termination().expect("await termination");
+}
+
+#[test]
+fn read_only_start_can_activate_an_explicitly_reserved_compute_capability() {
+    let running = NodeBuilder::new(())
+        .with_mainnet(mainnet().genesis.clone())
+        .with_roles(crate::PeerRoleSet::new([crate::PeerRole::Viewer]))
+        .with_role_capabilities(crate::PeerRoleSet::new([
+            crate::PeerRole::Viewer,
+            crate::PeerRole::TrainerCpu,
+        ]))
+        .with_listen_address(SwarmAddress::new("/memory/0").expect("listen"))
+        .spawn()
+        .expect("spawn");
+    let telemetry = running.telemetry();
+    wait_for(
+        Duration::from_secs(2),
+        || telemetry.snapshot().status == crate::RuntimeStatus::Running,
+        "runtime did not start",
+    );
+
+    running
+        .control_handle()
+        .update_roles(
+            crate::PeerRoleSet::new([crate::PeerRole::TrainerCpu]),
+            Duration::from_secs(2),
+        )
+        .expect("activate reserved trainer capability");
+    wait_for(
+        Duration::from_secs(2),
+        || {
+            telemetry.snapshot().configured_roles
+                == crate::PeerRoleSet::new([crate::PeerRole::TrainerCpu])
+        },
+        "reserved trainer capability was not activated",
+    );
+
+    running.shutdown().expect("shutdown");
+    let _ = running.await_termination().expect("await termination");
+}
+
+#[test]
 fn control_handle_updates_local_head_announcements() {
     let running = NodeBuilder::new(())
         .with_mainnet(mainnet().genesis.clone())
@@ -559,16 +681,43 @@ fn admitted_peer_security_state_survives_restart() {
         .spawn()
         .expect("restarted listener spawn");
     let restarted_telemetry = restarted.telemetry();
-    wait_for(
-        Duration::from_secs(5),
-        || {
-            let snapshot = restarted_telemetry.snapshot();
-            snapshot.status == crate::RuntimeStatus::Running
-                && snapshot.admitted_peers.contains_key(&dialer_peer_id)
-                && snapshot.peer_reputation.contains_key(&dialer_peer_id)
-                && snapshot.minimum_revocation_epoch == Some(crate::RevocationEpoch(1))
-        },
-        "restarted listener did not restore admitted security state",
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let snapshot = restarted_telemetry.snapshot();
+        if snapshot.status == crate::RuntimeStatus::Running
+            && snapshot.admitted_peers.contains_key(&dialer_peer_id)
+            && snapshot.peer_reputation.contains_key(&dialer_peer_id)
+            && snapshot.minimum_revocation_epoch == Some(crate::RevocationEpoch(1))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let restarted_snapshot = restarted_telemetry.snapshot();
+    assert!(
+        restarted_snapshot.status == crate::RuntimeStatus::Running
+            && restarted_snapshot
+                .admitted_peers
+                .contains_key(&dialer_peer_id)
+            && restarted_snapshot
+                .peer_reputation
+                .contains_key(&dialer_peer_id)
+            && restarted_snapshot.minimum_revocation_epoch == Some(crate::RevocationEpoch(1)),
+        "restarted listener did not restore admitted security state; admitted={:?}; rejected={:?}; reputation={:?}; epoch={:?}; error={:?}; events={:?}",
+        restarted_snapshot.admitted_peers.keys().collect::<Vec<_>>(),
+        restarted_snapshot.rejected_peers,
+        restarted_snapshot
+            .peer_reputation
+            .keys()
+            .collect::<Vec<_>>(),
+        restarted_snapshot.minimum_revocation_epoch,
+        restarted_snapshot.last_error,
+        restarted_snapshot
+            .recent_events
+            .iter()
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>(),
     );
 
     restarted.shutdown().expect("restarted listener shutdown");

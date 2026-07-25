@@ -64,8 +64,10 @@ do not share an ambiguous return contract.
 `burn_p2p` handles:
 
 - head sync
+- authority-signed semantic revision and model-genesis verification
 - lease-scoped shard assignment
 - window-by-window training publication
+- full, dense, quantized, seeded low-rank, and subspace update contracts
 - checkpoint/artifact movement
 - reducer proposal flow
 - validator attestation and promotion
@@ -173,6 +175,7 @@ crates:
 - `burn_p2p_security`: auth connectors, admission policy, certificate issuance, and peer auth verification
 - `burn_p2p_social`: social/profile/feed-facing data surface
 - `burn_p2p_swarm`: native libp2p transport, discovery, relay/rendezvous, and control-plane sync
+- `burn_p2p_tensor_identity`: lightweight native/WASM canonical Burn tensor digest
 - `burn_p2p_testkit`: deterministic harnesses, multiprocess soak tools, and integration support
 - `burn_p2p_views`: query/view models used by app/bootstrap/social surfaces
 - `burn_p2p_workload`: backend-neutral workload and lease-data-pipeline seam
@@ -208,6 +211,7 @@ best follow-up docs:
 
 - [docs/examples/mnist.md](docs/examples/mnist.md)
 - [docs/downstream-burn-guide.md](docs/downstream-burn-guide.md)
+- [docs/training-contracts.md](docs/training-contracts.md)
 - [docs/learning-dynamics.md](docs/learning-dynamics.md)
 - [docs/protocol-shape.md](docs/protocol-shape.md)
 - [docs/formal-verification-plan.md](docs/formal-verification-plan.md)

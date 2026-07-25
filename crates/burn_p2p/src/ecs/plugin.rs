@@ -1,9 +1,12 @@
+use burn_ecs::bevy_ecs::prelude::{With, Without};
 use burn_ecs::prelude::{
-    App, Commands, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, Res, ResMut,
-    TrainingSet, TrainingWindowEntities, Update,
+    App, Commands, Entity, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, Query, Res,
+    ResMut, TrainingRun, TrainingSet, TrainingWindowEntities, Update,
 };
 
-use super::messages::{P2pCanonicalReconcileEvent, P2pWindowFinished, P2pWindowStarted};
+use super::messages::{
+    P2pCanonicalReconcileEvent, P2pCapabilityAssessment, P2pWindowFinished, P2pWindowStarted,
+};
 use super::resources::{P2pTrainingTelemetryState, P2pWindowMetadata, PendingP2pWindowMetadata};
 
 pub struct P2pTrainingPlugin;
@@ -13,15 +16,18 @@ impl Plugin for P2pTrainingPlugin {
         app.add_message::<P2pWindowStarted>()
             .add_message::<P2pWindowFinished>()
             .add_message::<P2pCanonicalReconcileEvent>()
-            .init_resource::<P2pTrainingTelemetryState>()
+            .add_message::<P2pCapabilityAssessment>()
             .init_resource::<PendingP2pWindowMetadata>()
             .add_systems(
                 Update,
                 (
+                    attach_p2p_run_state,
                     mirror_p2p_window_started,
                     mirror_p2p_window_finished,
                     record_p2p_canonical_reconcile,
+                    bridge_p2p_capability_assessments,
                 )
+                    .chain()
                     .in_set(TrainingSet::Window),
             )
             .add_systems(
@@ -31,13 +37,58 @@ impl Plugin for P2pTrainingPlugin {
     }
 }
 
+fn bridge_p2p_capability_assessments(
+    mut messages: MessageReader<P2pCapabilityAssessment>,
+    mut transitions: MessageWriter<burn_ecs::PipelineCapabilityTransitionRequest>,
+    mut runs: Query<(
+        &TrainingRun,
+        &mut burn_ecs::PipelineCapabilityState,
+        &mut P2pTrainingTelemetryState,
+    )>,
+) {
+    for assessment in messages.read() {
+        let Some((_, mut capability, mut telemetry)) = runs
+            .iter_mut()
+            .find(|(run, ..)| run.id == assessment.run_id)
+        else {
+            continue;
+        };
+        capability.supported_participation = assessment.supported_participation.clone();
+        telemetry.participation = Some(assessment.participation);
+        telemetry.compute = Some(assessment.compute);
+        telemetry.capability_transitions = telemetry.capability_transitions.saturating_add(1);
+        transitions.write(burn_ecs::PipelineCapabilityTransitionRequest {
+            run_id: assessment.run_id.clone(),
+            expected_revision: capability.revision,
+            target: assessment.participation,
+            compute: assessment.compute,
+            reason: assessment.reason.clone(),
+        });
+    }
+}
+
+fn attach_p2p_run_state(
+    mut commands: Commands,
+    runs: Query<Entity, (With<TrainingRun>, Without<P2pTrainingTelemetryState>)>,
+) {
+    for entity in &runs {
+        commands
+            .entity(entity)
+            .insert(P2pTrainingTelemetryState::default());
+    }
+}
+
 fn mirror_p2p_window_started(
     mut messages: MessageReader<P2pWindowStarted>,
-    mut telemetry: ResMut<P2pTrainingTelemetryState>,
+    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
     mut pending: ResMut<PendingP2pWindowMetadata>,
     mut training_windows: MessageWriter<burn_ecs::TrainingWindowStarted>,
 ) {
     for event in messages.read() {
+        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        else {
+            continue;
+        };
         telemetry.run_id = Some(event.run_id.clone());
         telemetry.experiment_id = Some(event.experiment_id.clone());
         telemetry.revision_id = Some(event.revision_id.clone());
@@ -83,10 +134,14 @@ fn attach_p2p_window_metadata(
 
 fn mirror_p2p_window_finished(
     mut messages: MessageReader<P2pWindowFinished>,
-    mut telemetry: ResMut<P2pTrainingTelemetryState>,
+    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
     mut training_windows: MessageWriter<burn_ecs::TrainingWindowFinished>,
 ) {
     for event in messages.read() {
+        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        else {
+            continue;
+        };
         telemetry.run_id = Some(event.run_id.clone());
         telemetry.experiment_id = Some(event.experiment_id.clone());
         telemetry.revision_id = Some(event.revision_id.clone());
@@ -105,9 +160,13 @@ fn mirror_p2p_window_finished(
 
 fn record_p2p_canonical_reconcile(
     mut messages: MessageReader<P2pCanonicalReconcileEvent>,
-    mut telemetry: ResMut<P2pTrainingTelemetryState>,
+    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
 ) {
     for event in messages.read() {
+        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        else {
+            continue;
+        };
         telemetry.run_id = Some(event.run_id.clone());
         telemetry.experiment_id = Some(event.experiment_id.clone());
         telemetry.revision_id = Some(event.revision_id.clone());
@@ -163,10 +222,17 @@ mod tests {
         runtime.update();
         runtime.update();
         runtime.finish();
+        let run_entity = runtime
+            .app()
+            .world()
+            .resource::<burn_ecs::TrainingRunEntity>()
+            .0;
         let state = runtime
             .app()
             .world()
-            .resource::<P2pTrainingTelemetryState>();
+            .entity(run_entity)
+            .get::<P2pTrainingTelemetryState>()
+            .expect("run-scoped p2p telemetry");
         assert_eq!(state.latest_window_id, Some(7));
         assert_eq!(state.latest_head_id.as_deref(), Some("head"));
         assert_eq!(state.published_windows, 1);
@@ -183,9 +249,79 @@ mod tests {
             .get::<P2pWindowMetadata>()
             .expect("p2p metadata");
         assert_eq!(metadata.experiment_id, "exp");
-        let jsonl =
-            std::fs::read_to_string(dir.path().join("events/training_events.jsonl")).unwrap();
+        let jsonl = std::fs::read_to_string(dir.path().join("events/training_events.jsonl"))
+            .expect("training events jsonl");
         assert!(jsonl.contains("window_started"));
         assert!(jsonl.contains("window_finished"));
+    }
+
+    #[test]
+    fn p2p_capability_assessment_supports_upgrade_and_read_only_downgrade() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut runtime = TrainingAppBuilder::new(TrainingAppConfig {
+            run: TrainingRunConfig::new("p2p", "p2p", dir.path(), 1),
+            ..TrainingAppConfig::default()
+        })
+        .with_plugin(P2pTrainingPlugin)
+        .build()
+        .expect("runtime");
+        runtime
+            .app_mut()
+            .world_mut()
+            .write_message(P2pCapabilityAssessment {
+                run_id: "p2p".into(),
+                participation: burn_ecs::PipelineParticipation::Trainer,
+                compute: burn_ecs::PipelineComputeClass::Accelerator,
+                supported_participation: std::collections::BTreeSet::from([
+                    burn_ecs::PipelineParticipation::Observer,
+                    burn_ecs::PipelineParticipation::Trainer,
+                ]),
+                reason: "accelerator probe succeeded".into(),
+            });
+        runtime.update();
+        runtime.update();
+        let run_entity = runtime
+            .app()
+            .world()
+            .resource::<burn_ecs::TrainingRunEntity>()
+            .0;
+        let capability = runtime
+            .app()
+            .world()
+            .entity(run_entity)
+            .get::<burn_ecs::PipelineCapabilityState>()
+            .expect("capability");
+        assert_eq!(
+            capability.participation,
+            burn_ecs::PipelineParticipation::Trainer
+        );
+
+        runtime
+            .app_mut()
+            .world_mut()
+            .write_message(P2pCapabilityAssessment {
+                run_id: "p2p".into(),
+                participation: burn_ecs::PipelineParticipation::Observer,
+                compute: burn_ecs::PipelineComputeClass::None,
+                supported_participation: std::collections::BTreeSet::from([
+                    burn_ecs::PipelineParticipation::Observer,
+                    burn_ecs::PipelineParticipation::Validator,
+                ]),
+                reason: "WebGPU unavailable".into(),
+            });
+        runtime.update();
+        runtime.update();
+
+        let capability = runtime
+            .app()
+            .world()
+            .entity(run_entity)
+            .get::<burn_ecs::PipelineCapabilityState>()
+            .expect("capability");
+        assert_eq!(
+            capability.participation,
+            burn_ecs::PipelineParticipation::Observer
+        );
+        assert!(capability.participation.is_read_only());
     }
 }

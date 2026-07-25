@@ -4,8 +4,8 @@ use crate::metrics_runtime::{
     build_training_peer_window_metrics, persist_peer_window_metrics,
 };
 use crate::runtime_support::{
-    LagAssessment, active_experiment_directory_entry, head_provider_peers,
-    local_training_adaptation_factor, local_training_schedule_hint,
+    LagAssessment, active_experiment_directory_entry, canonical_training_assignment_peers,
+    head_provider_peers, local_training_adaptation_factor, local_training_schedule_hint,
     runtime_training_assignment_peers, snapshots_with_local_control_plane,
 };
 use burn_p2p_core::{MetricsLiveEventKind, MicroShard};
@@ -13,16 +13,21 @@ use std::collections::BTreeSet;
 
 mod continuous;
 mod execution;
+mod observer;
 mod planning;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use observer::TrainingWindowObservers;
+pub use observer::{
+    TrainingWindowCompletedEvent, TrainingWindowObserver, TrainingWindowStartedEvent,
+};
 pub(crate) use planning::load_model_for_head;
 use planning::{
-    adaptive_microshard_cap, ensure_training_placement_roles, fair_share_budget_work_units,
-    fair_share_microshard_cap, load_runtime_model, merge_connected_lease_announcements,
-    plan_prefetch_lease_for_window, preferred_microshards_for_peer, prefetched_lease_is_reusable,
-    runtime_blocked_reason, scheduled_microshard_cap, supports_background_shard_prefetch,
+    adaptive_microshard_cap, ensure_training_placement_roles, load_runtime_model,
+    merge_connected_lease_announcements, plan_prefetch_lease_for_window,
+    preferred_unleased_microshards_for_peer, prefetched_lease_is_reusable, runtime_blocked_reason,
+    scheduled_microshard_cap, supports_background_shard_prefetch,
     training_placement_budget_work_units, unleased_microshards_for_window,
     wait_for_prefetch_completion,
 };
@@ -38,6 +43,36 @@ pub enum TrainingProtocolStepOutcome<T> {
     ArtifactWindow(Box<TrainingWindowOutcome<T>>),
     /// One DiLoCo synchronization round completed.
     DiLoCoRound(Box<crate::DiLoCoRoundOutcome>),
+}
+
+/// A fully planned and materialized DiLoCo round, ready to enter the
+/// synchronized network collective.
+///
+/// Preparing a round may reconcile the canonical head, benchmark the local
+/// workload, assign a data lease, fetch shards, and build batches. Keeping that
+/// work separate from execution lets an orchestrator wait until every cohort
+/// member is ready before starting the latency-sensitive DiLoCo exchange.
+pub struct PreparedDiLoCoRound<B> {
+    experiment: ExperimentHandle,
+    lease: AssignmentLease,
+    batches: Vec<B>,
+}
+
+impl<B> PreparedDiLoCoRound<B> {
+    /// Returns the reconciled experiment revision this round will update.
+    pub fn experiment(&self) -> &ExperimentHandle {
+        &self.experiment
+    }
+
+    /// Returns the exact data assignment bound to this round.
+    pub fn lease(&self) -> &AssignmentLease {
+        &self.lease
+    }
+
+    /// Returns the number of materialized local inner-loop batches.
+    pub fn batch_count(&self) -> usize {
+        self.batches.len()
+    }
 }
 
 struct TrainingPreparedState {

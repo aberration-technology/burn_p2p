@@ -419,6 +419,31 @@ pub(crate) fn execute_admin_action(
     action: AdminAction,
 ) -> Result<burn_p2p_bootstrap::AdminResult, Box<dyn std::error::Error>> {
     match action.clone() {
+        AdminAction::RolloutRevisionContracts {
+            contracts,
+            allow_signature_rotation,
+        } => {
+            if !context.plan.supports_admin_action(&action) {
+                return Err(Box::new(
+                    burn_p2p_bootstrap::BootstrapError::UnsupportedAdminAction(action.capability()),
+                ));
+            }
+            let mut state = lock_shared(&context.state, "bootstrap admin state")?;
+            let previous_contracts = state.revision_contracts.clone();
+            let (inserted, signature_rotations) =
+                state.rollout_revision_contracts(contracts, allow_signature_rotation)?;
+            if let Err(error) = state.persist_operator_state_snapshot() {
+                state.revision_contracts = previous_contracts;
+                return Err(Box::new(std::io::Error::other(error.to_string())));
+            }
+            Ok(
+                burn_p2p_bootstrap::AdminResult::RevisionContractsRolledOut {
+                    inserted,
+                    signature_rotations,
+                    total: state.revision_contracts.len(),
+                },
+            )
+        }
         AdminAction::RotateAuthorityMaterial {
             issuer_key_id,
             retain_previous_issuer,

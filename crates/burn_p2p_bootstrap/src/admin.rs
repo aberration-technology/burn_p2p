@@ -10,8 +10,9 @@ use burn_p2p::{
     ContributionReceipt, HeadAnnouncement, HeadDescriptor, ReducerLoadAnnouncement, TrustedIssuer,
 };
 use burn_p2p_core::{
-    ControlCertificate, HeadId, Page, PageRequest, PeerId, ReenrollmentStatus, RevocationEpoch,
-    SignatureMetadata, TrustBundleExport, TrustedIssuerStatus,
+    ControlCertificate, HeadId, Page, PageRequest, PeerId, ReenrollmentStatus,
+    RevisionContractBundle, RevocationEpoch, SignatureMetadata, TrustBundleExport,
+    TrustedIssuerStatus,
 };
 use burn_p2p_experiment::{
     ExperimentControlCommand, ExperimentControlEnvelope, ExperimentLifecycleEnvelope,
@@ -90,6 +91,14 @@ pub enum AdminAction {
         /// The reenrollment reason.
         reenrollment_reason: Option<String>,
     },
+    /// Atomically inserts new revision contracts or rotates signatures over an
+    /// unchanged revision authority payload.
+    RolloutRevisionContracts {
+        /// Contracts to verify and publish.
+        contracts: Vec<RevisionContractBundle>,
+        /// Allows replacement only when the signed semantic payload is unchanged.
+        allow_signature_rotation: bool,
+    },
     /// Uses the operator retention prune variant.
     PruneOperatorRetention,
 }
@@ -114,6 +123,7 @@ impl AdminAction {
             Self::RolloutAuthPolicy(_) => AdminCapability::RolloutAuthPolicy,
             Self::RetireTrustedIssuers { .. } => AdminCapability::RetireTrustedIssuers,
             Self::RotateAuthorityMaterial { .. } => AdminCapability::RotateAuthorityMaterial,
+            Self::RolloutRevisionContracts { .. } => AdminCapability::RolloutRevisionContracts,
             Self::PruneOperatorRetention => AdminCapability::OperatorRetentionPrune,
         }
     }
@@ -192,6 +202,15 @@ pub enum AdminResult {
         reenrollment_required: bool,
         /// The rotated at.
         rotated_at: DateTime<Utc>,
+    },
+    /// Uses the revision contracts rolled out variant.
+    RevisionContractsRolledOut {
+        /// Newly inserted revision contracts.
+        inserted: usize,
+        /// Existing contracts re-signed by an accepted authority.
+        signature_rotations: usize,
+        /// Total active contracts after the transaction.
+        total: usize,
     },
     /// Uses the operator retention pruned variant.
     OperatorRetentionPruned(OperatorRetentionPruneResult),
@@ -443,6 +462,19 @@ impl BootstrapPlan {
                         .is_some(),
                 rotated_at: captured_at,
             }),
+            AdminAction::RolloutRevisionContracts {
+                contracts,
+                allow_signature_rotation,
+            } => {
+                let (inserted, signature_rotations) = state
+                    .rollout_revision_contracts(contracts, allow_signature_rotation)
+                    .map_err(|error| BootstrapError::InvalidConfig(error.to_string()))?;
+                Ok(AdminResult::RevisionContractsRolledOut {
+                    inserted,
+                    signature_rotations,
+                    total: state.revision_contracts.len(),
+                })
+            }
             AdminAction::PruneOperatorRetention => Ok(AdminResult::OperatorRetentionPruned(
                 state.prune_operator_retention().map_err(|error| {
                     BootstrapError::InvalidConfig(format!(

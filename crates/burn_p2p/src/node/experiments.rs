@@ -4,6 +4,7 @@ use crate::runtime_support::{
     head_provider_peers, load_slot_assignments, persist_slot_assignments, resolve_canonical_head,
     runtime_window_reducers,
 };
+use anyhow::Context;
 
 #[derive(Clone, Copy)]
 enum HeadSyncTargetMode {
@@ -274,25 +275,112 @@ impl<P> RunningNode<P> {
             .snapshot()
             .local_peer_id
             .ok_or_else(|| anyhow::anyhow!("runtime does not have a local peer id yet"))?;
+        let (revision_contract, require_signed_revision_contracts) = {
+            let node = self
+                .node
+                .as_ref()
+                .expect("running node should retain prepared node");
+            (
+                node.revision_contracts
+                    .get(&experiment.revision_id)
+                    .cloned(),
+                node.require_signed_revision_contracts,
+            )
+        };
+        if require_signed_revision_contracts && revision_contract.is_none() {
+            anyhow::bail!(
+                "revision {} has no authority-signed training contract",
+                experiment.revision_id.as_str()
+            );
+        }
+        if let Some(contract) = &revision_contract {
+            contract.validate()?;
+            anyhow::ensure!(
+                contract.revision.experiment_id == experiment.experiment_id
+                    && contract.revision.revision_id == experiment.revision_id,
+                "revision contract does not belong to experiment {} revision {}",
+                experiment.experiment_id.as_str(),
+                experiment.revision_id.as_str(),
+            );
+        }
+
+        let (expected_artifact, created_at) = revision_contract
+            .as_ref()
+            .map(|contract| {
+                (
+                    Some(contract.genesis.payload.payload.artifact.clone()),
+                    contract.genesis.payload.payload.created_at,
+                )
+            })
+            .unwrap_or((None, Utc::now()));
+        let head_id = expected_artifact
+            .as_ref()
+            .and_then(|artifact| artifact.head_id.clone())
+            .unwrap_or_else(|| {
+                HeadId::new(format!(
+                    "{}-{}-genesis",
+                    experiment.experiment_id.as_str(),
+                    experiment.revision_id.as_str(),
+                ))
+            });
         let project = &mut self
             .node
             .as_mut()
             .expect("running node should retain prepared node")
             .project;
         let device = project.runtime_device();
-        let model = project.init_model(&device);
-        let head_id = HeadId::new(format!(
-            "{}-{}-genesis",
-            experiment.experiment_id.as_str(),
-            local_peer_id.as_str()
-        ));
-        let artifact = project.materialize_model_artifact(
-            &model,
-            ArtifactKind::FullHead,
-            head_id.clone(),
-            None,
-            &store,
-        )?;
+        let initialized_model = project.init_model(&device);
+        let (model, artifact) = match expected_artifact {
+            Some(expected_artifact)
+                if store.has_complete_artifact(&expected_artifact.artifact_id)? =>
+            {
+                let stored_artifact = store.load_manifest(&expected_artifact.artifact_id)?;
+                anyhow::ensure!(
+                    stored_artifact == expected_artifact,
+                    "pre-provisioned genesis artifact {} does not match its authority-signed descriptor",
+                    expected_artifact.artifact_id.as_str(),
+                );
+                let model = project.load_model_artifact(
+                    initialized_model,
+                    &stored_artifact,
+                    &store,
+                    &device,
+                )?;
+                (model, stored_artifact)
+            }
+            expected_artifact => {
+                let artifact = project.materialize_model_artifact(
+                    &initialized_model,
+                    ArtifactKind::FullHead,
+                    head_id.clone(),
+                    None,
+                    &store,
+                )?;
+                if let Some(expected_artifact) = expected_artifact {
+                    anyhow::ensure!(
+                        artifact == expected_artifact,
+                        "locally materialized genesis artifact {} does not match authority-signed artifact {}",
+                        artifact.artifact_id.as_str(),
+                        expected_artifact.artifact_id.as_str(),
+                    );
+                }
+                let model =
+                    project.load_model_artifact(initialized_model, &artifact, &store, &device)?;
+                (model, artifact)
+            }
+        };
+        if let Some(contract) = &revision_contract {
+            let actual_tensor_digest = project.model_tensor_digest(&model).with_context(|| {
+                format!(
+                    "compute decoded tensor digest for signed genesis {}",
+                    artifact.artifact_id.as_str(),
+                )
+            })?;
+            ensure_genesis_tensor_digest(
+                &actual_tensor_digest,
+                &contract.genesis.payload.payload.tensor_digest,
+            )?;
+        }
         let evaluation = project.evaluate(&model, EvalSplit::Validation);
         let head = HeadDescriptor {
             head_id: head_id.clone(),
@@ -302,7 +390,7 @@ impl<P> RunningNode<P> {
             artifact_id: artifact.artifact_id.clone(),
             parent_head_id: None,
             global_step: 0,
-            created_at: Utc::now(),
+            created_at,
             metrics: evaluation.metrics,
         };
 
@@ -1047,6 +1135,7 @@ impl<P> RunningNode<P> {
                 providers: vec![outcome.contribution.peer_id.clone()],
                 announced_at: Utc::now(),
             },
+            workload_update: None,
         })?;
         self.control.publish_head(HeadAnnouncement {
             overlay: experiment.overlay_set()?.heads,
@@ -1121,16 +1210,44 @@ impl<P> RunningNode<P> {
     where
         P: P2pWorkload,
     {
-        if let Some((actual, expected)) =
-            self.head_artifact_schema_mismatch(store, experiment, head)?
-        {
+        let descriptor = store.load_manifest(&head.artifact_id)?;
+        anyhow::ensure!(
+            descriptor.kind == ArtifactKind::FullHead,
+            "head artifact {} for head {} must be a full training head, found {:?}",
+            descriptor.artifact_id.as_str(),
+            head.head_id.as_str(),
+            descriptor.kind,
+        );
+        anyhow::ensure!(
+            descriptor.head_id.as_ref() == Some(&head.head_id)
+                && descriptor.artifact_id == head.artifact_id,
+            "head artifact {} is not bound to announced head {}",
+            descriptor.artifact_id.as_str(),
+            head.head_id.as_str(),
+        );
+        let expected = self.expected_model_schema_hash_for_experiment(experiment)?;
+        if descriptor.model_schema_hash != expected {
             anyhow::bail!(
                 "head artifact {} for head {} has model schema {}, but workload expects {}; ignoring incompatible head",
                 head.artifact_id.as_str(),
                 head.head_id.as_str(),
-                actual.as_str(),
+                descriptor.model_schema_hash.as_str(),
                 expected.as_str()
             );
+        }
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id));
+        if let Some(contract) = revision_contract {
+            let genesis = &contract.genesis.payload.payload;
+            if genesis.artifact.head_id.as_ref() == Some(&head.head_id) {
+                anyhow::ensure!(
+                    descriptor == genesis.artifact,
+                    "head {} claims the signed genesis identity but its artifact descriptor differs",
+                    head.head_id.as_str(),
+                );
+            }
         }
         Ok(())
     }
@@ -1183,6 +1300,16 @@ impl<P> RunningNode<P> {
             .project
             .model_schema_hash())
     }
+}
+
+fn ensure_genesis_tensor_digest(actual: &ContentId, expected: &ContentId) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        actual == expected,
+        "decoded genesis tensor digest {} does not match authority-signed digest {}",
+        actual.as_str(),
+        expected.as_str(),
+    );
+    Ok(())
 }
 
 fn resolve_sync_target_head(
@@ -1421,5 +1548,18 @@ mod tests {
         } else {
             assert_eq!(timeout, Duration::from_secs(120));
         }
+    }
+
+    #[test]
+    fn signed_genesis_tensor_digest_mismatch_fails_closed() {
+        let error =
+            ensure_genesis_tensor_digest(&ContentId::new("decoded"), &ContentId::new("authority"))
+                .expect_err("mismatched tensors must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match authority-signed")
+        );
     }
 }

@@ -39,3 +39,15 @@ pub struct P2pCanonicalReconcileEvent {
 }
 
 impl burn_ecs::prelude::Message for P2pCanonicalReconcileEvent {}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// Reports the latest effective capability selected by P2P negotiation.
+pub struct P2pCapabilityAssessment {
+    pub run_id: String,
+    pub participation: burn_ecs::PipelineParticipation,
+    pub compute: burn_ecs::PipelineComputeClass,
+    pub supported_participation: std::collections::BTreeSet<burn_ecs::PipelineParticipation>,
+    pub reason: String,
+}
+
+impl burn_ecs::prelude::Message for P2pCapabilityAssessment {}

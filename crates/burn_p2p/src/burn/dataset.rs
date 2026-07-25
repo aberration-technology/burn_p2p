@@ -162,6 +162,76 @@ impl<Record> BurnShardedDataset<Record> {
     where
         Record: Serialize + Clone,
     {
+        Self::write_local_partitioned(root, records, config, |records, shard_count| {
+            (0..shard_count)
+                .map(|index| {
+                    let range = distributed_range(records.len(), shard_count, index);
+                    records[range].to_vec()
+                })
+                .collect()
+        })
+    }
+
+    /// Writes records while keeping each caller-defined group in one shard and
+    /// balancing group sizes across the planned shard set.
+    pub fn write_local_grouped_by<K>(
+        root: impl AsRef<Path>,
+        records: &[Record],
+        mut config: BurnShardedDatasetConfig,
+        partition_id: impl Into<String>,
+        group_key: impl Fn(usize, &Record) -> K,
+    ) -> anyhow::Result<Self>
+    where
+        Record: Serialize + Clone,
+        K: Ord,
+    {
+        let partition_id = partition_id.into();
+        config
+            .manifest_metadata
+            .insert("partitioning".into(), partition_id.clone());
+        config
+            .view_metadata
+            .insert("partitioning".into(), partition_id);
+        Self::write_local_partitioned(root, records, config, move |records, shard_count| {
+            let mut groups = BTreeMap::<K, Vec<Record>>::new();
+            for (index, record) in records.iter().enumerate() {
+                groups
+                    .entry(group_key(index, record))
+                    .or_default()
+                    .push(record.clone());
+            }
+
+            let mut groups = groups.into_iter().collect::<Vec<_>>();
+            groups.sort_by(|(left_key, left_group), (right_key, right_group)| {
+                right_group
+                    .len()
+                    .cmp(&left_group.len())
+                    .then_with(|| left_key.cmp(right_key))
+            });
+
+            let mut shards = vec![Vec::new(); shard_count];
+            for (_, group) in groups {
+                let shard_index = shards
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(index, shard)| (shard.len(), *index))
+                    .map(|(index, _)| index)
+                    .expect("a sharded dataset always has at least one shard");
+                shards[shard_index].extend(group);
+            }
+            shards
+        })
+    }
+
+    fn write_local_partitioned(
+        root: impl AsRef<Path>,
+        records: &[Record],
+        config: BurnShardedDatasetConfig,
+        partition: impl FnOnce(&[Record], usize) -> Vec<Vec<Record>>,
+    ) -> anyhow::Result<Self>
+    where
+        Record: Serialize + Clone,
+    {
         let root = root.as_ref();
         if records.is_empty() {
             anyhow::bail!("sharded dataset requires at least one record");
@@ -173,17 +243,23 @@ impl<Record> BurnShardedDataset<Record> {
             .sizing
             .clone()
             .unwrap_or(derive_record_sizing(records)?);
-        let registration = dataset_registration(root, &config, &sizing)?;
+        let content_root = ordered_record_content_root(records)?;
+        let registration = dataset_registration(root, &config, &sizing, &content_root)?;
         let microshard_plan = crate::MicroShardPlanner::new(config.planning_config(&sizing))?
             .plan(&registration.view, sizing)?;
+        let shard_records = partition(records, microshard_plan.microshards.len());
+        anyhow::ensure!(
+            shard_records.len() == microshard_plan.microshards.len(),
+            "record partition produced {} shards for a {}-shard plan",
+            shard_records.len(),
+            microshard_plan.microshards.len(),
+        );
 
         let mut shard_payloads = Vec::with_capacity(microshard_plan.microshards.len());
         let mut shard_examples = BTreeMap::new();
         for (index, microshard) in microshard_plan.microshards.iter().enumerate() {
-            let range = distributed_range(records.len(), microshard_plan.microshards.len(), index);
-            let shard_records = records[range].to_vec();
-            shard_examples.insert(microshard.microshard_id.clone(), shard_records.len());
-            shard_payloads.push(serde_json::to_vec_pretty(&shard_records)?);
+            shard_examples.insert(microshard.microshard_id.clone(), shard_records[index].len());
+            shard_payloads.push(serde_json::to_vec_pretty(&shard_records[index])?);
         }
 
         let manifest = crate::ShardFetchManifest::from_microshards(
@@ -370,28 +446,55 @@ fn derive_record_sizing<Record: Serialize>(
     })
 }
 
+fn ordered_record_content_root<Record: Serialize>(records: &[Record]) -> anyhow::Result<ContentId> {
+    let record_hashes = records
+        .iter()
+        .map(|record| {
+            let bytes = serde_json::to_vec(record)?;
+            Ok::<_, anyhow::Error>(ContentId::from_multihash(
+                burn_p2p_core::codec::multihash_sha256(&bytes),
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(ContentId::derive(&(
+        "burn-p2p-ordered-record-content-v1",
+        record_hashes,
+    ))?)
+}
+
 fn dataset_registration(
     root: &Path,
     config: &BurnShardedDatasetConfig,
     sizing: &crate::DatasetSizing,
+    content_root: &ContentId,
 ) -> anyhow::Result<crate::DatasetRegistration> {
     let source_uri = config.source_uri_for(root);
     let dataset_id = crate::DatasetId::derive(&("burn-p2p-sharded-dataset", &config.dataset_name))?;
-    let dataset_view_id =
-        crate::DatasetViewId::derive(&(dataset_id.as_str(), &config.dataset_name, "view"))?;
     let manifest_hash = ContentId::derive(&(
-        "burn-p2p-sharded-manifest",
+        "burn-p2p-sharded-manifest-v2",
         dataset_id.as_str(),
-        &source_uri,
         &config.format,
         sizing,
         &config.manifest_metadata,
-        &config.view_metadata,
+        content_root,
     ))?;
     let preprocessing_hash = match config.preprocessing_hash.clone() {
         Some(hash) => hash,
-        None => ContentId::derive(&("burn-p2p-sharded-preprocess", dataset_view_id.as_str()))?,
+        None => ContentId::derive(&(
+            "burn-p2p-sharded-preprocess-v2",
+            dataset_id.as_str(),
+            &config.format,
+            &config.view_metadata,
+        ))?,
     };
+    let dataset_view_id = crate::DatasetViewId::derive(&(
+        "burn-p2p-sharded-dataset-view-v2",
+        dataset_id.as_str(),
+        manifest_hash.as_str(),
+        preprocessing_hash.as_str(),
+        config.tokenizer_hash.as_ref().map(ContentId::as_str),
+        &config.view_metadata,
+    ))?;
 
     Ok(crate::DatasetRegistration {
         manifest: crate::DatasetManifest {

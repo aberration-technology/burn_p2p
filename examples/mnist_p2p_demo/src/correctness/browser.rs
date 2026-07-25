@@ -77,6 +77,7 @@ pub fn browser_scenarios(
             entries: directory_entries.clone(),
         },
         heads: heads.clone(),
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: network_manifest.network_id.clone(),
             score_version: "leaderboard_score_v1".into(),

@@ -3,6 +3,8 @@
 
 /// Adversarial fixtures, attacks, and robustness scenario helpers.
 pub mod adversarial;
+/// Compact-update communication and heterogeneous-link ablation helpers.
+pub mod bandwidth_ablation;
 /// Static browser-app wasm asset build helpers.
 pub mod browser_app_assets;
 /// Versioned protocol-trace exports for formal verification and refinement checks.
@@ -130,7 +132,7 @@ pub struct ChaosEvent {
     pub peer_id: Option<PeerId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// Enumerates the supported fault type values.
 pub enum FaultType {
     /// Uses the peer churn variant.
@@ -512,6 +514,7 @@ impl SimulationRunner {
             );
 
             for fixture in &mut peer_fixtures {
+                let active_faults = peer_faults(&spec.chaos_events, window_id, &fixture.peer_id);
                 let planned_lease = self.lease_planner.plan_lease(
                     spec.network_id.clone(),
                     spec.study_id.clone(),
@@ -527,13 +530,22 @@ impl SimulationRunner {
                 all_leases.push(planned_lease.lease.clone());
                 lease_cache.insert(planned_lease.lease.clone());
 
+                if active_faults.iter().any(FaultType::suppresses_transport) {
+                    admin_state.peer_store.mark_connection(
+                        fixture.peer_id.clone(),
+                        false,
+                        granted_at,
+                    );
+                    continue;
+                }
+
                 let simulated = self.simulate_peer_window(
                     &spec,
                     fixture,
                     &planned_lease,
                     current_base_head.clone(),
                     checkpoint_catalog.head(&current_base_head)?.global_step + 1,
-                    granted_at,
+                    &active_faults,
                 )?;
 
                 admin_state.peer_store.upsert(simulated.observation.clone());
@@ -964,13 +976,17 @@ impl SimulationRunner {
         planned_lease: &PlannedLease,
         current_base_head: HeadId,
         global_step: u64,
-        _now: DateTime<Utc>,
+        active_faults: &BTreeSet<FaultType>,
     ) -> Result<SimulatedPeerWindow, TestkitError> {
         let behavior = fixture.mode.malicious_behavior();
-        let mut completed_at = planned_lease.lease.granted_at + Duration::seconds(30);
-        if completed_at > planned_lease.lease.expires_at {
-            completed_at = planned_lease.lease.expires_at;
-        }
+        let completed_at = if active_faults.contains(&FaultType::SlowPeer) {
+            planned_lease.lease.expires_at + Duration::seconds(1)
+        } else {
+            std::cmp::min(
+                planned_lease.lease.granted_at + Duration::seconds(30),
+                planned_lease.lease.expires_at,
+            )
+        };
         let mut data_receipt = DataReceiptBuilder::accepted(
             planned_lease.selection.estimated_examples,
             planned_lease.selection.estimated_tokens,
@@ -990,6 +1006,7 @@ impl SimulationRunner {
         let base_head_for_receipt = match behavior {
             Some(MaliciousBehavior::WrongBaseHead) => HeadId::new("wrong-base-head"),
             Some(MaliciousBehavior::StaleBaseHead) => HeadId::new("genesis-head"),
+            _ if active_faults.contains(&FaultType::StaleHead) => HeadId::new("genesis-head"),
             _ => current_base_head.clone(),
         };
         let head_id = HeadId::new(format!(
@@ -1554,28 +1571,45 @@ fn apply_chaos_events(
     emitted_at: DateTime<Utc>,
 ) {
     for event in events.iter().filter(|event| event.window_id == window_id) {
-        match event.fault {
-            FaultType::PeerChurn => {
-                if let Some(peer_id) = &event.peer_id {
-                    admin_state
-                        .peer_store
-                        .mark_connection(peer_id.clone(), false, emitted_at);
-                }
-            }
-            FaultType::Partition
-            | FaultType::RelayLoss
-            | FaultType::SlowPeer
-            | FaultType::StaleHead => {
-                alerts.push(burn_p2p_swarm::AlertNotice {
-                    overlay: burn_p2p_swarm::OverlayTopic::control(NetworkId::new("simulation")),
-                    peer_id: event.peer_id.clone(),
-                    severity: burn_p2p_swarm::AlertSeverity::Warn,
-                    code: format!("chaos::{:?}", event.fault).to_lowercase(),
-                    message: "chaos event injected".into(),
-                    emitted_at,
-                });
-            }
+        if event.fault == FaultType::PeerChurn
+            && let Some(peer_id) = &event.peer_id
+        {
+            admin_state
+                .peer_store
+                .mark_connection(peer_id.clone(), false, emitted_at);
         }
+        alerts.push(burn_p2p_swarm::AlertNotice {
+            overlay: burn_p2p_swarm::OverlayTopic::control(NetworkId::new("simulation")),
+            peer_id: event.peer_id.clone(),
+            severity: burn_p2p_swarm::AlertSeverity::Warn,
+            code: format!("chaos::{:?}", event.fault).to_lowercase(),
+            message: "chaos event injected".into(),
+            emitted_at,
+        });
+    }
+}
+
+fn peer_faults(
+    events: &[ChaosEvent],
+    window_id: WindowId,
+    peer_id: &PeerId,
+) -> BTreeSet<FaultType> {
+    events
+        .iter()
+        .filter(|event| {
+            event.window_id == window_id
+                && event
+                    .peer_id
+                    .as_ref()
+                    .is_none_or(|target| target == peer_id)
+        })
+        .map(|event| event.fault)
+        .collect()
+}
+
+impl FaultType {
+    fn suppresses_transport(&self) -> bool {
+        matches!(self, Self::PeerChurn | Self::Partition | Self::RelayLoss)
     }
 }
 
@@ -1745,6 +1779,76 @@ mod tests {
                 .alerts
                 .iter()
                 .any(|alert| alert.code.contains("relayloss"))
+        );
+    }
+
+    #[test]
+    fn partition_stale_slow_and_rejoin_matrix_enforces_faults_and_recovers() {
+        let runner = SimulationRunner::default();
+        let spec = SimulationSpec {
+            peer_count: 3,
+            browser_peer_count: 1,
+            window_count: 5,
+            chaos_events: vec![
+                ChaosEvent {
+                    window_id: WindowId(2),
+                    fault: FaultType::Partition,
+                    peer_id: None,
+                },
+                ChaosEvent {
+                    window_id: WindowId(3),
+                    fault: FaultType::StaleHead,
+                    peer_id: Some(PeerId::new("peer-0")),
+                },
+                ChaosEvent {
+                    window_id: WindowId(4),
+                    fault: FaultType::SlowPeer,
+                    peer_id: Some(PeerId::new("peer-1")),
+                },
+            ],
+            ..SimulationSpec::default()
+        };
+
+        let outcome = runner.run(spec).expect("simulation");
+        let partitioned = &outcome.windows[1];
+        assert!(partitioned.accepted_receipts.is_empty());
+        assert!(partitioned.rejected_updates.is_empty());
+        assert!(partitioned.merge_certificate.is_none());
+
+        let stale = &outcome.windows[2];
+        assert!(stale.rejected_updates.iter().any(|rejection| {
+            rejection.peer_id == PeerId::new("peer-0")
+                && rejection.findings.iter().any(|finding| {
+                    matches!(
+                        finding,
+                        burn_p2p_security::AuditFinding::BaseHeadMismatch { .. }
+                    )
+                })
+        }));
+        assert_eq!(stale.accepted_receipts.len(), 2);
+
+        let slow = &outcome.windows[3];
+        assert!(slow.rejected_updates.iter().any(|rejection| {
+            rejection.peer_id == PeerId::new("peer-1")
+                && rejection.findings.iter().any(|finding| {
+                    matches!(
+                        finding,
+                        burn_p2p_security::AuditFinding::ReceiptOutsideLeaseWindow
+                    )
+                })
+        }));
+        assert_eq!(slow.accepted_receipts.len(), 2);
+
+        let recovered = &outcome.windows[4];
+        assert_eq!(recovered.accepted_receipts.len(), 3);
+        assert!(recovered.rejected_updates.is_empty());
+        assert!(recovered.merge_certificate.is_some());
+        assert!(
+            outcome
+                .operator_console
+                .alerts
+                .iter()
+                .any(|alert| { alert.code.contains("partition") && alert.peer_id.is_none() })
         );
     }
 

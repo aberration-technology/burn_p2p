@@ -14,6 +14,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub(super) struct ScalarDiLoCoTestWorkload {
     pub(super) inner_lr: f32,
+    parameter_count: usize,
     work_units_per_second: f64,
     workload_id: &'static str,
     workload_name: &'static str,
@@ -28,6 +29,7 @@ impl ScalarDiLoCoTestWorkload {
     pub(super) fn reference(inner_lr: f32) -> Self {
         Self {
             inner_lr,
+            parameter_count: 1,
             work_units_per_second: 16.0,
             workload_id: "scalar-diloco",
             workload_name: "Scalar DiLoCo",
@@ -35,8 +37,13 @@ impl ScalarDiLoCoTestWorkload {
     }
 
     pub(super) fn network(inner_lr: f32) -> Self {
+        Self::network_wide(inner_lr, 1)
+    }
+
+    pub(super) fn network_wide(inner_lr: f32, parameter_count: usize) -> Self {
         Self {
             inner_lr,
+            parameter_count: parameter_count.max(1),
             work_units_per_second: 32.0,
             workload_id: "scalar-diloco-network",
             workload_name: "Scalar DiLoCo Network",
@@ -192,7 +199,7 @@ impl DiLoCoWorkload for ScalarDiLoCoTestWorkload {
         Ok(FlattenedTensorPack::new(
             self.model_schema_hash(),
             ContentId::new("scalar-layout"),
-            vec![*model],
+            vec![*model; self.parameter_count],
         ))
     }
 
@@ -262,7 +269,7 @@ impl DiLoCoWorkload for ScalarDiLoCoTestWorkload {
             FlattenedTensorPack::new(
                 base.model_schema_hash.clone(),
                 base.layout_hash.clone(),
-                vec![next],
+                vec![next; base.values.len()],
             ),
             StateBlob::try_new("application/json", serde_json::to_vec(&state)?)?,
         ))

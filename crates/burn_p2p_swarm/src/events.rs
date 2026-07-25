@@ -319,6 +319,9 @@ pub struct UpdateEnvelopeAnnouncement {
     pub overlay: OverlayTopic,
     /// The update.
     pub update: UpdateAnnounce,
+    /// Contract-bound update envelope for typed decode and validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_update: Option<WorkloadUpdateEnvelope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -703,6 +706,7 @@ pub struct ArtifactChunkPayload {
     /// The chunk.
     pub chunk: ChunkDescriptor,
     /// The bytes.
+    #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     /// The generated at.
     pub generated_at: DateTime<Utc>,
@@ -747,7 +751,7 @@ pub enum ControlPlaneResponse {
 /// Enumerates the supported pubsub payload values.
 pub enum PubsubPayload {
     /// Uses the control variant.
-    Control(ControlAnnouncement),
+    Control(Box<ControlAnnouncement>),
     /// Uses the lifecycle variant.
     Lifecycle(Box<ExperimentLifecycleAnnouncement>),
     /// Uses the schedule variant.
@@ -763,7 +767,7 @@ pub enum PubsubPayload {
     /// Uses the reducer assignment variant.
     ReducerAssignment(ReducerAssignmentAnnouncement),
     /// Uses the update variant.
-    Update(UpdateEnvelopeAnnouncement),
+    Update(Box<UpdateEnvelopeAnnouncement>),
     /// Uses the trainer promotion attestation variant.
     TrainerPromotionAttestation(TrainerPromotionAttestationAnnouncement),
     /// Uses the diffusion promotion certificate variant.
@@ -1244,14 +1248,6 @@ fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
     values.dedup();
 }
 
-fn merge_peer_role_sets(existing: &mut Option<PeerRoleSet>, incoming: Option<PeerRoleSet>) {
-    match (existing.as_mut(), incoming) {
-        (Some(existing), Some(incoming)) => existing.roles.extend(incoming.roles),
-        (None, Some(incoming)) => *existing = Some(incoming),
-        _ => {}
-    }
-}
-
 fn canonicalize_peer_directory_announcement(announcement: &mut PeerDirectoryAnnouncement) {
     announcement.addresses.sort_by(|left, right| {
         left.is_relay_circuit()
@@ -1287,9 +1283,13 @@ fn coalesce_peer_directory_announcements(
     mut incoming: PeerDirectoryAnnouncement,
 ) {
     canonicalize_peer_directory_announcement(&mut incoming);
+    if incoming.announced_at >= existing.announced_at
+        && let Some(incoming_roles) = incoming.advertised_roles.take()
+    {
+        existing.advertised_roles = Some(incoming_roles);
+    }
     existing.announced_at = existing.announced_at.max(incoming.announced_at);
     existing.addresses.extend(incoming.addresses);
-    merge_peer_role_sets(&mut existing.advertised_roles, incoming.advertised_roles);
     canonicalize_peer_directory_announcement(existing);
 }
 
@@ -2082,7 +2082,7 @@ pub(crate) fn apply_pubsub_payload_with_index(
     payload: PubsubPayload,
 ) {
     match payload {
-        PubsubPayload::Control(announcement) => snapshot.insert_control_announcement(announcement),
+        PubsubPayload::Control(announcement) => snapshot.insert_control_announcement(*announcement),
         PubsubPayload::Lifecycle(announcement) => {
             snapshot.insert_lifecycle_announcement(*announcement)
         }
@@ -2100,7 +2100,7 @@ pub(crate) fn apply_pubsub_payload_with_index(
         PubsubPayload::ReducerAssignment(announcement) => {
             snapshot.insert_reducer_assignment_announcement(announcement);
         }
-        PubsubPayload::Update(announcement) => snapshot.insert_update_announcement(announcement),
+        PubsubPayload::Update(announcement) => snapshot.insert_update_announcement(*announcement),
         PubsubPayload::TrainerPromotionAttestation(announcement) => {
             insert_trainer_promotion_attestation_announcement_with_index(
                 snapshot,

@@ -218,6 +218,10 @@ fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
         ]
     );
     assert_eq!(policy.target_bootstrap_seed_connections, 0);
+    assert_eq!(
+        policy.idle_connection_timeout_ms,
+        super::CONTROL_IDLE_CONNECTION_TIMEOUT.as_millis() as u64
+    );
     assert!(!policy.enable_local_discovery);
     assert!(policy.enable_relay_client);
     assert!(!policy.enable_relay_server);
@@ -1491,7 +1495,7 @@ fn peer_directory_message_id_ignores_timestamps_and_address_order() {
 }
 
 #[test]
-fn peer_directory_announcements_coalesce_by_peer_and_union_addresses() {
+fn peer_directory_announcements_union_addresses_and_keep_latest_roles() {
     let now = Utc::now();
     let mut snapshot = ControlPlaneSnapshot::default();
     super::apply_pubsub_payload(
@@ -1512,6 +1516,15 @@ fn peer_directory_announcements_coalesce_by_peer_and_union_addresses() {
             now + chrono::Duration::seconds(10),
         )),
     );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::PeerDirectory(semantic_test_peer_directory(
+            "peer-a",
+            &["/ip4/127.0.0.1/tcp/4023"],
+            Some(PeerRoleSet::new([burn_p2p_core::PeerRole::TrainerGpu])),
+            now + chrono::Duration::seconds(5),
+        )),
+    );
 
     assert_eq!(snapshot.peer_directory_announcements.len(), 1);
     assert_eq!(
@@ -1520,7 +1533,11 @@ fn peer_directory_announcements_coalesce_by_peer_and_union_addresses() {
             .iter()
             .map(|address| address.as_str())
             .collect::<Vec<_>>(),
-        vec!["/ip4/127.0.0.1/tcp/4021", "/ip4/127.0.0.1/tcp/4022"]
+        vec![
+            "/ip4/127.0.0.1/tcp/4021",
+            "/ip4/127.0.0.1/tcp/4022",
+            "/ip4/127.0.0.1/tcp/4023",
+        ]
     );
     assert_eq!(
         snapshot.peer_directory_announcements[0]
@@ -1528,10 +1545,7 @@ fn peer_directory_announcements_coalesce_by_peer_and_union_addresses() {
             .as_ref()
             .expect("advertised roles")
             .roles,
-        BTreeSet::from([
-            burn_p2p_core::PeerRole::TrainerCpu,
-            burn_p2p_core::PeerRole::Validator,
-        ])
+        BTreeSet::from([burn_p2p_core::PeerRole::Validator])
     );
 }
 
@@ -2077,6 +2091,7 @@ fn control_plane_snapshot_caps_live_announcement_histories() {
                 providers: vec![PeerId::new("provider-a")],
                 announced_at: now + chrono::Duration::seconds(index as i64),
             },
+            workload_update: None,
         });
         snapshot.insert_reducer_load_announcement(super::ReducerLoadAnnouncement {
             overlay: overlay.clone(),
@@ -2977,6 +2992,7 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp
     let mut dialer_connected = false;
     let mut listener_events = Vec::new();
     let mut dialer_events = Vec::new();
+    let mut unverified_reachable_addresses = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !(listener_connected && dialer_connected) {
         assert!(
@@ -2987,12 +3003,18 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp
         );
 
         if let Some(event) = listener.wait_event(Duration::from_millis(100)) {
+            if let LiveControlPlaneEvent::ReachableAddressConfirmed { address } = &event {
+                unverified_reachable_addresses.push(address.clone());
+            }
             listener_events.push(format!("{event:?}"));
             listener_connected |=
                 matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
         }
 
         if let Some(event) = dialer.wait_event(Duration::from_millis(100)) {
+            if let LiveControlPlaneEvent::ReachableAddressConfirmed { address } = &event {
+                unverified_reachable_addresses.push(address.clone());
+            }
             dialer_events.push(format!("{event:?}"));
             dialer_connected |=
                 matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
@@ -3010,19 +3032,44 @@ fn native_control_plane_shell_exchanges_snapshot_requests_and_responses_over_tcp
             "dialer did not receive native snapshot"
         );
 
-        if let Some(event) = listener.wait_event(Duration::from_millis(100))
-            && let LiveControlPlaneEvent::SnapshotRequested { .. } = event
-        {
-            // keep polling until the response lands on the dialer
+        if let Some(event) = listener.wait_event(Duration::from_millis(100)) {
+            if let LiveControlPlaneEvent::ReachableAddressConfirmed { address } = &event {
+                unverified_reachable_addresses.push(address.clone());
+            }
+            if let LiveControlPlaneEvent::SnapshotRequested { .. } = event {
+                // keep polling until the response lands on the dialer
+            }
         }
 
         match dialer.wait_event(Duration::from_millis(100)) {
             Some(LiveControlPlaneEvent::SnapshotReceived { snapshot, .. }) => break snapshot,
+            Some(LiveControlPlaneEvent::ReachableAddressConfirmed { address }) => {
+                unverified_reachable_addresses.push(address);
+            }
             Some(_) => {}
             None => {}
         }
     };
 
+    let observation_deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < observation_deadline {
+        for event in [
+            listener.wait_event(Duration::from_millis(10)),
+            dialer.wait_event(Duration::from_millis(10)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let LiveControlPlaneEvent::ReachableAddressConfirmed { address } = event {
+                unverified_reachable_addresses.push(address);
+            }
+        }
+    }
+
+    assert!(
+        unverified_reachable_addresses.is_empty(),
+        "Identify observations must not be promoted as reachable listeners: {unverified_reachable_addresses:?}"
+    );
     assert_eq!(snapshot.head_announcements.len(), 1);
     assert_eq!(
         snapshot.head_announcements[0].head.head_id,
@@ -3400,15 +3447,22 @@ fn native_control_plane_shell_reserves_and_dials_relay_paths() {
         .expect("dial relay seed");
 
     let mut relay_addr = None;
+    let mut relay_events = Vec::new();
     let reservation_deadline = Instant::now() + Duration::from_secs(10);
     while relay_addr.is_none() {
         assert!(
             Instant::now() < reservation_deadline,
-            "listener did not confirm a relayed reachable address"
+            "listener did not confirm a relayed reachable address; events={relay_events:?}"
         );
 
-        let _ = relay_seed.wait_event(Duration::from_millis(50));
+        if let Some(event) = relay_seed.wait_event(Duration::from_millis(50)) {
+            relay_events.push(format!("seed:{event:?}"));
+        }
         if let Some(event) = listener.wait_event(Duration::from_millis(50)) {
+            relay_events.push(format!("listener:{event:?}"));
+            if relay_events.len() > 64 {
+                relay_events.remove(0);
+            }
             match event {
                 LiveControlPlaneEvent::ReachableAddressConfirmed { address }
                 | LiveControlPlaneEvent::NewListenAddr { address }
@@ -3550,22 +3604,28 @@ fn native_relay_path_transfers_large_artifact_chunks() {
     let relay_addr = relay_addr.expect("relay address");
     dialer.dial(relay_addr).expect("dial relayed listener");
     let listener_peer_id = listener.local_peer_id().to_string();
+    let dialer_peer_id = dialer.local_peer_id().to_string();
 
     let connect_deadline = Instant::now() + Duration::from_secs(10);
     let mut listener_connected = false;
     let mut dialer_connected = false;
+    let mut transfer_events = Vec::new();
     while !(listener_connected && dialer_connected) {
         assert!(
             Instant::now() < connect_deadline,
             "relayed peers did not connect through relay reservation"
         );
 
-        let _ = relay_seed.wait_event(Duration::from_millis(25));
+        if let Some(event) = relay_seed.wait_event(Duration::from_millis(25)) {
+            transfer_events.push(format!("seed:{event:?}"));
+        }
         if let Some(event) = listener.wait_event(Duration::from_millis(25)) {
+            transfer_events.push(format!("listener:{event:?}"));
             listener_connected |=
                 matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
         }
         if let Some(event) = dialer.wait_event(Duration::from_millis(25)) {
+            transfer_events.push(format!("dialer:{event:?}"));
             dialer_connected |=
                 matches!(event, LiveControlPlaneEvent::ConnectionEstablished { .. });
         }
@@ -3581,8 +3641,11 @@ fn native_relay_path_transfers_large_artifact_chunks() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let chunk_payload = loop {
         assert!(Instant::now() < deadline, "fetch relayed chunk");
-        let _ = relay_seed.wait_event(Duration::from_millis(10));
+        if let Some(event) = relay_seed.wait_event(Duration::from_millis(10)) {
+            transfer_events.push(format!("seed:{event:?}"));
+        }
         if let Some(event) = listener.wait_event(Duration::from_millis(10)) {
+            transfer_events.push(format!("listener:{event:?}"));
             match event {
                 LiveControlPlaneEvent::ArtifactChunkRequested { .. }
                 | LiveControlPlaneEvent::ConnectionEstablished { .. }
@@ -3594,12 +3657,16 @@ fn native_relay_path_transfers_large_artifact_chunks() {
             }
         }
         if let Some(event) = dialer.wait_event(Duration::from_millis(10)) {
+            transfer_events.push(format!("dialer:{event:?}"));
+            if transfer_events.len() > 128 {
+                transfer_events.remove(0);
+            }
             match event {
                 LiveControlPlaneEvent::ArtifactChunkReceived { payload, .. } => {
                     break payload.expect("chunk payload");
                 }
                 LiveControlPlaneEvent::RequestFailure { message, .. } => {
-                    panic!("fetch relayed chunk: {message}");
+                    panic!("fetch relayed chunk: {message}; events={transfer_events:?}");
                 }
                 _ => {}
             }
@@ -3609,6 +3676,24 @@ fn native_relay_path_transfers_large_artifact_chunks() {
     assert_eq!(chunk_payload.bytes.len(), chunk_bytes.len());
     assert_eq!(chunk_payload.bytes, chunk_bytes);
     assert_eq!(chunk_payload.chunk, descriptor.chunks[0]);
+
+    let reconciliation_deadline = Instant::now() + Duration::from_secs(5);
+    while (dialer.established_connection_count(&listener_peer_id) > 1
+        || listener.established_connection_count(&dialer_peer_id) > 1)
+        && Instant::now() < reconciliation_deadline
+    {
+        let _ = relay_seed.wait_event(Duration::from_millis(10));
+        let _ = listener.wait_event(Duration::from_millis(10));
+        let _ = dialer.wait_event(Duration::from_millis(10));
+    }
+    assert!(
+        dialer.established_connection_count(&listener_peer_id) <= 1,
+        "dialer did not reconcile to one listener route"
+    );
+    assert!(
+        listener.established_connection_count(&dialer_peer_id) <= 1,
+        "listener did not reconcile to one dialer route"
+    );
 }
 
 #[test]
@@ -4051,7 +4136,7 @@ fn native_control_plane_shell_propagates_control_announcements_over_pubsub() {
             listener.publish_control(announcement.clone());
             match listener.publish_pubsub(
                 control_overlay.clone(),
-                PubsubPayload::Control(announcement.clone()),
+                PubsubPayload::Control(Box::new(announcement.clone())),
             ) {
                 Ok(()) => published = true,
                 Err(SwarmError::Pubsub(message))

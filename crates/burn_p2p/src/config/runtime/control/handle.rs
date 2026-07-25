@@ -107,10 +107,47 @@ impl ControlHandle {
             .map_err(|error| anyhow::anyhow!("failed to subscribe topic: {error}"))
     }
 
+    /// Replaces the active runtime roles without rebuilding the transport.
+    ///
+    /// Compute roles may only be re-enabled when they were part of the node's
+    /// startup capability set. Read-only roles can always be selected.
+    pub fn update_roles(&self, roles: PeerRoleSet, timeout: Duration) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(RuntimeCommand::UpdateRoles {
+                roles,
+                reply: reply_tx,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to request runtime role update: {error}"))?;
+        Self::recv_runtime_reply(reply_rx, "runtime role update", timeout)
+    }
+
+    /// Clears one already-observed runtime error if it still matches exactly.
+    ///
+    /// The compare-and-clear contract prevents a capability controller from
+    /// accidentally acknowledging a newer failure that arrived during a
+    /// recovery probe.
+    pub fn acknowledge_runtime_error(
+        &self,
+        expected: impl Into<String>,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(RuntimeCommand::AcknowledgeRuntimeError {
+                expected: expected.into(),
+                reply: reply_tx,
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("failed to request runtime error acknowledgement: {error}")
+            })?;
+        Self::recv_runtime_reply(reply_rx, "runtime error acknowledgement", timeout)
+    }
+
     /// Performs the publish control operation.
     pub fn publish_control(&self, announcement: ControlAnnouncement) -> anyhow::Result<()> {
         self.tx
-            .send(RuntimeCommand::PublishControl(announcement))
+            .send(RuntimeCommand::PublishControl(Box::new(announcement)))
             .map_err(|error| anyhow::anyhow!("failed to send control announcement: {error}"))
     }
 
@@ -177,7 +214,7 @@ impl ControlHandle {
     /// Performs the publish update operation.
     pub fn publish_update(&self, announcement: UpdateEnvelopeAnnouncement) -> anyhow::Result<()> {
         self.tx
-            .send(RuntimeCommand::PublishUpdate(announcement))
+            .send(RuntimeCommand::PublishUpdate(Box::new(announcement)))
             .map_err(|error| anyhow::anyhow!("failed to send update announcement: {error}"))
     }
 
@@ -286,13 +323,20 @@ impl ControlHandle {
         outer_optimizer_state: Option<StateBlob>,
         current_parameters: Option<FlattenedTensorPack>,
     ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(RuntimeCommand::PublishDiLoCoState {
                 snapshot,
                 outer_optimizer_state,
                 current_parameters,
+                reply: reply_tx,
             })
-            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo state: {error}"))
+            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo state: {error}"))?;
+        Self::recv_runtime_reply(
+            reply_rx,
+            "publish DiLoCo state",
+            burn_p2p_swarm::CONTROL_REQUEST_RESPONSE_TIMEOUT,
+        )
     }
 
     /// Publishes one encoded DiLoCo pseudo-gradient manifest and chunk set.
@@ -301,9 +345,73 @@ impl ControlHandle {
         manifest: PseudoGradientManifest,
         chunks: Vec<PseudoGradientChunk>,
     ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
-            .send(RuntimeCommand::PublishDiLoCoGradient { manifest, chunks })
-            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo gradient: {error}"))
+            .send(RuntimeCommand::PublishDiLoCoGradient {
+                manifest,
+                chunks,
+                reply: reply_tx,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo gradient: {error}"))?;
+        Self::recv_runtime_reply(
+            reply_rx,
+            "publish DiLoCo gradient",
+            burn_p2p_swarm::CONTROL_REQUEST_RESPONSE_TIMEOUT,
+        )
+    }
+
+    /// Waits for one aggregate-ready release through the local runtime event loop.
+    pub fn wait_for_diloco_aggregate_ready(
+        &self,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        reducer_peer_id: PeerId,
+        round_cursor: RoundCursor,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoAggregateReady> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(RuntimeCommand::WaitDiLoCoAggregateReady {
+                experiment_id,
+                revision_id,
+                reducer_peer_id,
+                round_cursor,
+                timeout,
+                reply: reply_tx,
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("failed to wait for DiLoCo aggregate readiness: {error}")
+            })?;
+        Self::recv_runtime_reply(
+            reply_rx,
+            "wait for DiLoCo aggregate readiness",
+            runtime_reply_completion_timeout(timeout),
+        )
+    }
+
+    /// Publishes one reduced DiLoCo aggregate and its exact cohort commitment.
+    pub fn publish_diloco_aggregate(
+        &self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(RuntimeCommand::PublishDiLoCoAggregate {
+                manifest,
+                chunks,
+                participant_peer_ids,
+                contribution_manifest_ids,
+                reply: reply_tx,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to publish DiLoCo aggregate: {error}"))?;
+        Self::recv_runtime_reply(
+            reply_rx,
+            "publish DiLoCo aggregate",
+            burn_p2p_swarm::CONTROL_REQUEST_RESPONSE_TIMEOUT,
+        )
     }
 
     /// Performs the request snapshot operation.
@@ -342,7 +450,11 @@ impl ControlHandle {
                     reply: reply_tx,
                 })
                 .map_err(|error| anyhow::anyhow!("failed to request snapshot: {error}"))?;
-            Self::recv_runtime_reply(reply_rx, "snapshot", attempt_timeout)
+            Self::recv_runtime_reply(
+                reply_rx,
+                "snapshot",
+                runtime_reply_completion_timeout(attempt_timeout),
+            )
         });
 
         match runtime_result {
@@ -421,7 +533,11 @@ impl ControlHandle {
                     .map_err(|error| {
                         anyhow::anyhow!("failed to request artifact manifest: {error}")
                     })?;
-                Self::recv_runtime_reply(reply_rx, "artifact manifest", attempt_timeout)
+                Self::recv_runtime_reply(
+                    reply_rx,
+                    "artifact manifest",
+                    runtime_reply_completion_timeout(attempt_timeout),
+                )
             },
         );
 
@@ -482,7 +598,11 @@ impl ControlHandle {
                     .map_err(|error| {
                         anyhow::anyhow!("failed to request artifact chunk: {error}")
                     })?;
-                Self::recv_runtime_reply(reply_rx, "artifact chunk", attempt_timeout)
+                Self::recv_runtime_reply(
+                    reply_rx,
+                    "artifact chunk",
+                    runtime_reply_completion_timeout(attempt_timeout),
+                )
             },
         );
 
@@ -528,19 +648,7 @@ impl ControlHandle {
         let peer = PeerId::new(peer_id.clone());
         let (runtime_timeout, fallback_timeout) =
             split_fetch_timeout(&telemetry_snapshot, &peer, timeout);
-        let request_for_runtime = request.clone();
-        let runtime_result = self.retry_runtime_request(runtime_timeout, |attempt_timeout| {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            self.tx
-                .send(RuntimeCommand::FetchDiLoCo {
-                    peer_id: peer_id.clone(),
-                    request: request_for_runtime.clone(),
-                    timeout: attempt_timeout,
-                    reply: reply_tx,
-                })
-                .map_err(|error| anyhow::anyhow!("failed to request DiLoCo payload: {error}"))?;
-            Self::recv_runtime_reply(reply_rx, "diloco", attempt_timeout)
-        });
+        let runtime_result = self.fetch_diloco_from_runtime(&peer_id, &request, runtime_timeout);
 
         match runtime_result {
             Ok(result) => Ok(result),
@@ -563,6 +671,116 @@ impl ControlHandle {
         }
     }
 
+    fn fetch_diloco_from_runtime(
+        &self,
+        peer_id: &str,
+        request: &DiLoCoRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        let logical_timeout = timeout.max(Duration::from_millis(1));
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(RuntimeCommand::FetchDiLoCo {
+                peer_id: peer_id.to_owned(),
+                request: request.clone(),
+                timeout: logical_timeout,
+                reply: reply_tx,
+            })
+            .map_err(|error| anyhow::anyhow!("failed to request DiLoCo payload: {error}"))?;
+        Self::recv_runtime_reply(
+            reply_rx,
+            "diloco",
+            runtime_reply_completion_timeout(logical_timeout),
+        )
+    }
+
+    fn fetch_diloco_runtime_only(
+        &self,
+        peer_id: impl Into<String>,
+        request: DiLoCoRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<DiLoCoResponse> {
+        let peer_id = peer_id.into();
+        let operation = diloco_request_failure_operation(&request);
+        let result = self.fetch_diloco_from_runtime(&peer_id, &request, timeout);
+        if let Err(error) = result.as_ref() {
+            self.record_fetch_error(operation, error);
+        }
+        result
+    }
+
+    pub(crate) fn fetch_diloco_concurrently(
+        &self,
+        requests: Vec<(PeerId, DiLoCoRequest)>,
+        timeout: Duration,
+    ) -> Vec<(PeerId, anyhow::Result<DiLoCoResponse>)> {
+        const POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+        let logical_timeout = timeout.max(Duration::from_millis(1));
+        let runtime_timeout = logical_timeout;
+        let runtime_deadline = Instant::now() + runtime_reply_completion_timeout(runtime_timeout);
+        let mut results = Vec::with_capacity(requests.len());
+        let mut pending = Vec::with_capacity(requests.len());
+        for (peer_id, request) in requests {
+            let operation = diloco_request_failure_operation(&request);
+            let (reply, response) = mpsc::channel();
+            let command = RuntimeCommand::FetchDiLoCo {
+                peer_id: peer_id.as_str().to_owned(),
+                request: request.clone(),
+                timeout: runtime_timeout,
+                reply,
+            };
+            match self.tx.send(command) {
+                Ok(()) => pending.push((peer_id, operation, response)),
+                Err(error) => {
+                    let error =
+                        anyhow::anyhow!("failed to request concurrent DiLoCo payload: {error}");
+                    self.record_fetch_error(operation, &error);
+                    results.push((peer_id, Err(error)));
+                }
+            }
+        }
+
+        while !pending.is_empty() && Instant::now() < runtime_deadline {
+            let mut progressed = false;
+            let mut index = pending.len();
+            while index > 0 {
+                index -= 1;
+                let response = match pending[index].2.try_recv() {
+                    Ok(response) => Some(response.map_err(anyhow::Error::msg)),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(anyhow::anyhow!("DiLoCo reply channel closed")))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => None,
+                };
+                let Some(response) = response else {
+                    continue;
+                };
+                progressed = true;
+                let (peer_id, operation, _) = pending.swap_remove(index);
+                if let Err(error) = response.as_ref() {
+                    self.record_fetch_error(operation, error);
+                }
+                results.push((peer_id, response));
+            }
+            if !progressed {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+
+        for (peer_id, operation, _) in pending {
+            let response = Err(anyhow::anyhow!(
+                "DiLoCo concurrent persistent-path reply timed out after {} ms",
+                runtime_timeout.as_millis()
+            ));
+            if let Err(error) = response.as_ref() {
+                self.record_fetch_error(operation, error);
+            }
+            results.push((peer_id, response));
+        }
+        results
+    }
+
     pub fn fetch_diloco_state_snapshot(
         &self,
         peer_id: impl Into<String>,
@@ -570,7 +788,7 @@ impl ControlHandle {
         revision_id: RevisionId,
         timeout: Duration,
     ) -> anyhow::Result<Option<DiLoCoStateSnapshot>> {
-        match self.fetch_diloco(
+        match self.fetch_diloco_runtime_only(
             peer_id,
             DiLoCoRequest::StateSnapshot {
                 experiment_id,
@@ -591,6 +809,112 @@ impl ControlHandle {
                 anyhow::bail!("unexpected DiLoCo state response: {other:?}")
             }
         }
+    }
+
+    pub(crate) fn fetch_diloco_state_bundle(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<DiLoCoStateBundle>> {
+        match self.fetch_diloco(
+            peer_id,
+            DiLoCoRequest::StateBundle {
+                experiment_id,
+                revision_id,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::StateBundle(Some(bundle)) => Ok(Some(*bundle)),
+            DiLoCoResponse::StateBundle(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoParameterStateFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoParameterStateFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo state-bundle response: {other:?}")
+            }
+        }
+    }
+
+    pub(crate) fn fetch_diloco_state_snapshots_concurrently(
+        &self,
+        peer_ids: &[PeerId],
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        timeout: Duration,
+    ) -> Vec<(PeerId, anyhow::Result<Option<DiLoCoStateSnapshot>>)> {
+        const POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+        let deadline = Instant::now() + timeout.max(Duration::from_millis(1));
+        let mut results = Vec::with_capacity(peer_ids.len());
+        let mut pending = Vec::with_capacity(peer_ids.len());
+        for peer_id in peer_ids {
+            let (reply, response) = mpsc::channel();
+            let command = RuntimeCommand::FetchDiLoCo {
+                peer_id: peer_id.as_str().to_owned(),
+                request: DiLoCoRequest::StateSnapshot {
+                    experiment_id: experiment_id.clone(),
+                    revision_id: revision_id.clone(),
+                },
+                timeout,
+                reply,
+            };
+            match self.tx.send(command) {
+                Ok(()) => pending.push((peer_id.clone(), response)),
+                Err(error) => results.push((
+                    peer_id.clone(),
+                    Err(anyhow::anyhow!(
+                        "failed to request DiLoCo state snapshot: {error}"
+                    )),
+                )),
+            }
+        }
+
+        while !pending.is_empty() && Instant::now() < deadline {
+            let mut progressed = false;
+            let mut index = pending.len();
+            while index > 0 {
+                index -= 1;
+                let response = match pending[index].1.try_recv() {
+                    Ok(response) => Some(response.map_err(anyhow::Error::msg)),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(anyhow::anyhow!("DiLoCo state reply channel closed")))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => None,
+                };
+                let Some(response) = response else {
+                    continue;
+                };
+                progressed = true;
+                let (peer_id, _) = pending.swap_remove(index);
+                let response = response.and_then(|response| match response {
+                    DiLoCoResponse::StateSnapshot(snapshot) => Ok(snapshot),
+                    other => Err(anyhow::anyhow!(
+                        "unexpected DiLoCo state response: {other:?}"
+                    )),
+                });
+                results.push((peer_id, response));
+            }
+
+            if !progressed {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+
+        for (peer_id, _) in pending {
+            let error = anyhow::anyhow!(
+                "DiLoCo state snapshot batch timed out after {} ms",
+                timeout.as_millis()
+            );
+            self.record_fetch_error(RequestFailureOperation::DiLoCoStateFetch, &error);
+            results.push((peer_id, Err(error)));
+        }
+        results
     }
 
     pub fn fetch_diloco_outer_optimizer_state(
@@ -659,7 +983,7 @@ impl ControlHandle {
         manifest_id: ContentId,
         timeout: Duration,
     ) -> anyhow::Result<Option<PseudoGradientManifest>> {
-        match self.fetch_diloco(
+        match self.fetch_diloco_runtime_only(
             peer_id,
             DiLoCoRequest::GradientManifest { manifest_id },
             timeout,
@@ -686,7 +1010,7 @@ impl ControlHandle {
         chunk_index: u32,
         timeout: Duration,
     ) -> anyhow::Result<Option<PseudoGradientChunk>> {
-        match self.fetch_diloco(
+        match self.fetch_diloco_runtime_only(
             peer_id,
             DiLoCoRequest::GradientChunk {
                 manifest_id,
@@ -709,13 +1033,83 @@ impl ControlHandle {
         }
     }
 
+    pub fn fetch_diloco_gradient_slice(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        round_cursor: RoundCursor,
+        chunk_index: u32,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<DiLoCoGradientSlice>> {
+        let peer_id = peer_id.into();
+        match self.fetch_diloco(
+            &peer_id,
+            DiLoCoRequest::GradientSlice {
+                experiment_id,
+                revision_id,
+                round_cursor,
+                chunk_index,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::GradientSlice(Some(slice)) => Ok(Some(*slice)),
+            DiLoCoResponse::GradientSlice(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoGradientChunkFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoGradientChunkFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo gradient-slice response: {other:?}")
+            }
+        }
+    }
+
+    pub fn fetch_diloco_aggregate_slice(
+        &self,
+        peer_id: impl Into<String>,
+        experiment_id: ExperimentId,
+        revision_id: RevisionId,
+        round_cursor: RoundCursor,
+        chunk_index: u32,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<DiLoCoAggregateSlice>> {
+        let peer_id = peer_id.into();
+        match self.fetch_diloco(
+            &peer_id,
+            DiLoCoRequest::AggregateSlice {
+                experiment_id,
+                revision_id,
+                round_cursor,
+                chunk_index,
+            },
+            timeout,
+        )? {
+            DiLoCoResponse::AggregateSlice(Some(slice)) => Ok(Some(*slice)),
+            DiLoCoResponse::AggregateSlice(None) => {
+                self.record_missing_payload(RequestFailureOperation::DiLoCoAggregateChunkFetch);
+                Ok(None)
+            }
+            other => {
+                self.record_request_failure(RequestFailureKind::new(
+                    RequestFailureOperation::DiLoCoAggregateChunkFetch,
+                    RequestFailureReason::UnexpectedResponse,
+                ));
+                anyhow::bail!("unexpected DiLoCo aggregate-slice response: {other:?}")
+            }
+        }
+    }
+
     pub fn send_diloco_round_offer(
         &self,
         peer_id: impl Into<String>,
         offer: DiLoCoRoundOffer,
         timeout: Duration,
     ) -> anyhow::Result<DiLoCoResponse> {
-        self.fetch_diloco(peer_id, DiLoCoRequest::RoundOffer(Box::new(offer)), timeout)
+        self.fetch_diloco_runtime_only(peer_id, DiLoCoRequest::RoundOffer(Box::new(offer)), timeout)
     }
 
     pub fn send_diloco_round_heartbeat(
@@ -724,7 +1118,7 @@ impl ControlHandle {
         heartbeat: DiLoCoRoundHeartbeat,
         timeout: Duration,
     ) -> anyhow::Result<DiLoCoResponse> {
-        self.fetch_diloco(
+        self.fetch_diloco_runtime_only(
             peer_id,
             DiLoCoRequest::RoundHeartbeat(Box::new(heartbeat)),
             timeout,
@@ -737,7 +1131,7 @@ impl ControlHandle {
         finalize: DiLoCoRoundFinalize,
         timeout: Duration,
     ) -> anyhow::Result<DiLoCoResponse> {
-        self.fetch_diloco(
+        self.fetch_diloco_runtime_only(
             peer_id,
             DiLoCoRequest::RoundFinalize(Box::new(finalize)),
             timeout,
@@ -796,11 +1190,13 @@ impl ControlHandle {
         address: SwarmAddress,
         timeout: Duration,
     ) -> anyhow::Result<(PeerId, ControlPlaneSnapshot)> {
+        let transport_policy =
+            fetch_sidecar_transport_policy(self.runtime_boundary.transport_policy.clone());
         let mut shell = ControlPlaneShell::new(
             self.runtime_boundary.protocols.control.clone(),
             Keypair::generate_ed25519(),
             [address.clone()],
-            self.runtime_boundary.transport_policy.clone(),
+            transport_policy,
             None,
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -882,11 +1278,13 @@ impl ControlHandle {
             anyhow::bail!("no known address for peer {}", peer_id.as_str());
         }
 
+        let transport_policy =
+            fetch_sidecar_transport_policy(self.runtime_boundary.transport_policy.clone());
         let mut shell = ControlPlaneShell::new(
             self.runtime_boundary.protocols.control.clone(),
             Keypair::generate_ed25519(),
             addresses.clone(),
-            self.runtime_boundary.transport_policy.clone(),
+            transport_policy,
             None,
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -914,6 +1312,27 @@ impl ControlHandle {
                 .collect::<Vec<_>>()
         )
     }
+}
+
+fn fetch_sidecar_transport_policy(
+    mut policy: burn_p2p_swarm::RuntimeTransportPolicy,
+) -> burn_p2p_swarm::RuntimeTransportPolicy {
+    // A sidecar exists for one bounded direct fetch. Registering its ephemeral
+    // identity with discovery services leaves dead peers behind for the full
+    // rendezvous TTL and can make healthy runtimes spend their connection
+    // budget redialing addresses that can never return.
+    policy.target_connected_peers = 1;
+    policy.target_bootstrap_seed_connections = 0;
+    policy.enable_local_discovery = false;
+    policy.enable_relay_server = false;
+    policy.enable_hole_punching = false;
+    policy.enable_autonat = false;
+    policy.enable_rendezvous_client = false;
+    policy.enable_rendezvous_server = false;
+    policy.enable_kademlia = false;
+    policy.advertise_for_discovery = false;
+    policy.export_openmetrics = false;
+    policy
 }
 
 fn classify_request_failure(error: &anyhow::Error) -> RequestFailureReason {
@@ -946,13 +1365,19 @@ fn classify_request_failure(error: &anyhow::Error) -> RequestFailureReason {
 fn diloco_request_failure_operation(request: &DiLoCoRequest) -> RequestFailureOperation {
     match request {
         DiLoCoRequest::StateSnapshot { .. } => RequestFailureOperation::DiLoCoStateFetch,
-        DiLoCoRequest::OuterOptimizerState { .. } | DiLoCoRequest::CurrentParameters { .. } => {
+        DiLoCoRequest::StateBundle { .. }
+        | DiLoCoRequest::OuterOptimizerState { .. }
+        | DiLoCoRequest::CurrentParameters { .. } => {
             RequestFailureOperation::DiLoCoParameterStateFetch
         }
         DiLoCoRequest::GradientManifest { .. } => {
             RequestFailureOperation::DiLoCoGradientManifestFetch
         }
-        DiLoCoRequest::GradientChunk { .. } => RequestFailureOperation::DiLoCoGradientChunkFetch,
+        DiLoCoRequest::GradientChunk { .. } | DiLoCoRequest::GradientSlice { .. } => {
+            RequestFailureOperation::DiLoCoGradientChunkFetch
+        }
+        DiLoCoRequest::AggregateSlice { .. } => RequestFailureOperation::DiLoCoAggregateChunkFetch,
+        DiLoCoRequest::AggregateReady(_) => RequestFailureOperation::DiLoCoRoundRequest,
         DiLoCoRequest::RoundOffer(_)
         | DiLoCoRequest::RoundHeartbeat(_)
         | DiLoCoRequest::RoundFinalize(_) => RequestFailureOperation::DiLoCoRoundRequest,
@@ -960,9 +1385,17 @@ fn diloco_request_failure_operation(request: &DiLoCoRequest) -> RequestFailureOp
 }
 
 fn runtime_fetch_attempt_timeout(remaining: Duration) -> Duration {
-    const RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_secs(5);
+    // Logical retries are coalesced by the runtime while the underlying
+    // request-response stream remains active.
+    const RUNTIME_FETCH_RETRY_SLICE: Duration = Duration::from_secs(12);
 
     remaining.min(RUNTIME_FETCH_RETRY_SLICE)
+}
+
+fn runtime_reply_completion_timeout(operation_timeout: Duration) -> Duration {
+    const RUNTIME_REPLY_COMPLETION_GRACE: Duration = Duration::from_millis(500);
+
+    operation_timeout.saturating_add(RUNTIME_REPLY_COMPLETION_GRACE)
 }
 
 fn artifact_runtime_fetch_attempt_timeout(remaining: Duration) -> Duration {
@@ -987,8 +1420,38 @@ mod tests {
     fn runtime_fetch_attempt_timeout_allows_network_round_trip_under_load() {
         assert_eq!(
             runtime_fetch_attempt_timeout(Duration::from_secs(45)),
-            Duration::from_secs(5)
+            Duration::from_secs(12)
         );
+    }
+
+    #[test]
+    fn runtime_reply_completion_timeout_keeps_worker_and_caller_deadlines_ordered() {
+        assert_eq!(
+            runtime_reply_completion_timeout(Duration::from_secs(5)),
+            Duration::from_millis(5_500)
+        );
+    }
+
+    #[test]
+    fn fetch_sidecar_disables_ephemeral_discovery_registration() {
+        let mut base = burn_p2p_swarm::RuntimeTransportPolicy::native_for_roles(
+            &PeerRoleSet::default_trainer(),
+        );
+        base.enable_local_discovery = true;
+        let sidecar = fetch_sidecar_transport_policy(base.clone());
+
+        assert_eq!(sidecar.target_connected_peers, 1);
+        assert_eq!(sidecar.target_bootstrap_seed_connections, 0);
+        assert!(!sidecar.enable_local_discovery);
+        assert!(!sidecar.enable_rendezvous_client);
+        assert!(!sidecar.enable_rendezvous_server);
+        assert!(!sidecar.enable_kademlia);
+        assert!(!sidecar.enable_hole_punching);
+        assert!(!sidecar.enable_autonat);
+        assert!(!sidecar.enable_relay_server);
+        assert!(!sidecar.advertise_for_discovery);
+        assert_eq!(sidecar.enable_relay_client, base.enable_relay_client);
+        assert!(!sidecar.export_openmetrics);
     }
 
     #[test]

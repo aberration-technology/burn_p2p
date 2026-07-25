@@ -37,7 +37,8 @@ impl MemoryControlPlaneShell {
         let protocol = stream_protocol(&control_protocol)?;
         let behaviour = request_response::cbor::Behaviour::new(
             [(protocol, ProtocolSupport::Full)],
-            request_response::Config::default(),
+            request_response::Config::default()
+                .with_request_timeout(CONTROL_REQUEST_RESPONSE_TIMEOUT),
         );
         let swarm = Swarm::new(
             transport,
@@ -302,20 +303,65 @@ impl MemoryControlPlaneShell {
         self.diloco.publish_gradient(manifest, chunks);
     }
 
+    /// Publishes one reduced pseudo-gradient and its exact cohort commitment.
+    pub fn publish_diloco_aggregate(
+        &mut self,
+        manifest: PseudoGradientManifest,
+        chunks: Vec<PseudoGradientChunk>,
+        participant_peer_ids: Vec<PeerId>,
+        contribution_manifest_ids: Vec<ContentId>,
+    ) {
+        self.diloco.publish_aggregate(
+            manifest,
+            chunks,
+            participant_peer_ids,
+            contribution_manifest_ids,
+        );
+    }
+
+    pub fn diloco_aggregate_ready(
+        &self,
+        experiment_id: &ExperimentId,
+        revision_id: &RevisionId,
+        reducer_peer_id: &PeerId,
+        round_cursor: &RoundCursor,
+    ) -> Option<DiLoCoAggregateReady> {
+        self.diloco
+            .aggregate_ready(experiment_id, revision_id, reducer_peer_id, round_cursor)
+    }
+
     pub(crate) fn request_diloco_id(
         &mut self,
         peer_id: &str,
         request: DiLoCoRequest,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        self.start_diloco_request(peer_id, request)
+    }
+
+    /// Starts a DiLoCo request without blocking the swarm event loop.
+    pub fn start_diloco_request(
+        &mut self,
+        peer_id: &str,
+        request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
         Ok(self
             .swarm
             .behaviour_mut()
             .send_request(&peer_id, ControlPlaneRequest::DiLoCo(Box::new(request)))
             .to_string())
+    }
+
+    /// Takes a completed DiLoCo response produced while polling swarm events.
+    pub fn take_diloco_response(&mut self, request_id: &str) -> Option<(String, DiLoCoResponse)> {
+        self.completed_diloco_responses.remove(request_id)
+    }
+
+    pub(crate) fn discard_completed_diloco_responses(&mut self) -> usize {
+        let discarded = self.completed_diloco_responses.len();
+        self.completed_diloco_responses.clear();
+        discarded
     }
 
     pub fn fetch_diloco(
@@ -368,9 +414,7 @@ impl MemoryControlPlaneShell {
 
     pub(crate) fn request_snapshot_id(&mut self, peer_id: &str) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
         Ok(self
             .swarm
             .behaviour_mut()
@@ -394,9 +438,7 @@ impl MemoryControlPlaneShell {
         artifact_id: ArtifactId,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
         Ok(self
             .swarm
             .behaviour_mut()
@@ -425,9 +467,7 @@ impl MemoryControlPlaneShell {
         chunk_id: ChunkId,
     ) -> Result<String, SwarmError> {
         self.settle_request_response();
-        let peer_id = peer_id
-            .parse::<Libp2pPeerId>()
-            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        let peer_id = parse_remote_peer_id(&self.local_peer_id, peer_id)?;
         Ok(self
             .swarm
             .behaviour_mut()
@@ -625,12 +665,15 @@ impl MemoryControlPlaneShell {
                             }
                         }
                         ControlPlaneRequest::DiLoCo(request) => {
+                            let request_kind = diloco_request_kind(&request);
                             let response = ControlPlaneResponse::DiLoCo(Box::new(
                                 self.diloco.respond(*request),
                             ));
                             match self.swarm.behaviour_mut().send_response(channel, response) {
                                 Ok(()) => Poll::Ready(LiveControlPlaneEvent::Other {
-                                    kind: format!("responded to DiLoCo request from {}", peer),
+                                    kind: format!(
+                                        "responded to DiLoCo {request_kind} request from {peer}"
+                                    ),
                                 }),
                                 Err(_) => Poll::Ready(LiveControlPlaneEvent::ResponseSendFailure {
                                     peer_id: peer.to_string(),
@@ -665,12 +708,12 @@ impl MemoryControlPlaneShell {
                             })
                         }
                         ControlPlaneResponse::DiLoCo(response) => {
+                            let response_kind = diloco_response_kind(&response);
                             self.completed_diloco_responses
                                 .insert(request_id.to_string(), (peer.to_string(), *response));
                             Poll::Ready(LiveControlPlaneEvent::Other {
                                 kind: format!(
-                                    "received DiLoCo response {} from {}",
-                                    request_id, peer
+                                    "received DiLoCo {response_kind} response {request_id} from {peer}"
                                 ),
                             })
                         }
@@ -737,6 +780,11 @@ impl MemoryControlPlaneShell {
     pub fn wait_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
         self.wait_live_event(timeout)
             .or_else(|| self.pending_events.pop_front())
+    }
+
+    /// Waits for one latency-sensitive event.
+    pub fn wait_priority_event(&mut self, timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        self.wait_event(timeout)
     }
 }
 
@@ -993,6 +1041,25 @@ impl MemoryControlPlaneShell {
     ) {
     }
 
+    pub fn publish_diloco_aggregate(
+        &mut self,
+        _manifest: PseudoGradientManifest,
+        _chunks: Vec<PseudoGradientChunk>,
+        _participant_peer_ids: Vec<PeerId>,
+        _contribution_manifest_ids: Vec<ContentId>,
+    ) {
+    }
+
+    pub fn diloco_aggregate_ready(
+        &self,
+        _experiment_id: &ExperimentId,
+        _revision_id: &RevisionId,
+        _reducer_peer_id: &PeerId,
+        _round_cursor: &RoundCursor,
+    ) -> Option<DiLoCoAggregateReady> {
+        None
+    }
+
     pub fn fetch_diloco(
         &mut self,
         peer_id: &str,
@@ -1005,6 +1072,27 @@ impl MemoryControlPlaneShell {
         Err(SwarmError::Runtime(
             "memory control-plane transport is unavailable on wasm targets".into(),
         ))
+    }
+
+    pub fn start_diloco_request(
+        &mut self,
+        peer_id: &str,
+        _request: DiLoCoRequest,
+    ) -> Result<String, SwarmError> {
+        peer_id
+            .parse::<Libp2pPeerId>()
+            .map_err(|_| SwarmError::InvalidPeerId(peer_id.to_owned()))?;
+        Err(SwarmError::Runtime(
+            "memory control-plane transport is unavailable on wasm targets".into(),
+        ))
+    }
+
+    pub fn take_diloco_response(&mut self, _request_id: &str) -> Option<(String, DiLoCoResponse)> {
+        None
+    }
+
+    pub(crate) fn discard_completed_diloco_responses(&mut self) -> usize {
+        0
     }
 
     /// Performs the request snapshot operation.
@@ -1104,6 +1192,11 @@ impl MemoryControlPlaneShell {
 
     /// Performs the wait event operation.
     pub fn wait_event(&mut self, _timeout: Duration) -> Option<LiveControlPlaneEvent> {
+        None
+    }
+
+    /// Waits for one latency-sensitive event.
+    pub fn wait_priority_event(&mut self, _timeout: Duration) -> Option<LiveControlPlaneEvent> {
         None
     }
 }

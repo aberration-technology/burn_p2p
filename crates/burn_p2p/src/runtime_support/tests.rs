@@ -69,6 +69,55 @@ fn test_directory_entry(experiment: &ExperimentHandle) -> ExperimentDirectoryEnt
 }
 
 #[test]
+fn next_window_assignment_uses_promoted_incumbent_roster() {
+    let experiment = test_experiment_handle();
+    let mut snapshot = test_snapshot([PeerRole::TrainerCpu]);
+    snapshot.local_peer_id = Some(PeerId::new("trainer-c"));
+    let merged_head_id = HeadId::new("head-round-1");
+    let now = Utc::now();
+    snapshot
+        .control_plane
+        .diffusion_promotion_certificate_announcements
+        .push(DiffusionPromotionCertificateAnnouncement {
+            overlay: experiment.overlay_set().expect("overlay set").heads,
+            certificate: DiffusionPromotionCertificate {
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                window_id: WindowId(1),
+                base_head_id: HeadId::new("genesis"),
+                merged_head_id: merged_head_id.clone(),
+                merged_artifact_id: ArtifactId::new("artifact-round-1"),
+                promotion_mode: HeadPromotionMode::DiffusionSteadyState,
+                attesting_trainers: vec![
+                    PeerId::new("trainer-c"),
+                    PeerId::new("trainer-a"),
+                    PeerId::new("trainer-b"),
+                ],
+                attestation_ids: vec![
+                    ContentId::new("attestation-c"),
+                    ContentId::new("attestation-a"),
+                    ContentId::new("attestation-b"),
+                ],
+                attester_count: 3,
+                cumulative_sample_weight: 3.0,
+                settled_at: now,
+                promoter_peer_id: PeerId::new("trainer-b"),
+            },
+            announced_at: now,
+        });
+
+    assert_eq!(
+        canonical_training_assignment_peers(&snapshot, &experiment, WindowId(2), &merged_head_id,),
+        Some(vec![
+            PeerId::new("trainer-a"),
+            PeerId::new("trainer-b"),
+            PeerId::new("trainer-c"),
+        ])
+    );
+}
+
+#[test]
 fn corrupt_control_plane_state_is_quarantined_during_restore() {
     let storage_root = tempfile::tempdir().expect("storage tempdir");
     let storage = StorageConfig::new(storage_root.path().to_path_buf());

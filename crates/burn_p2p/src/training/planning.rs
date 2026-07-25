@@ -5,17 +5,13 @@ pub(super) fn plan_prefetch_lease_for_window(
 ) -> anyhow::Result<PlannedLease> {
     let preferred_microshards =
         preferred_microshards_for_peer(args.assignment_peers, args.local_peer_id, args.microshards);
-    let budget_work_units = fair_share_budget_work_units(
-        args.assignment_peers.len(),
-        preferred_microshards.len(),
-        args.budget_work_units,
-    );
+    let budget_work_units = args.budget_work_units.max(1);
     let mut lease_planner = LeasePlanner::default();
     lease_planner.config.max_microshards_per_lease = lease_planner
         .config
         .max_microshards_per_lease
         .min(adaptive_microshard_cap(
-            fair_share_microshard_cap(args.assignment_peers.len(), preferred_microshards.len()),
+            preferred_microshards.len(),
             args.adaptation_factor,
         ));
 
@@ -150,29 +146,6 @@ pub(super) fn training_placement_budget_work_units(
     ))
 }
 
-pub(super) fn fair_share_microshard_cap(
-    assignment_peer_count: usize,
-    available_microshard_count: usize,
-) -> usize {
-    available_microshard_count
-        .max(1)
-        .div_ceil(assignment_peer_count.max(1))
-}
-
-pub(super) fn fair_share_budget_work_units(
-    assignment_peer_count: usize,
-    available_microshard_count: usize,
-    placement_budget_work_units: u64,
-) -> u64 {
-    let fair_share_microshards =
-        fair_share_microshard_cap(assignment_peer_count, available_microshard_count) as u128;
-    let available_microshards = available_microshard_count.max(1) as u128;
-    let placement_budget_work_units = placement_budget_work_units.max(1) as u128;
-
-    ((placement_budget_work_units * fair_share_microshards).div_ceil(available_microshards)).max(1)
-        as u64
-}
-
 pub(super) fn adaptive_budget_work_units(
     base_budget_work_units: u64,
     adaptation_factor: f64,
@@ -225,16 +198,11 @@ pub(super) fn unleased_microshards_for_window(
         })
         .flat_map(|announcement| announcement.lease.microshards.iter().cloned())
         .collect::<BTreeSet<_>>();
-    let available = microshards
+    microshards
         .iter()
         .filter(|microshard| !leased_microshards.contains(&microshard.microshard_id))
         .cloned()
-        .collect::<Vec<_>>();
-    if available.is_empty() {
-        microshards.to_vec()
-    } else {
-        available
-    }
+        .collect()
 }
 
 pub(super) fn merge_connected_lease_announcements(
@@ -261,11 +229,18 @@ pub(super) fn preferred_microshards_for_peer(
         return microshards.to_vec();
     }
 
-    let peer_index = topology_peers
+    // Placement ranking is allowed to differ while telemetry converges, but it
+    // must not change the positional shard partition for an otherwise equal
+    // peer cohort.
+    let mut assignment_peers = topology_peers.to_vec();
+    assignment_peers.push(local_peer_id.clone());
+    assignment_peers.sort();
+    assignment_peers.dedup();
+    let peer_index = assignment_peers
         .iter()
         .position(|peer_id| peer_id == local_peer_id)
-        .unwrap_or_default();
-    let slot_count = topology_peers.len().max(1);
+        .expect("local peer was inserted into the assignment cohort");
+    let slot_count = assignment_peers.len();
     let preferred = microshards
         .iter()
         .enumerate()
@@ -280,6 +255,22 @@ pub(super) fn preferred_microshards_for_peer(
     }
 }
 
+pub(super) fn preferred_unleased_microshards_for_peer(
+    topology_peers: &[PeerId],
+    local_peer_id: &PeerId,
+    microshards: &[MicroShard],
+    unleased_microshards: &[MicroShard],
+) -> Vec<MicroShard> {
+    let unleased_ids = unleased_microshards
+        .iter()
+        .map(|microshard| &microshard.microshard_id)
+        .collect::<BTreeSet<_>>();
+    preferred_microshards_for_peer(topology_peers, local_peer_id, microshards)
+        .into_iter()
+        .filter(|microshard| unleased_ids.contains(&microshard.microshard_id))
+        .collect()
+}
+
 pub(super) fn load_runtime_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
@@ -289,11 +280,10 @@ pub(super) fn load_runtime_model<P>(
 where
     P: P2pWorkload,
 {
-    Ok(if let Some((_, base_head)) = current_head.as_ref() {
-        load_model_for_head(project, base_head, store, device)?
-    } else {
-        project.init_model(device)
-    })
+    let (_, base_head) = current_head
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("training requires a materialized canonical base head"))?;
+    load_model_for_head(project, base_head, store, device)
 }
 
 pub(crate) fn load_model_for_head<P>(
@@ -305,13 +295,15 @@ pub(crate) fn load_model_for_head<P>(
 where
     P: P2pWorkload,
 {
-    match store.load_manifest(&head.artifact_id) {
-        Ok(descriptor) => {
-            project.load_model_artifact(project.init_model(device), &descriptor, store, device)
-        }
-        Err(_) if head.global_step == 0 => Ok(project.init_model(device)),
-        Err(error) => Err(error.into()),
-    }
+    let descriptor = store.load_manifest(&head.artifact_id).map_err(|error| {
+        anyhow::anyhow!(
+            "missing artifact {} for canonical head {} at global step {}: {error}",
+            head.artifact_id.as_str(),
+            head.head_id.as_str(),
+            head.global_step,
+        )
+    })?;
+    project.load_model_artifact(project.init_model(device), &descriptor, store, device)
 }
 
 pub(super) fn runtime_blocked_reason(prefix: &str, lag_assessment: &LagAssessment) -> String {

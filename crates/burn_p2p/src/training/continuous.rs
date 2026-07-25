@@ -9,7 +9,10 @@ where
         experiment: &ExperimentHandle,
         policy: ContinuousTrainerPolicy,
     ) -> anyhow::Result<Self> {
-        let canonical_head = node.sync_experiment_head(experiment)?;
+        let canonical_head = match node.sync_experiment_head(experiment)? {
+            Some(head) => Some(head),
+            None => Some(node.initialize_local_head(experiment)?),
+        };
         let training_head = canonical_head.clone();
         let storage =
             node.config().storage.as_ref().cloned().ok_or_else(|| {
@@ -133,7 +136,7 @@ where
         self.training_head = Some(execution.head.clone());
         self.warm_model = Some(execution.model);
 
-        Ok(TrainingWindowOutcome {
+        let outcome = TrainingWindowOutcome {
             lease: execution.lease,
             head: execution.head,
             artifact: execution.artifact,
@@ -145,7 +148,10 @@ where
                 publish_latency_ms,
             },
             report: execution.report,
-        })
+        };
+        self.node
+            .notify_training_window_completed(&self.experiment, &outcome);
+        Ok(outcome)
     }
 
     fn wait_for_canonical_visibility_if_too_far_ahead(&mut self) -> anyhow::Result<()> {

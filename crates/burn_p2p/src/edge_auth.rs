@@ -697,6 +697,7 @@ mod tests {
                 entries: Vec::new(),
             },
             heads: Vec::new(),
+            revision_contracts: Vec::new(),
             leaderboard: burn_p2p_core::BrowserLeaderboardSnapshot {
                 network_id: NetworkId::new("demo"),
                 score_version: "v1".into(),

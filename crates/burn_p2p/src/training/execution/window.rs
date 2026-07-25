@@ -60,7 +60,7 @@ impl<P> RunningNode<P> {
             &execution.artifact.artifact_id,
         );
 
-        Ok(TrainingWindowOutcome {
+        let outcome = TrainingWindowOutcome {
             lease: execution.lease,
             head: execution.head,
             artifact: execution.artifact,
@@ -72,7 +72,9 @@ impl<P> RunningNode<P> {
                 publish_latency_ms,
             },
             report: execution.report,
-        })
+        };
+        self.notify_training_window_completed(experiment, &outcome);
+        Ok(outcome)
     }
 
     /// Performs one live training step using the active revision protocol.
@@ -115,7 +117,25 @@ impl<P> RunningNode<P> {
         P: DiLoCoWorkload,
         P::Batch: Clone,
     {
-        let prepared = self.prepare_training_state(experiment, None)?;
+        let prepared = self.prepare_diloco_round(experiment)?;
+        self.execute_prepared_diloco_round(prepared)
+    }
+
+    /// Plans, leases, fetches, and materializes one DiLoCo round without
+    /// entering the synchronized network collective.
+    ///
+    /// Multi-peer orchestrators should prepare all cohort members first and
+    /// then execute the returned rounds together. This keeps capability probes
+    /// and data loading off the collective's critical path.
+    pub fn prepare_diloco_round(
+        &mut self,
+        experiment: &ExperimentHandle,
+    ) -> anyhow::Result<PreparedDiLoCoRound<P::Batch>>
+    where
+        P: DiLoCoWorkload,
+        P::Batch: Clone,
+    {
+        let training_state = self.prepare_training_state(experiment, None)?;
         let capability = {
             let project = &mut self
                 .node
@@ -126,7 +146,8 @@ impl<P> RunningNode<P> {
             let model = project.init_model(&device);
             project.benchmark(&model, &device)
         };
-        let planned = self.plan_training_window(&prepared.experiment, &prepared, &capability)?;
+        let planned =
+            self.plan_training_window(&training_state.experiment, &training_state, &capability)?;
         {
             let mut snapshot = self
                 .telemetry
@@ -135,10 +156,10 @@ impl<P> RunningNode<P> {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             snapshot.set_node_state(NodeRuntimeState::LeasePending);
             snapshot.set_primary_slot_state(SlotRuntimeState::FetchingShards(
-                prepared.assignment.clone(),
+                training_state.assignment.clone(),
             ));
         }
-        let cache = ShardCache::new(prepared.storage.dataset_cache_dir());
+        let cache = ShardCache::new(training_state.storage.dataset_cache_dir());
         let cached_microshards = cache.fetch_lease_microshards(
             &planned.registration,
             &planned.microshard_plan,
@@ -152,7 +173,32 @@ impl<P> RunningNode<P> {
                 .project;
             project.load_batches(&planned.lease.lease, &cached_microshards)?
         };
-        self.diloco_round_once_with_batches(&prepared.experiment, &batches)
+
+        Ok(PreparedDiLoCoRound {
+            experiment: training_state.experiment,
+            lease: planned.lease.lease,
+            batches,
+        })
+    }
+
+    /// Executes one previously prepared DiLoCo round.
+    ///
+    /// The prepared value is consumed so its lease and batches cannot
+    /// accidentally be reused in a later round.
+    pub fn execute_prepared_diloco_round(
+        &mut self,
+        prepared: PreparedDiLoCoRound<P::Batch>,
+    ) -> anyhow::Result<DiLoCoRoundOutcome>
+    where
+        P: DiLoCoWorkload,
+        P::Batch: Clone,
+    {
+        let PreparedDiLoCoRound {
+            experiment,
+            lease,
+            batches,
+        } = prepared;
+        self.diloco_round_once_with_batches_and_lease(&experiment, &batches, Some(lease))
     }
 
     pub(in crate::training) fn ensure_artifact_windows_protocol(
@@ -183,6 +229,14 @@ impl<P> RunningNode<P> {
     where
         P: P2pWorkload,
     {
+        let active_roles = self.telemetry().snapshot().configured_roles;
+        anyhow::ensure!(
+            active_roles.contains(&PeerRole::TrainerGpu)
+                || active_roles.contains(&PeerRole::TrainerCpu)
+                || active_roles.contains(&PeerRole::BrowserTrainerWgpu)
+                || active_roles.contains(&PeerRole::BrowserTrainer),
+            "local runtime is not currently participating as a trainer"
+        );
         let storage = self
             .config()
             .storage
@@ -252,10 +306,17 @@ impl<P> RunningNode<P> {
                 latest_head_from_snapshot(telemetry_snapshot.control_plane.clone(), &experiment)
             })
         };
+        let current_head = match current_head {
+            Some(current_head) => Some(current_head),
+            None => Some((
+                local_peer_id.clone(),
+                self.initialize_local_head(&experiment)?,
+            )),
+        };
         let network_id = self.mainnet().network_id().clone();
         let mut telemetry_snapshot = telemetry_snapshot;
         merge_connected_lease_announcements(&mut telemetry_snapshot.control_plane, &snapshots);
-        let mainnet_roles = self.mainnet().roles.clone();
+        let mainnet_roles = telemetry_snapshot.configured_roles.clone();
         let node_config = self.config().clone();
         let metrics_retention = node_config
             .metrics_retention
@@ -272,7 +333,7 @@ impl<P> RunningNode<P> {
         if let Some((source_peer_id, source_head)) = current_head.as_ref()
             && !store.has_complete_artifact(&source_head.artifact_id)?
         {
-            if pinned_head.is_some() && source_head.global_step > 0 {
+            if pinned_head.is_some() {
                 anyhow::bail!(
                     "pinned base head {} artifact {} was not present locally",
                     source_head.head_id.as_str(),
@@ -301,11 +362,7 @@ impl<P> RunningNode<P> {
                     base_head_sync_timeout,
                 )
             };
-            if let Err(error) = result
-                && source_head.global_step > 0
-            {
-                return Err(error);
-            }
+            result?;
         }
 
         Ok(TrainingPreparedState {
@@ -369,7 +426,7 @@ impl<P> RunningNode<P> {
         }
 
         let assignment = SlotAssignmentState::from_experiment(&target_experiment);
-        let idle_state = default_node_runtime_state(&self.mainnet().roles);
+        let idle_state = default_node_runtime_state(&self.telemetry().snapshot().configured_roles);
         self.update_runtime_state(
             NodeRuntimeState::DirectorySync,
             Some(SlotRuntimeState::Migrating(assignment.clone())),
@@ -466,6 +523,14 @@ impl<P> RunningNode<P> {
         }
 
         let throughput_sample_started_at = Utc::now();
+        self.notify_training_window_started(&TrainingWindowStartedEvent {
+            study_id: experiment.study_id.clone(),
+            experiment_id: experiment.experiment_id.clone(),
+            revision_id: experiment.revision_id.clone(),
+            window_id: planned.window_id,
+            base_head_id: planned.base_head_id.clone(),
+            started_at: throughput_sample_started_at,
+        });
         let cache = ShardCache::new(prepared.storage.dataset_cache_dir());
         let cached_microshards = cache.fetch_lease_microshards(
             &planned.registration,

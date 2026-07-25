@@ -215,6 +215,8 @@ pub enum RequestFailureOperation {
     DiLoCoGradientManifestFetch,
     /// Fetching a DiLoCo pseudo-gradient chunk.
     DiLoCoGradientChunkFetch,
+    /// Fetching a reduced DiLoCo aggregate chunk.
+    DiLoCoAggregateChunkFetch,
     /// Sending a DiLoCo round-control request.
     DiLoCoRoundRequest,
     /// Sending an outbound request whose semantic operation is not known locally.

@@ -17,11 +17,12 @@ use burn_p2p::{
     ExperimentLifecycleAnnouncement, FleetScheduleAnnouncement, HeadAnnouncement, HeadDescriptor,
     MetricsRetentionBudget, NodeRuntimeState, NodeTelemetrySnapshot, ReducerLoadAnnouncement,
     RequestFailureCounter, RevocationEpoch, SlotRuntimeState, StorageConfig,
+    verify_revision_contract_with_trust_bundle,
 };
 use burn_p2p_core::{
     ExperimentId, HeadEvalReport, HeadId, MergeCertificate, NetworkId, Page, PageRequest, PeerId,
-    PeerWindowMetrics, ReducerCohortMetrics, RevisionId, StudyId, TrustBundleExport, WindowId,
-    operator_visible_last_error,
+    PeerWindowMetrics, ReducerCohortMetrics, RevisionContractBundle, RevisionId, StudyId,
+    TrustBundleExport, WindowId, operator_visible_last_error,
 };
 #[cfg(feature = "metrics-indexer")]
 use burn_p2p_metrics::{RobustnessRollup, derive_robustness_rollup};
@@ -758,6 +759,9 @@ pub struct BootstrapAdminState {
     pub minimum_revocation_epoch: Option<RevocationEpoch>,
     /// The trust bundle.
     pub trust_bundle: Option<TrustBundleExport>,
+    /// Authority-signed revision contracts distributed to browser peers.
+    #[serde(default)]
+    pub revision_contracts: Vec<burn_p2p_core::RevisionContractBundle>,
     /// The last error.
     pub last_error: Option<String>,
     /// The node state.
@@ -786,6 +790,152 @@ fn persist_durable_receipt(path: &Path, receipt: &ContributionReceipt) -> anyhow
 }
 
 impl BootstrapAdminState {
+    /// Registers one authority-signed revision contract for browser distribution.
+    pub fn register_revision_contract(
+        &mut self,
+        contract: RevisionContractBundle,
+    ) -> anyhow::Result<()> {
+        contract.validate()?;
+        let trust_bundle = self.trust_bundle.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot register revision contract {} before a trust bundle is available",
+                contract.revision.revision_id.as_str()
+            )
+        })?;
+        verify_revision_contract_with_trust_bundle(trust_bundle, &contract)?;
+        if let Some(existing) = self
+            .revision_contracts
+            .iter()
+            .find(|existing| existing.revision.revision_id == contract.revision.revision_id)
+        {
+            anyhow::ensure!(
+                existing == &contract,
+                "conflicting revision contracts registered for {}",
+                contract.revision.revision_id.as_str()
+            );
+            return Ok(());
+        }
+        self.revision_contracts.push(contract);
+        self.revision_contracts
+            .sort_by(|left, right| left.revision.revision_id.cmp(&right.revision.revision_id));
+        Ok(())
+    }
+
+    /// Atomically publishes verified contracts and authority-signature rotations.
+    ///
+    /// A contract for an existing revision may only be replaced when its
+    /// authority payload is byte-for-byte semantically identical. Training,
+    /// genesis, or revision-policy changes require a new revision ID.
+    pub fn rollout_revision_contracts(
+        &mut self,
+        contracts: Vec<RevisionContractBundle>,
+        allow_signature_rotation: bool,
+    ) -> anyhow::Result<(usize, usize)> {
+        anyhow::ensure!(
+            !contracts.is_empty(),
+            "revision contract rollout cannot be empty"
+        );
+        let trust_bundle = self.trust_bundle.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("cannot roll out revision contracts before a trust bundle is available")
+        })?;
+        for contract in &contracts {
+            contract.validate()?;
+            verify_revision_contract_with_trust_bundle(trust_bundle, contract)?;
+        }
+
+        let mut next = self.revision_contracts.clone();
+        let mut inserted = 0usize;
+        let mut signature_rotations = 0usize;
+        for contract in contracts {
+            match next
+                .iter_mut()
+                .find(|existing| existing.revision.revision_id == contract.revision.revision_id)
+            {
+                Some(existing) if existing == &contract => {}
+                Some(existing) => {
+                    anyhow::ensure!(
+                        allow_signature_rotation,
+                        "revision contract {} already exists with a different signature",
+                        contract.revision.revision_id.as_str()
+                    );
+                    anyhow::ensure!(
+                        existing.authority_payload() == contract.authority_payload(),
+                        "revision contract {} changes its signed semantic payload; publish a new revision instead",
+                        contract.revision.revision_id.as_str()
+                    );
+                    *existing = contract;
+                    signature_rotations = signature_rotations.saturating_add(1);
+                }
+                None => {
+                    next.push(contract);
+                    inserted = inserted.saturating_add(1);
+                }
+            }
+        }
+        next.sort_by(|left, right| left.revision.revision_id.cmp(&right.revision.revision_id));
+        let mut revision_ids = BTreeSet::new();
+        anyhow::ensure!(
+            next.iter()
+                .all(|contract| revision_ids.insert(contract.revision.revision_id.clone())),
+            "revision contract rollout contains duplicate revision IDs"
+        );
+        self.revision_contracts = next;
+        Ok((inserted, signature_rotations))
+    }
+
+    /// Validates all currently registered revision contracts against current trust.
+    pub fn validate_revision_contracts(&self) -> anyhow::Result<()> {
+        let Some(trust_bundle) = self.trust_bundle.as_ref() else {
+            anyhow::ensure!(
+                self.revision_contracts.is_empty(),
+                "revision contracts are configured but no trust bundle is available"
+            );
+            return Ok(());
+        };
+        let mut revision_ids = BTreeSet::new();
+        for contract in &self.revision_contracts {
+            anyhow::ensure!(
+                revision_ids.insert(contract.revision.revision_id.clone()),
+                "duplicate revision contract for {}",
+                contract.revision.revision_id.as_str()
+            );
+            contract.validate()?;
+            verify_revision_contract_with_trust_bundle(trust_bundle, contract)?;
+        }
+        Ok(())
+    }
+
+    /// Loads one or more JSON revision-contract files and verifies each before publication.
+    pub fn load_revision_contract_files(
+        &mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> anyhow::Result<usize> {
+        let mut loaded = 0usize;
+        for path in paths {
+            let bytes = fs::read(&path).map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to read revision contract file {}: {error}",
+                    path.display()
+                )
+            })?;
+            let contracts = match serde_json::from_slice::<RevisionContractBundle>(&bytes) {
+                Ok(contract) => vec![contract],
+                Err(single_error) => serde_json::from_slice::<Vec<RevisionContractBundle>>(&bytes)
+                    .map_err(|list_error| {
+                        anyhow::anyhow!(
+                            "failed to decode revision contract file {} as a bundle ({single_error}) or bundle list ({list_error})",
+                            path.display()
+                        )
+                    })?,
+            };
+            for contract in contracts {
+                self.register_revision_contract(contract)?;
+                loaded = loaded.saturating_add(1);
+            }
+        }
+        Ok(loaded)
+    }
+
     pub(crate) fn register_live_head_announcement(
         &mut self,
         announcement: HeadAnnouncement,
@@ -1250,12 +1400,250 @@ impl BootstrapAdminState {
 mod tests {
     use super::*;
     use burn_p2p::{
-        ClientPlatform, ControlPlaneSnapshot, DiffusionPromotionCertificate,
-        DiffusionPromotionCertificateAnnouncement, HeadAnnouncement, LagPolicy, LagState,
-        NodeRuntimeState, RuntimeStatus,
+        ArtifactDescriptor, ArtifactId, ArtifactKind, BrowserRolePolicy, BrowserVisibilityPolicy,
+        ClientPlatform, ControlPlaneSnapshot, DatasetViewId, DiffusionPromotionCertificate,
+        DiffusionPromotionCertificateAnnouncement, ExperimentResourceRequirements,
+        HeadAnnouncement, LagPolicy, LagState, LocalOptimizerStatePolicy,
+        MODEL_GENESIS_SIGNATURE_KEY_ID, MergeWindowMissPolicy, ModelGenesisManifest, Precision,
+        REVISION_CONTRACT_SIGNATURE_KEY_ID, RecurrentStatePolicy, RevisionContractBundle,
+        RevisionManifest, RuntimeStatus, SchedulerStatePolicy, SignatureAlgorithm,
+        SignatureMetadata, SignedPayload, TRAINING_CONTRACT_VERSION, TrainingContractManifest,
+        TrainingProtocol, UpdateCodec, WindowActivation, WorkloadId, sign_revision_contract_bundle,
     };
+    use burn_p2p_core::{ContentId, SchemaEnvelope, TrustedIssuerStatus};
     use chrono::Utc;
+    use libp2p_identity::Keypair;
     use semver::Version;
+
+    fn signed_revision_contract(authority: &Keypair, description: &str) -> RevisionContractBundle {
+        let training = TrainingContractManifest {
+            version: TRAINING_CONTRACT_VERSION,
+            workload_id: WorkloadId::new("workload"),
+            model_program_hash: ContentId::new("program"),
+            model_schema_hash: ContentId::new("schema"),
+            checkpoint_format_hash: ContentId::new("format"),
+            dataset_view_id: DatasetViewId::new("dataset"),
+            tokenizer_hash: ContentId::new("tokenizer"),
+            preprocessing_hash: ContentId::new("preprocess"),
+            objective_hash: ContentId::new("objective"),
+            optimizer_hash: ContentId::new("optimizer"),
+            scheduler_hash: ContentId::new("scheduler"),
+            optimizer_state_policy: LocalOptimizerStatePolicy::ResetPerWindow,
+            scheduler_state_policy: SchedulerStatePolicy::CanonicalGlobalStep,
+            recurrent_state_policy: RecurrentStatePolicy::LeaseScoped,
+            update_codec: UpdateCodec::DenseDelta,
+            aggregation_hash: ContentId::new("aggregation"),
+            validation_hash: ContentId::new("validation"),
+            initialization_hash: ContentId::new("initialization"),
+            extensions: BTreeMap::new(),
+        };
+        let training_contract_id = training.contract_id().expect("training contract id");
+        let revision = RevisionManifest {
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+            workload_id: WorkloadId::new("workload"),
+            required_release_train_hash: ContentId::new("release"),
+            model_schema_hash: ContentId::new("schema"),
+            checkpoint_format_hash: ContentId::new("format"),
+            dataset_view_id: DatasetViewId::new("dataset"),
+            training_config_hash: training_contract_id.clone(),
+            merge_topology_policy_hash: ContentId::new("merge"),
+            training_protocol: TrainingProtocol::default(),
+            slot_requirements: ExperimentResourceRequirements {
+                minimum_roles: BTreeSet::new(),
+                minimum_device_memory_bytes: None,
+                minimum_system_memory_bytes: None,
+                estimated_download_bytes: 1,
+                estimated_window_seconds: 1,
+            },
+            activation_window: WindowActivation {
+                activation_window: WindowId(0),
+                grace_windows: 0,
+            },
+            lag_policy: LagPolicy::default(),
+            merge_window_miss_policy: MergeWindowMissPolicy::default(),
+            robustness_policy: None,
+            browser_enabled: true,
+            browser_role_policy: BrowserRolePolicy::default(),
+            max_browser_checkpoint_bytes: None,
+            max_browser_window_secs: None,
+            max_browser_shard_bytes: None,
+            requires_webgpu: false,
+            max_browser_batch_size: None,
+            recommended_browser_precision: None,
+            visibility_policy: BrowserVisibilityPolicy::SwarmEligible,
+            description: description.into(),
+        };
+        let genesis = ModelGenesisManifest {
+            experiment_id: revision.experiment_id.clone(),
+            revision_id: revision.revision_id.clone(),
+            workload_id: revision.workload_id.clone(),
+            training_contract_id: training_contract_id.clone(),
+            artifact: ArtifactDescriptor {
+                artifact_id: ArtifactId::new("genesis-artifact"),
+                kind: ArtifactKind::FullHead,
+                head_id: Some(HeadId::new("genesis-head")),
+                base_head_id: None,
+                precision: Precision::Fp32,
+                model_schema_hash: ContentId::new("schema"),
+                record_format: "test".into(),
+                bytes_len: 1,
+                chunks: Vec::new(),
+                root_hash: ContentId::new("genesis-root"),
+            },
+            tensor_digest: ContentId::new("tensor"),
+            initialization_algorithm: "deterministic-test".into(),
+            initialization_seed: Some(7),
+            authority_epoch: 1,
+            created_at: Utc::now(),
+        };
+        let mut contract = RevisionContractBundle {
+            revision,
+            training_contract_id,
+            training,
+            genesis: SignedPayload::new(
+                SchemaEnvelope::new("burn-p2p-model-genesis-v1", Version::new(0, 21, 0), genesis),
+                SignatureMetadata {
+                    signer: PeerId::new("unsigned"),
+                    key_id: MODEL_GENESIS_SIGNATURE_KEY_ID.into(),
+                    algorithm: SignatureAlgorithm::Ed25519,
+                    signed_at: Utc::now(),
+                    signature_hex: "00".into(),
+                },
+            )
+            .expect("placeholder signed genesis"),
+            contract_signature: SignatureMetadata {
+                signer: PeerId::new("unsigned"),
+                key_id: REVISION_CONTRACT_SIGNATURE_KEY_ID.into(),
+                algorithm: SignatureAlgorithm::Ed25519,
+                signed_at: Utc::now(),
+                signature_hex: "00".into(),
+            },
+        };
+        sign_revision_contract_bundle(authority, &mut contract, Utc::now())
+            .expect("sign revision contract");
+        contract
+    }
+
+    fn authority_trust_bundle(authority: &Keypair) -> TrustBundleExport {
+        let issuer_peer_id =
+            PeerId::new(libp2p_identity::PeerId::from_public_key(&authority.public()).to_string());
+        TrustBundleExport {
+            network_id: NetworkId::new("demo"),
+            project_family_id: burn_p2p::ProjectFamilyId::new("project"),
+            protocol_major: 0,
+            minimum_client_version: Version::new(0, 0, 0),
+            required_release_train_hash: ContentId::new("release"),
+            allowed_target_artifact_hashes: BTreeSet::new(),
+            minimum_revocation_epoch: burn_p2p::RevocationEpoch(0),
+            active_issuer_peer_id: issuer_peer_id.clone(),
+            issuers: vec![TrustedIssuerStatus {
+                issuer_peer_id,
+                issuer_public_key_hex: hex::encode(authority.public().encode_protobuf()),
+                active_for_new_certificates: true,
+                accepted_for_admission: true,
+            }],
+            reenrollment: None,
+        }
+    }
+
+    #[test]
+    fn revision_contract_registration_requires_trusted_signatures() {
+        let authority =
+            Keypair::ed25519_from_bytes([41_u8; 32]).expect("deterministic authority keypair");
+        let contract = signed_revision_contract(&authority, "trusted");
+        let mut state = BootstrapAdminState {
+            trust_bundle: Some(authority_trust_bundle(&authority)),
+            ..BootstrapAdminState::default()
+        };
+
+        state
+            .register_revision_contract(contract.clone())
+            .expect("trusted contract should register");
+        state
+            .register_revision_contract(contract)
+            .expect("exact registration should be idempotent");
+        state
+            .validate_revision_contracts()
+            .expect("registered contract should remain valid");
+        assert_eq!(state.revision_contracts.len(), 1);
+    }
+
+    #[test]
+    fn revision_contract_registration_rejects_tampering_and_conflicts() {
+        let authority =
+            Keypair::ed25519_from_bytes([42_u8; 32]).expect("deterministic authority keypair");
+        let trusted = signed_revision_contract(&authority, "trusted");
+        let mut tampered = trusted.clone();
+        tampered.contract_signature.signature_hex = "00".into();
+        let mut state = BootstrapAdminState {
+            trust_bundle: Some(authority_trust_bundle(&authority)),
+            ..BootstrapAdminState::default()
+        };
+        assert!(state.register_revision_contract(tampered).is_err());
+
+        state
+            .register_revision_contract(trusted)
+            .expect("trusted contract should register");
+        let conflicting = signed_revision_contract(&authority, "conflicting");
+        let error = state
+            .register_revision_contract(conflicting)
+            .expect_err("same revision id with different authority payload must fail");
+        assert!(error.to_string().contains("conflicting revision contracts"));
+    }
+
+    #[test]
+    fn revision_contract_rollout_allows_only_atomic_signature_rotation() {
+        let old_authority =
+            Keypair::ed25519_from_bytes([43_u8; 32]).expect("old authority keypair");
+        let new_authority =
+            Keypair::ed25519_from_bytes([44_u8; 32]).expect("new authority keypair");
+        let old_contract = signed_revision_contract(&old_authority, "stable semantics");
+        let mut rotated_contract = old_contract.clone();
+        sign_revision_contract_bundle(&new_authority, &mut rotated_contract, Utc::now())
+            .expect("rotate contract signatures");
+
+        let mut trust = authority_trust_bundle(&new_authority);
+        let old_peer_id = PeerId::new(
+            libp2p_identity::PeerId::from_public_key(&old_authority.public()).to_string(),
+        );
+        trust.issuers.push(TrustedIssuerStatus {
+            issuer_peer_id: old_peer_id,
+            issuer_public_key_hex: hex::encode(old_authority.public().encode_protobuf()),
+            active_for_new_certificates: false,
+            accepted_for_admission: true,
+        });
+        let mut state = BootstrapAdminState {
+            trust_bundle: Some(trust),
+            ..BootstrapAdminState::default()
+        };
+        state
+            .register_revision_contract(old_contract.clone())
+            .expect("old contract");
+
+        let (inserted, rotations) = state
+            .rollout_revision_contracts(vec![rotated_contract.clone()], true)
+            .expect("signature rotation");
+        assert_eq!((inserted, rotations), (0, 1));
+        assert_eq!(state.revision_contracts, vec![rotated_contract]);
+
+        let semantic_change = signed_revision_contract(&new_authority, "changed semantics");
+        let before = state.revision_contracts.clone();
+        let error = state
+            .rollout_revision_contracts(vec![semantic_change], true)
+            .expect_err("semantic mutation requires a new revision");
+        assert!(error.to_string().contains("new revision"));
+        assert_eq!(state.revision_contracts, before);
+
+        let mut tampered = old_contract;
+        tampered.contract_signature.signature_hex = "00".into();
+        assert!(
+            state
+                .rollout_revision_contracts(vec![tampered], true)
+                .is_err()
+        );
+        assert_eq!(state.revision_contracts, before);
+    }
 
     fn test_runtime_snapshot(
         now: chrono::DateTime<Utc>,
@@ -1553,7 +1941,9 @@ impl BootstrapAdminState {
         }
     }
 
-    pub(crate) fn persist_operator_state_snapshot(&self) -> anyhow::Result<()> {
+    /// Persists the current externally configured operator snapshot, when one
+    /// is configured.
+    pub fn persist_operator_state_snapshot(&self) -> anyhow::Result<()> {
         persist_operator_state_snapshot(
             self.operator_state_backend.as_ref(),
             self.metrics_retention,

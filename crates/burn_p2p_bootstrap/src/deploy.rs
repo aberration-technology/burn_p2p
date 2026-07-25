@@ -225,6 +225,7 @@ impl Default for AdminApiPlan {
                 AdminCapability::RolloutAuthPolicy,
                 AdminCapability::RetireTrustedIssuers,
                 AdminCapability::RotateAuthorityMaterial,
+                AdminCapability::RolloutRevisionContracts,
                 AdminCapability::OperatorRetentionPrune,
             ]),
             diagnostics_enabled: true,
@@ -262,6 +263,8 @@ pub enum AdminCapability {
     RetireTrustedIssuers,
     /// Uses the rotate authority material variant.
     RotateAuthorityMaterial,
+    /// Uses the rollout revision contracts variant.
+    RolloutRevisionContracts,
     /// Uses the operator retention prune variant.
     OperatorRetentionPrune,
 }

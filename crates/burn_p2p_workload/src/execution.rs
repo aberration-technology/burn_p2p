@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use burn_p2p_core::{
     ArtifactDescriptor, ArtifactId, AssignmentLease, ChunkDescriptor, ContentId,
     ContributionReceiptId, DatasetViewId, ExperimentId, HeadId, LeaseId, MicroShardId, Precision,
-    RevisionId, StudyId, WindowId, WorkloadId,
+    RevisionId, StudyId, WindowId, WorkloadId, WorkloadUpdateEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +85,7 @@ pub struct WorkloadTrainingArtifact {
     pub chunks: Vec<WorkloadTrainingArtifactChunk>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Describes concrete local work already completed for one host-neutral
 /// training window.
 pub struct WorkloadTrainingContribution {
@@ -112,6 +112,9 @@ pub struct WorkloadTrainingContribution {
     /// Fully materialized artifact data to publish through the runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_artifact: Option<WorkloadTrainingArtifact>,
+    /// Contract-bound update metadata for typed validator reconstruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_update: Option<WorkloadUpdateEnvelope>,
     /// Extra string metadata copied into contribution receipts.
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -135,7 +138,7 @@ impl From<AssignmentLease> for WorkloadTrainingLease {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Represents one host-neutral training plan.
 pub struct WorkloadTrainingPlan {
     /// The study ID.
@@ -295,6 +298,7 @@ mod tests {
                     },
                     chunks: vec![artifact_chunk],
                 }),
+                workload_update: None,
                 metadata: BTreeMap::from([("backend".into(), "burn-webgpu-wasm".into())]),
             }),
         };

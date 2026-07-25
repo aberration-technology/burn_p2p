@@ -34,7 +34,8 @@ use persistence::{
     persist_local_peer_auth, seed_shell_control_plane_state, sync_control_plane_snapshot,
 };
 pub(crate) use placement::{
-    build_fleet_placement_snapshot, local_training_adaptation_factor, local_training_schedule_hint,
+    build_fleet_placement_snapshot, canonical_training_assignment_peers,
+    local_training_adaptation_factor, local_training_schedule_hint,
     runtime_training_assignment_peers, sign_fleet_placement_snapshot,
 };
 pub(crate) use signing::{

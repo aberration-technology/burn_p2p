@@ -304,6 +304,7 @@ fn browser_portal_snapshot(snapshot: &AppSnapshotView) -> BrowserEdgeSnapshot {
             entries: directory_entries,
         },
         heads,
+        revision_contracts: Vec::new(),
         leaderboard: BrowserLeaderboardSnapshot {
             network_id: network_id.clone(),
             score_version: "leaderboard_score_v1".into(),

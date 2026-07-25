@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use anyhow::ensure;
 use burn_p2p_core::{
-    BaseCheckpointId, DiLoCoPolicy, DiLoCoStateSnapshot, ExperimentId, FlattenedTensorPack,
-    GroupId, HeadId, PeerId, RoundCursor, RoundPhase, StateBlob, TrainingProtocol,
+    BaseCheckpointId, DiLoCoAggregationPolicy, DiLoCoPolicy, DiLoCoStateSnapshot, ExperimentId,
+    FlattenedTensorPack, GroupId, HeadId, PeerId, RoundCursor, RoundPhase, StateBlob,
+    TrainingProtocol,
 };
 use burn_p2p_workload::DiLoCoWorkload;
 use chrono::Utc;
@@ -93,6 +94,21 @@ pub struct DiLoCoPeerContribution {
     pub encoded: EncodedPseudoGradient,
     /// Decoded pseudo-gradient after transport validation.
     pub decoded_gradient: FlattenedTensorPack,
+}
+
+pub(super) fn aggregate_peer_contributions(
+    policy: &DiLoCoAggregationPolicy,
+    contributions: &[DiLoCoPeerContribution],
+) -> anyhow::Result<FlattenedTensorPack> {
+    let mut ordered = contributions.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+    aggregate_pseudo_gradients(
+        policy,
+        &ordered
+            .into_iter()
+            .map(|contribution| contribution.decoded_gradient.clone())
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -268,13 +284,24 @@ impl DiLoCoReferenceCoordinator {
         }
 
         completed_round.phase = RoundPhase::Aggregate;
-        let aggregate = aggregate_pseudo_gradients(
-            &self.policy.aggregation_policy,
-            &contributions
-                .iter()
-                .map(|contribution| contribution.decoded_gradient.clone())
-                .collect::<Vec<_>>(),
+        let reduced =
+            aggregate_peer_contributions(&self.policy.aggregation_policy, &contributions)?;
+        let reducer_index =
+            usize::try_from(baseline_cursor.round_id.as_u64() % participant_peer_ids.len() as u64)
+                .expect("reducer index is bounded by the in-memory participant count");
+        let encoded_aggregate = encode_pseudo_gradient(
+            self.experiment_id.clone(),
+            self.revision_id.clone(),
+            participant_peer_ids[reducer_index].clone(),
+            completed_round.clone(),
+            self.policy.codec.clone(),
+            &reduced,
+            self.chunk_size_bytes,
         )?;
+        // Model the reducer broadcast exactly: all peers apply the decoded
+        // transport representation, including when the codec is lossy.
+        let aggregate =
+            decode_pseudo_gradient(&encoded_aggregate.manifest, &encoded_aggregate.chunks)?;
 
         let mut updated_pack = None;
         let mut checkpoint_head_id = None;

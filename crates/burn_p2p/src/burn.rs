@@ -15,21 +15,24 @@ use crate::{
     FsArtifactStore, HeadId, LeaseId, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
     NetworkId, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, PeerId, Precision, RevisionId,
     RuntimePatch, SingleWorkloadProjectFamily, StateBlob, StudyId, SupportedWorkload, TrainError,
-    TrainerCanonicalReconcileStrategy, WindowCtx, WindowId, WindowReport,
+    TrainerCanonicalReconcileStrategy, TrainingContractManifest, ValidatedWorkloadUpdate,
+    WindowCtx, WindowId, WindowReport, WorkloadUpdateEnvelope, WorkloadUpdateValidationContext,
 };
 
 pub use burn::module::Module as BurnModule;
 pub use burn::prelude::Backend as BurnBackend;
 pub use burn_p2p_engine::{
-    BurnArtifactBytes, BurnArtifactFile, BurnCheckpointer, BurnEvaluator, BurnLearner,
-    BurnLearningCheckpointer, BurnMergeCandidate, BurnModuleInventory, BurnModuleParameter,
-    BurnModuleTarget, BurnRecordBytesFormat, BurnRecordFileFormat, BurnRecordPrecision,
-    BurnStoreFormat, BurnTensorKind, EngineError, apply_root_ema_modules, encode_record_bytes,
-    encode_store_bytes, flatten_module_float_parameters, inspect_module, load_record_bytes,
-    load_record_file, load_store_bytes, load_store_file, materialize_record_bytes_artifact,
-    materialize_record_file_artifact, materialize_store_bytes_artifact,
+    BurnArtifactBytes, BurnArtifactFile, BurnArtifactOptions, BurnCheckpointer, BurnEvaluator,
+    BurnLearner, BurnLearningCheckpointer, BurnMergeCandidate, BurnModuleInventory,
+    BurnModuleParameter, BurnModuleTarget, BurnRecordBytesFormat, BurnRecordFileFormat,
+    BurnRecordPrecision, BurnStoreFormat, BurnTensorKind, EngineError, RecordArtifactBytesOptions,
+    StoreArtifactBytesOptions, apply_root_ema_modules, encode_record_bytes, encode_store_bytes,
+    flatten_module_float_parameters, inspect_module, load_record_bytes, load_record_file,
+    load_store_bytes, load_store_file, materialize_record_bytes_artifact,
+    materialize_record_bytes_artifact_with_schema, materialize_record_file_artifact,
+    materialize_store_bytes_artifact, materialize_store_bytes_artifact_with_schema,
     materialize_store_file_artifact, merge_weighted_mean_modules, module_schema_hash,
-    replace_module_float_parameters, save_record_file, save_store_file,
+    module_tensor_digest, replace_module_float_parameters, save_record_file, save_store_file,
 };
 pub use burn_p2p_workload::{
     DiLoCoInnerLoopReport, DiLoCoWorkload, WorkloadExecutionStage, WorkloadTrainingBudget,
@@ -99,6 +102,22 @@ type LearnerStepMetricFn<LC> = dyn Fn(usize, &BurnLearnerOutput<LC>, &mut BTreeM
     + Send
     + Sync;
 type LearnerWindowMetricFn<LC> = dyn Fn(&BurnLearner<LC>, &mut BTreeMap<String, MetricValue>) -> Result<(), TrainError>
+    + Send
+    + Sync;
+type LearnerWorkloadUpdateFn<LC> = dyn Fn(
+        BurnLearnerModel<LC>,
+        &ArtifactDescriptor,
+        &WorkloadUpdateEnvelope,
+        &TrainingContractManifest,
+        &FsArtifactStore,
+        &BurnLearnerDevice<LC>,
+    ) -> anyhow::Result<BurnLearnerModel<LC>>
+    + Send
+    + Sync;
+type LearnerWorkloadUpdateValidationFn<LC> = dyn Fn(
+        BurnLearnerModel<LC>,
+        WorkloadUpdateValidationContext<'_, BurnLearnerDevice<LC>>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<BurnLearnerModel<LC>>>
     + Send
     + Sync;
 
@@ -213,6 +232,35 @@ where
     Ok(artifact.descriptor)
 }
 
+/// Materializes a record-bytes runtime artifact with a semantic model schema.
+pub fn materialize_record_bytes_runtime_artifact_with_schema<B, M>(
+    module: M,
+    store: &FsArtifactStore,
+    options: RecordBytesRuntimeArtifactOptions,
+    model_schema_hash: ContentId,
+) -> Result<ArtifactDescriptor, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    let artifact = materialize_record_bytes_artifact_with_schema::<B, M>(
+        module,
+        RecordArtifactBytesOptions {
+            format: options.format,
+            precision: options.precision,
+            artifact: BurnArtifactOptions {
+                artifact_kind: options.artifact_kind,
+                head_id: Some(options.head_id),
+                base_head_id: options.base_head_id,
+                chunking: options.chunking,
+            },
+            model_schema_hash,
+        },
+    )?;
+    store.store_prebuilt_artifact_bytes(&artifact.descriptor, &artifact.bytes)?;
+    Ok(artifact.descriptor)
+}
+
 /// Performs the load store bytes runtime artifact operation.
 pub fn load_store_bytes_runtime_artifact<B, M>(
     mut module: M,
@@ -247,6 +295,35 @@ where
         Some(options.head_id),
         options.base_head_id,
         options.chunking,
+    )?;
+    store.store_prebuilt_artifact_bytes(&artifact.descriptor, &artifact.bytes)?;
+    Ok(artifact.descriptor)
+}
+
+/// Materializes a store-bytes runtime artifact with a semantic model schema.
+pub fn materialize_store_bytes_runtime_artifact_with_schema<B, M>(
+    module: &M,
+    store: &FsArtifactStore,
+    options: StoreBytesRuntimeArtifactOptions,
+    model_schema_hash: ContentId,
+) -> Result<ArtifactDescriptor, EngineError>
+where
+    B: Backend,
+    M: BurnModuleTarget<B>,
+{
+    let artifact = materialize_store_bytes_artifact_with_schema::<B, M>(
+        module,
+        StoreArtifactBytesOptions {
+            format: options.format,
+            declared_precision: options.declared_precision,
+            artifact: BurnArtifactOptions {
+                artifact_kind: options.artifact_kind,
+                head_id: Some(options.head_id),
+                base_head_id: options.base_head_id,
+                chunking: options.chunking,
+            },
+            model_schema_hash,
+        },
     )?;
     store.store_prebuilt_artifact_bytes(&artifact.descriptor, &artifact.bytes)?;
     Ok(artifact.descriptor)
@@ -334,6 +411,13 @@ pub struct BurnWorkloadConfig {
     pub supported_workload: SupportedWorkload,
     /// The checkpoint serialization strategy used for model artifacts.
     pub artifact: BurnArtifactConfig,
+    /// Optional semantic model schema shared across backend implementations.
+    ///
+    /// When omitted, the adapter derives the schema from the Burn module
+    /// inventory. Cross-backend applications may provide a stronger
+    /// architecture/config identity while the tensor digest still binds the
+    /// concrete parameter layout and values.
+    pub model_schema_hash: Option<ContentId>,
     /// The merge behavior exposed to validators.
     pub merge: BurnMergeConfig,
 }
@@ -349,8 +433,15 @@ impl BurnWorkloadConfig {
         Self {
             supported_workload,
             artifact,
+            model_schema_hash: None,
             merge: BurnMergeConfig::WeightedMean,
         }
+    }
+
+    /// Uses an application-defined semantic model schema across backends.
+    pub fn with_model_schema_hash(mut self, model_schema_hash: ContentId) -> Self {
+        self.model_schema_hash = Some(model_schema_hash);
+        self
     }
 
     /// Creates the default burn config used by the learner-first happy path.
@@ -719,6 +810,53 @@ pub trait BurnWorkload {
         cached_microshards: &[CachedMicroShard],
     ) -> anyhow::Result<Vec<Self::Batch>>;
 
+    /// Reconstructs one validated typed update from a canonical base model.
+    fn apply_workload_update(
+        &self,
+        _base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        _update: &WorkloadUpdateEnvelope,
+        _contract: &TrainingContractManifest,
+        _store: &FsArtifactStore,
+        _device: &BackendDevice<Self::Backend>,
+    ) -> anyhow::Result<Self::Model> {
+        anyhow::bail!(
+            "burn workload does not support typed update artifact {}",
+            descriptor.artifact_id.as_str()
+        )
+    }
+
+    /// Validates and applies a typed update using authenticated replay inputs.
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, BackendDevice<Self::Backend>>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        let WorkloadUpdateValidationContext {
+            descriptor,
+            update,
+            contract,
+            store,
+            device,
+            replay,
+        } = context;
+        let model =
+            self.apply_workload_update(base_model, descriptor, update, contract, store, device)?;
+        Ok(ValidatedWorkloadUpdate {
+            model,
+            evidence: crate::ValidatedUpdateEvidence {
+                update_envelope_id: ContentId::derive(update)?,
+                norm_stats: None,
+                feature_sketch: None,
+                reconstruction_verified: true,
+                replay_verified: !contract.update_codec.requires_independent_replay(),
+                replay_stats: None,
+                validator_peer_id: replay.validator_peer_id.clone(),
+                validated_at: Utc::now(),
+            },
+        })
+    }
+
     /// Returns receipt metrics for a completed training window.
     fn contribution_metrics(
         &self,
@@ -764,7 +902,10 @@ where
     pub fn try_new(workload: W, config: BurnWorkloadConfig) -> Result<Self, EngineError> {
         let device = workload.runtime_device();
         let model = workload.init_model(&device);
-        let model_schema_hash = module_schema_hash::<W::Backend, _>(&model)?;
+        let derived_model_schema_hash = module_schema_hash::<W::Backend, _>(&model)?;
+        let model_schema_hash = config
+            .model_schema_hash
+            .unwrap_or(derived_model_schema_hash);
 
         Ok(Self {
             workload,
@@ -937,6 +1078,33 @@ where
         })
     }
 
+    fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
+        module_tensor_digest::<W::Backend, _>(model, self.model_schema_hash.clone())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        descriptor: &ArtifactDescriptor,
+        update: &WorkloadUpdateEnvelope,
+        contract: &TrainingContractManifest,
+        store: &FsArtifactStore,
+        device: &Self::Device,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload
+            .apply_workload_update(base_model, descriptor, update, contract, store, device)
+    }
+
+    fn validate_and_apply_workload_update(
+        &self,
+        base_model: Self::Model,
+        context: WorkloadUpdateValidationContext<'_, Self::Device>,
+    ) -> anyhow::Result<ValidatedWorkloadUpdate<Self::Model>> {
+        self.workload
+            .validate_and_apply_workload_update(base_model, context)
+    }
+
     fn materialize_model_artifact(
         &self,
         model: &Self::Model,
@@ -950,7 +1118,7 @@ where
                 format,
                 declared_precision,
                 chunking,
-            } => materialize_store_bytes_runtime_artifact::<W::Backend, _>(
+            } => materialize_store_bytes_runtime_artifact_with_schema::<W::Backend, _>(
                 model,
                 store,
                 StoreBytesRuntimeArtifactOptions {
@@ -961,12 +1129,13 @@ where
                     declared_precision: declared_precision.clone(),
                     chunking: *chunking,
                 },
+                self.model_schema_hash.clone(),
             )?,
             BurnArtifactConfig::RecordBytes {
                 format,
                 precision,
                 chunking,
-            } => materialize_record_bytes_runtime_artifact::<W::Backend, _>(
+            } => materialize_record_bytes_runtime_artifact_with_schema::<W::Backend, _>(
                 model.clone(),
                 store,
                 RecordBytesRuntimeArtifactOptions {
@@ -977,6 +1146,7 @@ where
                     precision: *precision,
                     chunking: *chunking,
                 },
+                self.model_schema_hash.clone(),
             )?,
         })
     }
