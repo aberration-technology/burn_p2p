@@ -133,6 +133,24 @@ impl BurnShardedDatasetConfig {
         }
         crate::MicroShardPlannerConfig::default()
     }
+
+    fn cap_nonempty_microshards(&mut self, max_nonempty_microshards: usize) {
+        let cap = u32::try_from(max_nonempty_microshards)
+            .unwrap_or(u32::MAX)
+            .max(1);
+        if let Some(count) = &mut self.fixed_microshard_count {
+            *count = (*count).min(cap);
+        }
+        if let Some(planner) = &mut self.planner {
+            planner.max_microshards = planner.max_microshards.min(cap).max(1);
+            planner.min_microshards = planner.min_microshards.min(planner.max_microshards).max(1);
+        } else if self.fixed_microshard_count.is_none() {
+            let mut planner = crate::MicroShardPlannerConfig::default();
+            planner.max_microshards = planner.max_microshards.min(cap).max(1);
+            planner.min_microshards = planner.min_microshards.min(planner.max_microshards).max(1);
+            self.planner = Some(planner);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -157,11 +175,12 @@ impl<Record> BurnShardedDataset<Record> {
     pub fn write_local(
         root: impl AsRef<Path>,
         records: &[Record],
-        config: BurnShardedDatasetConfig,
+        mut config: BurnShardedDatasetConfig,
     ) -> anyhow::Result<Self>
     where
         Record: Serialize + Clone,
     {
+        config.cap_nonempty_microshards(records.len());
         Self::write_local_partitioned(root, records, config, |records, shard_count| {
             (0..shard_count)
                 .map(|index| {
@@ -192,15 +211,15 @@ impl<Record> BurnShardedDataset<Record> {
         config
             .view_metadata
             .insert("partitioning".into(), partition_id);
-        Self::write_local_partitioned(root, records, config, move |records, shard_count| {
-            let mut groups = BTreeMap::<K, Vec<Record>>::new();
-            for (index, record) in records.iter().enumerate() {
-                groups
-                    .entry(group_key(index, record))
-                    .or_default()
-                    .push(record.clone());
-            }
-
+        let mut groups = BTreeMap::<K, Vec<Record>>::new();
+        for (index, record) in records.iter().enumerate() {
+            groups
+                .entry(group_key(index, record))
+                .or_default()
+                .push(record.clone());
+        }
+        config.cap_nonempty_microshards(groups.len());
+        Self::write_local_partitioned(root, records, config, move |_records, shard_count| {
             let mut groups = groups.into_iter().collect::<Vec<_>>();
             groups.sort_by(|(left_key, left_group), (right_key, right_group)| {
                 right_group

@@ -391,6 +391,54 @@ fn burn_sharded_dataset_group_balancing_packs_largest_groups_first() {
 }
 
 #[test]
+fn burn_sharded_dataset_caps_shards_to_nonempty_record_partitions() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [1.0, 2.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("nonempty-record-shards").with_microshards(8),
+    )
+    .expect("sharded dataset");
+
+    assert_eq!(dataset.microshard_plan().microshards.len(), records.len());
+    assert!(
+        dataset
+            .shard_examples()
+            .values()
+            .all(|example_count| *example_count > 0)
+    );
+}
+
+#[test]
+fn burn_sharded_dataset_caps_grouped_shards_to_indivisible_groups() {
+    let dataset_root = tempdir().expect("dataset root");
+    let records = [10.0, 11.0, 12.0, 20.0]
+        .into_iter()
+        .map(|value| TinyLearnerItem { value })
+        .collect::<Vec<_>>();
+    let dataset = BurnShardedDataset::write_local_grouped_by(
+        dataset_root.path(),
+        &records,
+        BurnShardedDatasetConfig::new("nonempty-grouped-shards").with_microshards(8),
+        "nonempty-grouped-v1",
+        |_, item| item.value as u32 / 10,
+    )
+    .expect("grouped sharded dataset");
+
+    assert_eq!(dataset.microshard_plan().microshards.len(), 2);
+    assert!(
+        dataset
+            .shard_examples()
+            .values()
+            .all(|example_count| *example_count > 0)
+    );
+}
+
+#[test]
 fn burn_sharded_dataset_identity_is_content_bound_and_location_independent() {
     let first_root = tempdir().expect("first dataset root");
     let mirror_root = tempdir().expect("mirror dataset root");
