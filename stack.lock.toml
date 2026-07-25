@@ -1,0 +1,7 @@
+schema_version = 1
+
+[[repositories]]
+name = "burn_ecs"
+path = "../burn_ecs"
+url = "https://github.com/aberration-technology/burn_ecs.git"
+revision = "76f75bed78d1c78cbdbcc480d73832628f903436"

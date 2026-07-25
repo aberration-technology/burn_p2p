@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - ".cargo/config.toml"
+      - ".github/actions/**"
       - ".github/workflows/browser.yml"
+      - "scripts/bootstrap_stack.py"
+      - "stack.lock.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "xtask/**"
@@ -22,7 +25,10 @@ on:
       - main
     paths:
       - ".cargo/config.toml"
+      - ".github/actions/**"
       - ".github/workflows/browser.yml"
+      - "scripts/bootstrap_stack.py"
+      - "stack.lock.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "xtask/**"
@@ -49,6 +55,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: bootstrap locked sibling stack
+        uses: ./.github/actions/bootstrap-stack
+        with:
+          token: ${{ secrets.BURN_STACK_TOKEN }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable

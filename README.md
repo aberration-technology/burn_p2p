@@ -21,6 +21,23 @@ core shape:
 burn_p2p = { version = "=0.21.2", features = ["burn"] }
 ```
 
+## development stack
+
+The in-flight `burn_ecs` integration remains a local sibling path dependency so
+P2P can validate the exact provider revision before it is published. The
+immutable revision and expected sibling path live in `stack.lock.toml`:
+
+```bash
+python3 scripts/bootstrap_stack.py
+python3 scripts/bootstrap_stack.py --verify
+```
+
+CI uses the same lock through `.github/actions/bootstrap-stack`. Because
+`burn_ecs` is a private sibling repository, the repository or organization must
+provide `BURN_STACK_TOKEN` with read-only contents access to `burn_ecs`.
+Repository-scoped `GITHUB_TOKEN` credentials do not grant cross-repository
+access and are intentionally not used as a fallback.
+
 ## happy path
 
 ```rust

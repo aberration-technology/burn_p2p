@@ -1,0 +1,27 @@
+name: bootstrap locked sibling stack
+description: Materialize burn_p2p path dependencies from stack.lock.toml
+
+inputs:
+  token:
+    description: GitHub token with read access to the locked sibling repositories
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: require cross-repository read token
+      shell: bash
+      env:
+        BURN_STACK_TOKEN: ${{ inputs.token }}
+      run: |
+        if [[ -z "${BURN_STACK_TOKEN}" ]]; then
+          echo "::error::BURN_STACK_TOKEN must have read access to aberration-technology/burn_ecs"
+          exit 1
+        fi
+    - name: bootstrap locked sibling repositories
+      shell: bash
+      env:
+        GIT_CONFIG_COUNT: 1
+        GIT_CONFIG_KEY_0: url.https://x-access-token:${{ inputs.token }}@github.com/.insteadOf
+        GIT_CONFIG_VALUE_0: https://github.com/
+      run: python3 "${{ github.workspace }}/scripts/bootstrap_stack.py" --repair-existing
