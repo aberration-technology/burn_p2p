@@ -88,6 +88,7 @@ pub const CONTROL_REQUEST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// healthy trainer link look idle between collective phases.
 pub const CONTROL_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn diloco_request_kind(request: &DiLoCoRequest) -> &'static str {
     match request {
         DiLoCoRequest::RoundOffer(_) => "round-offer",
@@ -105,6 +106,7 @@ fn diloco_request_kind(request: &DiLoCoRequest) -> &'static str {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn diloco_response_kind(response: &DiLoCoResponse) -> &'static str {
     match response {
         DiLoCoResponse::Ack { .. } => "ack",
@@ -143,6 +145,8 @@ pub use memory_control::*;
 pub use memory_swarm::*;
 pub use native_control::*;
 #[cfg(not(target_arch = "wasm32"))]
+use runtime_helpers::parse_remote_peer_id;
+#[cfg(not(target_arch = "wasm32"))]
 use runtime_helpers::stream_protocol;
 #[cfg(not(target_arch = "wasm32"))]
 use runtime_helpers::{
@@ -150,7 +154,7 @@ use runtime_helpers::{
     peer_directory_record_key_for_peer, protocol_supports_relay_hop, protocol_supports_rendezvous,
     relay_reservation_listen_addr, rendezvous_namespace_for_control_protocol, tls_config,
 };
-use runtime_helpers::{other_control_name, other_name, parse_remote_peer_id};
+use runtime_helpers::{other_control_name, other_name};
 pub use stats::{
     MigrationCoordinator, MigrationPlan, PeerObservation, PeerStore, SwarmError, SwarmStats,
 };

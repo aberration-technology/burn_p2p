@@ -621,7 +621,12 @@ fn collect_validator_quorum_size(trace: &FormalProtocolTrace) -> usize {
         .filter_map(|event| match event {
             FormalProtocolEvent::QuorumCertificateEmitted {
                 validator_peer_ids, ..
-            } => Some(validator_peer_ids.len()),
+            } => Some(
+                validator_peer_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+            ),
             _ => None,
         })
         .max()

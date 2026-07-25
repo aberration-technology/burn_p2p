@@ -73,6 +73,13 @@ do not share an ambiguous return contract.
 - validator attestation and promotion
 - peer discovery, relay fallback, and control-plane sync
 
+With the optional `ecs` feature, `P2pTrainingIngressPlugin` projects protocol
+events into typed `burn_ecs` run entities. Its producer is bounded and
+non-blocking, and exposes queue pressure counters so a slow dashboard cannot
+silently become an unbounded training-path allocation. Dragon/model state does
+not move into `burn_p2p`; downstream plugins retain ownership of model,
+optimizer, recurrent state, and data.
+
 ## safety boundary
 
 the important trust split is:

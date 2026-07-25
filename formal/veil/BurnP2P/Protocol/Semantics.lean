@@ -3,9 +3,18 @@ import BurnP2P.Protocol.Invariants
 
 namespace BurnP2P.Protocol
 
+def validatorAttestationPeerIds
+    (s : State)
+    (windowId : WindowId)
+    (artifactId : ArtifactId) : List PeerId :=
+  ((s.validatorAttestations.filter
+      (fun attestation =>
+        attestation.windowId = windowId ∧
+          attestation.aggregateArtifactId = artifactId)).map
+      (·.validatorPeerId)).eraseDups
+
 def validatorAttestationCount (s : State) (windowId : WindowId) (artifactId : ArtifactId) : Nat :=
-  (s.validatorAttestations.filter
-    (fun attestation => attestation.windowId = windowId ∧ attestation.aggregateArtifactId = artifactId)).length
+  (validatorAttestationPeerIds s windowId artifactId).length
 
 def hasValidatorQuorumForB (s : State) (windowId : WindowId) (artifactId : ArtifactId) : Bool :=
   s.validatorQuorumSize > 0 &&

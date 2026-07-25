@@ -1663,6 +1663,37 @@ fn validation_quorum_announcements_dedupe_semantic_replays() {
 }
 
 #[test]
+fn validation_quorum_announcements_reject_structurally_invalid_certificates() {
+    let now = Utc::now();
+    let mut snapshot = ControlPlaneSnapshot::default();
+
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::ValidationQuorum(semantic_test_validation_quorum(
+            "validator-a",
+            "aggregate-a",
+            "merged-head-a",
+            &["validator-a", "validator-a"],
+            &["reduction-a", "reduction-a"],
+            now,
+        )),
+    );
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::ValidationQuorum(semantic_test_validation_quorum(
+            "validator-c",
+            "aggregate-b",
+            "merged-head-b",
+            &["validator-a", "validator-b"],
+            &["reduction-a", "reduction-b"],
+            now,
+        )),
+    );
+
+    assert!(snapshot.validation_quorum_announcements.is_empty());
+}
+
+#[test]
 fn peer_store_aggregates_connected_peers_and_eta() {
     let now = Utc::now();
     let network_id = NetworkId::new("network");

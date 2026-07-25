@@ -8,6 +8,7 @@ use libp2p::multiaddr::Protocol as MultiaddrProtocol;
 use libp2p::{Multiaddr, StreamProtocol};
 #[cfg(not(target_arch = "wasm32"))]
 use libp2p_identity::Keypair;
+#[cfg(not(target_arch = "wasm32"))]
 use libp2p_identity::PeerId as Libp2pPeerId;
 #[cfg(not(target_arch = "wasm32"))]
 use libp2p_kad as kad;
@@ -100,6 +101,7 @@ pub(crate) fn stream_protocol(protocol: &ProtocolId) -> Result<StreamProtocol, S
         .map_err(|_| SwarmError::InvalidProtocolId(protocol.as_str().to_owned()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn parse_remote_peer_id(
     local_peer_id: &Libp2pPeerId,
     peer_id: &str,

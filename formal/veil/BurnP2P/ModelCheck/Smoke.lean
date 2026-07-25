@@ -1,4 +1,4 @@
-import BurnP2P.Protocol.Invariants
+import BurnP2P.Protocol.Semantics
 
 namespace BurnP2P.ModelCheck
 
@@ -29,5 +29,27 @@ example : promotedHeadRequiresValidatorQuorum smokeState := by
 example : revokedPeersExcluded smokeState := by
   intro update hUpdate
   simp [smokeState] at hUpdate
+
+def duplicateAttestationState : State :=
+  { smokeState with
+      validatorAttestations := [
+        {
+          validatorPeerId := "validator-1"
+          windowId := 1
+          aggregateArtifactId := "aggregate-1"
+        },
+        {
+          validatorPeerId := "validator-1"
+          windowId := 1
+          aggregateArtifactId := "aggregate-1"
+        }
+      ]
+  }
+
+example : validatorAttestationCount duplicateAttestationState 1 "aggregate-1" = 1 := by
+  decide
+
+example : hasValidatorQuorumForB duplicateAttestationState 1 "aggregate-1" = false := by
+  decide
 
 end BurnP2P.ModelCheck

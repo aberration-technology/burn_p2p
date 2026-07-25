@@ -2450,6 +2450,26 @@ mod tests {
     }
 
     #[test]
+    fn formal_trace_checker_rejects_duplicate_quorum_validators() {
+        let mut trace = sample_protocol_trace(FormalTraceScenario::MnistSmoke);
+        let quorum = trace.events.iter_mut().find_map(|event| match event {
+            FormalProtocolEvent::QuorumCertificateEmitted {
+                validator_peer_ids, ..
+            } => Some(validator_peer_ids),
+            _ => None,
+        });
+        let quorum = quorum.expect("sample quorum certificate");
+        quorum[1] = quorum[0].clone();
+
+        let error =
+            check_protocol_trace(&trace).expect_err("duplicate quorum validator should fail");
+        assert!(matches!(
+            error,
+            FormalTraceConformanceError::DuplicateQuorumValidator { .. }
+        ));
+    }
+
+    #[test]
     fn formal_trace_lowering_matches_expected_action_sequence() {
         let trace = sample_protocol_trace(FormalTraceScenario::ReducerAdversarial);
         let actions = lower_protocol_trace(&trace);

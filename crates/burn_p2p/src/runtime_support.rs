@@ -4,6 +4,7 @@ use crate::config::{
 };
 use crate::handles::dedupe_peer_ids;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use sysinfo::{Disks, System};
 
 mod control_plane;
@@ -77,6 +78,7 @@ pub(crate) fn runtime_limit_policy(estimate: &CapabilityEstimate) -> LimitPolicy
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn storage_probe_root(config: &NodeConfig) -> Option<PathBuf> {
     config
         .storage
@@ -85,6 +87,7 @@ fn storage_probe_root(config: &NodeConfig) -> Option<PathBuf> {
         .or_else(|| std::env::current_dir().ok())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn available_disk_bytes_for_path(path: &Path) -> Option<u64> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let disks = Disks::new_with_refreshed_list();
@@ -95,6 +98,7 @@ fn available_disk_bytes_for_path(path: &Path) -> Option<u64> {
         .map(|disk| disk.available_space())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn runtime_resource_probe(config: &NodeConfig) -> CapabilityResourceProbe {
     let mut system = System::new();
     system.refresh_memory();
@@ -105,6 +109,17 @@ fn runtime_resource_probe(config: &NodeConfig) -> CapabilityResourceProbe {
         disk_bytes: storage_probe_root(config)
             .as_deref()
             .and_then(available_disk_bytes_for_path),
+        upload_mbps: None,
+        download_mbps: None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn runtime_resource_probe(_config: &NodeConfig) -> CapabilityResourceProbe {
+    CapabilityResourceProbe {
+        device_memory_bytes: None,
+        system_memory_bytes: None,
+        disk_bytes: None,
         upload_mbps: None,
         download_mbps: None,
     }

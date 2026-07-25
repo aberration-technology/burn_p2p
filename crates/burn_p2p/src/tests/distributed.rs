@@ -806,6 +806,15 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
         },
         "validator did not observe all trainer head announcements for the merge window",
     );
+    for outcome in &trainer_outcomes {
+        validator
+            .wait_for_artifact_from_peers(
+                std::slice::from_ref(&outcome.contribution.peer_id),
+                &outcome.head.artifact_id,
+                test_timeout(Duration::from_secs(30)),
+            )
+            .expect("validator did not warm every trainer artifact before the fan-in merge");
+    }
 
     let validated = validator
         .validate_candidates_once(&experiment)

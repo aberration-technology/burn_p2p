@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use burn_ecs::{
     bevy_ecs,
-    prelude::{Component, Resource},
+    prelude::{Component, Resource, TrainingRunId},
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Component, Deserialize, Serialize, PartialEq, Eq)]
 pub struct P2pTrainingTelemetryState {
-    pub run_id: Option<String>,
+    pub run_id: Option<TrainingRunId>,
     pub experiment_id: Option<String>,
     pub revision_id: Option<String>,
     pub latest_window_id: Option<u64>,
@@ -59,5 +59,5 @@ pub struct P2pWindowMetadata {
 
 #[derive(Debug, Clone, Default, Resource)]
 pub struct PendingP2pWindowMetadata {
-    pub by_run_window_id: BTreeMap<(String, u64), P2pWindowMetadata>,
+    pub by_run_window_id: BTreeMap<(TrainingRunId, u64), P2pWindowMetadata>,
 }

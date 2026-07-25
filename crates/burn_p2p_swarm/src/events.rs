@@ -1922,6 +1922,9 @@ pub(crate) fn insert_validation_quorum_announcement_with_index(
     mut announcement: ValidationQuorumAnnouncement,
 ) {
     canonicalize_validation_quorum_announcement(&mut announcement);
+    if announcement.certificate.validate_structure().is_err() {
+        return;
+    }
     let key = validation_quorum_announcement_key(&announcement);
     let fingerprint = validation_quorum_semantic_fingerprint(&announcement);
     match index.validation_quorum_announcements.get(&key).copied() {

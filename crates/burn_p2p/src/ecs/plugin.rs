@@ -1,7 +1,7 @@
 use burn_ecs::bevy_ecs::prelude::{With, Without};
 use burn_ecs::prelude::{
-    App, Commands, Entity, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, Query, Res,
-    ResMut, TrainingRun, TrainingSet, TrainingWindowEntities, Update,
+    App, Commands, Entity, IntoScheduleConfigs, MessageReader, MessageWriter, Plugin, Query,
+    ResMut, TrainingRunId, TrainingSet, TrainingWindowIndex, Update,
 };
 
 use super::messages::{
@@ -41,7 +41,7 @@ fn bridge_p2p_capability_assessments(
     mut messages: MessageReader<P2pCapabilityAssessment>,
     mut transitions: MessageWriter<burn_ecs::PipelineCapabilityTransitionRequest>,
     mut runs: Query<(
-        &TrainingRun,
+        &TrainingRunId,
         &mut burn_ecs::PipelineCapabilityState,
         &mut P2pTrainingTelemetryState,
     )>,
@@ -49,7 +49,7 @@ fn bridge_p2p_capability_assessments(
     for assessment in messages.read() {
         let Some((_, mut capability, mut telemetry)) = runs
             .iter_mut()
-            .find(|(run, ..)| run.id == assessment.run_id)
+            .find(|(run_id, ..)| *run_id == &assessment.run_id)
         else {
             continue;
         };
@@ -69,7 +69,7 @@ fn bridge_p2p_capability_assessments(
 
 fn attach_p2p_run_state(
     mut commands: Commands,
-    runs: Query<Entity, (With<TrainingRun>, Without<P2pTrainingTelemetryState>)>,
+    runs: Query<Entity, (With<TrainingRunId>, Without<P2pTrainingTelemetryState>)>,
 ) {
     for entity in &runs {
         commands
@@ -80,12 +80,14 @@ fn attach_p2p_run_state(
 
 fn mirror_p2p_window_started(
     mut messages: MessageReader<P2pWindowStarted>,
-    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
+    mut runs: Query<(&TrainingRunId, &mut P2pTrainingTelemetryState)>,
     mut pending: ResMut<PendingP2pWindowMetadata>,
     mut training_windows: MessageWriter<burn_ecs::TrainingWindowStarted>,
 ) {
     for event in messages.read() {
-        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        let Some((_, mut telemetry)) = runs
+            .iter_mut()
+            .find(|(run_id, ..)| *run_id == &event.run_id)
         else {
             continue;
         };
@@ -115,14 +117,17 @@ fn mirror_p2p_window_started(
 
 fn attach_p2p_window_metadata(
     mut commands: Commands,
-    windows: Res<TrainingWindowEntities>,
+    windows: Query<(&TrainingRunId, &TrainingWindowIndex)>,
     mut pending: ResMut<PendingP2pWindowMetadata>,
 ) {
     let attached = pending
         .by_run_window_id
         .iter()
         .filter_map(|((run_id, window_id), metadata)| {
-            let entity = windows.get_for_run(run_id, *window_id)?;
+            let (_, windows) = windows
+                .iter()
+                .find(|(candidate_run_id, _)| *candidate_run_id == run_id)?;
+            let entity = windows.get(*window_id)?;
             commands.entity(entity).insert(metadata.clone());
             Some((run_id.clone(), *window_id))
         })
@@ -134,11 +139,13 @@ fn attach_p2p_window_metadata(
 
 fn mirror_p2p_window_finished(
     mut messages: MessageReader<P2pWindowFinished>,
-    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
+    mut runs: Query<(&TrainingRunId, &mut P2pTrainingTelemetryState)>,
     mut training_windows: MessageWriter<burn_ecs::TrainingWindowFinished>,
 ) {
     for event in messages.read() {
-        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        let Some((_, mut telemetry)) = runs
+            .iter_mut()
+            .find(|(run_id, ..)| *run_id == &event.run_id)
         else {
             continue;
         };
@@ -160,10 +167,12 @@ fn mirror_p2p_window_finished(
 
 fn record_p2p_canonical_reconcile(
     mut messages: MessageReader<P2pCanonicalReconcileEvent>,
-    mut runs: Query<(&TrainingRun, &mut P2pTrainingTelemetryState)>,
+    mut runs: Query<(&TrainingRunId, &mut P2pTrainingTelemetryState)>,
 ) {
     for event in messages.read() {
-        let Some((_, mut telemetry)) = runs.iter_mut().find(|(run, ..)| run.id == event.run_id)
+        let Some((_, mut telemetry)) = runs
+            .iter_mut()
+            .find(|(run_id, ..)| *run_id == &event.run_id)
         else {
             continue;
         };
@@ -178,20 +187,24 @@ fn record_p2p_canonical_reconcile(
 
 #[cfg(test)]
 mod tests {
-    use burn_ecs::{TrainingAppBuilder, TrainingAppConfig, TrainingRunConfig};
+    use burn_ecs::{TrainingAppExt, TrainingPlugins, TrainingRunConfig, TrainingRuntime};
 
     use super::*;
 
+    fn runtime() -> (tempfile::TempDir, TrainingRuntime, Entity) {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut app = App::new();
+        app.add_plugins(TrainingPlugins)
+            .add_plugins(P2pTrainingPlugin);
+        let run = app
+            .try_add_training_run(TrainingRunConfig::new("p2p", "p2p", dir.path(), 1))
+            .expect("run");
+        (dir, TrainingRuntime::new(app), run)
+    }
+
     #[test]
     fn p2p_plugin_tracks_window_state_and_mirrors_common_events() {
-        let dir = tempfile::tempdir().expect("dir");
-        let mut runtime = TrainingAppBuilder::new(TrainingAppConfig {
-            run: TrainingRunConfig::new("p2p", "p2p", dir.path(), 1),
-            ..TrainingAppConfig::default()
-        })
-        .with_plugin(P2pTrainingPlugin)
-        .build()
-        .expect("runtime");
+        let (dir, mut runtime, run_entity) = runtime();
         runtime
             .app_mut()
             .world_mut()
@@ -221,12 +234,7 @@ mod tests {
         runtime.update();
         runtime.update();
         runtime.update();
-        runtime.finish();
-        let run_entity = runtime
-            .app()
-            .world()
-            .resource::<burn_ecs::TrainingRunEntity>()
-            .0;
+        runtime.finish().expect("finish");
         let state = runtime
             .app()
             .world()
@@ -239,7 +247,9 @@ mod tests {
         let window_entity = runtime
             .app()
             .world()
-            .resource::<TrainingWindowEntities>()
+            .entity(run_entity)
+            .get::<TrainingWindowIndex>()
+            .expect("window index")
             .get(7)
             .expect("window entity");
         let metadata = runtime
@@ -257,14 +267,7 @@ mod tests {
 
     #[test]
     fn p2p_capability_assessment_supports_upgrade_and_read_only_downgrade() {
-        let dir = tempfile::tempdir().expect("dir");
-        let mut runtime = TrainingAppBuilder::new(TrainingAppConfig {
-            run: TrainingRunConfig::new("p2p", "p2p", dir.path(), 1),
-            ..TrainingAppConfig::default()
-        })
-        .with_plugin(P2pTrainingPlugin)
-        .build()
-        .expect("runtime");
+        let (_dir, mut runtime, run_entity) = runtime();
         runtime
             .app_mut()
             .world_mut()
@@ -280,11 +283,6 @@ mod tests {
             });
         runtime.update();
         runtime.update();
-        let run_entity = runtime
-            .app()
-            .world()
-            .resource::<burn_ecs::TrainingRunEntity>()
-            .0;
         let capability = runtime
             .app()
             .world()

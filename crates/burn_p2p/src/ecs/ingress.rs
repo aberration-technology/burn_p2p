@@ -1,11 +1,13 @@
 use std::sync::{
     Arc, Mutex,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
 };
 
 use burn_ecs::bevy_ecs;
 use burn_ecs::prelude::{
-    App, IntoScheduleConfigs, MessageWriter, Plugin, Res, Resource, TrainingSet, Update,
+    App, IntoScheduleConfigs, MessageWriter, Plugin, Res, Resource, TrainingRunId, TrainingSet,
+    Update,
 };
 
 use crate::{
@@ -31,18 +33,84 @@ enum P2pTrainingCommand {
 /// Bounded, non-blocking producer for a P2P training ECS app.
 pub struct P2pTrainingEventBus {
     sender: SyncSender<P2pTrainingCommand>,
+    capacity: usize,
+    counters: Arc<P2pTrainingIngressCounters>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Point-in-time pressure and delivery counters for the P2P ECS ingress.
+pub struct P2pTrainingEventBusStats {
+    pub queue_capacity: usize,
+    pub queue_depth: usize,
+    pub queue_high_watermark: usize,
+    pub send_attempts: u64,
+    pub sends_accepted: u64,
+    pub sends_full: u64,
+    pub send_disconnects: u64,
+}
+
+impl P2pTrainingEventBusStats {
+    pub fn utilization(&self) -> f64 {
+        if self.queue_capacity == 0 {
+            0.0
+        } else {
+            self.queue_depth as f64 / self.queue_capacity as f64
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct P2pTrainingIngressCounters {
+    queue_depth: AtomicUsize,
+    queue_high_watermark: AtomicUsize,
+    send_attempts: AtomicU64,
+    sends_accepted: AtomicU64,
+    sends_full: AtomicU64,
+    send_disconnects: AtomicU64,
 }
 
 impl P2pTrainingEventBus {
     fn send(&self, command: P2pTrainingCommand) -> anyhow::Result<()> {
-        self.sender.try_send(command).map_err(|error| match error {
-            TrySendError::Full(_) => {
-                anyhow::anyhow!("P2P training ECS ingress queue is full")
+        self.counters.send_attempts.fetch_add(1, Ordering::Relaxed);
+        let depth = self
+            .counters
+            .queue_depth
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        match self.sender.try_send(command) {
+            Ok(()) => {
+                self.counters.sends_accepted.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .queue_high_watermark
+                    .fetch_max(depth, Ordering::Relaxed);
+                Ok(())
             }
-            TrySendError::Disconnected(_) => {
-                anyhow::anyhow!("P2P training ECS ingress is disconnected")
+            Err(TrySendError::Full(_)) => {
+                self.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
+                self.counters.sends_full.fetch_add(1, Ordering::Relaxed);
+                Err(anyhow::anyhow!("P2P training ECS ingress queue is full"))
             }
-        })
+            Err(TrySendError::Disconnected(_)) => {
+                self.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
+                self.counters
+                    .send_disconnects
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(anyhow::anyhow!("P2P training ECS ingress is disconnected"))
+            }
+        }
+    }
+
+    /// Returns bounded-ingress pressure and delivery counters.
+    pub fn stats(&self) -> P2pTrainingEventBusStats {
+        P2pTrainingEventBusStats {
+            queue_capacity: self.capacity,
+            queue_depth: self.counters.queue_depth.load(Ordering::Acquire),
+            queue_high_watermark: self.counters.queue_high_watermark.load(Ordering::Relaxed),
+            send_attempts: self.counters.send_attempts.load(Ordering::Relaxed),
+            sends_accepted: self.counters.sends_accepted.load(Ordering::Relaxed),
+            sends_full: self.counters.sends_full.load(Ordering::Relaxed),
+            send_disconnects: self.counters.send_disconnects.load(Ordering::Relaxed),
+        }
     }
 
     /// Reports a P2P training window start.
@@ -72,13 +140,13 @@ impl P2pTrainingEventBus {
 #[derive(Clone, Debug)]
 /// Bridges native `burn_p2p` window callbacks into one run-scoped ECS ingress.
 pub struct P2pTrainingEcsObserver {
-    run_id: String,
+    run_id: TrainingRunId,
     bus: P2pTrainingEventBus,
 }
 
 impl P2pTrainingEcsObserver {
     /// Binds a generic P2P runtime observer to one ECS training run.
-    pub fn new(run_id: impl Into<String>, bus: P2pTrainingEventBus) -> Self {
+    pub fn new(run_id: impl Into<TrainingRunId>, bus: P2pTrainingEventBus) -> Self {
         Self {
             run_id: run_id.into(),
             bus,
@@ -126,6 +194,7 @@ impl TrainingWindowObserver for P2pTrainingEcsObserver {
 #[derive(Resource)]
 struct P2pTrainingIngress {
     receiver: Arc<Mutex<Receiver<P2pTrainingCommand>>>,
+    counters: Arc<P2pTrainingIngressCounters>,
     max_events_per_update: usize,
 }
 
@@ -137,15 +206,22 @@ pub struct P2pTrainingIngressPlugin {
 impl P2pTrainingIngressPlugin {
     /// Creates a bounded ingress plugin and its producer handle.
     pub fn channel(capacity: usize) -> (Self, P2pTrainingEventBus) {
-        let (sender, receiver) = sync_channel(capacity.max(1));
+        let capacity = capacity.max(1);
+        let (sender, receiver) = sync_channel(capacity);
+        let counters = Arc::new(P2pTrainingIngressCounters::default());
         (
             Self {
                 ingress: P2pTrainingIngress {
                     receiver: Arc::new(Mutex::new(receiver)),
+                    counters: Arc::clone(&counters),
                     max_events_per_update: DEFAULT_MAX_EVENTS_PER_UPDATE,
                 },
             },
-            P2pTrainingEventBus { sender },
+            P2pTrainingEventBus {
+                sender,
+                capacity,
+                counters,
+            },
         )
     }
 
@@ -161,6 +237,7 @@ impl Plugin for P2pTrainingIngressPlugin {
         app.add_plugins(P2pTrainingPlugin)
             .insert_resource(P2pTrainingIngress {
                 receiver: Arc::clone(&self.ingress.receiver),
+                counters: Arc::clone(&self.ingress.counters),
                 max_events_per_update: self.ingress.max_events_per_update,
             })
             .add_systems(
@@ -183,15 +260,19 @@ fn drain_p2p_training_ingress(
     for _ in 0..ingress.max_events_per_update {
         match receiver.try_recv() {
             Ok(P2pTrainingCommand::WindowStarted(event)) => {
+                ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 window_started.write(event);
             }
             Ok(P2pTrainingCommand::WindowFinished(event)) => {
+                ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 window_finished.write(event);
             }
             Ok(P2pTrainingCommand::CanonicalReconcile(event)) => {
+                ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 reconcile.write(event);
             }
             Ok(P2pTrainingCommand::Capability(event)) => {
+                ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 capability.write(event);
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -201,21 +282,26 @@ fn drain_p2p_training_ingress(
 
 #[cfg(test)]
 mod tests {
-    use burn_ecs::{TrainingAppBuilder, TrainingAppConfig, TrainingRunConfig};
+    use burn_ecs::{TrainingAppExt, TrainingPlugins, TrainingRunConfig, TrainingRuntime};
 
     use super::*;
 
+    fn runtime(
+        plugin: P2pTrainingIngressPlugin,
+    ) -> (tempfile::TempDir, TrainingRuntime, bevy_ecs::entity::Entity) {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut app = App::new();
+        app.add_plugins(TrainingPlugins).add_plugins(plugin);
+        let run = app
+            .try_add_training_run(TrainingRunConfig::new("p2p", "p2p", dir.path(), 1))
+            .expect("run");
+        (dir, TrainingRuntime::new(app), run)
+    }
+
     #[test]
     fn bounded_ingress_drives_run_scoped_p2p_state() {
-        let dir = tempfile::tempdir().expect("dir");
         let (plugin, bus) = P2pTrainingIngressPlugin::channel(8);
-        let mut runtime = TrainingAppBuilder::new(TrainingAppConfig {
-            run: TrainingRunConfig::new("p2p", "p2p", dir.path(), 1),
-            ..TrainingAppConfig::default()
-        })
-        .with_plugin(plugin)
-        .build()
-        .expect("runtime");
+        let (_dir, mut runtime, run) = runtime(plugin);
         bus.send_capability(P2pCapabilityAssessment {
             run_id: "p2p".into(),
             participation: burn_ecs::PipelineParticipation::Trainer,
@@ -243,11 +329,6 @@ mod tests {
         for _ in 0..3 {
             runtime.update();
         }
-        let run = runtime
-            .app()
-            .world()
-            .resource::<burn_ecs::TrainingRunEntity>()
-            .0;
         let entity = runtime.app().world().entity(run);
         let capability = entity
             .get::<burn_ecs::PipelineCapabilityState>()
@@ -264,16 +345,9 @@ mod tests {
 
     #[test]
     fn native_window_observer_drives_the_same_typed_ingress() {
-        let dir = tempfile::tempdir().expect("dir");
         let (plugin, bus) = P2pTrainingIngressPlugin::channel(8);
         let observer = P2pTrainingEcsObserver::new("p2p", bus);
-        let mut runtime = TrainingAppBuilder::new(TrainingAppConfig {
-            run: TrainingRunConfig::new("p2p", "p2p", dir.path(), 1),
-            ..TrainingAppConfig::default()
-        })
-        .with_plugin(plugin)
-        .build()
-        .expect("runtime");
+        let (_dir, mut runtime, run) = runtime(plugin);
         let now = chrono::Utc::now();
         observer.window_started(&TrainingWindowStartedEvent {
             study_id: crate::StudyId::new("study"),
@@ -304,16 +378,49 @@ mod tests {
         for _ in 0..3 {
             runtime.update();
         }
-        let run = runtime
-            .app()
-            .world()
-            .resource::<burn_ecs::TrainingRunEntity>()
-            .0;
         let entity = runtime.app().world().entity(run);
         let telemetry = entity
             .get::<super::super::P2pTrainingTelemetryState>()
             .expect("P2P telemetry");
         assert_eq!(telemetry.latest_window_id, Some(4));
         assert_eq!(telemetry.published_windows, 1);
+    }
+
+    #[test]
+    fn bounded_ingress_reports_saturation_and_drain() {
+        let (plugin, bus) = P2pTrainingIngressPlugin::channel(1);
+        let (_dir, mut runtime, _run) = runtime(plugin);
+        let event = P2pCapabilityAssessment {
+            run_id: "p2p".into(),
+            participation: burn_ecs::PipelineParticipation::Observer,
+            compute: burn_ecs::PipelineComputeClass::None,
+            supported_participation: std::collections::BTreeSet::from([
+                burn_ecs::PipelineParticipation::Observer,
+            ]),
+            reason: "bounded ingress test".into(),
+        };
+
+        bus.send_capability(event.clone()).expect("first event");
+        let error = bus
+            .send_capability(event)
+            .expect_err("second event must observe full ingress");
+        assert!(error.to_string().contains("queue is full"));
+        assert_eq!(
+            bus.stats(),
+            P2pTrainingEventBusStats {
+                queue_capacity: 1,
+                queue_depth: 1,
+                queue_high_watermark: 1,
+                send_attempts: 2,
+                sends_accepted: 1,
+                sends_full: 1,
+                send_disconnects: 0,
+            }
+        );
+        assert_eq!(bus.stats().utilization(), 1.0);
+
+        runtime.update();
+        assert_eq!(bus.stats().queue_depth, 0);
+        assert_eq!(bus.stats().utilization(), 0.0);
     }
 }

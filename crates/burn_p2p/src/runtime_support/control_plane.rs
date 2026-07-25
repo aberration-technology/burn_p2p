@@ -1931,7 +1931,7 @@ mod pending_request_tests {
             ..ControlPlaneSnapshot::default()
         };
         let mut timestamp_only = current.clone();
-        timestamp_only.announced_at = timestamp_only.announced_at + chrono::Duration::seconds(1);
+        timestamp_only.announced_at += chrono::Duration::seconds(1);
         assert!(!peer_directory_announcement_adds_information(
             &snapshot,
             &timestamp_only

@@ -196,6 +196,18 @@ bounded `P2pTrainingIngressPlugin` channel. The plugin projects them onto one
 canonical reconciliation, and telemetry. Model tensors and optimizer state
 remain owned by the workload.
 
+The observer is bound to a typed `TrainingRunId`; window ordinals and pending
+metadata are keyed by `(run_id, window_id)`. Multiple training pipelines can
+therefore share one ECS world without sharing their P2P lifecycle state.
+`P2pTrainingEventBus` is cloneable for producers but remains non-blocking:
+queue saturation returns an error instead of blocking the training thread or
+growing memory without bound. Operators can export
+`P2pTrainingEventBusStats`, which reports queue depth/capacity/high-watermark,
+accepted sends, full-queue sends, and disconnected sends. A non-zero
+`sends_full` count means observability did not keep up with the protocol and
+must be treated as a monitoring failure even though training was allowed to
+continue.
+
 Active native roles can be changed without rebuilding the transport:
 
 ```rust
@@ -220,6 +232,17 @@ The current trust boundary remains validator quorum:
 - deterministic reconstruction protects update interpretation
 - independent replay protects claimed learning signal
 - validator quorum protects canonical promotion
+
+A received validation-quorum certificate is not counted by list length alone.
+Its promotion mode must be validator quorum, its declared quorum must be
+non-zero, attesting validator identities and reduction-evidence identifiers
+must each be distinct at quorum cardinality, and the coordinator must be an
+attester. During an active merge window, every attester must also belong to the
+window's effective validator set and the certificate must match the exact
+window, base head, and effective quorum. Merge and reduction announcements are
+similarly filtered to the active reducer/validator authority. These are
+architecture-neutral structural checks; peer authentication, signatures, and
+authority-epoch membership remain runtime admission checks.
 
 Do not equate signature verification with proof that a training update is
 useful. Do not equate deterministic reconstruction with verification of

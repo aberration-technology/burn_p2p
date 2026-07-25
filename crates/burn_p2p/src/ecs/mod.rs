@@ -9,7 +9,9 @@ mod messages;
 mod plugin;
 mod resources;
 
-pub use ingress::{P2pTrainingEcsObserver, P2pTrainingEventBus, P2pTrainingIngressPlugin};
+pub use ingress::{
+    P2pTrainingEcsObserver, P2pTrainingEventBus, P2pTrainingEventBusStats, P2pTrainingIngressPlugin,
+};
 pub use messages::*;
 pub use plugin::P2pTrainingPlugin;
 pub use resources::*;
