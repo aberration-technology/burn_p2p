@@ -121,7 +121,7 @@ impl BrowserAppConnectConfig {
             selected_experiment_id: None,
             selected_revision_id: None,
             seed_node_urls: Vec::new(),
-            sync_active_head_artifact: true,
+            sync_active_head_artifact: default_sync_active_head_artifact(),
             bootstrap_snapshot: None,
             bootstrap_signed_seed_advertisement: None,
         }
