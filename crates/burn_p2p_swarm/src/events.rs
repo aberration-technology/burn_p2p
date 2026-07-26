@@ -706,7 +706,7 @@ pub struct ArtifactChunkPayload {
     /// The chunk.
     pub chunk: ChunkDescriptor,
     /// The bytes.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "burn_p2p_core::codec::compact_bytes")]
     pub bytes: Vec<u8>,
     /// The generated at.
     pub generated_at: DateTime<Utc>,

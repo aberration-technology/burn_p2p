@@ -9,6 +9,70 @@ pub const SHA2_256_MULTIHASH_CODE: u8 = 0x12;
 pub const SHA2_256_DIGEST_LEN: usize = 32;
 pub const SHA2_256_MULTIHASH_LEN: usize = 2 + SHA2_256_DIGEST_LEN;
 
+/// Compact byte serialization with backward-compatible sequence decoding.
+///
+/// New payloads use the serializer's byte-string representation. Decoders also
+/// accept the integer sequence emitted by older `Vec<u8>` schemas so peers can
+/// interoperate during rolling upgrades.
+pub mod compact_bytes {
+    use std::{cmp, fmt};
+
+    use serde::{
+        Deserializer, Serializer,
+        de::{SeqAccess, Visitor},
+    };
+
+    /// Serializes bytes using the format's compact byte-string representation.
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(bytes)
+    }
+
+    /// Deserializes either a compact byte string or a legacy integer sequence.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(CompatibleBytesVisitor)
+    }
+
+    struct CompatibleBytesVisitor;
+
+    impl<'de> Visitor<'de> for CompatibleBytesVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a byte string or a sequence of bytes")
+        }
+
+        fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E> {
+            Ok(value.to_vec())
+        }
+
+        fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> Result<Self::Value, E> {
+            Ok(value.to_vec())
+        }
+
+        fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let capacity = cmp::min(sequence.size_hint().unwrap_or(0), 4096);
+            let mut bytes = Vec::with_capacity(capacity);
+            while let Some(byte) = sequence.next_element()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 /// Errors returned while encoding or decoding canonical schema payloads.
 pub enum SchemaError {
@@ -103,10 +167,23 @@ impl<T> CanonicalSchema for T where T: Serialize {}
 #[cfg(test)]
 mod tests {
     use super::{
-        content_id_for, deterministic_cbor, multihash_from_sha256_digest, multihash_sha256,
+        content_id_for, deterministic_cbor, from_cbor_slice, multihash_from_sha256_digest,
+        multihash_sha256,
     };
     use crate::ContentId;
+    use serde::{Deserialize, Serialize};
     use sha2::Digest;
+
+    #[derive(Debug, PartialEq, Serialize)]
+    struct LegacyBytes {
+        bytes: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct CompatibleBytes {
+        #[serde(with = "crate::codec::compact_bytes")]
+        bytes: Vec<u8>,
+    }
 
     #[test]
     fn sha256_multihash_encoding_matches_multiformats_wire_format() {
@@ -140,5 +217,27 @@ mod tests {
             content_id_for(&value).expect("streaming content identifier"),
             expected
         );
+    }
+
+    #[test]
+    fn compact_bytes_decode_legacy_sequences_and_current_byte_strings() {
+        let expected = vec![0, 1, 2, 127, 128, 254, 255];
+        let legacy = deterministic_cbor(&LegacyBytes {
+            bytes: expected.clone(),
+        })
+        .expect("encode legacy byte sequence");
+        let compact = deterministic_cbor(&CompatibleBytes {
+            bytes: expected.clone(),
+        })
+        .expect("encode compact byte string");
+
+        let legacy_decoded: CompatibleBytes =
+            from_cbor_slice(&legacy).expect("decode legacy byte sequence");
+        let compact_decoded: CompatibleBytes =
+            from_cbor_slice(&compact).expect("decode compact byte string");
+
+        assert_eq!(legacy_decoded.bytes, expected);
+        assert_eq!(compact_decoded.bytes, expected);
+        assert!(compact.len() < legacy.len());
     }
 }
