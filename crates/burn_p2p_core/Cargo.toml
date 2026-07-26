@@ -17,7 +17,6 @@ hex.workspace = true
 semver.workspace = true
 sha2.workspace = true
 serde.workspace = true
-serde_bytes.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

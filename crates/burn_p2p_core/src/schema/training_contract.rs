@@ -189,7 +189,7 @@ pub struct CompactScalarVector {
     /// Number of decoded scalars.
     pub value_count: u32,
     /// Packed scalar bytes.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "crate::codec::compact_bytes")]
     pub bytes: Vec<u8>,
 }
 

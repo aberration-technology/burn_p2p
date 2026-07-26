@@ -2447,6 +2447,66 @@ fn request_metadata_types_are_constructible() {
 }
 
 #[test]
+fn artifact_chunk_response_decodes_legacy_cbor_byte_sequences() {
+    #[allow(dead_code)]
+    #[derive(serde::Serialize)]
+    enum LegacyControlPlaneResponse {
+        Snapshot(()),
+        ArtifactManifest(()),
+        ArtifactChunk(Option<LegacyArtifactChunkPayload>),
+        DiLoCo(()),
+    }
+
+    #[derive(serde::Serialize)]
+    struct LegacyArtifactChunkPayload {
+        artifact_id: ArtifactId,
+        chunk: ChunkDescriptor,
+        bytes: Vec<u8>,
+        generated_at: chrono::DateTime<Utc>,
+    }
+
+    let generated_at = Utc::now();
+    let expected = ArtifactChunkPayload {
+        artifact_id: ArtifactId::new("artifact-legacy-wire"),
+        chunk: ChunkDescriptor {
+            chunk_id: ChunkId::new("chunk-legacy-wire"),
+            offset_bytes: 0,
+            length_bytes: 7,
+            chunk_hash: ContentId::new("legacy-wire-hash"),
+        },
+        bytes: vec![0, 1, 2, 127, 128, 254, 255],
+        generated_at,
+    };
+    let legacy = LegacyControlPlaneResponse::ArtifactChunk(Some(LegacyArtifactChunkPayload {
+        artifact_id: expected.artifact_id.clone(),
+        chunk: expected.chunk.clone(),
+        bytes: expected.bytes.clone(),
+        generated_at,
+    }));
+
+    let encoded = cbor4ii::serde::to_vec(Vec::new(), &legacy).expect("encode legacy response");
+    let compact_encoded = cbor4ii::serde::to_vec(
+        Vec::new(),
+        &super::ControlPlaneResponse::ArtifactChunk(Some(expected.clone())),
+    )
+    .expect("encode compact response");
+    let decoded: super::ControlPlaneResponse =
+        cbor4ii::serde::from_slice(&encoded).expect("decode legacy response");
+    let compact_decoded: super::ControlPlaneResponse =
+        cbor4ii::serde::from_slice(&compact_encoded).expect("decode compact response");
+
+    assert_eq!(
+        decoded,
+        super::ControlPlaneResponse::ArtifactChunk(Some(expected.clone()))
+    );
+    assert_eq!(
+        compact_decoded,
+        super::ControlPlaneResponse::ArtifactChunk(Some(expected))
+    );
+    assert!(compact_encoded.len() < encoded.len());
+}
+
+#[test]
 fn control_envelope_announcements_are_usable() {
     let now = Utc::now();
     let envelope = ExperimentControlEnvelope {

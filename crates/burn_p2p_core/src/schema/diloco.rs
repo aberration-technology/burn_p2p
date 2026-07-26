@@ -631,7 +631,7 @@ pub struct StateBlob {
     /// Human-readable encoding label.
     pub encoding: String,
     /// Serialized bytes.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "crate::codec::compact_bytes")]
     pub bytes: Vec<u8>,
 }
 
@@ -809,7 +809,7 @@ pub struct PseudoGradientChunk {
     /// Zero-based chunk index.
     pub chunk_index: u32,
     /// Raw encoded bytes.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "crate::codec::compact_bytes")]
     pub bytes: Vec<u8>,
     /// Timestamp when the chunk was produced.
     pub generated_at: DateTime<Utc>,
@@ -1124,6 +1124,9 @@ mod wire_tests {
         );
         let decoded: PseudoGradientChunk =
             ciborium::de::from_reader(Cursor::new(encoded)).expect("decode chunk");
+        let legacy_decoded: PseudoGradientChunk =
+            ciborium::de::from_reader(Cursor::new(legacy_encoded)).expect("decode legacy chunk");
         assert_eq!(decoded, chunk);
+        assert_eq!(legacy_decoded, chunk);
     }
 }
