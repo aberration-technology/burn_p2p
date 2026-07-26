@@ -265,6 +265,6 @@ impl BrowserRuntimeConfig {
     }
 }
 
-fn default_sync_active_head_artifact() -> bool {
+pub(crate) fn default_sync_active_head_artifact() -> bool {
     true
 }

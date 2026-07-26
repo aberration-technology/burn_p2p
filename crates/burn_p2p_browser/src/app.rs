@@ -35,6 +35,7 @@ use crate::{
         persist_durable_browser_storage, persist_durable_receipt_outbox,
     },
     resolve_browser_seed_bootstrap,
+    runtime::default_sync_active_head_artifact,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{
@@ -90,6 +91,13 @@ pub struct BrowserAppConnectConfig {
     pub selected_revision_id: Option<String>,
     /// Optional site-config fallback seed urls embedded into the browser artifact.
     pub seed_node_urls: Vec<String>,
+    /// Whether the browser app should keep the active head artifact cached.
+    ///
+    /// Disable this for observer or training profiles that do not consume the
+    /// active checkpoint. Direct-swarm refresh then remains peer-native instead
+    /// of falling back to edge control APIs solely to retrieve artifact bytes.
+    #[serde(default = "default_sync_active_head_artifact")]
+    pub sync_active_head_artifact: bool,
     /// Optional baked browser edge snapshot for bootstrap without a live edge fetch.
     #[serde(default)]
     pub bootstrap_snapshot: Option<BrowserEdgeSnapshot>,
@@ -113,6 +121,7 @@ impl BrowserAppConnectConfig {
             selected_experiment_id: None,
             selected_revision_id: None,
             seed_node_urls: Vec::new(),
+            sync_active_head_artifact: default_sync_active_head_artifact(),
             bootstrap_snapshot: None,
             bootstrap_signed_seed_advertisement: None,
         }
@@ -161,6 +170,12 @@ impl BrowserAppConnectConfig {
     /// Adds site-config fallback seeds to the browser connect config.
     pub fn with_seed_node_urls(mut self, seed_node_urls: Vec<String>) -> Self {
         self.seed_node_urls = seed_node_urls;
+        self
+    }
+
+    /// Configures whether refresh should cache the active head artifact.
+    pub fn with_active_head_artifact_sync(mut self, enabled: bool) -> Self {
+        self.sync_active_head_artifact = enabled;
         self
     }
 
@@ -574,26 +589,7 @@ impl BrowserAppController {
     pub async fn connect_with(
         config: BrowserAppConnectConfig,
     ) -> Result<Self, BrowserAuthClientError> {
-        let BrowserAppConnectConfig {
-            edge_base_url,
-            capability,
-            target,
-            selected_experiment_id,
-            selected_revision_id,
-            seed_node_urls,
-            bootstrap_snapshot,
-            bootstrap_signed_seed_advertisement,
-        } = config;
-        Self::connect(
-            edge_base_url,
-            capability,
-            target.preferred_role(),
-            selected_experiment_id.map(|experiment_id| (experiment_id, selected_revision_id)),
-            seed_node_urls,
-            bootstrap_snapshot,
-            bootstrap_signed_seed_advertisement,
-        )
-        .await
+        Self::connect_configured(config).await
     }
 
     /// Connects a viewer-first browser app.
@@ -640,13 +636,25 @@ impl BrowserAppController {
             SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>,
         >,
     ) -> Result<Self, BrowserAuthClientError> {
-        let edge_base_url = edge_base_url.into().trim_end_matches('/').to_owned();
-        let preloaded_bootstrap = bootstrap_snapshot.is_some();
-        let snapshot = match bootstrap_snapshot {
+        let mut config = BrowserAppConnectConfig::custom(edge_base_url, capability, requested_role)
+            .with_seed_node_urls(site_seed_node_urls)
+            .with_bootstrap_material(bootstrap_snapshot, bootstrap_signed_seed_advertisement);
+        if let Some((experiment_id, revision_id)) = selected_experiment {
+            config = config.with_selection(experiment_id, revision_id);
+        }
+        Self::connect_configured(config).await
+    }
+
+    async fn connect_configured(
+        mut config: BrowserAppConnectConfig,
+    ) -> Result<Self, BrowserAuthClientError> {
+        let edge_base_url = config.edge_base_url.trim_end_matches('/').to_owned();
+        let preloaded_bootstrap = config.bootstrap_snapshot.is_some();
+        let snapshot = match config.bootstrap_snapshot.take() {
             Some(snapshot) => snapshot,
             None => fetch_edge_snapshot(&edge_base_url).await?,
         };
-        let signed_seed_advertisement = match bootstrap_signed_seed_advertisement {
+        let signed_seed_advertisement = match config.bootstrap_signed_seed_advertisement.take() {
             Some(signed_seed_advertisement) => Some(signed_seed_advertisement),
             None if preloaded_bootstrap => {
                 fetch_signed_seed_advertisement(&edge_base_url, &snapshot)
@@ -660,17 +668,15 @@ impl BrowserAppController {
             bindings.clone(),
             BrowserEnrollmentConfig::for_runtime_sync(&snapshot),
         );
+        let runtime_config = runtime_config_from_snapshot(
+            &edge_base_url,
+            &snapshot,
+            &config,
+            signed_seed_advertisement.as_ref(),
+        );
         let runtime = BrowserWorkerRuntime::start(
-            runtime_config_from_snapshot(
-                &edge_base_url,
-                &snapshot,
-                &capability,
-                requested_role,
-                selected_experiment,
-                &site_seed_node_urls,
-                signed_seed_advertisement.as_ref(),
-            ),
-            capability,
+            runtime_config,
+            config.capability,
             BrowserTransportStatus::enabled(
                 snapshot.transports.webrtc_direct,
                 snapshot.transports.webtransport_gateway,
@@ -1564,13 +1570,10 @@ async fn fetch_signed_seed_advertisement(
         .map_err(Into::into)
 }
 
-fn runtime_config_from_snapshot(
+pub(crate) fn runtime_config_from_snapshot(
     edge_base_url: &str,
     snapshot: &BrowserEdgeSnapshot,
-    capability: &BrowserCapabilityReport,
-    requested_role: BrowserRuntimeRole,
-    selected_experiment: Option<(String, Option<String>)>,
-    site_seed_node_urls: &[String],
+    connect: &BrowserAppConnectConfig,
     signed_seed_advertisement: Option<&SignedPayload<SchemaEnvelope<BrowserSeedAdvertisement>>>,
 ) -> BrowserRuntimeConfig {
     let target_artifact_hash = snapshot
@@ -1602,16 +1605,21 @@ fn runtime_config_from_snapshot(
         "browser-client",
         target_artifact_hash,
     );
-    config.role = preferred_runtime_role(snapshot, capability, requested_role);
+    config.role = preferred_runtime_role(
+        snapshot,
+        &connect.capability,
+        connect.target.preferred_role(),
+    );
     config.receipt_submit_path = snapshot.paths.receipt_submit_path.clone();
-    config.site_seed_node_urls = site_seed_node_urls.to_vec();
+    config.site_seed_node_urls = connect.seed_node_urls.clone();
+    config.sync_active_head_artifact = connect.sync_active_head_artifact;
     config.seed_bootstrap = resolve_browser_seed_bootstrap(
         &snapshot.network_id,
         signed_seed_advertisement,
-        site_seed_node_urls,
+        &connect.seed_node_urls,
         snapshot.captured_at,
     );
-    if let Some((experiment_id, revision_id)) = selected_experiment {
+    if let Some((experiment_id, revision_id)) = connect.selected_experiment() {
         config.selected_experiment = Some(ExperimentId::new(&experiment_id));
         config.selected_revision = revision_id.map(|revision_id| RevisionId::new(&revision_id));
     } else if let Some(entry) = snapshot.directory.entries.first() {
