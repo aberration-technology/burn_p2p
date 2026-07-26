@@ -1,9 +1,9 @@
 use super::*;
 use crate::app::{
     cached_active_head_artifact_for_restore, restore_cached_active_head_artifact,
-    restore_cached_active_head_artifact_after_unready_sync, should_fallback_to_edge_control_sync,
-    should_fetch_direct_swarm_snapshot, should_sync_active_head_artifact,
-    should_wait_for_direct_swarm_bootstrap,
+    restore_cached_active_head_artifact_after_unready_sync, runtime_config_from_snapshot,
+    should_fallback_to_edge_control_sync, should_fetch_direct_swarm_snapshot,
+    should_sync_active_head_artifact, should_wait_for_direct_swarm_bootstrap,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -481,6 +481,7 @@ fn browser_app_connect_config_tracks_target_and_selection() {
     )
     .with_selection("exp-browser", Some("rev-browser"))
     .with_seed_node_urls(vec!["/dns4/site.example/tcp/443/wss".into()])
+    .with_active_head_artifact_sync(false)
     .with_bootstrap_material(
         Some(snapshot.clone()),
         Some(signed_seed_advertisement.clone()),
@@ -495,11 +496,43 @@ fn browser_app_connect_config_tracks_target_and_selection() {
         config.seed_node_urls,
         vec!["/dns4/site.example/tcp/443/wss".to_owned()]
     );
+    assert!(!config.sync_active_head_artifact);
     assert_eq!(config.bootstrap_snapshot, Some(snapshot));
     assert_eq!(
         config.bootstrap_signed_seed_advertisement,
         Some(signed_seed_advertisement)
     );
+}
+
+#[test]
+fn browser_app_connect_config_defaults_artifact_sync_for_compatibility() {
+    let config = BrowserAppConnectConfig::observe(
+        "https://edge.example",
+        BrowserCapabilityReport::default(),
+    );
+    assert!(config.sync_active_head_artifact);
+
+    let mut serialized = serde_json::to_value(config).expect("serialize browser app config");
+    serialized
+        .as_object_mut()
+        .expect("browser app config object")
+        .remove("sync_active_head_artifact");
+    let decoded: BrowserAppConnectConfig =
+        serde_json::from_value(serialized).expect("decode legacy browser app config");
+    assert!(decoded.sync_active_head_artifact);
+}
+
+#[test]
+fn browser_app_connect_config_propagates_artifact_sync_policy_to_runtime() {
+    let snapshot = browser_test_edge_snapshot();
+    let connect = BrowserAppConnectConfig::observe(
+        "https://edge.example",
+        BrowserCapabilityReport::default(),
+    )
+    .with_active_head_artifact_sync(false);
+    let config = runtime_config_from_snapshot("https://edge.example", &snapshot, &connect, None);
+
+    assert!(!config.sync_active_head_artifact);
 }
 
 #[test]
