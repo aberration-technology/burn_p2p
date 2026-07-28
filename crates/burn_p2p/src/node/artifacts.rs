@@ -661,10 +661,15 @@ pub(crate) fn artifact_sync_attempt_timeout(
     deadline: Instant,
     timeout: Duration,
     provider_count: usize,
+    transfer_in_progress: bool,
 ) -> Option<Duration> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return None;
+    }
+
+    if transfer_in_progress {
+        return Some(timeout.min(remaining));
     }
 
     let provider_count = provider_count.max(1) as u32;
@@ -693,11 +698,36 @@ pub(crate) fn prioritized_artifact_source_peers(
     requested_peer_id: &PeerId,
     provider_peer_id: Option<&PeerId>,
     existing_source_peers: &[PeerId],
-    _connected_peers: &BTreeSet<PeerId>,
+    connected_peers: &BTreeSet<PeerId>,
 ) -> Vec<PeerId> {
-    dedupe_peer_ids(
-        std::iter::once(requested_peer_id.clone())
-            .chain(provider_peer_id.into_iter().cloned())
-            .chain(existing_source_peers.iter().cloned()),
+    prioritized_artifact_provider_peers(
+        &dedupe_peer_ids(
+            provider_peer_id
+                .into_iter()
+                .cloned()
+                .chain(std::iter::once(requested_peer_id.clone()))
+                .chain(existing_source_peers.iter().cloned()),
+        ),
+        None,
+        connected_peers,
     )
+}
+
+pub(crate) fn prioritized_artifact_provider_peers(
+    provider_peer_ids: &[PeerId],
+    transfer_provider_peer_id: Option<&PeerId>,
+    connected_peers: &BTreeSet<PeerId>,
+) -> Vec<PeerId> {
+    let candidates = dedupe_peer_ids(
+        transfer_provider_peer_id
+            .into_iter()
+            .cloned()
+            .chain(provider_peer_ids.iter().cloned()),
+    );
+    let connected = candidates
+        .iter()
+        .filter(|peer_id| connected_peers.contains(*peer_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    dedupe_peer_ids(connected.into_iter().chain(candidates))
 }

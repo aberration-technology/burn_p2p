@@ -756,11 +756,45 @@ impl<P> RunningNode<P> {
                 return Ok(());
             }
 
-            for (provider_index, provider_peer_id) in provider_peer_ids.iter().enumerate() {
-                let remaining_candidates = provider_peer_ids.len().saturating_sub(provider_index);
-                let Some(sync_timeout) =
-                    artifact_sync_attempt_timeout(deadline, timeout, remaining_candidates)
-                else {
+            let telemetry_snapshot = self.telemetry().snapshot();
+            let transfer_state = telemetry_snapshot.in_flight_transfers.get(artifact_id);
+            let transfer_provider_peer_id =
+                transfer_state.and_then(|state| state.provider_peer_id.as_ref());
+            let connected_peer_ids = connected_peer_ids(&telemetry_snapshot)
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let prioritized_provider_peer_ids = prioritized_artifact_provider_peers(
+                provider_peer_ids,
+                transfer_provider_peer_id,
+                &connected_peer_ids,
+            );
+
+            for (provider_index, provider_peer_id) in
+                prioritized_provider_peer_ids.iter().enumerate()
+            {
+                let transfer_state = self
+                    .telemetry()
+                    .snapshot()
+                    .in_flight_transfers
+                    .get(artifact_id)
+                    .cloned();
+                let transfer_in_progress = transfer_state.as_ref().is_some_and(|state| {
+                    state.provider_peer_id.as_ref() == Some(provider_peer_id)
+                        && !state.completed_chunks.is_empty()
+                        && connected_peer_ids.contains(provider_peer_id)
+                });
+                let completed_chunks_before = transfer_state
+                    .as_ref()
+                    .map_or(0, |state| state.completed_chunks.len());
+                let remaining_candidates = prioritized_provider_peer_ids
+                    .len()
+                    .saturating_sub(provider_index);
+                let Some(sync_timeout) = artifact_sync_attempt_timeout(
+                    deadline,
+                    timeout,
+                    remaining_candidates,
+                    transfer_in_progress,
+                ) else {
                     break;
                 };
                 match self.sync_artifact_from_peer_bounded(
@@ -775,6 +809,18 @@ impl<P> RunningNode<P> {
                             artifact_id.as_str(),
                             provider_peer_id.as_str(),
                         ));
+                        let transfer_state = self
+                            .telemetry()
+                            .snapshot()
+                            .in_flight_transfers
+                            .get(artifact_id)
+                            .cloned();
+                        let made_progress = transfer_state.as_ref().is_some_and(|state| {
+                            state.completed_chunks.len() > completed_chunks_before
+                        });
+                        if made_progress {
+                            break;
+                        }
                     }
                 }
             }
@@ -1399,7 +1445,7 @@ fn head_is_newer(candidate: &HeadDescriptor, current: &HeadDescriptor) -> bool {
 }
 
 fn head_sync_wait_timeout() -> Duration {
-    ci_scaled_timeout(Duration::from_secs(120), Duration::from_secs(300))
+    ci_scaled_timeout(Duration::from_secs(300), Duration::from_secs(600))
 }
 
 #[cfg(test)]
@@ -1544,9 +1590,9 @@ mod tests {
     fn head_sync_wait_timeout_covers_large_production_checkpoints() {
         let timeout = head_sync_wait_timeout();
         if std::env::var_os("CI").is_some() || std::env::var_os("GITHUB_ACTIONS").is_some() {
-            assert_eq!(timeout, Duration::from_secs(300));
+            assert_eq!(timeout, Duration::from_secs(600));
         } else {
-            assert_eq!(timeout, Duration::from_secs(120));
+            assert_eq!(timeout, Duration::from_secs(300));
         }
     }
 
