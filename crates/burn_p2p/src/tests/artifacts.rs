@@ -38,6 +38,7 @@ fn artifact_sync_attempt_timeout_preserves_transfer_budget_with_many_providers()
         Instant::now() + Duration::from_secs(120),
         Duration::from_secs(120),
         64,
+        false,
     )
     .expect("timeout");
 
@@ -54,10 +55,27 @@ fn artifact_sync_attempt_timeout_respects_remaining_budget() {
         Instant::now() + Duration::from_millis(120),
         Duration::from_secs(10),
         8,
+        false,
     )
     .expect("timeout");
 
     assert!(timeout <= Duration::from_millis(120));
+}
+
+#[test]
+fn artifact_sync_attempt_timeout_preserves_deadline_for_progressing_transfer() {
+    let timeout = crate::node::artifact_sync_attempt_timeout(
+        Instant::now() + Duration::from_secs(120),
+        Duration::from_secs(120),
+        64,
+        true,
+    )
+    .expect("timeout");
+
+    assert!(
+        timeout >= Duration::from_secs(119),
+        "a transfer that already found a provider or chunks should keep the remaining budget"
+    );
 }
 
 #[test]
@@ -1906,8 +1924,7 @@ fn head_provider_peers_collect_matching_real_providers() {
 }
 
 #[test]
-fn prioritized_artifact_source_peers_keep_requested_provider_first_without_unrelated_connected_peers()
- {
+fn prioritized_artifact_source_peers_keep_connected_transfer_provider_first() {
     let requested_peer = crate::PeerId::new("peer-requested");
     let selected_provider = crate::PeerId::new("peer-provider");
     let stale_peer = crate::PeerId::new("peer-stale");
@@ -1922,6 +1939,25 @@ fn prioritized_artifact_source_peers_keep_requested_provider_first_without_unrel
             connected_peer.clone(),
             requested_peer.clone(),
         ]),
+    );
+
+    assert_eq!(
+        prioritized,
+        vec![selected_provider, requested_peer, stale_peer]
+    );
+}
+
+#[test]
+fn prioritized_artifact_source_peers_keep_disconnected_fallbacks_after_connected_peers() {
+    let requested_peer = crate::PeerId::new("peer-requested");
+    let selected_provider = crate::PeerId::new("peer-provider");
+    let stale_peer = crate::PeerId::new("peer-stale");
+
+    let prioritized = crate::prioritized_artifact_source_peers(
+        &requested_peer,
+        Some(&selected_provider),
+        std::slice::from_ref(&stale_peer),
+        &BTreeSet::from([requested_peer.clone()]),
     );
 
     assert_eq!(
@@ -2212,7 +2248,11 @@ fn wait_for_artifact_from_peers_repairs_partial_local_artifact() {
 
     dialer
         .wait_for_artifact_from_peers(
-            std::slice::from_ref(&listener_peer_id),
+            &[
+                crate::PeerId::new("peer-stale-a"),
+                crate::PeerId::new("peer-stale-b"),
+                listener_peer_id.clone(),
+            ],
             &descriptor.artifact_id,
             Duration::from_secs(10),
         )
