@@ -760,28 +760,30 @@ impl<P> RunningNode<P> {
             let transfer_state = telemetry_snapshot.in_flight_transfers.get(artifact_id);
             let transfer_provider_peer_id =
                 transfer_state.and_then(|state| state.provider_peer_id.as_ref());
-            let connected_peer_ids = connected_peer_ids(&telemetry_snapshot)
+            let initial_connected_peer_ids = connected_peer_ids(&telemetry_snapshot)
                 .into_iter()
                 .collect::<BTreeSet<_>>();
             let prioritized_provider_peer_ids = prioritized_artifact_provider_peers(
                 provider_peer_ids,
                 transfer_provider_peer_id,
-                &connected_peer_ids,
+                &initial_connected_peer_ids,
             );
 
             for (provider_index, provider_peer_id) in
                 prioritized_provider_peer_ids.iter().enumerate()
             {
-                let transfer_state = self
-                    .telemetry()
-                    .snapshot()
+                let transfer_snapshot = self.telemetry().snapshot();
+                let transfer_state = transfer_snapshot
                     .in_flight_transfers
                     .get(artifact_id)
                     .cloned();
+                let transfer_connected_peer_ids = connected_peer_ids(&transfer_snapshot)
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
                 let transfer_in_progress = transfer_state.as_ref().is_some_and(|state| {
                     state.provider_peer_id.as_ref() == Some(provider_peer_id)
                         && !state.completed_chunks.is_empty()
-                        && connected_peer_ids.contains(provider_peer_id)
+                        && transfer_connected_peer_ids.contains(provider_peer_id)
                 });
                 let completed_chunks_before = transfer_state
                     .as_ref()
