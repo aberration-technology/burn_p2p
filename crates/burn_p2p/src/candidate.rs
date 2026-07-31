@@ -77,3 +77,16 @@ pub(crate) struct ValidationCandidateHead {
     pub update: UpdateAnnounce,
     pub workload_update: Option<WorkloadUpdateEnvelope>,
 }
+
+/// Matches the immutable identity of an update while ignoring relay-local
+/// metadata such as providers and announcement time.
+pub(crate) fn same_update_identity(left: &UpdateAnnounce, right: &UpdateAnnounce) -> bool {
+    left.peer_id == right.peer_id
+        && left.study_id == right.study_id
+        && left.experiment_id == right.experiment_id
+        && left.revision_id == right.revision_id
+        && left.window_id == right.window_id
+        && left.base_head_id == right.base_head_id
+        && left.lease_id == right.lease_id
+        && left.delta_artifact_id == right.delta_artifact_id
+}

@@ -769,6 +769,7 @@ mod tests {
                 momentum_micros: Some(900_000),
                 nesterov: true,
                 weight_decay_micros: Some(10_000),
+                max_pseudo_gradient_rms_ratio_micros: None,
             },
             ..burn_p2p_core::DiLoCoPolicy::default()
         });

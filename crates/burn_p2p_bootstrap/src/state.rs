@@ -1403,7 +1403,7 @@ mod tests {
         ArtifactDescriptor, ArtifactId, ArtifactKind, BrowserRolePolicy, BrowserVisibilityPolicy,
         ClientPlatform, ControlPlaneSnapshot, DatasetViewId, DiffusionPromotionCertificate,
         DiffusionPromotionCertificateAnnouncement, ExperimentResourceRequirements,
-        HeadAnnouncement, LagPolicy, LagState, LocalOptimizerStatePolicy,
+        GenesisMaterialization, HeadAnnouncement, LagPolicy, LagState, LocalOptimizerStatePolicy,
         MODEL_GENESIS_SIGNATURE_KEY_ID, MergeWindowMissPolicy, ModelGenesisManifest, Precision,
         REVISION_CONTRACT_SIGNATURE_KEY_ID, RecurrentStatePolicy, RevisionContractBundle,
         RevisionManifest, RuntimeStatus, SchedulerStatePolicy, SignatureAlgorithm,
@@ -1494,6 +1494,7 @@ mod tests {
             tensor_digest: ContentId::new("tensor"),
             initialization_algorithm: "deterministic-test".into(),
             initialization_seed: Some(7),
+            materialization: GenesisMaterialization::FullArtifact,
             authority_epoch: 1,
             created_at: Utc::now(),
         };

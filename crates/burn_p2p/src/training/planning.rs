@@ -274,6 +274,7 @@ pub(super) fn preferred_unleased_microshards_for_peer(
 pub(super) fn load_runtime_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
+    revision_contract: Option<&RevisionContractBundle>,
     store: &FsArtifactStore,
     device: &P::Device,
 ) -> anyhow::Result<P::Model>
@@ -283,12 +284,13 @@ where
     let (_, base_head) = current_head
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("training requires a materialized canonical base head"))?;
-    load_model_for_head(project, base_head, store, device)
+    load_model_for_head(project, base_head, revision_contract, store, device)
 }
 
 pub(crate) fn load_model_for_head<P>(
     project: &mut P,
     head: &HeadDescriptor,
+    revision_contract: Option<&RevisionContractBundle>,
     store: &FsArtifactStore,
     device: &P::Device,
 ) -> anyhow::Result<P::Model>
@@ -303,7 +305,42 @@ where
             head.global_step,
         )
     })?;
-    project.load_model_artifact(project.init_model(device), &descriptor, store, device)
+    let initialized_model = project.init_model(device);
+    let Some(contract) = revision_contract else {
+        return project.load_model_artifact(initialized_model, &descriptor, store, device);
+    };
+    if head.parent_head_id.is_some() {
+        return project.load_model_artifact(initialized_model, &descriptor, store, device);
+    }
+
+    let signed_genesis = &contract.genesis.payload.payload;
+    anyhow::ensure!(
+        head.revision_id == contract.revision.revision_id
+            && descriptor == signed_genesis.artifact
+            && head.artifact_id == signed_genesis.artifact.artifact_id,
+        "parentless head {} does not match the authority-signed genesis for revision {}",
+        head.head_id.as_str(),
+        head.revision_id.as_str(),
+    );
+    let model = project.load_genesis_artifact(
+        initialized_model,
+        crate::GenesisArtifactLoadContext {
+            descriptor: &descriptor,
+            training_contract_id: &contract.training_contract_id,
+            contract: &contract.training,
+            materialization: &signed_genesis.materialization,
+            store,
+            device,
+        },
+    )?;
+    let actual_digest = project.model_tensor_digest(&model)?;
+    anyhow::ensure!(
+        actual_digest == signed_genesis.tensor_digest,
+        "decoded genesis tensor digest {} does not match authority digest {}",
+        actual_digest.as_str(),
+        signed_genesis.tensor_digest.as_str(),
+    );
+    Ok(model)
 }
 
 pub(super) fn runtime_blocked_reason(prefix: &str, lag_assessment: &LagAssessment) -> String {

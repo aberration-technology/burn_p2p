@@ -1695,6 +1695,7 @@ dependencies = [
  "burn_p2p_experiment",
  "burn_p2p_tensor_identity",
  "criterion",
+ "futures",
  "serde",
  "tempfile",
  "thiserror 2.0.18",

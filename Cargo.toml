@@ -61,7 +61,7 @@ burn_p2p_browser = { version = "=0.21.8", path = "crates/burn_p2p_browser" }
 burn_p2p_checkpoint = { version = "=0.21.8", path = "crates/burn_p2p_checkpoint" }
 burn_p2p_core = { version = "=0.21.8", path = "crates/burn_p2p_core" }
 burn_p2p_dataloader = { version = "=0.21.8", path = "crates/burn_p2p_dataloader" }
-burn_p2p_engine = { version = "=0.21.8", path = "crates/burn_p2p_engine" }
+burn_p2p_engine = { version = "=0.21.8", path = "crates/burn_p2p_engine", default-features = false }
 burn_p2p_tensor_identity = { version = "=0.21.8", path = "crates/burn_p2p_tensor_identity" }
 burn_p2p_experiment = { version = "=0.21.8", path = "crates/burn_p2p_experiment" }
 burn_p2p_limits = { version = "=0.21.8", path = "crates/burn_p2p_limits" }

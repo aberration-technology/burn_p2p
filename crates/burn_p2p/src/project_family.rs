@@ -3,10 +3,11 @@ use semver::Version;
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ClientReleaseManifest,
     ContentId, DiLoCoInnerLoopReport, DiLoCoWorkload, EvalSplit, FlattenedTensorPack,
-    FsArtifactStore, GenesisSpec, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
-    NetworkManifest, NodeBuilder, OuterOptimizerPolicy, P2pWorkload, PatchOutcome, PatchSupport,
-    ProjectFamilyId, RuntimePatch, StateBlob, SupportedWorkload, TrainerCanonicalReconcileStrategy,
-    ValidatedWorkloadUpdate, WindowCtx, WindowReport, WorkloadId, WorkloadUpdateValidationContext,
+    FsArtifactStore, GenesisSpec, MaterializedWorkloadUpdate, MergeModelCandidate, MergePolicy,
+    MetricReport, MetricValue, NetworkManifest, NodeBuilder, OuterOptimizerPolicy, P2pWorkload,
+    PatchOutcome, PatchSupport, ProjectFamilyId, RuntimePatch, StateBlob, SupportedWorkload,
+    TrainerCanonicalReconcileStrategy, ValidatedWorkloadUpdate, WindowCtx, WindowReport,
+    WorkloadId, WorkloadUpdateMaterializationContext, WorkloadUpdateValidationContext,
 };
 
 /// Groups one or more compatible workloads under a single project family.
@@ -234,8 +235,23 @@ where
             .load_model_artifact(model, descriptor, store, device)
     }
 
+    fn load_genesis_artifact(
+        &self,
+        model: Self::Model,
+        context: crate::GenesisArtifactLoadContext<'_, Self::Device>,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload.load_genesis_artifact(model, context)
+    }
+
     fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
         self.workload.model_tensor_digest(model)
+    }
+
+    fn materialize_workload_update(
+        &self,
+        context: WorkloadUpdateMaterializationContext<'_, Self::Device, Self::Model>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        self.workload.materialize_workload_update(context)
     }
 
     fn apply_workload_update(
@@ -270,6 +286,13 @@ where
     ) -> anyhow::Result<ArtifactDescriptor> {
         self.workload
             .materialize_model_artifact(model, artifact_kind, head_id, base_head_id, store)
+    }
+
+    fn materialize_genesis_artifact(
+        &self,
+        context: crate::GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        self.workload.materialize_genesis_artifact(context)
     }
 
     fn contribution_metrics(
@@ -464,8 +487,23 @@ where
             .load_model_artifact(model, descriptor, store, device)
     }
 
+    fn load_genesis_artifact(
+        &self,
+        model: Self::Model,
+        context: crate::GenesisArtifactLoadContext<'_, Self::Device>,
+    ) -> anyhow::Result<Self::Model> {
+        self.workload.load_genesis_artifact(model, context)
+    }
+
     fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
         self.workload.model_tensor_digest(model)
+    }
+
+    fn materialize_workload_update(
+        &self,
+        context: WorkloadUpdateMaterializationContext<'_, Self::Device, Self::Model>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        self.workload.materialize_workload_update(context)
     }
 
     fn apply_workload_update(
@@ -500,6 +538,13 @@ where
     ) -> anyhow::Result<ArtifactDescriptor> {
         self.workload
             .materialize_model_artifact(model, artifact_kind, head_id, base_head_id, store)
+    }
+
+    fn materialize_genesis_artifact(
+        &self,
+        context: crate::GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        self.workload.materialize_genesis_artifact(context)
     }
 
     fn contribution_metrics(

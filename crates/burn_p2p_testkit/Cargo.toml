@@ -33,7 +33,7 @@ burn_p2p_bootstrap = { workspace = true, features = [
   "auth-oauth",
   "social",
 ] }
-burn_p2p_engine.workspace = true
+burn_p2p_engine = { workspace = true, features = ["train"] }
 burn_p2p_checkpoint.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_dataloader.workspace = true

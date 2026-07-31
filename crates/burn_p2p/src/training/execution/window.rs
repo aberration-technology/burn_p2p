@@ -482,6 +482,11 @@ impl<P> RunningNode<P> {
         P: P2pWorkload,
     {
         self.reap_training_prefetch();
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id))
+            .cloned();
         let (device, model, capability) = {
             let project = &mut self
                 .node
@@ -489,8 +494,13 @@ impl<P> RunningNode<P> {
                 .expect("running node should retain prepared node")
                 .project;
             let device = project.runtime_device();
-            let model =
-                load_runtime_model(project, &prepared.current_head, &prepared.store, &device)?;
+            let model = load_runtime_model(
+                project,
+                &prepared.current_head,
+                revision_contract.as_ref(),
+                &prepared.store,
+                &device,
+            )?;
             let capability = project.benchmark(&model, &device);
             (device, model, capability)
         };
@@ -510,6 +520,12 @@ impl<P> RunningNode<P> {
     {
         let mut planned = self.plan_training_window(experiment, prepared, &capability)?;
         let telemetry = self.telemetry.clone();
+        let base_model = model.clone();
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id))
+            .cloned();
 
         {
             let mut snapshot = telemetry
@@ -587,13 +603,53 @@ impl<P> RunningNode<P> {
             prepared.local_peer_id.as_str(),
             planned.window_id.0
         ));
-        let artifact = {
+        let materialized_update = if let Some(revision_contract) = revision_contract.as_ref()
+            && !matches!(
+                revision_contract.training.update_codec,
+                UpdateCodec::FullModel
+            ) {
             let project = &mut self
                 .node
                 .as_mut()
                 .expect("running node should retain prepared node")
                 .project;
-            project.materialize_model_artifact(
+            let materialized =
+                project.materialize_workload_update(WorkloadUpdateMaterializationContext {
+                    base_model: &base_model,
+                    trained_model: &ctx.model,
+                    training_contract_id: &revision_contract.training_contract_id,
+                    contract: &revision_contract.training,
+                    revision_id: &experiment.revision_id,
+                    base_head_id: &planned.base_head_id,
+                    candidate_head_id: &head_id,
+                    window_id: planned.window_id,
+                    lease_id: &planned.lease.lease.lease_id,
+                    store: &prepared.store,
+                    device: &ctx.device,
+                })?;
+            Some(materialized.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "workload {} did not materialize required {:?} update",
+                    revision_contract.training.workload_id.as_str(),
+                    revision_contract.training.update_codec
+                )
+            })?)
+        } else {
+            None
+        };
+        let (artifact, workload_update) = if let Some(materialized) = materialized_update {
+            anyhow::ensure!(
+                materialized.artifact == materialized.envelope.artifact,
+                "materialized workload update artifact and envelope disagree"
+            );
+            (materialized.artifact, Some(materialized.envelope))
+        } else {
+            let project = &mut self
+                .node
+                .as_mut()
+                .expect("running node should retain prepared node")
+                .project;
+            let artifact = project.materialize_model_artifact(
                 &ctx.model,
                 ArtifactKind::FullHead,
                 head_id.clone(),
@@ -602,7 +658,8 @@ impl<P> RunningNode<P> {
                     .as_ref()
                     .map(|(_, head)| head.head_id.clone()),
                 &prepared.store,
-            )?
+            )?;
+            (artifact, None)
         };
         let throughput_sample_finished_at = std::cmp::max(Utc::now(), report.completed_at);
         let observed_throughput = ObservedThroughputUpdate {
@@ -686,6 +743,7 @@ impl<P> RunningNode<P> {
             model: ctx.model,
             head,
             artifact,
+            workload_update,
             contribution,
             report,
             window_started_at: throughput_sample_started_at,

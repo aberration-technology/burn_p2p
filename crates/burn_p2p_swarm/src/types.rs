@@ -424,7 +424,10 @@ impl RuntimeTransportPolicy {
             } else {
                 Some(32)
             },
-            max_established_per_peer: if bootstrap { Some(4) } else { Some(1) },
+            // Native trainers routinely exchange state and gradient payloads in both
+            // directions. Retaining two routes avoids interrupting request-response streams
+            // while simultaneous-dial reconciliation converges.
+            max_established_per_peer: if bootstrap { Some(4) } else { Some(2) },
             max_relay_circuits: if bootstrap { Some(128) } else { None },
             max_relay_circuit_bytes: if bootstrap {
                 DEFAULT_BOOTSTRAP_RELAY_CIRCUIT_BYTES

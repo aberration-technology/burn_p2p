@@ -222,6 +222,7 @@ fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
         policy.idle_connection_timeout_ms,
         super::CONTROL_IDLE_CONNECTION_TIMEOUT.as_millis() as u64
     );
+    assert_eq!(policy.max_established_per_peer, Some(2));
     assert!(!policy.enable_local_discovery);
     assert!(policy.enable_relay_client);
     assert!(!policy.enable_relay_server);

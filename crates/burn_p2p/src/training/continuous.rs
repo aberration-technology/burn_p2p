@@ -14,6 +14,11 @@ where
             None => Some(node.initialize_local_head(experiment)?),
         };
         let training_head = canonical_head.clone();
+        let revision_contract = node
+            .node
+            .as_ref()
+            .and_then(|inner| inner.revision_contracts.get(&experiment.revision_id))
+            .cloned();
         let storage =
             node.config().storage.as_ref().cloned().ok_or_else(|| {
                 anyhow::anyhow!("continuous training requires configured storage")
@@ -29,7 +34,13 @@ where
             let current_head = canonical_head
                 .clone()
                 .map(|head| (PeerId::new("canonical"), head));
-            load_runtime_model(project, &current_head, &store, &device)?
+            load_runtime_model(
+                project,
+                &current_head,
+                revision_contract.as_ref(),
+                &store,
+                &device,
+            )?
         };
 
         Ok(Self {
@@ -209,6 +220,12 @@ where
             .warm_model
             .take()
             .expect("continuous trainer should retain a warm model");
+        let revision_contract = self
+            .node
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&latest.revision_id))
+            .cloned();
         let reconciled = {
             let project = &mut self
                 .node
@@ -217,7 +234,13 @@ where
                 .expect("running node should retain prepared node")
                 .project;
             let device = project.runtime_device();
-            let canonical_model = load_model_for_head(project, &latest, &store, &device)?;
+            let canonical_model = load_model_for_head(
+                project,
+                &latest,
+                revision_contract.as_ref(),
+                &store,
+                &device,
+            )?;
             if self
                 .training_head
                 .as_ref()
@@ -243,6 +266,15 @@ where
         &mut self,
         prepared: &TrainingPreparedState,
     ) -> anyhow::Result<()> {
+        let revision_contract = self
+            .node
+            .node
+            .as_ref()
+            .and_then(|node| {
+                node.revision_contracts
+                    .get(&prepared.experiment.revision_id)
+            })
+            .cloned();
         let model = {
             let project = &mut self
                 .node
@@ -251,7 +283,13 @@ where
                 .expect("running node should retain prepared node")
                 .project;
             let device = project.runtime_device();
-            load_runtime_model(project, &prepared.current_head, &prepared.store, &device)?
+            load_runtime_model(
+                project,
+                &prepared.current_head,
+                revision_contract.as_ref(),
+                &prepared.store,
+                &device,
+            )?
         };
         let current_head = prepared.current_head.as_ref().map(|(_, head)| head.clone());
         self.experiment = prepared.experiment.clone();

@@ -509,6 +509,11 @@ impl<P> RunningNode<P> {
                 draft: None,
             }));
         }
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id))
+            .cloned();
         {
             let node = self
                 .node
@@ -525,6 +530,7 @@ impl<P> RunningNode<P> {
                 cache.base_model = Some(load_validation_base_model(
                     project,
                     &prepared.current_head,
+                    revision_contract.as_ref(),
                     &prepared.store,
                     &device,
                 )?);

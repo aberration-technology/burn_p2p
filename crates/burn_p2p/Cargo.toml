@@ -23,7 +23,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 burn_p2p_checkpoint.workspace = true
-burn_p2p_engine = { workspace = true, optional = true }
+burn_p2p_engine = { workspace = true, optional = true, default-features = false }
 burn_p2p_tensor_identity = { workspace = true, optional = true }
 burn_p2p_core.workspace = true
 burn_p2p_dataloader.workspace = true
@@ -44,7 +44,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 default = []
-burn = ["dep:burn", "dep:burn_p2p_engine", "tensor-identity"]
+burn-module = ["dep:burn_p2p_engine", "tensor-identity"]
+burn = ["dep:burn", "burn-module", "burn_p2p_engine/train"]
 ecs = ["dep:burn_ecs"]
 tensor-identity = ["dep:burn_p2p_tensor_identity"]
 

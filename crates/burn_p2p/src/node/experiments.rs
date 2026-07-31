@@ -340,22 +340,43 @@ impl<P> RunningNode<P> {
                     "pre-provisioned genesis artifact {} does not match its authority-signed descriptor",
                     expected_artifact.artifact_id.as_str(),
                 );
-                let model = project.load_model_artifact(
+                let contract = revision_contract
+                    .as_ref()
+                    .expect("authority-signed genesis artifact requires its revision contract");
+                let model = project.load_genesis_artifact(
                     initialized_model,
-                    &stored_artifact,
-                    &store,
-                    &device,
+                    crate::GenesisArtifactLoadContext {
+                        descriptor: &stored_artifact,
+                        training_contract_id: &contract.training_contract_id,
+                        contract: &contract.training,
+                        materialization: &contract.genesis.payload.payload.materialization,
+                        store: &store,
+                        device: &device,
+                    },
                 )?;
                 (model, stored_artifact)
             }
             expected_artifact => {
-                let artifact = project.materialize_model_artifact(
-                    &initialized_model,
-                    ArtifactKind::FullHead,
-                    head_id.clone(),
-                    None,
-                    &store,
-                )?;
+                let artifact = if let Some(contract) = revision_contract.as_ref() {
+                    project.materialize_genesis_artifact(
+                        crate::GenesisArtifactMaterializationContext {
+                            model: &initialized_model,
+                            head_id: head_id.clone(),
+                            training_contract_id: &contract.training_contract_id,
+                            contract: &contract.training,
+                            materialization: &contract.genesis.payload.payload.materialization,
+                            store: &store,
+                        },
+                    )?
+                } else {
+                    project.materialize_model_artifact(
+                        &initialized_model,
+                        ArtifactKind::FullHead,
+                        head_id.clone(),
+                        None,
+                        &store,
+                    )?
+                };
                 if let Some(expected_artifact) = expected_artifact {
                     anyhow::ensure!(
                         artifact == expected_artifact,
@@ -364,8 +385,21 @@ impl<P> RunningNode<P> {
                         expected_artifact.artifact_id.as_str(),
                     );
                 }
-                let model =
-                    project.load_model_artifact(initialized_model, &artifact, &store, &device)?;
+                let model = if let Some(contract) = revision_contract.as_ref() {
+                    project.load_genesis_artifact(
+                        initialized_model,
+                        crate::GenesisArtifactLoadContext {
+                            descriptor: &artifact,
+                            training_contract_id: &contract.training_contract_id,
+                            contract: &contract.training,
+                            materialization: &contract.genesis.payload.payload.materialization,
+                            store: &store,
+                            device: &device,
+                        },
+                    )?
+                } else {
+                    project.load_model_artifact(initialized_model, &artifact, &store, &device)?
+                };
                 (model, artifact)
             }
         };

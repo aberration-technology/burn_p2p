@@ -83,6 +83,28 @@ pub trait CompactUpdateReconstructor {
     fn reconstruct(&self, update: &ValidatedCompactUpdate) -> anyhow::Result<FlattenedTensorPack>;
 }
 
+/// Direct decoder for a canonical mutable-parameter subset.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MutableSubsetParameterReconstructor;
+
+impl CompactUpdateReconstructor for MutableSubsetParameterReconstructor {
+    fn reconstruct(&self, update: &ValidatedCompactUpdate) -> anyhow::Result<FlattenedTensorPack> {
+        let CompactUpdateBody::MutableSubsetParameters { values } = &update.payload.body else {
+            anyhow::bail!("mutable subset reconstructor requires a mutable-subset payload");
+        };
+        let values = values.decode().context("decode mutable-subset values")?;
+        ensure!(
+            values.len() as u64 == update.payload.parameter_count,
+            "mutable-subset parameter count mismatch"
+        );
+        Ok(FlattenedTensorPack::new(
+            update.payload.model_schema_hash.clone(),
+            update.payload.parameter_catalog_hash.clone(),
+            values,
+        ))
+    }
+}
+
 /// Deterministic CountSketch-style decoder for `SubspaceLatent` updates.
 ///
 /// Every flattened parameter coordinate maps to one seeded coefficient and one
@@ -210,6 +232,72 @@ pub fn average_subspace_updates(
             seed: *seed,
             coefficients,
         },
+    })
+}
+
+/// Averages compatible mutable-parameter subsets in canonical parameter order.
+pub fn average_mutable_subset_parameters(
+    updates: &[(&CompactUpdatePayload, f64)],
+    encoding: CompactScalarEncoding,
+) -> anyhow::Result<CompactUpdatePayload> {
+    ensure!(!updates.is_empty(), "cannot average zero compact updates");
+    let (first, _) = updates[0];
+    let CompactUpdateBody::MutableSubsetParameters {
+        values: first_values,
+    } = &first.body
+    else {
+        anyhow::bail!("mutable-subset aggregation requires mutable-subset updates");
+    };
+    let parameter_count = usize::try_from(first.parameter_count)
+        .context("mutable-subset parameter count exceeds local usize")?;
+    let mut aggregate = vec![0.0_f64; parameter_count];
+    let mut total_weight = 0.0_f64;
+
+    for (payload, weight) in updates {
+        ensure!(
+            weight.is_finite() && *weight > 0.0,
+            "compact update aggregation weights must be finite and positive"
+        );
+        ensure!(
+            payload.version == first.version
+                && payload.training_contract_id == first.training_contract_id
+                && payload.model_schema_hash == first.model_schema_hash
+                && payload.parameter_catalog_hash == first.parameter_catalog_hash
+                && payload.parameter_count == first.parameter_count,
+            "compact update metadata mismatch"
+        );
+        let CompactUpdateBody::MutableSubsetParameters { values } = &payload.body else {
+            anyhow::bail!("cannot mix compact update body types");
+        };
+        let values = values.decode().context("decode mutable-subset values")?;
+        ensure!(
+            values.len() == parameter_count,
+            "mutable-subset scalar count mismatch"
+        );
+        for (aggregate, value) in aggregate.iter_mut().zip(values) {
+            *aggregate += f64::from(value) * *weight;
+        }
+        total_weight += *weight;
+    }
+    ensure!(
+        total_weight.is_finite() && total_weight > 0.0,
+        "compact update aggregate weight is invalid"
+    );
+    let values = aggregate
+        .into_iter()
+        .map(|value| (value / total_weight) as f32)
+        .collect::<Vec<_>>();
+    let values = CompactScalarVector::encode(&values, encoding)
+        .context("encode aggregated mutable-subset values")?;
+    let _ = first_values;
+
+    Ok(CompactUpdatePayload {
+        version: first.version,
+        training_contract_id: first.training_contract_id.clone(),
+        model_schema_hash: first.model_schema_hash.clone(),
+        parameter_catalog_hash: first.parameter_catalog_hash.clone(),
+        parameter_count: first.parameter_count,
+        body: CompactUpdateBody::MutableSubsetParameters { values },
     })
 }
 

@@ -20,7 +20,7 @@ use burn::{
     },
     module::Module,
     nn::{Linear, LinearConfig},
-    optim::{SgdConfig, adaptor::OptimizerAdaptor},
+    optim::{AdamConfig, SgdConfig, adaptor::OptimizerAdaptor},
     tensor::{
         ElementConversion, Tensor, TensorData,
         backend::{AutodiffBackend, Backend},
@@ -727,6 +727,144 @@ fn burn_workload_adapter_supports_diloco_parameter_round_trip() {
     {
         assert!((*restored - *expected).abs() <= f32::EPSILON);
     }
+}
+
+#[test]
+fn stateful_learner_inner_loop_matches_uninterrupted_adam() {
+    let device = BackendDevice::<LearnerBackend>::default();
+    LearnerBackend::seed(&device, 91);
+    let dataset_root = tempdir().expect("stateful dataset root");
+    let dataset = tiny_sharded_dataset(dataset_root.path(), 1).expect("stateful dataset");
+    let project = from_stateful_components(
+        TinyLearnerModel::<LearnerBackend>::new(&device),
+        AdamConfig::new().init(),
+        0.01,
+        1,
+        device,
+    )
+    .with_sharded_dataset(dataset, TinyLearnerBatcher, 1)
+    .build()
+    .expect("stateful learner project");
+    let adapter = project
+        .into_p2p_workload(BurnWorkloadConfig::standard(SupportedWorkload {
+            workload_id: crate::WorkloadId::new("stateful-tiny-workload"),
+            workload_name: "Stateful Tiny Workload".into(),
+            model_program_hash: ContentId::new("stateful-tiny-program"),
+            checkpoint_format_hash: ContentId::new("stateful-tiny-burnpack"),
+            supported_revision_family: ContentId::new("stateful-tiny-family"),
+            resource_class: "cpu".into(),
+        }))
+        .expect("stateful adapter");
+    let base = adapter.init_model(&device);
+    let first_batch = TinyLearnerWorkload::batch::<LearnerBackend>(&device, 1.0);
+    let second_batch = TinyLearnerWorkload::batch::<LearnerBackend>(&device, 2.0);
+
+    let first = adapter
+        .run_inner_steps(&base, std::slice::from_ref(&first_batch), 1, None)
+        .expect("first persistent Adam step");
+    let first_model = adapter
+        .import_parameter_pack(&device, &first.local_parameters)
+        .expect("first persistent model");
+    let continued = adapter
+        .run_inner_steps(
+            &first_model,
+            std::slice::from_ref(&second_batch),
+            1,
+            first.inner_optimizer_state.as_ref(),
+        )
+        .expect("continued persistent Adam step");
+    let uninterrupted = adapter
+        .run_inner_steps(&base, &[first_batch, second_batch], 2, None)
+        .expect("uninterrupted Adam steps");
+    let reset = adapter
+        .run_inner_steps(
+            &first_model,
+            &[TinyLearnerWorkload::batch::<LearnerBackend>(&device, 2.0)],
+            1,
+            None,
+        )
+        .expect("reset Adam step");
+
+    let continued_error = continued
+        .local_parameters
+        .values
+        .iter()
+        .zip(&uninterrupted.local_parameters.values)
+        .map(|(left, right)| (*left - *right).abs())
+        .fold(0.0_f32, f32::max);
+    let reset_error = reset
+        .local_parameters
+        .values
+        .iter()
+        .zip(&uninterrupted.local_parameters.values)
+        .map(|(left, right)| (*left - *right).abs())
+        .fold(0.0_f32, f32::max);
+
+    assert!(continued.inner_optimizer_state.is_some());
+    assert_eq!(
+        continued.metrics.get("diloco_inner_state_restored"),
+        Some(&MetricValue::Bool(true))
+    );
+    assert_eq!(
+        continued.metrics.get("diloco_inner_microstep_offset_end"),
+        Some(&MetricValue::Integer(2))
+    );
+    assert!(
+        continued_error <= 1.0e-6,
+        "continued Adam diverged from uninterrupted Adam by {continued_error}"
+    );
+    assert!(
+        reset_error > continued_error + 1.0e-5,
+        "reset Adam should measurably differ: reset={reset_error} continued={continued_error}"
+    );
+}
+
+#[test]
+fn burn_workload_adapter_supports_diloco_parameter_subset_round_trip() {
+    let supported_workload = SupportedWorkload {
+        workload_id: crate::WorkloadId::new("tiny-subset-workload"),
+        workload_name: "Tiny Subset Burn Workload".into(),
+        model_program_hash: ContentId::new("tiny-program"),
+        checkpoint_format_hash: ContentId::new("tiny-burnpack"),
+        supported_revision_family: ContentId::new("tiny-family"),
+        resource_class: "cpu".into(),
+    };
+    let device = BackendDevice::<TestBackend>::default();
+    let semantic_schema = ContentId::new("tiny-subset-schema");
+    let template = TinyModel::<TestBackend>::new(&device);
+    let catalog = module_float_parameter_subset_catalog::<TestBackend, _>(
+        &template,
+        semantic_schema.clone(),
+        |path| path.ends_with("weight"),
+    )
+    .expect("weight catalog");
+    assert_eq!(catalog.parameter_count().expect("subset count"), 8);
+
+    let adapter = TinyBurnWorkload
+        .into_p2p_workload(
+            BurnWorkloadConfig::standard(supported_workload)
+                .with_model_schema_hash(semantic_schema.clone())
+                .with_diloco_parameter_subset(Some(catalog.clone())),
+        )
+        .expect("subset adapter should build");
+    let model = adapter.init_model(&device);
+    let mut pack = adapter
+        .export_parameter_pack(&model)
+        .expect("export subset parameters");
+    assert_eq!(pack.model_schema_hash, semantic_schema);
+    assert_eq!(pack.layout_hash, catalog.catalog_id().expect("catalog id"));
+    assert_eq!(pack.parameter_count(), 8);
+    for value in &mut pack.values {
+        *value += 0.125;
+    }
+
+    let restored = adapter
+        .import_parameter_pack(&device, &pack)
+        .expect("restore subset parameters");
+    let restored_pack = adapter
+        .export_parameter_pack(&restored)
+        .expect("export restored subset");
+    assert_eq!(restored_pack, pack);
 }
 
 #[test]

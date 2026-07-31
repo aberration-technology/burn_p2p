@@ -36,8 +36,15 @@ impl<P> RunningNode<P> {
             .node
             .as_mut()
             .expect("running node should retain prepared node");
+        let revision_contract = node.revision_contracts.get(&head.revision_id).cloned();
         let device = node.project.runtime_device();
-        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        let model = crate::training::load_model_for_head(
+            &mut node.project,
+            head,
+            revision_contract.as_ref(),
+            &store,
+            &device,
+        )?;
         Ok(node.project.evaluate(&model, split))
     }
 
@@ -56,8 +63,15 @@ impl<P> RunningNode<P> {
             .node
             .as_mut()
             .expect("running node should retain prepared node");
+        let revision_contract = node.revision_contracts.get(&head.revision_id).cloned();
         let device = node.project.runtime_device();
-        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        let model = crate::training::load_model_for_head(
+            &mut node.project,
+            head,
+            revision_contract.as_ref(),
+            &store,
+            &device,
+        )?;
         node.project.model_tensor_digest(&model)
     }
 

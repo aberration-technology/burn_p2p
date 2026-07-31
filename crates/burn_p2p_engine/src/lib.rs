@@ -11,21 +11,24 @@ use burn::{
         HalfPrecisionSettings, JsonGzFileRecorder, NamedMpkBytesRecorder, NamedMpkFileRecorder,
         NamedMpkGzFileRecorder, PrettyJsonFileRecorder, Recorder,
     },
-    tensor::{Bool, Bytes, Int, Tensor},
+    tensor::{Bool, Bytes, Int, Tensor, Transaction},
 };
 use burn_p2p_checkpoint::{
     ArtifactBuildSpec, CheckpointError, ChunkingScheme, build_artifact_descriptor_from_bytes,
     build_artifact_descriptor_from_file,
 };
 use burn_p2p_core::{
-    ArtifactDescriptor, ArtifactKind, ContentId, FlattenedTensorPack, HeadId, Precision,
+    ArtifactDescriptor, ArtifactKind, ContentId, FlattenedTensorPack, HeadId,
+    ParameterSubsetCatalog, ParameterSubsetEntry, Precision,
 };
 use burn_store::{BurnpackStore, Collector, ModuleSnapshot, SafetensorsStore, TensorSnapshot};
 use serde::{Deserialize, Serialize};
 
 pub use burn_p2p_tensor_identity::module_tensor_digest;
 
+#[cfg(feature = "train")]
 pub use burn::train::checkpoint::Checkpointer as BurnCheckpointer;
+#[cfg(feature = "train")]
 pub use burn::train::{
     Evaluator as BurnEvaluator, Learner as BurnLearner,
     LearningCheckpointer as BurnLearningCheckpointer,
@@ -524,6 +527,238 @@ where
     ))
 }
 
+/// Builds a canonical catalog for a selected subset of float parameters.
+pub fn module_float_parameter_subset_catalog<B, M>(
+    module: &M,
+    model_schema_hash: ContentId,
+    include: impl Fn(&str) -> bool,
+) -> Result<ParameterSubsetCatalog, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    let snapshots = collect_float_snapshots::<B, M>(module)?;
+    let entries = snapshots
+        .iter()
+        .filter(|(path, _)| include(path))
+        .map(|(path, snapshot)| ParameterSubsetEntry {
+            path: path.clone(),
+            shape: snapshot
+                .shape
+                .iter()
+                .map(|dimension| *dimension as u64)
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let catalog = ParameterSubsetCatalog::new(model_schema_hash, entries);
+    catalog
+        .validate()
+        .map_err(|error| EngineError::ModuleMerge(error.to_string()))?;
+    Ok(catalog)
+}
+
+/// Flattens selected float parameters according to a validated canonical catalog.
+pub fn flatten_module_float_parameter_subset<B, M>(
+    module: &M,
+    catalog: &ParameterSubsetCatalog,
+) -> Result<Vec<f32>, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    catalog
+        .validate()
+        .map_err(|error| EngineError::ModuleMerge(error.to_string()))?;
+    let snapshots = collect_float_snapshots::<B, M>(module)?;
+    flatten_catalog_snapshots(catalog, &snapshots)
+}
+
+/// Asynchronously flattens selected float parameters in one backend transaction.
+///
+/// This is the browser/WebGPU-friendly counterpart to
+/// [`flatten_module_float_parameter_subset`]: it does not block the current
+/// thread while mapped GPU buffers are resolved.
+pub async fn flatten_module_float_parameter_subset_async<B, M>(
+    module: &M,
+    catalog: &ParameterSubsetCatalog,
+) -> Result<Vec<f32>, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    struct AsyncFloatSnapshot<B: Backend> {
+        shape: Vec<usize>,
+        tensor: Tensor<B, 1>,
+    }
+
+    struct AsyncFloatCollector<B: Backend> {
+        path_stack: Vec<String>,
+        snapshots: BTreeMap<String, AsyncFloatSnapshot<B>>,
+    }
+
+    impl<B: Backend> Default for AsyncFloatCollector<B> {
+        fn default() -> Self {
+            Self {
+                path_stack: Vec::new(),
+                snapshots: BTreeMap::new(),
+            }
+        }
+    }
+
+    impl<B: Backend> AsyncFloatCollector<B> {
+        fn insert<const D: usize>(&mut self, path: String, tensor: Tensor<B, D>) {
+            let shape = tensor.dims().into_iter().collect::<Vec<_>>();
+            let num_elements = tensor.shape().num_elements();
+            self.snapshots.insert(
+                path,
+                AsyncFloatSnapshot {
+                    shape,
+                    tensor: tensor.reshape([num_elements]),
+                },
+            );
+        }
+    }
+
+    impl<B: Backend> ModuleVisitor<B> for AsyncFloatCollector<B> {
+        fn enter_module(&mut self, name: &str, _container_type: &str) {
+            self.path_stack.push(name.to_string());
+        }
+
+        fn exit_module(&mut self, _name: &str, _container_type: &str) {
+            self.path_stack.pop();
+        }
+
+        fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<B, D>>) {
+            self.insert(self.path_stack.join("."), param.val());
+        }
+
+        fn visit_float_with_path<const D: usize>(
+            &mut self,
+            path: &[String],
+            _id: ParamId,
+            tensor: &Tensor<B, D>,
+        ) {
+            self.insert(path.join("."), tensor.clone());
+        }
+    }
+
+    catalog
+        .validate()
+        .map_err(|error| EngineError::ModuleMerge(error.to_string()))?;
+    let mut collector = AsyncFloatCollector::<B>::default();
+    module.visit(&mut collector);
+    let mut transaction = Transaction::<B>::default();
+    for entry in &catalog.entries {
+        let snapshot = collector.snapshots.get(&entry.path).ok_or_else(|| {
+            EngineError::ModuleMerge(format!(
+                "module is missing catalog parameter {}",
+                entry.path
+            ))
+        })?;
+        let expected_shape = entry
+            .shape
+            .iter()
+            .map(|dimension| *dimension as usize)
+            .collect::<Vec<_>>();
+        if snapshot.shape != expected_shape {
+            return Err(EngineError::ModuleMerge(format!(
+                "catalog shape mismatch at {}: expected {:?}, got {:?}",
+                entry.path, expected_shape, snapshot.shape
+            )));
+        }
+        transaction = transaction.register(snapshot.tensor.clone());
+    }
+    let data = transaction
+        .execute_async()
+        .await
+        .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+    let capacity = usize::try_from(
+        catalog
+            .parameter_count()
+            .map_err(|error| EngineError::ModuleMerge(error.to_string()))?,
+    )
+    .map_err(|_| EngineError::ModuleMerge("parameter subset exceeds usize".into()))?;
+    let mut values = Vec::with_capacity(capacity);
+    for data in data {
+        values.extend(data.iter::<f64>().map(|value| value as f32));
+    }
+    Ok(values)
+}
+
+/// Computes `updated - base` for one canonical float-parameter subset.
+pub fn diff_module_float_parameter_subset<B, M>(
+    base: &M,
+    updated: &M,
+    catalog: &ParameterSubsetCatalog,
+) -> Result<Vec<f32>, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    catalog
+        .validate()
+        .map_err(|error| EngineError::ModuleMerge(error.to_string()))?;
+    let base_snapshots = collect_float_snapshots::<B, M>(base)?;
+    let updated_snapshots = collect_float_snapshots::<B, M>(updated)?;
+    validate_catalog_layout(catalog, &base_snapshots)?;
+    validate_catalog_layout(catalog, &updated_snapshots)?;
+
+    let capacity = usize::try_from(
+        catalog
+            .parameter_count()
+            .map_err(|error| EngineError::ModuleMerge(error.to_string()))?,
+    )
+    .map_err(|_| EngineError::ModuleMerge("parameter subset exceeds usize".into()))?;
+    let mut values = Vec::with_capacity(capacity);
+    for entry in &catalog.entries {
+        let base = base_snapshots
+            .get(&entry.path)
+            .expect("validated base subset path");
+        let updated = updated_snapshots
+            .get(&entry.path)
+            .expect("validated updated subset path");
+        let base_data = base
+            .to_data()
+            .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+        let updated_data = updated
+            .to_data()
+            .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+        values.extend(
+            base_data
+                .iter::<f64>()
+                .zip(updated_data.iter::<f64>())
+                .map(|(base, updated)| (updated - base) as f32),
+        );
+    }
+    Ok(values)
+}
+
+/// Adds a canonical float-parameter subset delta to a base module.
+pub fn apply_module_float_parameter_subset_delta<B, M>(
+    base: &M,
+    catalog: &ParameterSubsetCatalog,
+    deltas: &[f32],
+) -> Result<M, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    replace_or_add_module_float_parameter_subset(base, catalog, deltas, true)
+}
+
+/// Replaces a canonical float-parameter subset while retaining all other parameters.
+pub fn replace_module_float_parameter_subset<B, M>(
+    base: &M,
+    catalog: &ParameterSubsetCatalog,
+    values: &[f32],
+) -> Result<M, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    replace_or_add_module_float_parameter_subset(base, catalog, values, false)
+}
+
 /// Restores a flattened float-parameter pack into a Burn module with the same layout.
 pub fn replace_module_float_parameters<B, M>(
     base_module: &M,
@@ -694,6 +929,115 @@ where
     }
 
     Ok(snapshots)
+}
+
+fn validate_catalog_layout(
+    catalog: &ParameterSubsetCatalog,
+    snapshots: &BTreeMap<String, TensorSnapshot>,
+) -> Result<(), EngineError> {
+    for entry in &catalog.entries {
+        let snapshot = snapshots.get(&entry.path).ok_or_else(|| {
+            EngineError::ModuleMerge(format!(
+                "module is missing catalog parameter {}",
+                entry.path
+            ))
+        })?;
+        let shape = snapshot
+            .shape
+            .iter()
+            .map(|dimension| *dimension as u64)
+            .collect::<Vec<_>>();
+        if shape != entry.shape {
+            return Err(EngineError::ModuleMerge(format!(
+                "catalog shape mismatch at {}: expected {:?}, got {:?}",
+                entry.path, entry.shape, shape
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn flatten_catalog_snapshots(
+    catalog: &ParameterSubsetCatalog,
+    snapshots: &BTreeMap<String, TensorSnapshot>,
+) -> Result<Vec<f32>, EngineError> {
+    validate_catalog_layout(catalog, snapshots)?;
+    let capacity = usize::try_from(
+        catalog
+            .parameter_count()
+            .map_err(|error| EngineError::ModuleMerge(error.to_string()))?,
+    )
+    .map_err(|_| EngineError::ModuleMerge("parameter subset exceeds usize".into()))?;
+    let mut values = Vec::with_capacity(capacity);
+    for entry in &catalog.entries {
+        let data = snapshots
+            .get(&entry.path)
+            .expect("validated subset path")
+            .to_data()
+            .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+        values.extend(data.iter::<f64>().map(|value| value as f32));
+    }
+    Ok(values)
+}
+
+fn replace_or_add_module_float_parameter_subset<B, M>(
+    base: &M,
+    catalog: &ParameterSubsetCatalog,
+    values: &[f32],
+    add_to_base: bool,
+) -> Result<M, EngineError>
+where
+    B: Backend,
+    M: Module<B>,
+{
+    catalog
+        .validate()
+        .map_err(|error| EngineError::ModuleMerge(error.to_string()))?;
+    let expected_count = usize::try_from(
+        catalog
+            .parameter_count()
+            .map_err(|error| EngineError::ModuleMerge(error.to_string()))?,
+    )
+    .map_err(|_| EngineError::ModuleMerge("parameter subset exceeds usize".into()))?;
+    if values.len() != expected_count {
+        return Err(EngineError::ModuleMerge(format!(
+            "parameter subset has {} values, expected {expected_count}",
+            values.len()
+        )));
+    }
+    let snapshots = collect_float_snapshots::<B, M>(base)?;
+    validate_catalog_layout(catalog, &snapshots)?;
+
+    let mut offset = 0usize;
+    let mut replacements = BTreeMap::new();
+    for entry in &catalog.entries {
+        let snapshot = snapshots.get(&entry.path).expect("validated subset path");
+        let count = usize::try_from(
+            entry
+                .parameter_count()
+                .map_err(|error| EngineError::ModuleMerge(error.to_string()))?,
+        )
+        .map_err(|_| EngineError::ModuleMerge("parameter tensor exceeds usize".into()))?;
+        let end = offset + count;
+        let replacement = if add_to_base {
+            let base_data = snapshot
+                .to_data()
+                .map_err(|error| EngineError::TensorSnapshot(error.to_string()))?;
+            base_data
+                .iter::<f64>()
+                .zip(values[offset..end].iter())
+                .map(|(base, delta)| (base + f64::from(*delta)) as f32)
+                .collect()
+        } else {
+            values[offset..end].to_vec()
+        };
+        replacements.insert(
+            entry.path.clone(),
+            burn::tensor::TensorData::new(replacement, snapshot.shape.clone()),
+        );
+        offset = end;
+    }
+    replace_float_tensors::<B, M>(base, replacements)
 }
 
 fn validate_snapshot_layout(
@@ -1401,10 +1745,13 @@ mod tests {
 
     use super::{
         BurnArtifactOptions, BurnMergeCandidate, BurnRecordBytesFormat, BurnRecordFileFormat,
-        BurnRecordPrecision, BurnStoreFormat, RecordArtifactFileOptions, apply_root_ema_modules,
-        encode_record_bytes, encode_store_bytes, inspect_module, load_record_bytes,
-        load_store_bytes, materialize_record_file_artifact, materialize_store_bytes_artifact,
-        merge_weighted_mean_modules, module_schema_hash, module_tensor_digest,
+        BurnRecordPrecision, BurnStoreFormat, RecordArtifactFileOptions,
+        apply_module_float_parameter_subset_delta, apply_root_ema_modules,
+        diff_module_float_parameter_subset, encode_record_bytes, encode_store_bytes,
+        flatten_module_float_parameter_subset, flatten_module_float_parameter_subset_async,
+        inspect_module, load_record_bytes, load_store_bytes, materialize_record_file_artifact,
+        materialize_store_bytes_artifact, merge_weighted_mean_modules,
+        module_float_parameter_subset_catalog, module_schema_hash, module_tensor_digest,
     };
     use burn_p2p_checkpoint::ChunkingScheme;
     use burn_p2p_core::{ArtifactKind, ContentId};
@@ -1729,5 +2076,68 @@ mod tests {
                 .expect("bias data"),
             3.0,
         );
+    }
+
+    #[test]
+    fn mutable_parameter_subset_round_trip_changes_only_catalog_tensors() {
+        let device = BackendDevice::<TestBackend>::default();
+        let base = fill_model(TinyModel::<TestBackend>::new(&device), 2.0);
+        let updated = fill_model(TinyModel::<TestBackend>::new(&device), 5.0);
+        let schema = module_schema_hash::<TestBackend, _>(&base).expect("schema");
+        let catalog =
+            module_float_parameter_subset_catalog::<TestBackend, _>(&base, schema, |path| {
+                path.ends_with("weight")
+            })
+            .expect("catalog");
+        let delta = diff_module_float_parameter_subset::<TestBackend, _>(&base, &updated, &catalog)
+            .expect("delta");
+        let applied =
+            apply_module_float_parameter_subset_delta::<TestBackend, _>(&base, &catalog, &delta)
+                .expect("apply");
+
+        assert_all_close(
+            &applied
+                .linear
+                .weight
+                .to_data()
+                .to_vec::<f32>()
+                .expect("weight data"),
+            5.0,
+        );
+        assert_all_close(
+            &applied
+                .linear
+                .bias
+                .as_ref()
+                .expect("bias")
+                .to_data()
+                .to_vec::<f32>()
+                .expect("bias data"),
+            2.0,
+        );
+        assert_eq!(
+            delta.len() as u64,
+            catalog.parameter_count().expect("parameter count")
+        );
+    }
+
+    #[test]
+    fn async_parameter_subset_flatten_matches_synchronous_order_and_values() {
+        let device = BackendDevice::<TestBackend>::default();
+        let model = fill_model(TinyModel::<TestBackend>::new(&device), 3.0);
+        let schema = module_schema_hash::<TestBackend, _>(&model).expect("schema");
+        let catalog =
+            module_float_parameter_subset_catalog::<TestBackend, _>(&model, schema, |_| true)
+                .expect("catalog");
+        let synchronous = flatten_module_float_parameter_subset::<TestBackend, _>(&model, &catalog)
+            .expect("synchronous values");
+        let asynchronous =
+            futures::executor::block_on(flatten_module_float_parameter_subset_async::<
+                TestBackend,
+                _,
+            >(&model, &catalog))
+            .expect("asynchronous values");
+
+        assert_eq!(asynchronous, synchronous);
     }
 }

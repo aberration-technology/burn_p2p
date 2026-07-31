@@ -208,6 +208,7 @@ fn apply_outer_sgd_update(
     };
     let learning_rate = policy.learning_rate() as f32;
     let weight_decay = policy.weight_decay().unwrap_or_default() as f32;
+    let max_pseudo_gradient_rms_ratio = policy.max_pseudo_gradient_rms_ratio();
     anyhow::ensure!(
         learning_rate.is_finite() && learning_rate > 0.0,
         "DiLoCo outer SGD learning rate must be finite and positive"
@@ -221,6 +222,10 @@ fn apply_outer_sgd_update(
         "DiLoCo outer SGD weight decay must be in [0, 1]"
     );
     anyhow::ensure!(
+        max_pseudo_gradient_rms_ratio.is_none_or(|ratio| ratio.is_finite() && ratio > 0.0),
+        "DiLoCo outer SGD pseudo-gradient RMS ratio must be finite and positive"
+    );
+    anyhow::ensure!(
         !nesterov || momentum > 0.0,
         "DiLoCo outer SGD Nesterov acceleration requires positive momentum"
     );
@@ -232,12 +237,37 @@ fn apply_outer_sgd_update(
             velocity: Vec::new(),
         }
     };
+    let pseudo_gradient_scale = max_pseudo_gradient_rms_ratio
+        .map(|maximum_ratio| {
+            let count = base.values.len().max(1) as f64;
+            let parameter_rms = (base
+                .values
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                / count)
+                .sqrt();
+            let pseudo_gradient_rms = (aggregate
+                .values
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                / count)
+                .sqrt();
+            if pseudo_gradient_rms <= f64::EPSILON {
+                1.0
+            } else {
+                (maximum_ratio * parameter_rms.max(f64::EPSILON) / pseudo_gradient_rms).min(1.0)
+                    as f32
+            }
+        })
+        .unwrap_or(1.0);
 
     let mut values = Vec::with_capacity(base.values.len());
     for (index, (parameter, pseudo_gradient)) in
         base.values.iter().zip(&aggregate.values).enumerate()
     {
-        let gradient = *pseudo_gradient + weight_decay * *parameter;
+        let gradient = *pseudo_gradient * pseudo_gradient_scale + weight_decay * *parameter;
         let update = if momentum > 0.0 {
             let velocity = momentum * state.velocity[index] + gradient;
             state.velocity[index] = velocity;
@@ -408,6 +438,7 @@ mod tests {
             momentum_micros,
             nesterov,
             weight_decay_micros,
+            max_pseudo_gradient_rms_ratio_micros: None,
         }
     }
 
@@ -424,6 +455,26 @@ mod tests {
         assert!((updated.values[0] - 0.949).abs() <= 1.0e-6);
         assert!((updated.values[1] - -1.973).abs() <= 1.0e-6);
         assert_eq!(next_state, state);
+    }
+
+    #[test]
+    fn outer_sgd_clips_pseudo_gradient_by_relative_rms() {
+        let base = pack("layout", vec![3.0, 4.0]);
+        let aggregate = pack("layout", vec![3.0, 4.0]);
+        let policy = OuterOptimizerPolicy::Sgd {
+            learning_rate_micros: 1_000_000,
+            momentum_micros: None,
+            nesterov: false,
+            weight_decay_micros: None,
+            max_pseudo_gradient_rms_ratio_micros: Some(100_000),
+        };
+        let state = initialize_outer_sgd_state(&base, &policy).expect("initialize state");
+
+        let (updated, _) =
+            apply_outer_sgd_update(&base, &aggregate, &state, &policy).expect("apply update");
+
+        assert!((updated.values[0] - 2.7).abs() <= 1.0e-6);
+        assert!((updated.values[1] - 3.6).abs() <= 1.0e-6);
     }
 
     #[test]

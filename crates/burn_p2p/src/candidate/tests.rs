@@ -375,6 +375,11 @@ fn typed_candidate_heads_are_not_collapsed_without_sequential_payloads() {
         announced_at: root_update.announced_at + chrono::Duration::milliseconds(1),
         ..root_update.clone()
     };
+    let relayed_root_update = UpdateAnnounce {
+        providers: vec![PeerId::new("provider-b")],
+        announced_at: root_update.announced_at + chrono::Duration::milliseconds(2),
+        ..root_update.clone()
+    };
     let descriptor = ArtifactDescriptor {
         artifact_id: root_update.delta_artifact_id.clone(),
         kind: ArtifactKind::DeltaPack,
@@ -399,24 +404,49 @@ fn typed_candidate_heads_are_not_collapsed_without_sequential_payloads() {
         claimed_norm_stats: None,
         claimed_feature_sketch: None,
     };
-    let snapshots = vec![(
-        PeerId::new("observer"),
-        ControlPlaneSnapshot {
-            update_announcements: vec![
-                UpdateEnvelopeAnnouncement {
-                    overlay: experiment.overlay_set().expect("overlay").heads.clone(),
-                    update: root_update.clone(),
-                    workload_update: Some(workload_update),
-                },
-                UpdateEnvelopeAnnouncement {
+    let mut telemetry_variant = workload_update.clone();
+    telemetry_variant.claimed_norm_stats = Some(UpdateNormStats {
+        l2_norm: 1.0 + f64::EPSILON,
+        max_abs: 0.25,
+        clipped: false,
+        non_finite_tensors: 0,
+    });
+    let snapshots = vec![
+        (
+            PeerId::new("observer"),
+            ControlPlaneSnapshot {
+                update_announcements: vec![
+                    UpdateEnvelopeAnnouncement {
+                        overlay: experiment.overlay_set().expect("overlay").heads.clone(),
+                        update: root_update.clone(),
+                        workload_update: Some(telemetry_variant),
+                    },
+                    UpdateEnvelopeAnnouncement {
+                        overlay: experiment.overlay_set().expect("overlay").heads,
+                        update: descendant_update,
+                        workload_update: None,
+                    },
+                    UpdateEnvelopeAnnouncement {
+                        overlay: experiment.overlay_set().expect("overlay").heads,
+                        update: relayed_root_update,
+                        workload_update: None,
+                    },
+                ],
+                ..ControlPlaneSnapshot::default()
+            },
+        ),
+        (
+            root_update.peer_id.clone(),
+            ControlPlaneSnapshot {
+                update_announcements: vec![UpdateEnvelopeAnnouncement {
                     overlay: experiment.overlay_set().expect("overlay").heads,
-                    update: descendant_update,
-                    workload_update: None,
-                },
-            ],
-            ..ControlPlaneSnapshot::default()
-        },
-    )];
+                    update: root_update.clone(),
+                    workload_update: Some(workload_update.clone()),
+                }],
+                ..ControlPlaneSnapshot::default()
+            },
+        ),
+    ];
 
     let candidates = collect_validation_candidate_heads(
         &experiment,
@@ -432,7 +462,7 @@ fn typed_candidate_heads_are_not_collapsed_without_sequential_payloads() {
         candidates[0].update.delta_artifact_id,
         ArtifactId::new("artifact-a")
     );
-    assert!(candidates[0].workload_update.is_some());
+    assert_eq!(candidates[0].workload_update, Some(workload_update));
 }
 
 #[test]

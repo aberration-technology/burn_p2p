@@ -2328,7 +2328,7 @@ mod native_event_priority_tests {
     }
 
     #[test]
-    fn connection_limit_allows_one_route_for_reconciliation() {
+    fn connection_limit_adds_one_route_for_reconciliation() {
         assert_eq!(connection_limit_with_reconciliation_slack(Some(1)), Some(2));
         assert_eq!(
             connection_limit_with_reconciliation_slack(Some(u32::MAX)),
