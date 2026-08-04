@@ -129,8 +129,24 @@ fn observe_validation_snapshots(
     );
     let current_head =
         resolve_canonical_head(storage, experiment, &canonical_snapshots)?.or_else(|| {
+            // Before the first promotion, an announced genesis may bootstrap a validator.
+            // Never adopt an unpromoted child announcement as the canonical validation base.
             latest_head_from_snapshot(telemetry_snapshot.control_plane.clone(), experiment)
+                .filter(|(_, head)| head.parent_head_id.is_none() && head.global_step == 0)
         });
+    if current_head.is_none()
+        && canonical_snapshots.iter().any(|(_, snapshot)| {
+            snapshot.update_announcements.iter().any(|announcement| {
+                announcement.update.study_id == experiment.study_id
+                    && announcement.update.experiment_id == experiment.experiment_id
+                    && announcement.update.revision_id == experiment.revision_id
+            })
+        })
+    {
+        anyhow::bail!(
+            "validation requires a synchronized canonical base head before candidate updates"
+        );
+    }
     let base_head_id = current_head
         .as_ref()
         .map(|(_, head)| head.head_id.clone())
@@ -490,7 +506,7 @@ impl<P> RunningNode<P> {
         experiment: &ExperimentHandle,
         prepared: &ValidationPreparedState,
         candidate_heads: &[ValidationCandidateHead],
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<Vec<String>>
     where
         P: P2pWorkload,
         P::Model: Send + 'static,
@@ -536,6 +552,7 @@ impl<P> RunningNode<P> {
                 )?);
             }
         }
+        let mut artifact_failures = Vec::new();
         for candidate in candidate_heads {
             let already_cached = self
                 .validation_cache
@@ -551,17 +568,20 @@ impl<P> RunningNode<P> {
             if already_cached {
                 continue;
             }
-            if self
-                .wait_for_artifact_from_peers(
-                    &candidate.provider_peer_ids,
-                    &candidate.head.artifact_id,
-                    VALIDATION_ARTIFACT_SYNC_TIMEOUT,
-                )
-                .is_err()
-            {
+            if let Err(error) = self.wait_for_artifact_from_peers(
+                &candidate.provider_peer_ids,
+                &candidate.head.artifact_id,
+                VALIDATION_ARTIFACT_SYNC_TIMEOUT,
+            ) {
                 // Missing candidate artifacts are retried by later validation
                 // passes; one unavailable provider should not block the
                 // reducer from merging already materialized candidates.
+                artifact_failures.push(format!(
+                    "head={} artifact={} providers={} error={error}",
+                    candidate.head.head_id.as_str(),
+                    candidate.head.artifact_id.as_str(),
+                    candidate.provider_peer_ids.len(),
+                ));
                 continue;
             }
             let loaded = {
@@ -584,10 +604,7 @@ impl<P> RunningNode<P> {
                         current_head: &prepared.current_head,
                         revision_contract: revision_contract.as_ref(),
                         baseline_metrics: None,
-                        canary_threshold: prepared
-                            .robustness_policy
-                            .validator_canary_policy
-                            .maximum_regression_delta,
+                        canary_policy: &prepared.robustness_policy.validator_canary_policy,
                         evaluate_candidates: !reducer_authority_promotion_enabled(
                             &prepared.merge_window,
                         ),
@@ -612,7 +629,7 @@ impl<P> RunningNode<P> {
                 .push(loaded);
         }
 
-        Ok(())
+        Ok(artifact_failures)
     }
 
     fn execute_validation_candidates(
@@ -641,7 +658,8 @@ impl<P> RunningNode<P> {
                 .unwrap_or(0),
             &prepared.updates,
         );
-        self.prime_validation_candidate_cache(experiment, prepared, &candidate_heads)?;
+        let artifact_failures =
+            self.prime_validation_candidate_cache(experiment, prepared, &candidate_heads)?;
         if should_wait_for_candidate_settle(
             prepared,
             candidate_heads.len(),
@@ -670,6 +688,15 @@ impl<P> RunningNode<P> {
                     .map(ValidationCandidateView::from)
             })
             .collect::<Vec<_>>();
+        if !candidate_heads.is_empty()
+            && all_candidate_models.is_empty()
+            && !artifact_failures.is_empty()
+        {
+            anyhow::bail!(
+                "validation candidate artifacts are unavailable: {}",
+                artifact_failures.join("; ")
+            );
+        }
         let base_model = cache
             .base_model
             .as_ref()
@@ -844,15 +871,12 @@ impl<P> RunningNode<P> {
                 }
             };
             if matches!(promotion_mode, HeadPromotionMode::ValidatorQuorum) {
-                let canary_report = build_validation_canary_report(
+                let canary_report = build_validation_canary_report_with_policy(
                     experiment,
                     &prepared.current_head,
                     &merged_head,
                     &evaluation,
-                    prepared
-                        .robustness_policy
-                        .validator_canary_policy
-                        .maximum_regression_delta,
+                    &prepared.robustness_policy.validator_canary_policy,
                     effective_validator_quorum(&prepared.merge_window) as u16,
                 )?;
                 robustness.canary_report = Some(canary_report.clone());
@@ -934,15 +958,12 @@ impl<P> RunningNode<P> {
         if matches!(promotion_mode, HeadPromotionMode::ValidatorQuorum)
             && robustness.canary_report.is_none()
         {
-            let canary_report = build_validation_canary_report(
+            let canary_report = build_validation_canary_report_with_policy(
                 experiment,
                 &prepared.current_head,
                 &merged_head,
                 &evaluation,
-                prepared
-                    .robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
+                &prepared.robustness_policy.validator_canary_policy,
                 effective_validator_quorum(&prepared.merge_window) as u16,
             )?;
             robustness.canary_report = Some(canary_report.clone());
@@ -964,12 +985,6 @@ impl<P> RunningNode<P> {
             local_aggregate_materialization,
             resolution_mode,
         )?;
-        let reduction_certificate = build_reduction_certificate(
-            experiment,
-            prepared,
-            &resolved_aggregate.aggregate,
-            &prepared.merge_window,
-        )?;
         let contribution =
             build_validation_contribution(experiment, &source_peer_id, &merged_head, &evaluation);
         let merge_certificate = build_validation_merge_certificate(
@@ -983,6 +998,30 @@ impl<P> RunningNode<P> {
             &filtered_updates,
         );
         let finished_at = Utc::now();
+        let (head_eval_report, eval_protocol_manifest) = build_head_eval_report(
+            self.config(),
+            experiment,
+            &merged_head,
+            &evaluation,
+            started_at,
+            finished_at,
+            &prepared.local_peer_id,
+            promotion_mode.clone(),
+        )?;
+        let evaluation_binding = HeadEvaluationBinding {
+            head_id: merged_head.head_id.clone(),
+            artifact_id: merged_head.artifact_id.clone(),
+            eval_protocol_id: head_eval_report.eval_protocol_id.clone(),
+            eval_report_id: ContentId::derive(&head_eval_report)?,
+        };
+        let reduction_certificate = build_reduction_certificate(
+            experiment,
+            prepared,
+            &resolved_aggregate.aggregate,
+            &merged_head,
+            &evaluation_binding,
+            &prepared.merge_window,
+        )?;
 
         Ok(Some(ValidationAttempt::Promoted(Box::new(
             ValidationExecution {
@@ -996,6 +1035,8 @@ impl<P> RunningNode<P> {
                 aggregate: resolved_aggregate.aggregate,
                 local_aggregate_materialization: resolved_aggregate.local_aggregate_materialization,
                 reduction_certificate,
+                head_eval_report,
+                eval_protocol_manifest,
                 robustness,
                 started_at,
                 finished_at,
@@ -1284,6 +1325,18 @@ impl<P> RunningNode<P> {
                 .scoped_receipt_path(&execution.contribution.receipt_id),
             &execution.contribution,
         )?;
+        persist_head_eval_report(
+            &prepared.storage,
+            experiment,
+            &execution.head_eval_report,
+            prepared.metrics_retention,
+        )?;
+        persist_eval_protocol_manifest(
+            &prepared.storage,
+            experiment,
+            &execution.eval_protocol_manifest,
+            prepared.metrics_retention,
+        )?;
 
         self.update_runtime_state(
             NodeRuntimeState::PublishingUpdate,
@@ -1325,12 +1378,17 @@ impl<P> RunningNode<P> {
         } else {
             self.wait_for_validation_coordination(experiment, prepared, execution)?
         };
-        let attesters = coordination.attesters;
-        let reduction_ids = coordination.reduction_ids;
+        let attesters = &coordination.attesters;
+        let eval_protocol_id = coordination.eval_protocol_id.as_ref();
+        let eval_report_ids = &coordination.eval_report_ids;
         let quorum = effective_promotion_quorum(&prepared.merge_window);
+        let distinct_eval_reports = eval_report_ids.iter().collect::<BTreeSet<_>>().len();
+        let local_quorum_ready = attesters.len() >= quorum
+            && (reducer_authority
+                || (eval_protocol_id.is_some() && distinct_eval_reports >= quorum));
         if coordination.merge_announced
             || (coordination.quorum_announced && !reducer_authority)
-            || attesters.len() >= quorum
+            || local_quorum_ready
         {
             persist_window_id(
                 &prepared.storage,
@@ -1351,7 +1409,7 @@ impl<P> RunningNode<P> {
         }
         let mut publish_latency_ms = 0;
         let mut promoted = false;
-        if !coordination.merge_announced && attesters.len() >= quorum {
+        if !coordination.merge_announced && local_quorum_ready {
             let local_rank = attesters
                 .iter()
                 .position(|peer_id| peer_id == &prepared.local_peer_id);
@@ -1380,8 +1438,7 @@ impl<P> RunningNode<P> {
                                     prepared,
                                     &execution.aggregate,
                                     &execution.merged_head,
-                                    &attesters,
-                                    &reduction_ids,
+                                    &coordination,
                                 )?,
                                 announced_at: Utc::now(),
                             })?;
@@ -1471,38 +1528,18 @@ impl<P> RunningNode<P> {
                 prepared.metrics_retention,
             )?;
         }
-        let (head_eval_report, eval_protocol_manifest) = build_head_eval_report(
-            self.config(),
+        self.control.publish_metrics(build_metrics_announcement(
             experiment,
-            &execution.merged_head,
-            &execution.evaluation,
-            execution.started_at,
-            execution.finished_at,
-            &prepared.local_peer_id,
-            execution.promotion_mode.clone(),
-        )?;
-        persist_head_eval_report(
-            &prepared.storage,
-            experiment,
-            &head_eval_report,
-            prepared.metrics_retention,
-        )?;
-        persist_eval_protocol_manifest(
-            &prepared.storage,
-            experiment,
-            &eval_protocol_manifest,
-            prepared.metrics_retention,
-        )?;
-        if promoted {
-            self.control.publish_metrics(build_metrics_announcement(
-                experiment,
-                overlays.metrics,
-                MetricsLiveEventKind::CatchupRefresh,
-                Some(execution.merged_head.head_id.clone()),
-                Some(prepared.merge_window.merge_window_id.clone()),
-                vec![peer_window_hint],
-            ))?;
-        }
+            overlays.metrics,
+            if promoted {
+                MetricsLiveEventKind::CatchupRefresh
+            } else {
+                MetricsLiveEventKind::SnapshotRefresh
+            },
+            Some(execution.merged_head.head_id.clone()),
+            Some(prepared.merge_window.merge_window_id.clone()),
+            vec![peer_window_hint],
+        ))?;
         self.set_experiment_idle_state(
             experiment,
             validation_idle_state_for_roles(&self.mainnet().roles),

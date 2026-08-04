@@ -190,21 +190,21 @@ where
     let (mut evaluation, canary_report) = if args.evaluate_candidates {
         let evaluation = project.evaluate(&model, EvalSplit::Validation);
         let canary_report = Some(match args.baseline_metrics {
-            Some(baseline_metrics) => build_validation_canary_report_against_baseline(
+            Some(baseline_metrics) => build_validation_canary_report_against_baseline_with_policy(
                 args.experiment,
                 args.current_head,
                 baseline_metrics,
                 &head,
                 &evaluation,
-                args.canary_threshold,
+                args.canary_policy,
                 2,
             )?,
-            None => build_validation_canary_report(
+            None => build_validation_canary_report_with_policy(
                 args.experiment,
                 args.current_head,
                 &head,
                 &evaluation,
-                args.canary_threshold,
+                args.canary_policy,
                 2,
             )?,
         });

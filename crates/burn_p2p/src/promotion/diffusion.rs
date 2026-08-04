@@ -5,8 +5,9 @@ use crate::candidate::{
     load_validation_candidate_model, same_update_identity, select_validation_head,
 };
 use crate::candidate_screening::{
-    CandidateRobustnessContext, PersistedRobustnessState, build_validation_canary_report,
-    build_validation_canary_report_against_baseline, evaluate_candidate_robustness,
+    CandidateRobustnessContext, PersistedRobustnessState,
+    build_validation_canary_report_against_baseline_with_policy,
+    build_validation_canary_report_with_policy, evaluate_candidate_robustness,
 };
 use crate::runtime_support::{active_experiment_directory_entry, load_json, trace_to_stderr};
 use crate::training::load_model_for_head;
@@ -1299,9 +1300,6 @@ where
             candidate_heads.len()
         ));
 
-        let canary_threshold = robustness_policy
-            .validator_canary_policy
-            .maximum_regression_delta;
         let mut loaded_candidates = Vec::<ValidationCandidate<P::Model>>::new();
         let base_load_started = Instant::now();
         let revision_contract = self
@@ -1428,7 +1426,7 @@ where
                         baseline_metrics: base_evaluation
                             .as_ref()
                             .map(|evaluation| &evaluation.metrics),
-                        canary_threshold,
+                        canary_policy: &robustness_policy.validator_canary_policy,
                         evaluate_candidates: true,
                         replay_snapshots: &candidate_snapshots,
                         dataset_cache_dir: storage.dataset_cache_dir(),
@@ -1610,25 +1608,21 @@ where
             select_started.elapsed().as_millis()
         ));
         let canary_report = match base_evaluation.as_ref() {
-            Some(base_evaluation) => build_validation_canary_report_against_baseline(
+            Some(base_evaluation) => build_validation_canary_report_against_baseline_with_policy(
                 experiment,
                 &current_head,
                 &base_evaluation.metrics,
                 &merged_head,
                 &evaluation,
-                robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
+                &robustness_policy.validator_canary_policy,
                 1,
             )?,
-            None => build_validation_canary_report(
+            None => build_validation_canary_report_with_policy(
                 experiment,
                 &current_head,
                 &merged_head,
                 &evaluation,
-                robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
+                &robustness_policy.validator_canary_policy,
                 1,
             )?,
         };

@@ -231,7 +231,36 @@ fn validator_quorum_two_emits_one_merge_promotion_and_one_aggregate_proposal() {
         quorum_certificate.merged_head_id,
         promoted_merge.merged_head_id
     );
+    assert_eq!(
+        quorum_certificate.merged_artifact_id.as_ref(),
+        Some(&promoted_merge.merged_artifact_id)
+    );
     assert_eq!(quorum_certificate.attesting_validators.len(), 2);
+    assert!(quorum_certificate.eval_protocol_id.is_some());
+    assert_eq!(
+        quorum_certificate
+            .eval_report_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
+    );
+    let validator_a_snapshot = validator_a_telemetry.snapshot();
+    let bound_reductions = validator_a_snapshot
+        .control_plane
+        .reduction_certificate_announcements
+        .iter()
+        .filter_map(|announcement| announcement.certificate.evaluation.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(bound_reductions.len(), 2);
+    assert!(bound_reductions.iter().all(|binding| {
+        binding.head_id == promoted_merge.merged_head_id
+            && binding.artifact_id == promoted_merge.merged_artifact_id
+            && Some(&binding.eval_protocol_id) == quorum_certificate.eval_protocol_id.as_ref()
+            && quorum_certificate
+                .eval_report_ids
+                .contains(&binding.eval_report_id)
+    }));
 
     let sync_deadline = Instant::now() + test_timeout(Duration::from_secs(5));
     loop {

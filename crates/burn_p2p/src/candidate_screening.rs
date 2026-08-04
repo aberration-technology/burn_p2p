@@ -238,6 +238,7 @@ pub(crate) fn evaluate_candidate_robustness<M>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_validation_canary_report(
     experiment: &ExperimentHandle,
     current_head: &Option<(PeerId, HeadDescriptor)>,
@@ -246,6 +247,32 @@ pub(crate) fn build_validation_canary_report(
     maximum_regression_delta: f64,
     evaluator_quorum: u16,
 ) -> anyhow::Result<CanaryEvalReport> {
+    let policy = ValidatorCanaryPolicy {
+        maximum_regression_delta,
+        ..ValidatorCanaryPolicy::default()
+    };
+    build_validation_canary_report_with_policy(
+        experiment,
+        current_head,
+        candidate_head,
+        evaluation,
+        &policy,
+        evaluator_quorum,
+    )
+}
+
+pub(crate) fn build_validation_canary_report_with_policy(
+    experiment: &ExperimentHandle,
+    current_head: &Option<(PeerId, HeadDescriptor)>,
+    candidate_head: &HeadDescriptor,
+    evaluation: &MetricReport,
+    policy: &ValidatorCanaryPolicy,
+    evaluator_quorum: u16,
+) -> anyhow::Result<CanaryEvalReport> {
+    policy.validate_metric_gates().map_err(anyhow::Error::msg)?;
+    let baseline_metrics = current_head
+        .as_ref()
+        .and_then(|(_, head)| (!head.metrics.is_empty()).then_some(&head.metrics));
     let base_quality = current_head
         .as_ref()
         .and_then(|(_, head)| (!head.metrics.is_empty()).then(|| metric_quality(&head.metrics)))
@@ -254,44 +281,148 @@ pub(crate) fn build_validation_canary_report(
         experiment,
         current_head,
         base_quality,
+        baseline_metrics,
         candidate_head,
         evaluation,
-        maximum_regression_delta,
+        policy,
         evaluator_quorum,
     )
 }
 
-pub(crate) fn build_validation_canary_report_against_baseline(
+pub(crate) fn build_validation_canary_report_against_baseline_with_policy(
     experiment: &ExperimentHandle,
     current_head: &Option<(PeerId, HeadDescriptor)>,
     baseline_metrics: &BTreeMap<String, MetricValue>,
     candidate_head: &HeadDescriptor,
     evaluation: &MetricReport,
-    maximum_regression_delta: f64,
+    policy: &ValidatorCanaryPolicy,
     evaluator_quorum: u16,
 ) -> anyhow::Result<CanaryEvalReport> {
+    policy.validate_metric_gates().map_err(anyhow::Error::msg)?;
     build_validation_canary_report_with_base_quality(
         experiment,
         current_head,
         metric_quality(baseline_metrics),
+        Some(baseline_metrics),
         candidate_head,
         evaluation,
-        maximum_regression_delta,
+        policy,
         evaluator_quorum,
     )
 }
 
+fn evaluate_canary_metric_gates(
+    policy: &ValidatorCanaryPolicy,
+    baseline_metrics: Option<&BTreeMap<String, MetricValue>>,
+    candidate_metrics: &BTreeMap<String, MetricValue>,
+) -> Vec<CanaryMetricGateResult> {
+    policy
+        .metric_gates
+        .iter()
+        .map(|gate| {
+            let mut result = CanaryMetricGateResult {
+                metric_key: gate.metric_key.clone(),
+                direction: gate.direction.clone(),
+                threshold: gate.threshold,
+                candidate_value: None,
+                baseline_value: None,
+                observed_regression: None,
+                maximum_regression_delta: gate.maximum_regression_delta,
+                accepted: false,
+                failures: Vec::new(),
+            };
+
+            let candidate_value = match candidate_metrics.get(&gate.metric_key) {
+                Some(MetricValue::Integer(value)) => Some(*value as f64),
+                Some(MetricValue::Float(value)) => Some(*value),
+                Some(MetricValue::Bool(_) | MetricValue::Text(_)) => {
+                    result
+                        .failures
+                        .push(CanaryMetricGateFailure::NonNumericCandidate);
+                    None
+                }
+                None => {
+                    result
+                        .failures
+                        .push(CanaryMetricGateFailure::MissingCandidate);
+                    None
+                }
+            };
+            if let Some(candidate_value) = candidate_value {
+                result.candidate_value = Some(candidate_value);
+                if !candidate_value.is_finite() {
+                    result
+                        .failures
+                        .push(CanaryMetricGateFailure::NonFiniteCandidate);
+                } else {
+                    let threshold_passed = match gate.direction {
+                        CanaryMetricDirection::HigherIsBetter => candidate_value >= gate.threshold,
+                        CanaryMetricDirection::LowerIsBetter => candidate_value <= gate.threshold,
+                    };
+                    if !threshold_passed {
+                        result.failures.push(CanaryMetricGateFailure::Threshold);
+                    }
+
+                    if let Some(maximum_regression_delta) = gate.maximum_regression_delta
+                        && let Some(baseline_metric) =
+                            baseline_metrics.and_then(|metrics| metrics.get(&gate.metric_key))
+                    {
+                        let baseline_value = match baseline_metric {
+                            MetricValue::Integer(value) => Some(*value as f64),
+                            MetricValue::Float(value) => Some(*value),
+                            MetricValue::Bool(_) | MetricValue::Text(_) => {
+                                result
+                                    .failures
+                                    .push(CanaryMetricGateFailure::NonNumericBaseline);
+                                None
+                            }
+                        };
+                        if let Some(baseline_value) = baseline_value {
+                            result.baseline_value = Some(baseline_value);
+                            if !baseline_value.is_finite() {
+                                result
+                                    .failures
+                                    .push(CanaryMetricGateFailure::NonFiniteBaseline);
+                            } else {
+                                let regression = match gate.direction {
+                                    CanaryMetricDirection::HigherIsBetter => {
+                                        baseline_value - candidate_value
+                                    }
+                                    CanaryMetricDirection::LowerIsBetter => {
+                                        candidate_value - baseline_value
+                                    }
+                                };
+                                result.observed_regression = Some(regression);
+                                if regression > maximum_regression_delta {
+                                    result.failures.push(CanaryMetricGateFailure::Regression);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            result.accepted = result.failures.is_empty();
+            result
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_validation_canary_report_with_base_quality(
     experiment: &ExperimentHandle,
     current_head: &Option<(PeerId, HeadDescriptor)>,
     base_quality: f64,
+    baseline_metrics: Option<&BTreeMap<String, MetricValue>>,
     candidate_head: &HeadDescriptor,
     evaluation: &MetricReport,
-    maximum_regression_delta: f64,
+    policy: &ValidatorCanaryPolicy,
     evaluator_quorum: u16,
 ) -> anyhow::Result<CanaryEvalReport> {
     let candidate_quality = metric_quality(&evaluation.metrics);
     let regression_margin = (candidate_quality - base_quality).max(0.0);
+    let metric_gate_results =
+        evaluate_canary_metric_gates(policy, baseline_metrics, &evaluation.metrics);
+    let metric_gates_accepted = metric_gate_results.iter().all(|result| result.accepted);
     let metric_deltas = evaluation
         .metrics
         .iter()
@@ -309,12 +440,14 @@ fn build_validation_canary_report_with_base_quality(
             experiment.study_id.as_str(),
             experiment.experiment_id.as_str(),
             experiment.revision_id.as_str(),
-            "runtime-canary",
+            "runtime-canary-v2",
+            policy,
         ))?,
         candidate_head_id: candidate_head.head_id.clone(),
         base_head_id: current_head.as_ref().map(|(_, head)| head.head_id.clone()),
-        accepted: regression_margin <= maximum_regression_delta,
+        accepted: regression_margin <= policy.maximum_regression_delta && metric_gates_accepted,
         metric_deltas,
+        metric_gate_results,
         regression_margin,
         detected_backdoor_trigger: false,
         evaluator_quorum,

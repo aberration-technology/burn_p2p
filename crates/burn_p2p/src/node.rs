@@ -19,6 +19,7 @@ use artifacts::{
 #[cfg(test)]
 pub(crate) use experiments::prioritize_connected_provider_peers;
 
+pub use artifacts::MaterializedHeadEvaluation;
 #[cfg(test)]
 pub(crate) use artifacts::prioritized_artifact_source_peers;
 pub use builder::{Node, NodeBuilder};

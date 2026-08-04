@@ -1,6 +1,7 @@
 use super::*;
 use crate::candidate_screening::{
-    build_validation_canary_report, build_validation_canary_report_against_baseline,
+    build_validation_canary_report_against_baseline_with_policy,
+    build_validation_canary_report_with_policy,
 };
 use std::path::PathBuf;
 
@@ -63,7 +64,7 @@ pub(crate) struct ValidationCandidateLoadArgs<'a, D> {
     pub current_head: &'a Option<(PeerId, HeadDescriptor)>,
     pub revision_contract: Option<&'a RevisionContractBundle>,
     pub baseline_metrics: Option<&'a BTreeMap<String, MetricValue>>,
-    pub canary_threshold: f64,
+    pub canary_policy: &'a ValidatorCanaryPolicy,
     pub evaluate_candidates: bool,
     pub replay_snapshots: &'a [(PeerId, ControlPlaneSnapshot)],
     pub dataset_cache_dir: PathBuf,

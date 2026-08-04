@@ -150,8 +150,23 @@ pub(crate) fn persist_head_eval_report(
     report: &HeadEvalReport,
     retention: MetricsRetentionBudget,
 ) -> anyhow::Result<()> {
+    let eval_report_id = ContentId::derive(report)?;
+    let json = serde_json::to_vec(report)?;
+    let json_projection = serde_json::from_slice::<HeadEvalReport>(&json)?;
+    let projected_report_id = ContentId::derive(&json_projection)?;
+    anyhow::ensure!(
+        projected_report_id == eval_report_id,
+        "head evaluation JSON projection changes canonical identity: original_id={} projected_id={}",
+        eval_report_id.as_str(),
+        projected_report_id.as_str(),
+    );
     persist_json(
-        storage.scoped_head_eval_report_path(experiment, &report.head_id, &report.eval_protocol_id),
+        storage.scoped_head_eval_report_path(
+            experiment,
+            &report.head_id,
+            &report.eval_protocol_id,
+            &eval_report_id,
+        ),
         report,
     )?;
     prune_metric_artifacts::<HeadEvalReport, _, _>(
@@ -495,8 +510,11 @@ pub(crate) fn build_head_eval_report(
     let (eval_protocol, evaluator_set_id, metric_values, sample_count, status) =
         match promotion_mode {
             HeadPromotionMode::ValidatorQuorum => {
-                let eval_protocol =
-                    runtime_validation_eval_protocol(&context.dataset_view_id, evaluation)?;
+                let eval_protocol = runtime_validation_eval_protocol(
+                    &context.dataset_view_id,
+                    evaluation,
+                    &EvalSplit::Validation,
+                )?;
                 let evaluator_set_id = ContentId::derive(&[
                     "validator-set",
                     promoter_peer_id.as_str(),
@@ -581,9 +599,52 @@ pub(crate) fn build_head_eval_report(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_evaluator_head_eval_report(
+    config: &NodeConfig,
+    experiment: &ExperimentHandle,
+    head: &HeadDescriptor,
+    evaluation: &MetricReport,
+    split: &EvalSplit,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    evaluator_peer_id: &PeerId,
+) -> anyhow::Result<(HeadEvalReport, EvalProtocolManifest)> {
+    let context = resolve_runtime_metric_context(config, experiment, None);
+    let eval_protocol =
+        runtime_validation_eval_protocol(&context.dataset_view_id, evaluation, split)?;
+    let evaluator_set_id = ContentId::derive(&[
+        "head-evaluator",
+        evaluator_peer_id.as_str(),
+        experiment.experiment_id.as_str(),
+        experiment.revision_id.as_str(),
+        eval_protocol.eval_protocol_id.as_str(),
+    ])?;
+    let report = HeadEvalReport {
+        network_id: experiment.network_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        workload_id: context.workload_id,
+        head_id: head.head_id.clone(),
+        base_head_id: head.parent_head_id.clone(),
+        eval_protocol_id: eval_protocol.eval_protocol_id.clone(),
+        evaluator_set_id,
+        metric_values: evaluation.metrics.clone(),
+        sample_count: evaluation_sample_count(evaluation),
+        dataset_view_id: context.dataset_view_id,
+        started_at,
+        finished_at,
+        trust_class: MetricTrustClass::Canonical,
+        status: HeadEvalStatus::Completed,
+        signature_bundle: Vec::new(),
+    };
+    Ok((report, eval_protocol))
+}
+
 fn runtime_validation_eval_protocol(
     dataset_view_id: &DatasetViewId,
     evaluation: &MetricReport,
+    split: &EvalSplit,
 ) -> anyhow::Result<EvalProtocolManifest> {
     let metric_defs = evaluation
         .metrics
@@ -591,7 +652,7 @@ fn runtime_validation_eval_protocol(
         .cloned()
         .map(|metric_key| EvalMetricDef {
             display_name: metric_key.clone(),
-            higher_is_better: !metric_key.contains("loss"),
+            higher_is_better: metric_higher_is_better(&metric_key),
             metric_key,
             unit: None,
         })
@@ -600,11 +661,39 @@ fn runtime_validation_eval_protocol(
     EvalProtocolManifest::new(
         "runtime-validation-default",
         dataset_view_id.clone(),
-        "validation",
+        eval_split_label(split),
         metric_defs,
         burn_p2p_core::EvalProtocolOptions::new(EvalAggregationRule::Mean, 1, 0, "v1"),
     )
     .map_err(anyhow::Error::from)
+}
+
+fn eval_split_label(split: &EvalSplit) -> String {
+    match split {
+        EvalSplit::Train => "train".into(),
+        EvalSplit::Validation => "validation".into(),
+        EvalSplit::Test => "test".into(),
+        EvalSplit::Custom(label) => format!("custom:{label}"),
+    }
+}
+
+fn metric_higher_is_better(metric_key: &str) -> bool {
+    let key = metric_key.to_ascii_lowercase();
+    ![
+        "loss",
+        "error",
+        "malformed",
+        "missing",
+        "regression",
+        "collapse",
+        "elapsed",
+        "latency",
+        "duration",
+        "time_ms",
+        "dominant_fraction",
+    ]
+    .iter()
+    .any(|marker| key.contains(marker))
 }
 
 fn numeric_metric(metrics: &BTreeMap<String, MetricValue>, key: &str) -> Option<f64> {
@@ -616,7 +705,13 @@ fn numeric_metric(metrics: &BTreeMap<String, MetricValue>, key: &str) -> Option<
 }
 
 fn evaluation_sample_count(evaluation: &MetricReport) -> u64 {
-    for key in ["evaluation_items", "sample_count", "samples"] {
+    for key in [
+        "evaluation_items",
+        "ruliad_evaluation_items",
+        "sample_count",
+        "samples",
+        "evaluation_batches",
+    ] {
         match evaluation.metrics.get(key) {
             Some(MetricValue::Integer(value)) if *value > 0 => return *value as u64,
             Some(MetricValue::Float(value)) if *value > 0.0 => return value.round() as u64,

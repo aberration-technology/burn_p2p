@@ -1326,6 +1326,7 @@ mod tests {
                 base_head_id: Some(HeadId::new("base")),
                 eval_protocol_id: burn_p2p_core::ContentId::new("canary"),
                 metric_deltas: BTreeMap::from([("loss".into(), 0.19)]),
+                metric_gate_results: Vec::new(),
                 regression_margin: 0.19,
                 detected_backdoor_trigger: false,
                 accepted: false,

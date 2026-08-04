@@ -998,6 +998,12 @@ pub fn simulate_merge_topology(
             .last()
             .map(|aggregate| aggregate.aggregate_id.clone())
             .unwrap_or_else(|| ContentId::new("aggregate-root")),
+        evaluation: Some(burn_p2p_core::HeadEvaluationBinding {
+            head_id: HeadId::new("testkit-merged-head"),
+            artifact_id: burn_p2p_core::ArtifactId::new("testkit-merged-artifact"),
+            eval_protocol_id: ContentId::new("testkit-eval-protocol"),
+            eval_report_id: ContentId::new("testkit-eval-report"),
+        }),
         promoter_peer_id: validators[0].clone(),
         promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
         promotion_quorum: config.topology_policy.promotion_policy.validator_quorum,

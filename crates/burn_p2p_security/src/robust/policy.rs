@@ -365,6 +365,7 @@ mod tests {
             base_head_id: Some(burn_p2p_core::HeadId::new("head-base")),
             accepted: false,
             metric_deltas: BTreeMap::new(),
+            metric_gate_results: Vec::new(),
             regression_margin: 0.25,
             detected_backdoor_trigger: false,
             evaluator_quorum: 1,

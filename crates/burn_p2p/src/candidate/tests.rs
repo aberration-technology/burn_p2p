@@ -778,7 +778,7 @@ fn delta_pack_candidate_without_typed_envelope_is_rejected() {
             current_head: &current_head,
             revision_contract: None,
             baseline_metrics: None,
-            canary_threshold: 0.0,
+            canary_policy: &ValidatorCanaryPolicy::default(),
             evaluate_candidates: false,
             replay_snapshots: &[],
             dataset_cache_dir: root.join("dataset-cache"),

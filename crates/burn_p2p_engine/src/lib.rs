@@ -851,6 +851,12 @@ where
     if total_weight <= f64::EPSILON {
         return Ok(Some(base_module.clone()));
     }
+    if let [candidate] = candidates {
+        // A one-member weighted mean is exactly that member. Reconstructing it
+        // through base-relative delta arithmetic introduces avoidable rounding
+        // and can lose the update entirely when base and candidate scales differ.
+        return Ok(Some(candidate.module.clone()));
+    }
 
     let mut replacements = BTreeMap::new();
     for (path, base_snapshot) in &base_snapshots {
@@ -2046,6 +2052,56 @@ mod tests {
                 .to_vec::<f32>()
                 .expect("bias data"),
             16.5,
+        );
+    }
+
+    #[test]
+    fn single_candidate_merge_preserves_candidate_exactly() {
+        let device = BackendDevice::<TestBackend>::default();
+        let base = fill_model(TinyModel::<TestBackend>::new(&device), 1.0e20);
+        let candidate = fill_model(TinyModel::<TestBackend>::new(&device), 1.0);
+
+        let merged = merge_weighted_mean_modules::<TestBackend, _>(
+            &base,
+            &[BurnMergeCandidate {
+                module: &candidate,
+                weight: 2.0,
+            }],
+        )
+        .expect("merge")
+        .expect("merged model");
+
+        assert_eq!(
+            merged
+                .linear
+                .weight
+                .to_data()
+                .to_vec::<f32>()
+                .expect("merged weight data"),
+            candidate
+                .linear
+                .weight
+                .to_data()
+                .to_vec::<f32>()
+                .expect("candidate weight data")
+        );
+        assert_eq!(
+            merged
+                .linear
+                .bias
+                .as_ref()
+                .expect("merged bias")
+                .to_data()
+                .to_vec::<f32>()
+                .expect("merged bias data"),
+            candidate
+                .linear
+                .bias
+                .as_ref()
+                .expect("candidate bias")
+                .to_data()
+                .to_vec::<f32>()
+                .expect("candidate bias data")
         );
     }
 

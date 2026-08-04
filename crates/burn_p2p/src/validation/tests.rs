@@ -130,6 +130,8 @@ fn quorum_observation_requires_active_window_membership_and_policy() {
     let overlay = experiment.overlay_set().expect("overlay").heads;
     let aggregate_id = ContentId::new("aggregate-a");
     let merged_head_id = HeadId::new("merged-a");
+    let merged_artifact_id = ArtifactId::new("merged-artifact-a");
+    let eval_protocol_id = ContentId::new("eval-protocol-a");
     let certificate = |attesters: Vec<PeerId>, validator_quorum| ValidationQuorumCertificate {
         quorum_cert_id: ContentId::new("quorum-a"),
         study_id: experiment.study_id.clone(),
@@ -140,6 +142,12 @@ fn quorum_observation_requires_active_window_membership_and_policy() {
         aggregate_id: aggregate_id.clone(),
         aggregate_artifact_id: ArtifactId::new("aggregate-artifact-a"),
         merged_head_id: merged_head_id.clone(),
+        merged_artifact_id: Some(merged_artifact_id.clone()),
+        eval_protocol_id: Some(eval_protocol_id.clone()),
+        eval_report_ids: vec![
+            ContentId::new("eval-report-a"),
+            ContentId::new("eval-report-b"),
+        ],
         promotion_mode: HeadPromotionMode::ValidatorQuorum,
         validator_quorum,
         coordinator: PeerId::new("validator-a"),
@@ -147,7 +155,37 @@ fn quorum_observation_requires_active_window_membership_and_policy() {
         reduction_ids: vec![ContentId::new("reduction-a"), ContentId::new("reduction-b")],
         issued_at: Utc::now(),
     };
-    let mut snapshot = ControlPlaneSnapshot::default();
+    let reduction_certificate_announcements = ["a", "b"]
+        .into_iter()
+        .map(|suffix| ReductionCertificateAnnouncement {
+            overlay: overlay.clone(),
+            certificate: ReductionCertificate {
+                reduction_id: ContentId::new(format!("reduction-{suffix}")),
+                study_id: experiment.study_id.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                revision_id: experiment.revision_id.clone(),
+                window_id: prepared.merge_window.window_id,
+                base_head_id: prepared.merge_window.base_head_id.clone(),
+                aggregate_id: aggregate_id.clone(),
+                evaluation: Some(HeadEvaluationBinding {
+                    head_id: merged_head_id.clone(),
+                    artifact_id: merged_artifact_id.clone(),
+                    eval_protocol_id: eval_protocol_id.clone(),
+                    eval_report_id: ContentId::new(format!("eval-report-{suffix}")),
+                }),
+                promoter_peer_id: PeerId::new(format!("validator-{suffix}")),
+                promotion_mode: HeadPromotionMode::ValidatorQuorum,
+                promotion_quorum: 2,
+                cross_checked_reducers: Vec::new(),
+                issued_at: Utc::now(),
+            },
+            announced_at: Utc::now(),
+        })
+        .collect();
+    let mut snapshot = ControlPlaneSnapshot {
+        reduction_certificate_announcements,
+        ..ControlPlaneSnapshot::default()
+    };
     snapshot
         .validation_quorum_announcements
         .push(ValidationQuorumAnnouncement {
@@ -156,13 +194,17 @@ fn quorum_observation_requires_active_window_membership_and_policy() {
             announced_at: Utc::now(),
         });
 
-    assert!(!coordination::validation_quorum_announced_in_snapshot(
-        &snapshot,
+    let evidence_scope = coordination::ValidationEvidenceScope::new(
         &overlay,
         &experiment,
         &aggregate_id,
         &merged_head_id,
-        Some(&prepared.merge_window),
+    )
+    .with_evaluation(&merged_artifact_id, &eval_protocol_id)
+    .with_merge_window(&prepared.merge_window);
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        evidence_scope,
     ));
 
     snapshot.validation_quorum_announcements[0].certificate = certificate(
@@ -171,25 +213,101 @@ fn quorum_observation_requires_active_window_membership_and_policy() {
     );
     assert!(!coordination::validation_quorum_announced_in_snapshot(
         &snapshot,
-        &overlay,
-        &experiment,
-        &aggregate_id,
-        &merged_head_id,
-        Some(&prepared.merge_window),
+        evidence_scope,
     ));
 
     snapshot.validation_quorum_announcements[0].certificate = certificate(
         vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
         2,
     );
+    snapshot.validation_quorum_announcements[0]
+        .certificate
+        .eval_report_ids = vec![ContentId::new("same-report"), ContentId::new("same-report")];
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        evidence_scope,
+    ));
+
+    snapshot.validation_quorum_announcements[0].certificate = certificate(
+        vec![PeerId::new("validator-a"), PeerId::new("validator-b")],
+        2,
+    );
+    snapshot.reduction_certificate_announcements[1]
+        .certificate
+        .evaluation
+        .as_mut()
+        .expect("evaluation binding")
+        .eval_protocol_id = ContentId::new("different-protocol");
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        evidence_scope,
+    ));
+    snapshot.reduction_certificate_announcements[1]
+        .certificate
+        .evaluation
+        .as_mut()
+        .expect("evaluation binding")
+        .eval_protocol_id = eval_protocol_id.clone();
     assert!(coordination::validation_quorum_announced_in_snapshot(
         &snapshot,
-        &overlay,
-        &experiment,
-        &aggregate_id,
-        &merged_head_id,
-        Some(&prepared.merge_window),
+        evidence_scope,
     ));
+
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        coordination::ValidationEvidenceScope::new(
+            &overlay,
+            &experiment,
+            &aggregate_id,
+            &merged_head_id,
+        )
+        .with_evaluation(&ArtifactId::new("different-artifact"), &eval_protocol_id)
+        .with_merge_window(&prepared.merge_window),
+    ));
+    assert!(!coordination::validation_quorum_announced_in_snapshot(
+        &snapshot,
+        coordination::ValidationEvidenceScope::new(
+            &overlay,
+            &experiment,
+            &aggregate_id,
+            &merged_head_id,
+        )
+        .with_evaluation(&merged_artifact_id, &ContentId::new("different-protocol"),)
+        .with_merge_window(&prepared.merge_window),
+    ));
+}
+
+#[test]
+fn validator_reduction_certificate_requires_exact_head_evaluation_evidence() {
+    let mut certificate = ReductionCertificate {
+        reduction_id: ContentId::new("reduction-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+        window_id: WindowId(3),
+        base_head_id: HeadId::new("base-a"),
+        aggregate_id: ContentId::new("aggregate-a"),
+        evaluation: None,
+        promoter_peer_id: PeerId::new("validator-a"),
+        promotion_mode: HeadPromotionMode::ValidatorQuorum,
+        promotion_quorum: 1,
+        cross_checked_reducers: Vec::new(),
+        issued_at: Utc::now(),
+    };
+    assert_eq!(
+        certificate.validate_structure(),
+        Err(ReductionCertificateError::MissingEvaluationEvidence)
+    );
+
+    certificate.evaluation = Some(HeadEvaluationBinding {
+        head_id: HeadId::new("merged-a"),
+        artifact_id: ArtifactId::new("merged-artifact-a"),
+        eval_protocol_id: ContentId::new("eval-protocol-a"),
+        eval_report_id: ContentId::new("eval-report-a"),
+    });
+    certificate
+        .validate_structure()
+        .expect("bound validator certificate");
 }
 
 #[test]
@@ -901,6 +1019,126 @@ fn canary_ignores_skipped_eval_heads_without_metrics() {
 
     assert!(report.accepted);
     assert_eq!(report.regression_margin, 0.0);
+}
+
+#[test]
+fn canary_metric_gates_fail_closed_and_bind_the_protocol() {
+    let mut prepared = prepared_state();
+    let current_metrics = &mut prepared
+        .current_head
+        .as_mut()
+        .expect("current head")
+        .1
+        .metrics;
+    current_metrics.insert("verifier_accuracy".into(), MetricValue::Float(0.80));
+    current_metrics.insert("malformed_completion_rate".into(), MetricValue::Float(0.02));
+    let experiment = ExperimentHandle {
+        network_id: NetworkId::new("net-a"),
+        study_id: StudyId::new("study-a"),
+        experiment_id: ExperimentId::new("exp-a"),
+        revision_id: RevisionId::new("rev-a"),
+    };
+    let candidate_head = HeadDescriptor {
+        head_id: HeadId::new("head-candidate"),
+        study_id: experiment.study_id.clone(),
+        experiment_id: experiment.experiment_id.clone(),
+        revision_id: experiment.revision_id.clone(),
+        artifact_id: ArtifactId::new("artifact-candidate"),
+        parent_head_id: Some(HeadId::new("head-base")),
+        global_step: 4,
+        created_at: Utc::now(),
+        metrics: BTreeMap::new(),
+    };
+    let mut policy = ValidatorCanaryPolicy {
+        maximum_regression_delta: 1.0,
+        metric_gates: vec![
+            CanaryMetricGate::higher_is_better("verifier_accuracy", 0.40)
+                .with_maximum_regression_delta(0.20),
+            CanaryMetricGate::lower_is_better("malformed_completion_rate", 0.10)
+                .with_maximum_regression_delta(0.05),
+        ],
+        ..ValidatorCanaryPolicy::default()
+    };
+    let passing = MetricReport {
+        metrics: BTreeMap::from([
+            ("loss".into(), MetricValue::Float(0.35)),
+            ("verifier_accuracy".into(), MetricValue::Float(0.65)),
+            ("malformed_completion_rate".into(), MetricValue::Float(0.05)),
+        ]),
+        captured_at: Utc::now(),
+    };
+    let report = build_validation_canary_report_with_policy(
+        &experiment,
+        &prepared.current_head,
+        &candidate_head,
+        &passing,
+        &policy,
+        2,
+    )
+    .expect("passing metric gates");
+    assert!(report.accepted);
+    assert!(
+        report
+            .metric_gate_results
+            .iter()
+            .all(|result| result.accepted)
+    );
+    let passing_protocol_id = report.eval_protocol_id;
+
+    let regressed = MetricReport {
+        metrics: BTreeMap::from([
+            ("loss".into(), MetricValue::Float(0.35)),
+            ("verifier_accuracy".into(), MetricValue::Float(0.55)),
+            ("malformed_completion_rate".into(), MetricValue::Float(0.05)),
+        ]),
+        captured_at: Utc::now(),
+    };
+    let report = build_validation_canary_report_with_policy(
+        &experiment,
+        &prepared.current_head,
+        &candidate_head,
+        &regressed,
+        &policy,
+        2,
+    )
+    .expect("regressed metric gates");
+    assert!(!report.accepted);
+    assert!(report.metric_gate_results.iter().any(|result| {
+        result.metric_key == "verifier_accuracy"
+            && result
+                .failures
+                .contains(&CanaryMetricGateFailure::Regression)
+    }));
+
+    let missing = metric_report(0.35);
+    let report = build_validation_canary_report_with_policy(
+        &experiment,
+        &prepared.current_head,
+        &candidate_head,
+        &missing,
+        &policy,
+        2,
+    )
+    .expect("missing metric report");
+    assert!(!report.accepted);
+    assert!(report.metric_gate_results.iter().any(|result| {
+        result.metric_key == "verifier_accuracy"
+            && result
+                .failures
+                .contains(&CanaryMetricGateFailure::MissingCandidate)
+    }));
+
+    policy.metric_gates[0].threshold = 0.41;
+    let changed = build_validation_canary_report_with_policy(
+        &experiment,
+        &prepared.current_head,
+        &candidate_head,
+        &passing,
+        &policy,
+        2,
+    )
+    .expect("changed policy report");
+    assert_ne!(passing_protocol_id, changed.eval_protocol_id);
 }
 
 #[test]

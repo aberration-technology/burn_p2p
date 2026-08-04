@@ -246,6 +246,122 @@ impl Default for AggregationPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Selects how a validator metric is compared with its promotion threshold.
+pub enum CanaryMetricDirection {
+    /// Larger metric values are better, so candidates must meet a minimum.
+    HigherIsBetter,
+    /// Smaller metric values are better, so candidates must stay below a maximum.
+    LowerIsBetter,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One explicit, architecture-neutral metric requirement for head promotion.
+pub struct CanaryMetricGate {
+    /// Exact metric key required from the evaluator.
+    pub metric_key: String,
+    /// Direction used for absolute and relative comparisons.
+    pub direction: CanaryMetricDirection,
+    /// Required minimum or maximum according to `direction`.
+    pub threshold: f64,
+    /// Optional maximum regression from the same evaluator's base-head value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_regression_delta: Option<f64>,
+}
+
+impl CanaryMetricGate {
+    /// Builds a minimum-value gate.
+    pub fn higher_is_better(metric_key: impl Into<String>, minimum: f64) -> Self {
+        Self {
+            metric_key: metric_key.into(),
+            direction: CanaryMetricDirection::HigherIsBetter,
+            threshold: minimum,
+            maximum_regression_delta: None,
+        }
+    }
+
+    /// Builds a maximum-value gate.
+    pub fn lower_is_better(metric_key: impl Into<String>, maximum: f64) -> Self {
+        Self {
+            metric_key: metric_key.into(),
+            direction: CanaryMetricDirection::LowerIsBetter,
+            threshold: maximum,
+            maximum_regression_delta: None,
+        }
+    }
+
+    /// Adds a same-protocol base-head non-regression requirement.
+    pub fn with_maximum_regression_delta(mut self, maximum_regression_delta: f64) -> Self {
+        self.maximum_regression_delta = Some(maximum_regression_delta);
+        self
+    }
+
+    /// Validates this gate before it is used in a signed revision policy.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.metric_key.trim().is_empty() {
+            return Err("canary metric gate key cannot be empty".into());
+        }
+        if !self.threshold.is_finite() {
+            return Err(format!(
+                "canary metric gate {} threshold must be finite",
+                self.metric_key
+            ));
+        }
+        if self
+            .maximum_regression_delta
+            .is_some_and(|delta| !delta.is_finite() || delta < 0.0)
+        {
+            return Err(format!(
+                "canary metric gate {} maximum_regression_delta must be finite and non-negative",
+                self.metric_key
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Explains why one required promotion metric failed.
+pub enum CanaryMetricGateFailure {
+    /// The evaluator did not emit the required candidate metric.
+    MissingCandidate,
+    /// The candidate metric exists but is not numeric.
+    NonNumericCandidate,
+    /// The candidate metric is NaN or infinite.
+    NonFiniteCandidate,
+    /// The candidate metric missed its absolute threshold.
+    Threshold,
+    /// The base metric exists but is not numeric.
+    NonNumericBaseline,
+    /// The base metric is NaN or infinite.
+    NonFiniteBaseline,
+    /// The candidate regressed farther than the configured allowance.
+    Regression,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Auditable result for one metric in a validator canary decision.
+pub struct CanaryMetricGateResult {
+    /// Exact metric key that was evaluated.
+    pub metric_key: String,
+    /// Comparison direction used by the gate.
+    pub direction: CanaryMetricDirection,
+    /// Configured absolute threshold.
+    pub threshold: f64,
+    /// Candidate value, when numeric evidence was available.
+    pub candidate_value: Option<f64>,
+    /// Base-head value, when a same-protocol numeric anchor was available.
+    pub baseline_value: Option<f64>,
+    /// Signed regression in the configured worse direction.
+    pub observed_regression: Option<f64>,
+    /// Configured maximum regression from the base head.
+    pub maximum_regression_delta: Option<f64>,
+    /// Whether this metric passed every applicable check.
+    pub accepted: bool,
+    /// Zero or more explicit failure causes.
+    pub failures: Vec<CanaryMetricGateFailure>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Configures validator-side canary evaluation.
 pub struct ValidatorCanaryPolicy {
     /// Minimum evaluator quorum required before promotion.
@@ -256,6 +372,9 @@ pub struct ValidatorCanaryPolicy {
     pub require_backdoor_probes: bool,
     /// Whether promotion is blocked on canary regression.
     pub block_on_regression: bool,
+    /// Explicit evaluator metrics that must pass before promotion.
+    #[serde(default)]
+    pub metric_gates: Vec<CanaryMetricGate>,
 }
 
 impl Default for ValidatorCanaryPolicy {
@@ -265,7 +384,25 @@ impl Default for ValidatorCanaryPolicy {
             maximum_regression_delta: 0.02,
             require_backdoor_probes: false,
             block_on_regression: true,
+            metric_gates: Vec::new(),
         }
+    }
+}
+
+impl ValidatorCanaryPolicy {
+    /// Validates explicit metric gates and rejects duplicate metric keys.
+    pub fn validate_metric_gates(&self) -> Result<(), String> {
+        let mut keys = std::collections::BTreeSet::new();
+        for gate in &self.metric_gates {
+            gate.validate()?;
+            if !keys.insert(gate.metric_key.as_str()) {
+                return Err(format!(
+                    "duplicate canary metric gate for {}",
+                    gate.metric_key
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -675,6 +812,9 @@ pub struct CanaryEvalReport {
     pub accepted: bool,
     /// Metric deltas by key.
     pub metric_deltas: BTreeMap<String, f64>,
+    /// Explicit per-metric gate outcomes bound to this evaluation protocol.
+    #[serde(default)]
+    pub metric_gate_results: Vec<CanaryMetricGateResult>,
     /// Worst allowed-versus-observed regression margin.
     pub regression_margin: f64,
     /// Whether a trigger-specific probe indicated a backdoor.

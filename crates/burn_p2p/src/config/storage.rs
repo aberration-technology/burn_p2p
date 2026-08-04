@@ -347,12 +347,14 @@ impl StorageConfig {
         experiment: &ExperimentHandle,
         head_id: &HeadId,
         eval_protocol_id: &ContentId,
+        eval_report_id: &ContentId,
     ) -> PathBuf {
         self.metrics_dir().join(format!(
-            "{}{}-{}.json",
+            "{}{}-{}-{}.json",
             self.scoped_head_eval_report_prefix(experiment),
             head_id.path_component(),
-            eval_protocol_id.path_component()
+            eval_protocol_id.path_component(),
+            eval_report_id.path_component()
         ))
     }
 

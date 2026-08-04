@@ -579,6 +579,30 @@ fn metrics_schema_round_trips() {
 }
 
 #[test]
+fn metric_value_json_round_trip_preserves_numeric_variant() {
+    let values = vec![
+        MetricValue::Integer(1),
+        MetricValue::Float(1.0),
+        MetricValue::Float(-0.0),
+        MetricValue::Float(0.125),
+        MetricValue::Float(10.222909736633301),
+        MetricValue::Bool(true),
+        MetricValue::Text("metric".into()),
+    ];
+
+    let bytes = serde_json::to_vec(&values).expect("encode metric values as json");
+    let decoded =
+        serde_json::from_slice::<Vec<MetricValue>>(&bytes).expect("decode metric values from json");
+
+    assert_eq!(
+        decoded,
+        values,
+        "encoded json: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[test]
 fn publication_schema_round_trips() {
     let target = PublicationTarget {
         publication_target_id: PublicationTargetId::new("target-local"),
