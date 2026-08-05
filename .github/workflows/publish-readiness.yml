@@ -2,6 +2,22 @@ name: Release Readiness
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".cargo/config.toml"
+      - ".github/actions/**"
+      - ".github/workflows/publish-readiness.yml"
+      - "scripts/bootstrap_stack.py"
+      - "stack.lock.toml"
+      - "deny.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - "justfile"
+      - "patches/**"
+      - "crates/**"
+      - "examples/**"
+      - "docs/testing/**"
   push:
     branches:
       - main
