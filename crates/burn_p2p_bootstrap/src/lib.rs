@@ -1668,6 +1668,7 @@ mod tests {
                 candidate_head_id: HeadId::new("candidate-panel"),
                 regression_margin: 0.1,
                 detected_backdoor_trigger: false,
+                metric_gate_results: Vec::new(),
                 evaluated_at: Utc::now(),
             }],
             alerts: Vec::new(),

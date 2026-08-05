@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
 
 use anyhow::{Context, ensure};
@@ -553,24 +554,31 @@ struct PythonDiLoCoCheckpointResult {
     inner_optimizer_state_encoding: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Worker-owned model/optimizer state referenced by one opaque handle id.
 pub struct PythonModelHandle {
+    lease: Arc<PythonModelLease>,
+}
+
+#[derive(Debug)]
+struct PythonModelLease {
     id: String,
     client: PythonWorkerClient,
 }
 
 impl PythonModelHandle {
     fn new(id: String, client: PythonWorkerClient) -> Self {
-        Self { id, client }
+        Self {
+            lease: Arc::new(PythonModelLease { id, client }),
+        }
     }
 
     fn id(&self) -> &str {
-        &self.id
+        &self.lease.id
     }
 }
 
-impl Drop for PythonModelHandle {
+impl Drop for PythonModelLease {
     fn drop(&mut self) {
         self.client.release_model(&self.id);
     }
