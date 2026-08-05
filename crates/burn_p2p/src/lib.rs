@@ -103,8 +103,9 @@ pub use burn_p2p_core::{
     TargetArtifactManifest, TelemetrySummary, TrainerPromotionAttestation, TrainingContractError,
     TrainingContractManifest, TrainingProtocol, TrainingProtocolValidationError, TrustScore,
     UpdateAnnounce, UpdateCodec, UpdateFeatureSketch, UpdateNormStats, UpdateReplayStats,
-    ValidatedUpdateEvidence, ValidationQuorumCertificate, ValidationQuorumCertificateError,
-    ValidatorCanaryPolicy, WindowActivation, WindowId, WorkloadId, WorkloadUpdateEnvelope,
+    UpdateRoutingContext, ValidatedUpdateEvidence, ValidationQuorumCertificate,
+    ValidationQuorumCertificateError, ValidatorCanaryPolicy, WindowActivation, WindowId,
+    WorkloadId, WorkloadUpdateEnvelope,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,

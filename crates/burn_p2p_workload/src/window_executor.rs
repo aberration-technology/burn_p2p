@@ -409,6 +409,7 @@ mod tests {
                 window_id: WindowId(1),
                 lease_id: LeaseId::new("lease"),
                 codec: UpdateCodec::DenseDelta,
+                routing_context: None,
                 artifact: descriptor,
                 decoded_tensor_digest: Some(ContentId::new("decoded")),
                 claimed_norm_stats: None,

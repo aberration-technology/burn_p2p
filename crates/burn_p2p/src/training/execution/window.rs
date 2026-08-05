@@ -59,11 +59,16 @@ impl<P> RunningNode<P> {
             &execution.head.head_id,
             &execution.artifact.artifact_id,
         );
+        let routing_context = execution
+            .workload_update
+            .as_ref()
+            .and_then(|update| update.routing_context.clone());
 
         let outcome = TrainingWindowOutcome {
             lease: execution.lease,
             head: execution.head,
             artifact: execution.artifact,
+            routing_context,
             contribution: execution.contribution,
             timing: TrainingWindowTiming {
                 window_started_at: execution.window_started_at,

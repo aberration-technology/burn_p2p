@@ -87,7 +87,7 @@ pub use schema::{
     TelemetrySummary, TrainerPromotionAttestation, TrainingContractError, TrainingContractManifest,
     TrainingProtocol, TrainingProtocolValidationError, TrustBundleExport, TrustScore,
     TrustedIssuerStatus, UpdateAnnounce, UpdateCodec, UpdateFeatureSketch, UpdateNormStats,
-    UpdateReplayStats, ValidatedUpdateEvidence, ValidationQuorumCertificate,
+    UpdateReplayStats, UpdateRoutingContext, ValidatedUpdateEvidence, ValidationQuorumCertificate,
     ValidationQuorumCertificateError, ValidatorCanaryPolicy, ValidatorSetManifest,
     ValidatorSetMember, WindowActivation, WindowId, WorkDisposition, WorkloadUpdateEnvelope,
 };

@@ -184,6 +184,9 @@ pub struct TrainingWindowOutcome<T> {
     pub head: HeadDescriptor,
     /// Materialized artifact descriptor.
     pub artifact: ArtifactDescriptor,
+    /// Routed context generation targeted by the published compact update, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<burn_p2p_core::UpdateRoutingContext>,
     /// Accepted contribution receipt.
     pub contribution: ContributionReceipt,
     /// Runtime timing details for the window.

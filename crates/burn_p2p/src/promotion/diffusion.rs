@@ -1852,6 +1852,7 @@ mod tests {
             window_id: local_update.window_id,
             lease_id: local_update.lease_id.clone().expect("lease"),
             codec: UpdateCodec::DenseDelta,
+            routing_context: None,
             artifact: descriptor,
             decoded_tensor_digest: None,
             claimed_norm_stats: None,

@@ -28,9 +28,10 @@ pub use backend::{
     WindowCtx, WindowReport,
 };
 pub use compact_update::{
-    CompactUpdateReconstructor, MAX_COMPACT_UPDATE_BYTES, MutableSubsetParameterReconstructor,
-    SeededSubspaceReconstructor, ValidatedCompactUpdate, average_mutable_subset_parameters,
-    average_subspace_updates, decode_compact_update, encode_compact_update,
+    CompactUpdateReconstructor, ContextSparseDeltaReconstructor, MAX_COMPACT_UPDATE_BYTES,
+    MutableSubsetParameterReconstructor, SeededSubspaceReconstructor, ValidatedCompactUpdate,
+    average_context_sparse_deltas, average_mutable_subset_parameters, average_subspace_updates,
+    decode_compact_update, decode_context_sparse_update, encode_compact_update,
     reconstructed_update_norm_stats,
 };
 pub use data_pipeline::{

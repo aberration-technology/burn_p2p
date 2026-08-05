@@ -34,6 +34,9 @@ pub struct TrainingWindowCompletedEvent {
     pub head_id: HeadId,
     /// Published model or compact-update artifact.
     pub artifact_id: ArtifactId,
+    /// Routed context generation targeted by the update, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<UpdateRoutingContext>,
     /// Runtime timestamp captured before shard fetch and model execution.
     pub started_at: DateTime<Utc>,
     /// Backend completion timestamp.
@@ -113,6 +116,7 @@ impl<P> RunningNode<P> {
             base_head_id: outcome.contribution.base_head_id.clone(),
             head_id: outcome.head.head_id.clone(),
             artifact_id: outcome.artifact.artifact_id.clone(),
+            routing_context: outcome.routing_context.clone(),
             started_at: outcome.timing.window_started_at,
             completed_at: outcome.timing.completed_at,
             data_fetch_time_ms: outcome.timing.data_fetch_time_ms,

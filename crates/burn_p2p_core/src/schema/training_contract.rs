@@ -115,6 +115,19 @@ pub enum UpdateCodec {
         /// Scalar wire representation.
         encoding: CompactScalarEncoding,
     },
+    /// A sparse delta for one dynamically routed context generation.
+    ///
+    /// Unlike `MutableSubsetParameters`, the exact parameter catalog is bound
+    /// by each payload because different context masks may activate different
+    /// coordinates under one stable family contract.
+    ContextSparseDelta {
+        /// Stable identity of the deterministic context-mask family.
+        context_family_hash: ContentId,
+        /// Hard upper bound on transmitted scalar deltas.
+        max_parameter_count: u64,
+        /// Scalar wire representation.
+        encoding: CompactScalarEncoding,
+    },
     /// A block-quantized dense delta.
     QuantizedBlock {
         /// Number of quantization bits per value.
@@ -188,6 +201,34 @@ pub enum CompactScalarEncoding {
     SymmetricInt8,
     /// Symmetric signed 16-bit quantization with one payload-wide scale.
     SymmetricInt16,
+}
+
+/// Architecture-neutral identity of one bounded routed-context generation.
+///
+/// Slots may be reused, so `slot` is never sufficient on its own. The
+/// generation and dynamic parameter catalog are part of every signed update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRoutingContext {
+    pub context_family_hash: ContentId,
+    pub slot: u32,
+    pub generation: u64,
+    pub parameter_catalog_hash: ContentId,
+}
+
+impl UpdateRoutingContext {
+    pub fn validate(&self) -> Result<(), TrainingContractError> {
+        if self.context_family_hash.as_str().is_empty() {
+            return Err(TrainingContractError::InvalidUpdatePayload(
+                "context family hash must not be empty".into(),
+            ));
+        }
+        if self.parameter_catalog_hash.as_str().is_empty() {
+            return Err(TrainingContractError::InvalidUpdatePayload(
+                "context parameter catalog hash must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One canonically ordered tensor in a parameter subset.
@@ -465,6 +506,13 @@ pub enum CompactUpdateBody {
         /// Parameter values flattened according to the payload's catalog.
         values: CompactScalarVector,
     },
+    /// Canonically ordered deltas for one routed context generation.
+    ContextSparseDelta {
+        /// Slot, generation, family, and dynamic catalog identity.
+        context: UpdateRoutingContext,
+        /// Parameter deltas flattened according to the context catalog.
+        deltas: CompactScalarVector,
+    },
     /// Coefficients in a deterministic linear parameter subspace.
     SubspaceLatent {
         /// Number of subspace dimensions.
@@ -538,6 +586,28 @@ impl CompactUpdatePayload {
                 if u64::from(values.value_count) != self.parameter_count {
                     return Err(TrainingContractError::InvalidUpdatePayload(
                         "mutable-subset scalar count must equal parameter_count".into(),
+                    ));
+                }
+            }
+            (
+                CompactUpdateBody::ContextSparseDelta { context, deltas },
+                UpdateCodec::ContextSparseDelta {
+                    context_family_hash,
+                    max_parameter_count,
+                    encoding,
+                },
+            ) if &context.context_family_hash == context_family_hash
+                && context.parameter_catalog_hash == self.parameter_catalog_hash
+                && self.parameter_count <= *max_parameter_count
+                && deltas.encoding == *encoding =>
+            {
+                context.validate()?;
+                deltas.validate()?;
+                if self.parameter_count == 0
+                    || u64::from(deltas.value_count) != self.parameter_count
+                {
+                    return Err(TrainingContractError::InvalidUpdatePayload(
+                        "context-sparse scalar count must equal positive parameter_count".into(),
                     ));
                 }
             }
@@ -699,6 +769,16 @@ impl TrainingContractManifest {
             } => {
                 return Err(TrainingContractError::InvalidUpdateCodec(
                     "mutable-subset parameter count must be greater than zero".into(),
+                ));
+            }
+            UpdateCodec::ContextSparseDelta {
+                ref context_family_hash,
+                max_parameter_count,
+                ..
+            } if context_family_hash.as_str().is_empty() || max_parameter_count == 0 => {
+                return Err(TrainingContractError::InvalidUpdateCodec(
+                    "context-sparse codec requires a family hash and positive parameter bound"
+                        .into(),
                 ));
             }
             UpdateCodec::SeededLowRank { rank, .. }
@@ -947,6 +1027,9 @@ pub struct WorkloadUpdateEnvelope {
     pub lease_id: LeaseId,
     /// Encoding of the payload.
     pub codec: UpdateCodec,
+    /// Context generation targeted by a context-routed update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<UpdateRoutingContext>,
     /// Materialized payload artifact.
     pub artifact: ArtifactDescriptor,
     /// Optional peer-computed hash of decoded canonical update tensors.
@@ -976,6 +1059,7 @@ impl WorkloadUpdateEnvelope {
             && self.window_id == other.window_id
             && self.lease_id == other.lease_id
             && self.codec == other.codec
+            && self.routing_context == other.routing_context
             && self.artifact == other.artifact
             && self.decoded_tensor_digest == other.decoded_tensor_digest
     }
@@ -988,6 +1072,20 @@ impl WorkloadUpdateEnvelope {
     ) -> Result<(), TrainingContractError> {
         if &self.training_contract_id != contract_id || self.codec != contract.update_codec {
             return Err(TrainingContractError::UpdateContractMismatch);
+        }
+        match (&self.codec, &self.routing_context) {
+            (
+                UpdateCodec::ContextSparseDelta {
+                    context_family_hash,
+                    ..
+                },
+                Some(context),
+            ) if &context.context_family_hash == context_family_hash => context.validate()?,
+            (UpdateCodec::ContextSparseDelta { .. }, _) => {
+                return Err(TrainingContractError::UpdateContractMismatch);
+            }
+            (_, None) => {}
+            (_, Some(_)) => return Err(TrainingContractError::UpdateContractMismatch),
         }
         if self.codec.requires_base_head()
             && self.artifact.base_head_id.as_ref() != Some(&self.base_head_id)
@@ -1362,6 +1460,7 @@ mod tests {
             window_id: WindowId(3),
             lease_id: LeaseId::new("lease"),
             codec: contract.update_codec.clone(),
+            routing_context: None,
             artifact: update_artifact,
             decoded_tensor_digest: Some(content("decoded")),
             claimed_norm_stats: None,
@@ -1382,6 +1481,59 @@ mod tests {
 
         telemetry_variant.decoded_tensor_digest = Some(content("different-decoded"));
         assert!(!envelope.same_contract_bound_payload(&telemetry_variant));
+    }
+
+    #[test]
+    fn context_update_binds_generation_across_cbor_transport() {
+        let mut contract = contract();
+        contract.update_codec = UpdateCodec::ContextSparseDelta {
+            context_family_hash: content("context-family"),
+            max_parameter_count: 16,
+            encoding: CompactScalarEncoding::SymmetricInt16,
+        };
+        let contract_id = contract.contract_id().expect("contract id");
+        let mut update_artifact = artifact();
+        update_artifact.kind = ArtifactKind::DeltaPack;
+        update_artifact.base_head_id = Some(HeadId::new("base"));
+        let context = UpdateRoutingContext {
+            context_family_hash: content("context-family"),
+            slot: 3,
+            generation: 7,
+            parameter_catalog_hash: content("context-catalog"),
+        };
+        let envelope = WorkloadUpdateEnvelope {
+            training_contract_id: contract_id.clone(),
+            revision_id: RevisionId::new("revision"),
+            base_head_id: HeadId::new("base"),
+            window_id: WindowId(3),
+            lease_id: LeaseId::new("lease"),
+            codec: contract.update_codec.clone(),
+            routing_context: Some(context),
+            artifact: update_artifact,
+            decoded_tensor_digest: None,
+            claimed_norm_stats: None,
+            claimed_feature_sketch: None,
+        };
+        envelope
+            .validate_against(&contract_id, &contract)
+            .expect("matching context update");
+        let bytes = crate::deterministic_cbor(&envelope).expect("encode context envelope");
+        let decoded: WorkloadUpdateEnvelope =
+            crate::from_cbor_slice(&bytes).expect("decode context envelope");
+        assert_eq!(decoded, envelope);
+
+        let mut stale = envelope.clone();
+        stale.routing_context.as_mut().expect("context").generation = 6;
+        assert!(!envelope.same_contract_bound_payload(&stale));
+
+        let mut missing = envelope;
+        missing.routing_context = None;
+        assert_eq!(
+            missing
+                .validate_against(&contract_id, &contract)
+                .expect_err("context codec requires identity"),
+            TrainingContractError::UpdateContractMismatch
+        );
     }
 
     #[test]
