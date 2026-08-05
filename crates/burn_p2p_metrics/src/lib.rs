@@ -1847,6 +1847,7 @@ mod tests {
             base_head_id: Some(HeadId::new("head-base")),
             accepted: false,
             metric_deltas: std::collections::BTreeMap::new(),
+            metric_gate_results: Vec::new(),
             regression_margin: 0.12,
             detected_backdoor_trigger: false,
             evaluator_quorum: 2,

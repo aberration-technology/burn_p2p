@@ -1,4 +1,11 @@
 use super::*;
+use crate::runtime_support::trace_to_stderr;
+
+const CANDIDATE_TRACE_ENV: &str = "BURN_P2P_DIFFUSION_TRACE";
+
+fn candidate_trace(args: std::fmt::Arguments<'_>) {
+    trace_to_stderr(CANDIDATE_TRACE_ENV, "burn_p2p candidate", args);
+}
 
 fn synthesize_candidate_head(
     experiment: &ExperimentHandle,
@@ -45,13 +52,111 @@ fn matching_workload_update(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     update: &UpdateAnnounce,
 ) -> Option<WorkloadUpdateEnvelope> {
-    let mut matches = snapshots
+    let nearby = snapshots
         .iter()
-        .flat_map(|(_, snapshot)| snapshot.update_announcements.iter())
-        .filter(|announcement| announcement.update == *update)
-        .filter_map(|announcement| announcement.workload_update.clone());
-    let first = matches.next()?;
-    matches.all(|candidate| candidate == first).then_some(first)
+        .flat_map(|(snapshot_peer_id, snapshot)| {
+            snapshot
+                .update_announcements
+                .iter()
+                .map(move |announcement| (snapshot_peer_id, announcement))
+        })
+        .filter(|(_, announcement)| {
+            announcement.update.peer_id == update.peer_id
+                && announcement.update.study_id == update.study_id
+                && announcement.update.experiment_id == update.experiment_id
+                && announcement.update.revision_id == update.revision_id
+                && announcement.update.window_id == update.window_id
+                && announcement.update.base_head_id == update.base_head_id
+        })
+        .collect::<Vec<_>>();
+    let matches = nearby
+        .iter()
+        .filter(|(_, announcement)| same_update_identity(&announcement.update, update))
+        .filter_map(|(snapshot_peer_id, announcement)| {
+            announcement
+                .workload_update
+                .clone()
+                .map(|envelope| ((*snapshot_peer_id).clone(), envelope))
+        })
+        .collect::<Vec<_>>();
+    let Some((_, first)) = matches.first() else {
+        candidate_trace(format_args!(
+            "typed-envelope-miss peer={} window={} artifact={} lease={} nearby={}",
+            update.peer_id.as_str(),
+            update.window_id.0,
+            update.delta_artifact_id.as_str(),
+            update
+                .lease_id
+                .as_ref()
+                .map(LeaseId::as_str)
+                .unwrap_or("<none>"),
+            nearby
+                .iter()
+                .map(|(_, announcement)| format!(
+                    "{{artifact={},lease={},typed={},providers={:?}}}",
+                    announcement.update.delta_artifact_id.as_str(),
+                    announcement
+                        .update
+                        .lease_id
+                        .as_ref()
+                        .map(LeaseId::as_str)
+                        .unwrap_or("<none>"),
+                    announcement.workload_update.is_some(),
+                    announcement.update.providers
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        return None;
+    };
+    if !matches
+        .iter()
+        .all(|(_, candidate)| candidate.same_contract_bound_payload(first))
+    {
+        candidate_trace(format_args!(
+            "typed-envelope-payload-conflict peer={} window={} artifact={} envelopes={}",
+            update.peer_id.as_str(),
+            update.window_id.0,
+            update.delta_artifact_id.as_str(),
+            matches
+                .iter()
+                .map(|(snapshot_peer_id, candidate)| format!(
+                    "{{snapshot_peer={},id={},contract={},codec={:?},decoded={},norm={:?}}}",
+                    snapshot_peer_id.as_str(),
+                    ContentId::derive(candidate)
+                        .map(|id| id.as_str().to_owned())
+                        .unwrap_or_else(|error| format!("<derive-error:{error}>")),
+                    candidate.training_contract_id.as_str(),
+                    candidate.codec,
+                    candidate
+                        .decoded_tensor_digest
+                        .as_ref()
+                        .map(ContentId::as_str)
+                        .unwrap_or("<none>"),
+                    candidate.claimed_norm_stats,
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        return None;
+    }
+
+    let mut canonical = matches;
+    canonical.sort_by(|(left_peer, left), (right_peer, right)| {
+        (left_peer != &update.peer_id)
+            .cmp(&(right_peer != &update.peer_id))
+            .then_with(|| {
+                ContentId::derive(left)
+                    .map(|id| id.as_str().to_owned())
+                    .unwrap_or_default()
+                    .cmp(
+                        &ContentId::derive(right)
+                            .map(|id| id.as_str().to_owned())
+                            .unwrap_or_default(),
+                    )
+            })
+    });
+    canonical.into_iter().next().map(|(_, envelope)| envelope)
 }
 
 fn experiment_updates_from_snapshots(

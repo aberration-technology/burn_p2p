@@ -3,6 +3,17 @@ use crate::runtime_support::trace_to_stderr;
 
 const ARTIFACT_TRACE_ENV: &str = "BURN_P2P_ARTIFACT_TRACE";
 
+/// Result of evaluating one exact, materialized model head on a read-only peer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterializedHeadEvaluation {
+    /// Backend metrics produced from the decoded head artifact.
+    pub metrics: MetricReport,
+    /// Durable, revision-scoped evaluator report persisted by this peer.
+    pub report: HeadEvalReport,
+    /// Evaluation contract binding metric names, directions, split, and dataset view.
+    pub protocol: EvalProtocolManifest,
+}
+
 fn artifact_trace(args: std::fmt::Arguments<'_>) {
     trace_to_stderr(ARTIFACT_TRACE_ENV, "burn_p2p artifact", args);
 }
@@ -36,9 +47,132 @@ impl<P> RunningNode<P> {
             .node
             .as_mut()
             .expect("running node should retain prepared node");
+        let revision_contract = node.revision_contracts.get(&head.revision_id).cloned();
         let device = node.project.runtime_device();
-        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        let model = crate::training::load_model_for_head(
+            &mut node.project,
+            head,
+            revision_contract.as_ref(),
+            &store,
+            &device,
+        )?;
         Ok(node.project.evaluate(&model, split))
+    }
+
+    /// Evaluates, persists, and announces metrics for one exact materialized head.
+    ///
+    /// This is the read-only evaluator path. It never mutates model parameters or
+    /// participates in promotion, and it binds the resulting report to the
+    /// requested experiment revision and head ID.
+    pub fn evaluate_and_record_materialized_head(
+        &mut self,
+        experiment: &ExperimentHandle,
+        head: &HeadDescriptor,
+        split: EvalSplit,
+    ) -> anyhow::Result<MaterializedHeadEvaluation>
+    where
+        P: P2pWorkload,
+    {
+        if experiment.network_id != *self.mainnet().network_id()
+            || experiment.study_id != head.study_id
+            || experiment.experiment_id != head.experiment_id
+            || experiment.revision_id != head.revision_id
+        {
+            return Err(anyhow::anyhow!(
+                "head {} is outside evaluator experiment scope {}/{}/{}",
+                head.head_id.as_str(),
+                experiment.study_id.as_str(),
+                experiment.experiment_id.as_str(),
+                experiment.revision_id.as_str(),
+            ));
+        }
+
+        let started_at = Utc::now();
+        let metrics = self.evaluate_materialized_head(head, split.clone())?;
+        let finished_at = Utc::now();
+        let evaluator_peer_id =
+            self.telemetry().snapshot().local_peer_id.ok_or_else(|| {
+                anyhow::anyhow!("head evaluation requires a running peer identity")
+            })?;
+        let (report, protocol) = crate::metrics_runtime::build_evaluator_head_eval_report(
+            self.config(),
+            experiment,
+            head,
+            &metrics,
+            &split,
+            started_at,
+            finished_at,
+            &evaluator_peer_id,
+        )?;
+        let storage = self
+            .config()
+            .storage
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("head evaluation requires configured storage"))?;
+        let retention = self
+            .config()
+            .metrics_retention
+            .resolve_for_roles(&self.mainnet().roles);
+        crate::metrics_runtime::persist_head_eval_report(storage, experiment, &report, retention)?;
+        crate::metrics_runtime::persist_eval_protocol_manifest(
+            storage, experiment, &protocol, retention,
+        )?;
+        self.control
+            .publish_metrics(crate::metrics_runtime::build_metrics_announcement(
+                experiment,
+                experiment.overlay_set()?.metrics,
+                burn_p2p_core::MetricsLiveEventKind::SnapshotRefresh,
+                Some(head.head_id.clone()),
+                None,
+                Vec::new(),
+            ))?;
+
+        Ok(MaterializedHeadEvaluation {
+            metrics,
+            report,
+            protocol,
+        })
+    }
+
+    /// Loads one locally persisted exact-head evaluation report without exposing storage layout.
+    pub fn persisted_head_eval_report(
+        &self,
+        experiment: &ExperimentHandle,
+        head_id: &HeadId,
+        eval_protocol_id: &ContentId,
+        eval_report_id: &ContentId,
+    ) -> anyhow::Result<Option<HeadEvalReport>>
+    where
+        P: P2pWorkload,
+    {
+        let Some(storage) = self.config().storage.as_ref() else {
+            return Ok(None);
+        };
+        let path = storage.scoped_head_eval_report_path(
+            experiment,
+            head_id,
+            eval_protocol_id,
+            eval_report_id,
+        );
+        if !path.exists() {
+            return Ok(None);
+        }
+        let Some(report) = crate::runtime_support::load_json::<HeadEvalReport>(path)? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            report.network_id == experiment.network_id
+                && report.experiment_id == experiment.experiment_id
+                && report.revision_id == experiment.revision_id
+                && report.head_id == *head_id
+                && report.eval_protocol_id == *eval_protocol_id,
+            "persisted head evaluation report is outside the requested scope",
+        );
+        anyhow::ensure!(
+            ContentId::derive(&report)? == *eval_report_id,
+            "persisted head evaluation report content does not match the requested report id",
+        );
+        Ok(Some(report))
     }
 
     /// Computes the canonical decoded-tensor digest of a materialized head.
@@ -56,8 +190,15 @@ impl<P> RunningNode<P> {
             .node
             .as_mut()
             .expect("running node should retain prepared node");
+        let revision_contract = node.revision_contracts.get(&head.revision_id).cloned();
         let device = node.project.runtime_device();
-        let model = crate::training::load_model_for_head(&mut node.project, head, &store, &device)?;
+        let model = crate::training::load_model_for_head(
+            &mut node.project,
+            head,
+            revision_contract.as_ref(),
+            &store,
+            &device,
+        )?;
         node.project.model_tensor_digest(&model)
     }
 

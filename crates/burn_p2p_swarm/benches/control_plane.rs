@@ -187,6 +187,12 @@ fn reduction_certificate_announcement(index: usize) -> ReductionCertificateAnnou
             window_id: WindowId(1),
             base_head_id: HeadId::new("bench-base-head"),
             aggregate_id: ContentId::derive(&("aggregate", index)).expect("aggregate id"),
+            evaluation: Some(burn_p2p_core::HeadEvaluationBinding {
+                head_id: HeadId::new("bench-merged-head"),
+                artifact_id: ArtifactId::new("bench-merged-artifact"),
+                eval_protocol_id: ContentId::new("bench-eval-protocol"),
+                eval_report_id: ContentId::derive(&("eval-report", index)).expect("eval report id"),
+            }),
             promoter_peer_id: PeerId::new("validator-0001"),
             promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
             promotion_quorum: 2,

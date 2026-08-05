@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, error::Error as StdError, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error as StdError,
+    fmt,
+};
 
 use burn_p2p_core::{
     AggregateEnvelope, ArtifactDescriptor, ArtifactId, AssignmentLease, ContentId,
@@ -180,6 +184,9 @@ pub struct TrainingWindowOutcome<T> {
     pub head: HeadDescriptor,
     /// Materialized artifact descriptor.
     pub artifact: ArtifactDescriptor,
+    /// Routed context generation targeted by the published compact update, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<burn_p2p_core::UpdateRoutingContext>,
     /// Accepted contribution receipt.
     pub contribution: ContributionReceipt,
     /// Runtime timing details for the window.
@@ -210,6 +217,12 @@ pub struct ValidationCoordinationState {
     pub attesters: Vec<PeerId>,
     /// Reduction certificate ids associated with the visible attesters.
     pub reduction_ids: Vec<ContentId>,
+    /// Common evaluation protocol for the accepted attestation cohort, when known.
+    #[serde(default)]
+    pub eval_protocol_id: Option<ContentId>,
+    /// Content-addressed evaluation reports associated with visible attesters.
+    #[serde(default)]
+    pub eval_report_ids: Vec<ContentId>,
     /// Whether the aggregate proposal is visible in the control plane.
     pub aggregate_proposal_announced: bool,
     /// Whether a quorum certificate for the merged head is visible.
@@ -223,7 +236,10 @@ pub struct ValidationCoordinationState {
 impl ValidationCoordinationState {
     /// Returns whether validator quorum is visible either explicitly or by attester count.
     pub fn quorum_reached(&self, quorum: usize) -> bool {
-        self.quorum_announced || self.attesters.len() >= quorum
+        self.quorum_announced
+            || (self.attesters.len() >= quorum
+                && self.eval_protocol_id.is_some()
+                && self.eval_report_ids.iter().collect::<BTreeSet<_>>().len() >= quorum)
     }
 
     /// Returns whether the aggregate has reached a settled post-validation state.

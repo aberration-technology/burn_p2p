@@ -1024,6 +1024,11 @@ where
         base_head: Option<&HeadDescriptor>,
         store: &FsArtifactStore,
     ) -> anyhow::Result<PersistedDiLoCoRuntimeState> {
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id))
+            .cloned();
         let (model, checkpoint_head_id) = {
             let project = &mut self
                 .node
@@ -1032,7 +1037,7 @@ where
                 .project;
             let device = project.runtime_device();
             let model = if let Some(head) = base_head {
-                load_model_for_head(project, head, store, &device)?
+                load_model_for_head(project, head, revision_contract.as_ref(), store, &device)?
             } else {
                 project.init_model(&device)
             };
@@ -2955,6 +2960,7 @@ mod tests {
                 momentum_micros: Some(250_000),
                 nesterov: false,
                 weight_decay_micros: None,
+                max_pseudo_gradient_rms_ratio_micros: None,
             },
             ..DiLoCoPolicy::default()
         };

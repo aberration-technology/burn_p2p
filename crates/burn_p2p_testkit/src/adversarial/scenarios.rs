@@ -147,6 +147,7 @@ fn run_fixture(
                 String::from("loss"),
                 if peer.malicious { 0.08 } else { 0.0 },
             )]),
+            metric_gate_results: Vec::new(),
             regression_margin: if matches!(
                 peer.attack,
                 Some(AdversarialAttack::BackdoorLowNorm | AdversarialAttack::ReputationBuildStrike)

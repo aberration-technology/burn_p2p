@@ -1336,7 +1336,10 @@ pub(crate) fn update_announces_from_connected_snapshots(
     }
     for (_, snapshot) in snapshots {
         for update in update_announces_for_window(snapshot, experiment, window_id, base_head_id) {
-            updates.insert(update.peer_id.clone(), update);
+            // The local snapshot is authoritative for the local peer. Relays
+            // may alter provider lists and timestamps without carrying the
+            // typed workload envelope associated with that update.
+            updates.entry(update.peer_id.clone()).or_insert(update);
         }
     }
     updates.into_values().collect()

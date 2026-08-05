@@ -310,13 +310,13 @@ mod tests {
 
     use burn_p2p_core::{
         ArtifactDescriptor, ArtifactKind, BrowserRolePolicy, BrowserVisibilityPolicy, ContentId,
-        DatasetViewId, ExperimentId, ExperimentResourceRequirements, LagPolicy, LeaseId,
-        LocalOptimizerStatePolicy, MODEL_GENESIS_SIGNATURE_KEY_ID, MergeWindowMissPolicy,
-        ModelGenesisManifest, PeerId, Precision, REVISION_CONTRACT_SIGNATURE_KEY_ID,
-        RecurrentStatePolicy, RevisionManifest, SchedulerStatePolicy, SchemaEnvelope,
-        SignatureAlgorithm, SignatureMetadata, SignedPayload, StudyId, TRAINING_CONTRACT_VERSION,
-        TrainingContractManifest, TrainingProtocol, UpdateCodec, WindowActivation, WindowId,
-        WorkloadId,
+        DatasetViewId, ExperimentId, ExperimentResourceRequirements, GenesisMaterialization,
+        LagPolicy, LeaseId, LocalOptimizerStatePolicy, MODEL_GENESIS_SIGNATURE_KEY_ID,
+        MergeWindowMissPolicy, ModelGenesisManifest, PeerId, Precision,
+        REVISION_CONTRACT_SIGNATURE_KEY_ID, RecurrentStatePolicy, RevisionManifest,
+        SchedulerStatePolicy, SchemaEnvelope, SignatureAlgorithm, SignatureMetadata, SignedPayload,
+        StudyId, TRAINING_CONTRACT_VERSION, TrainingContractManifest, TrainingProtocol,
+        UpdateCodec, WindowActivation, WindowId, WorkloadId,
     };
     use chrono::Utc;
     use semver::Version;
@@ -409,6 +409,7 @@ mod tests {
                 window_id: WindowId(1),
                 lease_id: LeaseId::new("lease"),
                 codec: UpdateCodec::DenseDelta,
+                routing_context: None,
                 artifact: descriptor,
                 decoded_tensor_digest: Some(ContentId::new("decoded")),
                 claimed_norm_stats: None,
@@ -529,6 +530,7 @@ mod tests {
             tensor_digest: ContentId::new("tensor"),
             initialization_algorithm: "test".into(),
             initialization_seed: Some(1),
+            materialization: GenesisMaterialization::FullArtifact,
             authority_epoch: 1,
             created_at: Utc::now(),
         };

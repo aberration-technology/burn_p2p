@@ -112,6 +112,7 @@ struct TrainingExecution<T, M> {
     model: M,
     head: HeadDescriptor,
     artifact: ArtifactDescriptor,
+    workload_update: Option<WorkloadUpdateEnvelope>,
     contribution: ContributionReceipt,
     report: WindowReport<T>,
     window_started_at: DateTime<Utc>,

@@ -1055,6 +1055,17 @@ fn validation_persists_cohort_and_head_eval_metrics() {
     assert_eq!(reducer_cohorts.len(), 1);
     assert_eq!(head_eval_reports.len(), 1);
     assert_eq!(eval_protocol_manifests.len(), 1);
+    assert_eq!(
+        validator
+            .persisted_head_eval_report(
+                &experiment,
+                &head_eval_reports[0].head_id,
+                &head_eval_reports[0].eval_protocol_id,
+                &crate::ContentId::derive(&head_eval_reports[0]).expect("head eval report id"),
+            )
+            .expect("load persisted head eval report"),
+        Some(head_eval_reports[0].clone())
+    );
     assert_eq!(peer_windows[0].base_head_id, genesis_head.head_id);
     assert_eq!(
         reducer_cohorts[0].candidate_head_id,
@@ -1077,6 +1088,46 @@ fn validation_persists_cohort_and_head_eval_metrics() {
         eval_protocol_manifests[0].manifest.eval_protocol_id,
         head_eval_reports[0].eval_protocol_id
     );
+    let report_id = crate::ContentId::derive(&head_eval_reports[0]).expect("head eval report id");
+    let control_plane = validator_telemetry.snapshot().control_plane;
+    let reduction = control_plane
+        .reduction_certificate_announcements
+        .iter()
+        .find(|announcement| {
+            announcement
+                .certificate
+                .evaluation
+                .as_ref()
+                .is_some_and(|binding| binding.head_id == validated.merged_head.head_id)
+        })
+        .expect("bound validator reduction certificate");
+    let binding = reduction
+        .certificate
+        .evaluation
+        .as_ref()
+        .expect("evaluation binding");
+    assert_eq!(binding.artifact_id, validated.merged_head.artifact_id);
+    assert_eq!(
+        binding.eval_protocol_id,
+        head_eval_reports[0].eval_protocol_id
+    );
+    assert_eq!(binding.eval_report_id, report_id);
+    let quorum = control_plane
+        .validation_quorum_announcements
+        .iter()
+        .find(|announcement| {
+            announcement.certificate.merged_head_id == validated.merged_head.head_id
+        })
+        .expect("evaluation-bound validator quorum");
+    assert_eq!(
+        quorum.certificate.merged_artifact_id.as_ref(),
+        Some(&validated.merged_head.artifact_id)
+    );
+    assert_eq!(
+        quorum.certificate.eval_protocol_id.as_ref(),
+        Some(&head_eval_reports[0].eval_protocol_id)
+    );
+    assert_eq!(quorum.certificate.eval_report_ids, vec![report_id]);
     assert!(eval_protocol_manifests[0].captured_at <= Utc::now());
     wait_for(
         Duration::from_secs(5),

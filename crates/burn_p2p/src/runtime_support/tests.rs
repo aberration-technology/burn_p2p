@@ -345,6 +345,7 @@ fn runtime_training_protocol_reads_directory_entry_field() {
             momentum_micros: Some(900_000),
             nesterov: true,
             weight_decay_micros: Some(10_000),
+            max_pseudo_gradient_rms_ratio_micros: None,
         },
         ..crate::DiLoCoPolicy::default()
     });

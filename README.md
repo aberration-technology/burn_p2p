@@ -95,6 +95,25 @@ silently become an unbounded training-path allocation. Dragon/model state does
 not move into `burn_p2p`; downstream plugins retain ownership of model,
 optimizer, recurrent state, and data.
 
+### routed sparse updates
+
+`UpdateCodec::ContextSparseDelta` is the architecture-neutral transport for a
+dynamic routed subnetwork. The signed workload envelope and compact body both
+bind the context-family hash, slot, generation, parameter-catalog hash, and
+parameter count. Decoding fails unless those copies agree with the exact
+training contract and base head. This prevents a delayed update from being
+applied after a bounded router reuses the same slot for another context.
+
+`burn_p2p_workload` reconstructs the compact deltas and only averages updates
+whose complete routed identities match. The ECS ingress keeps bounded pending
+metadata and attaches accepted routing/window outcomes to the correct run
+entity. Native observers feed the same typed ingress used by browser peers.
+The protocol deliberately does not choose contexts, create sparse masks, or own
+per-context optimizers; those remain downstream workload responsibilities.
+The wire regression test uses a 25%-active deterministic catalog with int16
+values and requires the complete CBOR payload, including identity metadata, to
+remain below one sixth of the corresponding dense FP32 parameter body.
+
 ## safety boundary
 
 the important trust split is:

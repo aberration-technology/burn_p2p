@@ -5,9 +5,13 @@ use burn_ecs::prelude::{
 };
 
 use super::messages::{
-    P2pCanonicalReconcileEvent, P2pCapabilityAssessment, P2pWindowFinished, P2pWindowStarted,
+    P2pCanonicalReconcileEvent, P2pCapabilityAssessment, P2pContextUpdateObserved,
+    P2pWindowFinished, P2pWindowStarted,
 };
-use super::resources::{P2pTrainingTelemetryState, P2pWindowMetadata, PendingP2pWindowMetadata};
+use super::resources::{
+    MAX_CONTEXT_IDENTITIES_PER_WINDOW, P2pTrainingTelemetryState, P2pWindowContextUpdates,
+    P2pWindowMetadata, PendingP2pWindowContextUpdates, PendingP2pWindowMetadata,
+};
 
 pub struct P2pTrainingPlugin;
 
@@ -17,7 +21,9 @@ impl Plugin for P2pTrainingPlugin {
             .add_message::<P2pWindowFinished>()
             .add_message::<P2pCanonicalReconcileEvent>()
             .add_message::<P2pCapabilityAssessment>()
+            .add_message::<P2pContextUpdateObserved>()
             .init_resource::<PendingP2pWindowMetadata>()
+            .init_resource::<PendingP2pWindowContextUpdates>()
             .add_systems(
                 Update,
                 (
@@ -26,14 +32,61 @@ impl Plugin for P2pTrainingPlugin {
                     mirror_p2p_window_finished,
                     record_p2p_canonical_reconcile,
                     bridge_p2p_capability_assessments,
+                    record_p2p_context_updates,
                 )
                     .chain()
                     .in_set(TrainingSet::Window),
             )
             .add_systems(
                 Update,
-                attach_p2p_window_metadata.in_set(TrainingSet::Control),
+                (attach_p2p_window_metadata, attach_p2p_context_updates)
+                    .chain()
+                    .in_set(TrainingSet::Control),
             );
+    }
+}
+
+fn record_p2p_context_updates(
+    mut messages: MessageReader<P2pContextUpdateObserved>,
+    mut pending: ResMut<PendingP2pWindowContextUpdates>,
+) {
+    for event in messages.read() {
+        pending.record(event.run_id.clone(), event.window_id, event.context.clone());
+    }
+}
+
+fn attach_p2p_context_updates(
+    mut commands: Commands,
+    windows: Query<(&TrainingRunId, &TrainingWindowIndex)>,
+    mut attached: Query<&mut P2pWindowContextUpdates>,
+    mut pending: ResMut<PendingP2pWindowContextUpdates>,
+) {
+    let ready = pending
+        .by_run_window_id
+        .keys()
+        .filter_map(|(run_id, window_id)| {
+            let (_, index) = windows
+                .iter()
+                .find(|(candidate_run_id, _)| *candidate_run_id == run_id)?;
+            Some(((run_id.clone(), *window_id), index.get(*window_id)?))
+        })
+        .collect::<Vec<_>>();
+    for (key, entity) in ready {
+        let contexts = pending.by_run_window_id.remove(&key).unwrap_or_default();
+        if let Ok(mut current) = attached.get_mut(entity) {
+            for context in contexts {
+                if !current.contexts.contains(&context) {
+                    if current.contexts.len() >= MAX_CONTEXT_IDENTITIES_PER_WINDOW {
+                        current.contexts.remove(0);
+                    }
+                    current.contexts.push(context);
+                }
+            }
+        } else {
+            commands
+                .entity(entity)
+                .insert(P2pWindowContextUpdates { contexts });
+        }
     }
 }
 
@@ -220,6 +273,19 @@ mod tests {
         runtime
             .app_mut()
             .world_mut()
+            .write_message(P2pContextUpdateObserved {
+                run_id: "p2p".into(),
+                window_id: 7,
+                context: crate::UpdateRoutingContext {
+                    context_family_hash: crate::ContentId::new("family"),
+                    slot: 2,
+                    generation: 4,
+                    parameter_catalog_hash: crate::ContentId::new("catalog"),
+                },
+            });
+        runtime
+            .app_mut()
+            .world_mut()
             .write_message(P2pWindowFinished {
                 run_id: "p2p".into(),
                 experiment_id: "exp".into(),
@@ -259,6 +325,14 @@ mod tests {
             .get::<P2pWindowMetadata>()
             .expect("p2p metadata");
         assert_eq!(metadata.experiment_id, "exp");
+        let contexts = runtime
+            .app()
+            .world()
+            .entity(window_entity)
+            .get::<P2pWindowContextUpdates>()
+            .expect("context update metadata");
+        assert_eq!(contexts.contexts.len(), 1);
+        assert_eq!(contexts.contexts[0].generation, 4);
         let jsonl = std::fs::read_to_string(dir.path().join("events/training_events.jsonl"))
             .expect("training events jsonl");
         assert!(jsonl.contains("window_started"));

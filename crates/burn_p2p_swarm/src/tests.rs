@@ -222,6 +222,7 @@ fn native_transport_policy_prefers_quic_before_tcp_for_current_runtime() {
         policy.idle_connection_timeout_ms,
         super::CONTROL_IDLE_CONNECTION_TIMEOUT.as_millis() as u64
     );
+    assert_eq!(policy.max_established_per_peer, Some(2));
     assert!(!policy.enable_local_discovery);
     assert!(policy.enable_relay_client);
     assert!(!policy.enable_relay_server);
@@ -1314,6 +1315,12 @@ fn semantic_test_reduction_certificate(
             window_id: WindowId(7),
             base_head_id: HeadId::new("head-base"),
             aggregate_id: ContentId::new(aggregate_id),
+            evaluation: Some(burn_p2p_core::HeadEvaluationBinding {
+                head_id: HeadId::new("merged-a"),
+                artifact_id: ArtifactId::new("merged-artifact-a"),
+                eval_protocol_id: ContentId::new("eval-protocol-a"),
+                eval_report_id: ContentId::new(format!("eval-report-{validator}")),
+            }),
             promoter_peer_id: PeerId::new(validator),
             promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
             promotion_quorum: quorum,
@@ -1344,6 +1351,12 @@ fn semantic_test_validation_quorum(
             aggregate_id: ContentId::new(aggregate_id),
             aggregate_artifact_id: ArtifactId::new("artifact-a"),
             merged_head_id: HeadId::new(merged_head_id),
+            merged_artifact_id: Some(ArtifactId::new("merged-artifact-a")),
+            eval_protocol_id: Some(ContentId::new("eval-protocol-a")),
+            eval_report_ids: validators
+                .iter()
+                .map(|peer| ContentId::new(format!("eval-report-{peer}")))
+                .collect(),
             promotion_mode: burn_p2p_core::HeadPromotionMode::ValidatorQuorum,
             validator_quorum: 2,
             coordinator: PeerId::new(coordinator),
@@ -1613,6 +1626,22 @@ fn reduction_certificate_announcements_cap_at_validator_quorum() {
             .collect::<Vec<_>>(),
         vec!["validator-a", "validator-b"]
     );
+}
+
+#[test]
+fn validator_reduction_certificate_without_evaluation_binding_is_rejected() {
+    let now = Utc::now();
+    let mut announcement =
+        semantic_test_reduction_certificate("validator-a", "aggregate-a", 1, now);
+    announcement.certificate.evaluation = None;
+    let mut snapshot = ControlPlaneSnapshot::default();
+
+    super::apply_pubsub_payload(
+        &mut snapshot,
+        PubsubPayload::ReductionCertificate(announcement),
+    );
+
+    assert!(snapshot.reduction_certificate_announcements.is_empty());
 }
 
 #[test]
@@ -3598,6 +3627,9 @@ fn native_relay_path_transfers_large_artifact_chunks() {
         burn_p2p_core::PeerRole::RelayHelper,
     ]);
     let client_policy = RuntimeTransportPolicy::native_for_roles(&PeerRoleSet::default_trainer());
+    let client_route_cap = client_policy
+        .max_established_per_peer
+        .expect("native trainer route cap") as usize;
     let relay_policy = RuntimeTransportPolicy::native_for_roles(&relay_roles);
 
     let mut relay_seed =
@@ -3769,8 +3801,8 @@ fn native_relay_path_transfers_large_artifact_chunks() {
     assert_eq!(chunk_payload.chunk, descriptor.chunks[0]);
 
     let reconciliation_deadline = Instant::now() + Duration::from_secs(5);
-    while (dialer.established_connection_count(&listener_peer_id) > 1
-        || listener.established_connection_count(&dialer_peer_id) > 1)
+    while (dialer.established_connection_count(&listener_peer_id) > client_route_cap
+        || listener.established_connection_count(&dialer_peer_id) > client_route_cap)
         && Instant::now() < reconciliation_deadline
     {
         let _ = relay_seed.wait_event(Duration::from_millis(10));
@@ -3778,12 +3810,12 @@ fn native_relay_path_transfers_large_artifact_chunks() {
         let _ = dialer.wait_event(Duration::from_millis(10));
     }
     assert!(
-        dialer.established_connection_count(&listener_peer_id) <= 1,
-        "dialer did not reconcile to one listener route"
+        dialer.established_connection_count(&listener_peer_id) <= client_route_cap,
+        "dialer exceeded the configured listener route cap"
     );
     assert!(
-        listener.established_connection_count(&dialer_peer_id) <= 1,
-        "listener did not reconcile to one dialer route"
+        listener.established_connection_count(&dialer_peer_id) <= client_route_cap,
+        "listener exceeded the configured dialer route cap"
     );
 }
 

@@ -10,8 +10,12 @@ keywords.workspace = true
 categories.workspace = true
 readme = "../../README.md"
 
+[features]
+default = ["train"]
+train = ["burn/train"]
+
 [dependencies]
-burn.workspace = true
+burn = { version = "0.21.0", default-features = false, features = ["std", "store"] }
 burn-store.workspace = true
 burn_p2p_core.workspace = true
 burn_p2p_checkpoint.workspace = true
@@ -21,7 +25,9 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+burn.workspace = true
 criterion.workspace = true
+futures = "0.3"
 tempfile.workspace = true
 
 [[bench]]

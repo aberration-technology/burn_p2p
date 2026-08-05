@@ -1272,6 +1272,7 @@ fn canonicalize_reduction_certificate_announcement(
 fn canonicalize_validation_quorum_announcement(announcement: &mut ValidationQuorumAnnouncement) {
     sort_and_dedup(&mut announcement.certificate.attesting_validators);
     sort_and_dedup(&mut announcement.certificate.reduction_ids);
+    sort_and_dedup(&mut announcement.certificate.eval_report_ids);
 }
 
 fn canonicalize_merge_announcement(announcement: &mut MergeAnnouncement) {
@@ -1409,8 +1410,9 @@ fn reduction_certificate_semantic_fingerprint(
 ) -> String {
     let mut reducers = announcement.certificate.cross_checked_reducers.clone();
     sort_and_dedup(&mut reducers);
+    let evaluation = announcement.certificate.evaluation.as_ref();
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         announcement.overlay.path,
         announcement.certificate.study_id,
         announcement.certificate.experiment_id,
@@ -1418,6 +1420,19 @@ fn reduction_certificate_semantic_fingerprint(
         announcement.certificate.window_id.0,
         announcement.certificate.base_head_id,
         announcement.certificate.aggregate_id,
+        announcement.certificate.promoter_peer_id,
+        evaluation
+            .map(|binding| binding.head_id.as_str())
+            .unwrap_or("-"),
+        evaluation
+            .map(|binding| binding.artifact_id.as_str())
+            .unwrap_or("-"),
+        evaluation
+            .map(|binding| binding.eval_protocol_id.as_str())
+            .unwrap_or("-"),
+        evaluation
+            .map(|binding| binding.eval_report_id.as_str())
+            .unwrap_or("-"),
         reducers
             .iter()
             .map(|peer| peer.as_str())
@@ -1429,10 +1444,12 @@ fn reduction_certificate_semantic_fingerprint(
 fn validation_quorum_semantic_fingerprint(announcement: &ValidationQuorumAnnouncement) -> String {
     let mut validators = announcement.certificate.attesting_validators.clone();
     let mut reduction_ids = announcement.certificate.reduction_ids.clone();
+    let mut eval_report_ids = announcement.certificate.eval_report_ids.clone();
     sort_and_dedup(&mut validators);
     sort_and_dedup(&mut reduction_ids);
+    sort_and_dedup(&mut eval_report_ids);
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         announcement.overlay.path,
         announcement.certificate.study_id,
         announcement.certificate.experiment_id,
@@ -1442,12 +1459,29 @@ fn validation_quorum_semantic_fingerprint(announcement: &ValidationQuorumAnnounc
         announcement.certificate.aggregate_id,
         announcement.certificate.aggregate_artifact_id,
         announcement.certificate.merged_head_id,
+        announcement
+            .certificate
+            .merged_artifact_id
+            .as_ref()
+            .map(ArtifactId::as_str)
+            .unwrap_or("-"),
+        announcement
+            .certificate
+            .eval_protocol_id
+            .as_ref()
+            .map(ContentId::as_str)
+            .unwrap_or("-"),
         validators
             .iter()
             .map(|peer| peer.as_str())
             .collect::<Vec<_>>()
             .join(","),
         reduction_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        eval_report_ids
             .iter()
             .map(|id| id.as_str())
             .collect::<Vec<_>>()
@@ -1879,6 +1913,9 @@ pub(crate) fn insert_reduction_certificate_announcement_with_index(
     mut announcement: ReductionCertificateAnnouncement,
 ) {
     canonicalize_reduction_certificate_announcement(&mut announcement);
+    if announcement.certificate.validate_structure().is_err() {
+        return;
+    }
     let key = reduction_certificate_announcement_key(&announcement);
     let fingerprint = reduction_certificate_semantic_fingerprint(&announcement);
     match index.reduction_certificate_announcements.get(&key).copied() {

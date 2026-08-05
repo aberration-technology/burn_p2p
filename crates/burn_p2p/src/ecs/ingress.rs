@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    P2pCanonicalReconcileEvent, P2pCapabilityAssessment, P2pTrainingPlugin, P2pWindowFinished,
-    P2pWindowStarted,
+    P2pCanonicalReconcileEvent, P2pCapabilityAssessment, P2pContextUpdateObserved,
+    P2pTrainingPlugin, P2pWindowFinished, P2pWindowStarted,
 };
 
 const DEFAULT_MAX_EVENTS_PER_UPDATE: usize = 256;
@@ -27,6 +27,7 @@ enum P2pTrainingCommand {
     WindowFinished(P2pWindowFinished),
     CanonicalReconcile(P2pCanonicalReconcileEvent),
     Capability(P2pCapabilityAssessment),
+    ContextUpdate(P2pContextUpdateObserved),
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +136,11 @@ impl P2pTrainingEventBus {
     pub fn send_capability(&self, event: P2pCapabilityAssessment) -> anyhow::Result<()> {
         self.send(P2pTrainingCommand::Capability(event))
     }
+
+    /// Reports one accepted context-bound update.
+    pub fn send_context_update(&self, event: P2pContextUpdateObserved) -> anyhow::Result<()> {
+        self.send(P2pTrainingCommand::ContextUpdate(event))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +194,13 @@ impl TrainingWindowObserver for P2pTrainingEcsObserver {
             publish_latency_ms: event.publish_latency_ms,
             metrics,
         });
+        if let Some(context) = event.routing_context.as_ref() {
+            let _ = self.bus.send_context_update(P2pContextUpdateObserved {
+                run_id: self.run_id.clone(),
+                window_id: event.window_id.0,
+                context: context.clone(),
+            });
+        }
     }
 }
 
@@ -253,6 +266,7 @@ fn drain_p2p_training_ingress(
     mut window_finished: MessageWriter<P2pWindowFinished>,
     mut reconcile: MessageWriter<P2pCanonicalReconcileEvent>,
     mut capability: MessageWriter<P2pCapabilityAssessment>,
+    mut context_update: MessageWriter<P2pContextUpdateObserved>,
 ) {
     let Ok(receiver) = ingress.receiver.lock() else {
         return;
@@ -274,6 +288,10 @@ fn drain_p2p_training_ingress(
             Ok(P2pTrainingCommand::Capability(event)) => {
                 ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 capability.write(event);
+            }
+            Ok(P2pTrainingCommand::ContextUpdate(event)) => {
+                ingress.counters.queue_depth.fetch_sub(1, Ordering::AcqRel);
+                context_update.write(event);
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
         }
@@ -346,7 +364,7 @@ mod tests {
     #[test]
     fn native_window_observer_drives_the_same_typed_ingress() {
         let (plugin, bus) = P2pTrainingIngressPlugin::channel(8);
-        let observer = P2pTrainingEcsObserver::new("p2p", bus);
+        let observer = P2pTrainingEcsObserver::new("p2p", bus.clone());
         let (_dir, mut runtime, run) = runtime(plugin);
         let now = chrono::Utc::now();
         observer.window_started(&TrainingWindowStartedEvent {
@@ -365,6 +383,12 @@ mod tests {
             base_head_id: crate::HeadId::new("base"),
             head_id: crate::HeadId::new("head"),
             artifact_id: crate::ArtifactId::new("artifact"),
+            routing_context: Some(crate::UpdateRoutingContext {
+                context_family_hash: crate::ContentId::new("family"),
+                slot: 2,
+                generation: 5,
+                parameter_catalog_hash: crate::ContentId::new("catalog"),
+            }),
             started_at: now,
             completed_at: now,
             data_fetch_time_ms: 3,
@@ -384,6 +408,7 @@ mod tests {
             .expect("P2P telemetry");
         assert_eq!(telemetry.latest_window_id, Some(4));
         assert_eq!(telemetry.published_windows, 1);
+        assert_eq!(bus.stats().sends_accepted, 3);
     }
 
     #[test]

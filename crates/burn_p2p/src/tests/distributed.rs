@@ -82,6 +82,75 @@ fn native_runtime_training_and_validation_progresses_across_peers() {
         .expect("init genesis head");
     assert_eq!(genesis_head.global_step, 0);
 
+    let recorded = validator
+        .evaluate_and_record_materialized_head(&experiment, &genesis_head, EvalSplit::Validation)
+        .expect("record exact genesis evaluation");
+    assert_eq!(recorded.report.head_id, genesis_head.head_id);
+    assert_eq!(recorded.report.revision_id, experiment.revision_id);
+    assert_eq!(recorded.report.metric_values, recorded.metrics.metrics);
+    assert_eq!(recorded.report.sample_count, 2);
+    assert_eq!(recorded.report.status, crate::HeadEvalStatus::Completed);
+    assert_eq!(
+        recorded.report.trust_class,
+        crate::MetricTrustClass::Canonical
+    );
+    assert_eq!(
+        recorded.protocol.dataset_view_id,
+        recorded.report.dataset_view_id
+    );
+    assert_eq!(recorded.protocol.split_id, "validation");
+    assert!(
+        recorded
+            .protocol
+            .metric_defs
+            .iter()
+            .any(|metric| { metric.metric_key == "loss" && !metric.higher_is_better })
+    );
+    assert!(
+        recorded
+            .protocol
+            .metric_defs
+            .iter()
+            .any(|metric| { metric.metric_key == "model" && metric.higher_is_better })
+    );
+    let persisted = load_metric_artifacts::<HeadEvalReport>(
+        &StorageConfig::new(validator_storage.clone()),
+        "head-eval-",
+    );
+    assert_eq!(persisted, vec![recorded.report.clone()]);
+    wait_for(
+        Duration::from_secs(5),
+        || {
+            validator_telemetry
+                .snapshot()
+                .control_plane
+                .metrics_announcements
+                .iter()
+                .any(|announcement| {
+                    announcement.event.cursors.iter().any(|cursor| {
+                        cursor.revision_id == experiment.revision_id
+                            && cursor.latest_head_id.as_ref() == Some(&genesis_head.head_id)
+                    })
+                })
+        },
+        "evaluator did not announce its head metric watermark",
+    );
+
+    let mut wrong_revision_head = genesis_head.clone();
+    wrong_revision_head.revision_id = crate::RevisionId::new("rev-stale");
+    let error = validator
+        .evaluate_and_record_materialized_head(
+            &experiment,
+            &wrong_revision_head,
+            EvalSplit::Validation,
+        )
+        .expect_err("cross-revision head evaluation must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("outside evaluator experiment scope")
+    );
+
     let trainer_a = NodeBuilder::new(SyntheticRuntimeProject {
         dataset_root: dataset_dir.path().to_path_buf(),
         learning_rate: 1.0,

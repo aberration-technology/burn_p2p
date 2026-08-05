@@ -4,6 +4,8 @@ use super::*;
 pub const TRAINING_CONTRACT_VERSION: u16 = 1;
 /// Current version of compact update payloads.
 pub const COMPACT_UPDATE_PAYLOAD_VERSION: u16 = 1;
+/// Current version of canonical mutable-parameter subset catalogs.
+pub const PARAMETER_SUBSET_CATALOG_VERSION: u16 = 1;
 /// Domain-separated key identifier for complete revision contract signatures.
 pub const REVISION_CONTRACT_SIGNATURE_KEY_ID: &str = "burn-p2p-revision-contract-v1";
 /// Domain-separated key identifier for model genesis signatures.
@@ -17,6 +19,11 @@ pub enum LocalOptimizerStatePolicy {
     ResetPerWindow,
     /// State remains local to one peer and is invalidated when the base head changes.
     PeerLocalUntilReconcile,
+    /// State remains local to one peer and persists across model-head reconciliation.
+    ///
+    /// The state is revision-scoped and may be restored by the same peer, but
+    /// is not transferred when another peer's runtime state is adopted.
+    PeerLocalPersistent,
     /// State is serialized as a canonical artifact and follows the model head.
     CanonicalArtifact,
     /// The workload has no reverse-mode optimizer state.
@@ -35,6 +42,8 @@ pub enum SchedulerStatePolicy {
     CanonicalAcceptedWork,
     /// The scheduler restarts for every local window.
     ResetPerWindow,
+    /// The scheduler cursor remains peer-local and persists across reconciliation.
+    PeerLocalPersistent,
     /// A workload-defined policy identified by a stable name.
     Custom(String),
 }
@@ -94,6 +103,31 @@ pub enum UpdateCodec {
     FullModel,
     /// A dense parameter delta from the declared base head.
     DenseDelta,
+    /// Absolute values for one canonical subset of the model parameters.
+    ///
+    /// This is useful when the remaining parameters are immutable or can be
+    /// reconstructed locally from the revision contract.
+    MutableSubsetParameters {
+        /// Canonical path, shape, and ordering contract for transmitted values.
+        parameter_catalog_hash: ContentId,
+        /// Number of scalar parameters covered by the catalog.
+        parameter_count: u64,
+        /// Scalar wire representation.
+        encoding: CompactScalarEncoding,
+    },
+    /// A sparse delta for one dynamically routed context generation.
+    ///
+    /// Unlike `MutableSubsetParameters`, the exact parameter catalog is bound
+    /// by each payload because different context masks may activate different
+    /// coordinates under one stable family contract.
+    ContextSparseDelta {
+        /// Stable identity of the deterministic context-mask family.
+        context_family_hash: ContentId,
+        /// Hard upper bound on transmitted scalar deltas.
+        max_parameter_count: u64,
+        /// Scalar wire representation.
+        encoding: CompactScalarEncoding,
+    },
     /// A block-quantized dense delta.
     QuantizedBlock {
         /// Number of quantization bits per value.
@@ -167,6 +201,142 @@ pub enum CompactScalarEncoding {
     SymmetricInt8,
     /// Symmetric signed 16-bit quantization with one payload-wide scale.
     SymmetricInt16,
+}
+
+/// Architecture-neutral identity of one bounded routed-context generation.
+///
+/// Slots may be reused, so `slot` is never sufficient on its own. The
+/// generation and dynamic parameter catalog are part of every signed update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRoutingContext {
+    pub context_family_hash: ContentId,
+    pub slot: u32,
+    pub generation: u64,
+    pub parameter_catalog_hash: ContentId,
+}
+
+impl UpdateRoutingContext {
+    pub fn validate(&self) -> Result<(), TrainingContractError> {
+        if self.context_family_hash.as_str().is_empty() {
+            return Err(TrainingContractError::InvalidUpdatePayload(
+                "context family hash must not be empty".into(),
+            ));
+        }
+        if self.parameter_catalog_hash.as_str().is_empty() {
+            return Err(TrainingContractError::InvalidUpdatePayload(
+                "context parameter catalog hash must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One canonically ordered tensor in a parameter subset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterSubsetEntry {
+    /// Stable module parameter path.
+    pub path: String,
+    /// Tensor shape in row-major logical order.
+    pub shape: Vec<u64>,
+}
+
+impl ParameterSubsetEntry {
+    /// Returns the number of scalar values in this tensor.
+    pub fn parameter_count(&self) -> Result<u64, TrainingContractError> {
+        if self.path.trim().is_empty() {
+            return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                "parameter paths must not be empty".into(),
+            ));
+        }
+        if self.shape.is_empty() || self.shape.contains(&0) {
+            return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                format!(
+                    "parameter {} must have a non-empty positive shape",
+                    self.path
+                ),
+            ));
+        }
+        self.shape.iter().try_fold(1_u64, |count, dimension| {
+            count.checked_mul(*dimension).ok_or_else(|| {
+                TrainingContractError::InvalidParameterSubsetCatalog(format!(
+                    "parameter {} shape overflows u64",
+                    self.path
+                ))
+            })
+        })
+    }
+}
+
+/// Canonical path, shape, and ordering contract for a model parameter subset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterSubsetCatalog {
+    /// Catalog schema version.
+    pub version: u16,
+    /// Full model tensor schema this subset belongs to.
+    pub model_schema_hash: ContentId,
+    /// Strictly path-sorted tensor entries. Values are flattened in this order.
+    pub entries: Vec<ParameterSubsetEntry>,
+}
+
+impl ParameterSubsetCatalog {
+    /// Creates a versioned catalog.
+    pub fn new(model_schema_hash: ContentId, entries: Vec<ParameterSubsetEntry>) -> Self {
+        Self {
+            version: PARAMETER_SUBSET_CATALOG_VERSION,
+            model_schema_hash,
+            entries,
+        }
+    }
+
+    /// Validates canonical ordering and shape bounds.
+    pub fn validate(&self) -> Result<(), TrainingContractError> {
+        if self.version != PARAMETER_SUBSET_CATALOG_VERSION {
+            return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                format!(
+                    "unsupported parameter subset catalog version {}",
+                    self.version
+                ),
+            ));
+        }
+        if self.model_schema_hash.as_str().is_empty() {
+            return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                "model schema hash must not be empty".into(),
+            ));
+        }
+        if self.entries.is_empty() {
+            return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                "parameter subset catalog must contain at least one tensor".into(),
+            ));
+        }
+        let mut previous_path: Option<&str> = None;
+        for entry in &self.entries {
+            entry.parameter_count()?;
+            if previous_path.is_some_and(|previous| previous >= entry.path.as_str()) {
+                return Err(TrainingContractError::InvalidParameterSubsetCatalog(
+                    "parameter subset entries must be strictly path sorted and unique".into(),
+                ));
+            }
+            previous_path = Some(entry.path.as_str());
+        }
+        self.parameter_count()?;
+        Ok(())
+    }
+
+    /// Returns the total number of scalar values covered by this catalog.
+    pub fn parameter_count(&self) -> Result<u64, TrainingContractError> {
+        self.entries.iter().try_fold(0_u64, |count, entry| {
+            count.checked_add(entry.parameter_count()?).ok_or_else(|| {
+                TrainingContractError::InvalidParameterSubsetCatalog(
+                    "parameter subset scalar count overflows u64".into(),
+                )
+            })
+        })
+    }
+
+    /// Returns the canonical content identity of this catalog.
+    pub fn catalog_id(&self) -> Result<ContentId, SchemaError> {
+        self.content_id()
+    }
 }
 
 impl CompactScalarEncoding {
@@ -331,6 +501,18 @@ pub struct SeededFitnessGeneration {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum CompactUpdateBody {
+    /// Ordered values for one canonical mutable-parameter subset.
+    MutableSubsetParameters {
+        /// Parameter values flattened according to the payload's catalog.
+        values: CompactScalarVector,
+    },
+    /// Canonically ordered deltas for one routed context generation.
+    ContextSparseDelta {
+        /// Slot, generation, family, and dynamic catalog identity.
+        context: UpdateRoutingContext,
+        /// Parameter deltas flattened according to the context catalog.
+        deltas: CompactScalarVector,
+    },
     /// Coefficients in a deterministic linear parameter subspace.
     SubspaceLatent {
         /// Number of subspace dimensions.
@@ -389,6 +571,46 @@ impl CompactUpdatePayload {
             ));
         }
         match (&self.body, codec) {
+            (
+                CompactUpdateBody::MutableSubsetParameters { values },
+                UpdateCodec::MutableSubsetParameters {
+                    parameter_catalog_hash,
+                    parameter_count,
+                    encoding,
+                },
+            ) if &self.parameter_catalog_hash == parameter_catalog_hash
+                && &self.parameter_count == parameter_count
+                && values.encoding == *encoding =>
+            {
+                values.validate()?;
+                if u64::from(values.value_count) != self.parameter_count {
+                    return Err(TrainingContractError::InvalidUpdatePayload(
+                        "mutable-subset scalar count must equal parameter_count".into(),
+                    ));
+                }
+            }
+            (
+                CompactUpdateBody::ContextSparseDelta { context, deltas },
+                UpdateCodec::ContextSparseDelta {
+                    context_family_hash,
+                    max_parameter_count,
+                    encoding,
+                },
+            ) if &context.context_family_hash == context_family_hash
+                && context.parameter_catalog_hash == self.parameter_catalog_hash
+                && self.parameter_count <= *max_parameter_count
+                && deltas.encoding == *encoding =>
+            {
+                context.validate()?;
+                deltas.validate()?;
+                if self.parameter_count == 0
+                    || u64::from(deltas.value_count) != self.parameter_count
+                {
+                    return Err(TrainingContractError::InvalidUpdatePayload(
+                        "context-sparse scalar count must equal positive parameter_count".into(),
+                    ));
+                }
+            }
             (
                 CompactUpdateBody::SubspaceLatent {
                     dimensions,
@@ -542,6 +764,23 @@ impl TrainingContractManifest {
             }
         }
         match self.update_codec {
+            UpdateCodec::MutableSubsetParameters {
+                parameter_count: 0, ..
+            } => {
+                return Err(TrainingContractError::InvalidUpdateCodec(
+                    "mutable-subset parameter count must be greater than zero".into(),
+                ));
+            }
+            UpdateCodec::ContextSparseDelta {
+                ref context_family_hash,
+                max_parameter_count,
+                ..
+            } if context_family_hash.as_str().is_empty() || max_parameter_count == 0 => {
+                return Err(TrainingContractError::InvalidUpdateCodec(
+                    "context-sparse codec requires a family hash and positive parameter bound"
+                        .into(),
+                ));
+            }
             UpdateCodec::SeededLowRank { rank, .. }
             | UpdateCodec::PowerSgd { rank, .. }
             | UpdateCodec::SeededFitness { rank, .. }
@@ -589,6 +828,30 @@ impl TrainingContractManifest {
     }
 }
 
+/// Declares how a logical full model head is materialized from its artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum GenesisMaterialization {
+    /// The artifact stores every tensor value needed by the model head.
+    #[default]
+    FullArtifact,
+    /// Immutable tensors are regenerated and the artifact stores mutable state.
+    DeterministicReconstruction {
+        /// Stable generator implementation identifier required on every peer.
+        generator_id: String,
+        /// Hash of the complete deterministic reconstruction contract.
+        reconstruction_contract_hash: ContentId,
+        /// Catalog hash for tensors reconstructed rather than transmitted.
+        immutable_parameter_catalog_hash: ContentId,
+        /// Number of regenerated immutable scalar parameters.
+        immutable_parameter_count: u64,
+        /// Catalog hash for transmitted mutable tensors.
+        mutable_parameter_catalog_hash: ContentId,
+        /// Number of transmitted mutable scalar parameters.
+        mutable_parameter_count: u64,
+    },
+}
+
 /// Authority-controlled declaration of the unique model genesis artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelGenesisManifest {
@@ -609,6 +872,9 @@ pub struct ModelGenesisManifest {
     /// Optional deterministic seed when genesis can be reproduced locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initialization_seed: Option<u64>,
+    /// Whether the artifact is complete bytes or a deterministic reconstruction bundle.
+    #[serde(default)]
+    pub materialization: GenesisMaterialization,
     /// Authority epoch that approved this genesis.
     pub authority_epoch: u64,
     /// Creation timestamp.
@@ -628,6 +894,23 @@ impl ModelGenesisManifest {
             || self.artifact.head_id.is_none()
             || self.tensor_digest.as_str().is_empty()
             || self.initialization_algorithm.trim().is_empty()
+        {
+            return Err(TrainingContractError::IncompleteGenesis);
+        }
+        if let GenesisMaterialization::DeterministicReconstruction {
+            generator_id,
+            reconstruction_contract_hash,
+            immutable_parameter_catalog_hash,
+            immutable_parameter_count,
+            mutable_parameter_catalog_hash,
+            mutable_parameter_count,
+        } = &self.materialization
+            && (generator_id.trim().is_empty()
+                || reconstruction_contract_hash.as_str().is_empty()
+                || immutable_parameter_catalog_hash.as_str().is_empty()
+                || *immutable_parameter_count == 0
+                || mutable_parameter_catalog_hash.as_str().is_empty()
+                || *mutable_parameter_count == 0)
         {
             return Err(TrainingContractError::IncompleteGenesis);
         }
@@ -744,6 +1027,9 @@ pub struct WorkloadUpdateEnvelope {
     pub lease_id: LeaseId,
     /// Encoding of the payload.
     pub codec: UpdateCodec,
+    /// Context generation targeted by a context-routed update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<UpdateRoutingContext>,
     /// Materialized payload artifact.
     pub artifact: ArtifactDescriptor,
     /// Optional peer-computed hash of decoded canonical update tensors.
@@ -761,6 +1047,23 @@ pub struct WorkloadUpdateEnvelope {
 }
 
 impl WorkloadUpdateEnvelope {
+    /// Returns whether two envelopes identify the same contract-bound payload.
+    ///
+    /// Peer-claimed norms and feature sketches are deliberately excluded:
+    /// they are untrusted telemetry, may be rounded by transports, and are
+    /// independently recomputed by validators.
+    pub fn same_contract_bound_payload(&self, other: &Self) -> bool {
+        self.training_contract_id == other.training_contract_id
+            && self.revision_id == other.revision_id
+            && self.base_head_id == other.base_head_id
+            && self.window_id == other.window_id
+            && self.lease_id == other.lease_id
+            && self.codec == other.codec
+            && self.routing_context == other.routing_context
+            && self.artifact == other.artifact
+            && self.decoded_tensor_digest == other.decoded_tensor_digest
+    }
+
     /// Validates identities that can be checked without decoding the payload.
     pub fn validate_against(
         &self,
@@ -769,6 +1072,20 @@ impl WorkloadUpdateEnvelope {
     ) -> Result<(), TrainingContractError> {
         if &self.training_contract_id != contract_id || self.codec != contract.update_codec {
             return Err(TrainingContractError::UpdateContractMismatch);
+        }
+        match (&self.codec, &self.routing_context) {
+            (
+                UpdateCodec::ContextSparseDelta {
+                    context_family_hash,
+                    ..
+                },
+                Some(context),
+            ) if &context.context_family_hash == context_family_hash => context.validate()?,
+            (UpdateCodec::ContextSparseDelta { .. }, _) => {
+                return Err(TrainingContractError::UpdateContractMismatch);
+            }
+            (_, None) => {}
+            (_, Some(_)) => return Err(TrainingContractError::UpdateContractMismatch),
         }
         if self.codec.requires_base_head()
             && self.artifact.base_head_id.as_ref() != Some(&self.base_head_id)
@@ -833,6 +1150,9 @@ pub enum TrainingContractError {
     /// Compact update payload is malformed or violates declared bounds.
     #[error("invalid compact update payload: {0}")]
     InvalidUpdatePayload(String),
+    /// Canonical parameter subset catalog is malformed.
+    #[error("invalid parameter subset catalog: {0}")]
+    InvalidParameterSubsetCatalog(String),
     /// Canonical schema encoding failed.
     #[error("canonical schema error: {0}")]
     Schema(String),
@@ -920,6 +1240,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn peer_local_persistent_state_policies_have_stable_wire_names() {
+        assert_eq!(
+            serde_json::to_value(LocalOptimizerStatePolicy::PeerLocalPersistent)
+                .expect("optimizer policy"),
+            serde_json::json!("peer_local_persistent")
+        );
+        assert_eq!(
+            serde_json::to_value(SchedulerStatePolicy::PeerLocalPersistent)
+                .expect("scheduler policy"),
+            serde_json::json!("peer_local_persistent")
+        );
+    }
+
     fn artifact() -> ArtifactDescriptor {
         ArtifactDescriptor {
             artifact_id: ArtifactId::new("genesis-artifact"),
@@ -986,6 +1320,7 @@ mod tests {
             tensor_digest: content("tensor-digest"),
             initialization_algorithm: "deterministic-test".into(),
             initialization_seed: Some(11),
+            materialization: GenesisMaterialization::FullArtifact,
             authority_epoch: 1,
             created_at: Utc::now(),
         };
@@ -1026,6 +1361,79 @@ mod tests {
     }
 
     #[test]
+    fn mutable_subset_catalog_and_payload_bind_order_shape_and_encoding() {
+        let catalog = ParameterSubsetCatalog::new(
+            content("model-schema"),
+            vec![
+                ParameterSubsetEntry {
+                    path: "adapter.a".into(),
+                    shape: vec![2, 3],
+                },
+                ParameterSubsetEntry {
+                    path: "adapter.b".into(),
+                    shape: vec![3, 2],
+                },
+            ],
+        );
+        catalog.validate().expect("catalog");
+        let catalog_id = catalog.catalog_id().expect("catalog id");
+        let values =
+            CompactScalarVector::encode(&[0.25; 12], CompactScalarEncoding::SymmetricInt16)
+                .expect("values");
+        let codec = UpdateCodec::MutableSubsetParameters {
+            parameter_catalog_hash: catalog_id.clone(),
+            parameter_count: 12,
+            encoding: CompactScalarEncoding::SymmetricInt16,
+        };
+        let payload = CompactUpdatePayload {
+            version: COMPACT_UPDATE_PAYLOAD_VERSION,
+            training_contract_id: content("contract"),
+            model_schema_hash: content("model-schema"),
+            parameter_catalog_hash: catalog_id,
+            parameter_count: 12,
+            body: CompactUpdateBody::MutableSubsetParameters { values },
+        };
+
+        payload.validate_against_codec(&codec).expect("payload");
+
+        let wrong_catalog = UpdateCodec::MutableSubsetParameters {
+            parameter_catalog_hash: content("different"),
+            parameter_count: 12,
+            encoding: CompactScalarEncoding::SymmetricInt16,
+        };
+        assert_eq!(
+            payload
+                .validate_against_codec(&wrong_catalog)
+                .expect_err("catalog identity must match"),
+            TrainingContractError::UpdateContractMismatch
+        );
+    }
+
+    #[test]
+    fn reconstructible_genesis_requires_complete_materialization_contract() {
+        let mut bundle = bundle();
+        bundle.genesis.payload.payload.materialization =
+            GenesisMaterialization::DeterministicReconstruction {
+                generator_id: String::new(),
+                reconstruction_contract_hash: content("reconstruction"),
+                immutable_parameter_catalog_hash: content("immutable"),
+                immutable_parameter_count: 10,
+                mutable_parameter_catalog_hash: content("mutable"),
+                mutable_parameter_count: 2,
+            };
+
+        assert_eq!(
+            bundle
+                .genesis
+                .payload
+                .payload
+                .validate()
+                .expect_err("generator id is required"),
+            TrainingContractError::IncompleteGenesis
+        );
+    }
+
+    #[test]
     fn complete_revision_bundle_validates() {
         bundle().validate().expect("valid revision bundle");
     }
@@ -1052,6 +1460,7 @@ mod tests {
             window_id: WindowId(3),
             lease_id: LeaseId::new("lease"),
             codec: contract.update_codec.clone(),
+            routing_context: None,
             artifact: update_artifact,
             decoded_tensor_digest: Some(content("decoded")),
             claimed_norm_stats: None,
@@ -1060,6 +1469,71 @@ mod tests {
         envelope
             .validate_against(&contract_id, &contract)
             .expect("matching update");
+
+        let mut telemetry_variant = envelope.clone();
+        telemetry_variant.claimed_norm_stats = Some(UpdateNormStats {
+            l2_norm: 1.0 + f64::EPSILON,
+            max_abs: 0.25,
+            clipped: false,
+            non_finite_tensors: 0,
+        });
+        assert!(envelope.same_contract_bound_payload(&telemetry_variant));
+
+        telemetry_variant.decoded_tensor_digest = Some(content("different-decoded"));
+        assert!(!envelope.same_contract_bound_payload(&telemetry_variant));
+    }
+
+    #[test]
+    fn context_update_binds_generation_across_cbor_transport() {
+        let mut contract = contract();
+        contract.update_codec = UpdateCodec::ContextSparseDelta {
+            context_family_hash: content("context-family"),
+            max_parameter_count: 16,
+            encoding: CompactScalarEncoding::SymmetricInt16,
+        };
+        let contract_id = contract.contract_id().expect("contract id");
+        let mut update_artifact = artifact();
+        update_artifact.kind = ArtifactKind::DeltaPack;
+        update_artifact.base_head_id = Some(HeadId::new("base"));
+        let context = UpdateRoutingContext {
+            context_family_hash: content("context-family"),
+            slot: 3,
+            generation: 7,
+            parameter_catalog_hash: content("context-catalog"),
+        };
+        let envelope = WorkloadUpdateEnvelope {
+            training_contract_id: contract_id.clone(),
+            revision_id: RevisionId::new("revision"),
+            base_head_id: HeadId::new("base"),
+            window_id: WindowId(3),
+            lease_id: LeaseId::new("lease"),
+            codec: contract.update_codec.clone(),
+            routing_context: Some(context),
+            artifact: update_artifact,
+            decoded_tensor_digest: None,
+            claimed_norm_stats: None,
+            claimed_feature_sketch: None,
+        };
+        envelope
+            .validate_against(&contract_id, &contract)
+            .expect("matching context update");
+        let bytes = crate::deterministic_cbor(&envelope).expect("encode context envelope");
+        let decoded: WorkloadUpdateEnvelope =
+            crate::from_cbor_slice(&bytes).expect("decode context envelope");
+        assert_eq!(decoded, envelope);
+
+        let mut stale = envelope.clone();
+        stale.routing_context.as_mut().expect("context").generation = 6;
+        assert!(!envelope.same_contract_bound_payload(&stale));
+
+        let mut missing = envelope;
+        missing.routing_context = None;
+        assert_eq!(
+            missing
+                .validate_against(&contract_id, &contract)
+                .expect_err("context codec requires identity"),
+            TrainingContractError::UpdateContractMismatch
+        );
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub(super) fn authenticated_update_lease(
 pub(crate) fn load_validation_base_model<P>(
     project: &mut P,
     current_head: &Option<(PeerId, HeadDescriptor)>,
+    revision_contract: Option<&RevisionContractBundle>,
     store: &FsArtifactStore,
     device: &P::Device,
 ) -> anyhow::Result<P::Model>
@@ -58,16 +59,7 @@ where
     let (_, base_head) = current_head
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validation requires a materialized canonical base head"))?;
-    let descriptor = store
-        .load_manifest(&base_head.artifact_id)
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "missing artifact {} for validation base head {}: {error}",
-                base_head.artifact_id.as_str(),
-                base_head.head_id.as_str(),
-            )
-        })?;
-    project.load_model_artifact(project.init_model(device), &descriptor, store, device)
+    crate::training::load_model_for_head(project, base_head, revision_contract, store, device)
 }
 
 pub(crate) fn load_validation_candidate_model<P>(
@@ -114,8 +106,13 @@ where
                     && update.delta_artifact_id == descriptor.artifact_id,
                 "typed workload update identities do not match its candidate announcement"
             );
-            let base_model =
-                load_validation_base_model(project, args.current_head, args.store, args.device)?;
+            let base_model = load_validation_base_model(
+                project,
+                args.current_head,
+                args.revision_contract,
+                args.store,
+                args.device,
+            )?;
             let lease = authenticated_update_lease(
                 args.replay_snapshots,
                 args.experiment,
@@ -193,21 +190,21 @@ where
     let (mut evaluation, canary_report) = if args.evaluate_candidates {
         let evaluation = project.evaluate(&model, EvalSplit::Validation);
         let canary_report = Some(match args.baseline_metrics {
-            Some(baseline_metrics) => build_validation_canary_report_against_baseline(
+            Some(baseline_metrics) => build_validation_canary_report_against_baseline_with_policy(
                 args.experiment,
                 args.current_head,
                 baseline_metrics,
                 &head,
                 &evaluation,
-                args.canary_threshold,
+                args.canary_policy,
                 2,
             )?,
-            None => build_validation_canary_report(
+            None => build_validation_canary_report_with_policy(
                 args.experiment,
                 args.current_head,
                 &head,
                 &evaluation,
-                args.canary_threshold,
+                args.canary_policy,
                 2,
             )?,
         });

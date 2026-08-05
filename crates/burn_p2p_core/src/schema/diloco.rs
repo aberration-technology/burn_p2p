@@ -254,6 +254,13 @@ pub enum OuterOptimizerPolicy {
         /// Optional weight decay factor in millionths.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight_decay_micros: Option<u64>,
+        /// Optional cap on pseudo-gradient RMS relative to current parameter RMS.
+        ///
+        /// A value of `50_000` limits the aggregate pseudo-gradient RMS to five
+        /// percent of the current parameter RMS before momentum and weight
+        /// decay are applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_pseudo_gradient_rms_ratio_micros: Option<u64>,
     },
 }
 
@@ -286,6 +293,16 @@ impl OuterOptimizerPolicy {
             } => weight_decay_micros.map(|value| value as f64 / 1_000_000.0),
         }
     }
+
+    /// Returns the optional relative pseudo-gradient RMS trust-region bound.
+    pub fn max_pseudo_gradient_rms_ratio(&self) -> Option<f64> {
+        match self {
+            Self::Sgd {
+                max_pseudo_gradient_rms_ratio_micros,
+                ..
+            } => max_pseudo_gradient_rms_ratio_micros.map(|value| value as f64 / 1_000_000.0),
+        }
+    }
 }
 
 impl Default for OuterOptimizerPolicy {
@@ -295,6 +312,7 @@ impl Default for OuterOptimizerPolicy {
             momentum_micros: None,
             nesterov: false,
             weight_decay_micros: None,
+            max_pseudo_gradient_rms_ratio_micros: None,
         }
     }
 }
@@ -505,6 +523,7 @@ impl OuterOptimizerPolicy {
                 learning_rate_micros,
                 momentum_micros,
                 weight_decay_micros,
+                max_pseudo_gradient_rms_ratio_micros,
                 ..
             } => {
                 if *learning_rate_micros == 0 {
@@ -523,6 +542,9 @@ impl OuterOptimizerPolicy {
                     return Err(TrainingProtocolValidationError::WeightDecayOutOfRange {
                         weight_decay_micros: *weight_decay_micros,
                     });
+                }
+                if max_pseudo_gradient_rms_ratio_micros == &Some(0) {
+                    return Err(TrainingProtocolValidationError::ZeroPseudoGradientRmsRatio);
                 }
                 Ok(())
             }
@@ -621,6 +643,11 @@ pub enum TrainingProtocolValidationError {
         /// Configured weight decay coefficient in millionths.
         weight_decay_micros: u64,
     },
+    /// A configured pseudo-gradient trust region must be positive.
+    #[error(
+        "DiLoCo outer optimizer max_pseudo_gradient_rms_ratio_micros must be greater than zero"
+    )]
+    ZeroPseudoGradientRmsRatio,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -25,6 +25,8 @@ pub(super) struct ValidationExecution {
     pub aggregate: AggregateEnvelope,
     pub local_aggregate_materialization: Option<LocalAggregateMaterialization>,
     pub reduction_certificate: ReductionCertificate,
+    pub head_eval_report: HeadEvalReport,
+    pub eval_protocol_manifest: EvalProtocolManifest,
     pub robustness: ValidationRobustnessExecution,
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
@@ -185,6 +187,8 @@ pub(super) fn build_reduction_certificate(
     experiment: &ExperimentHandle,
     prepared: &ValidationPreparedState,
     aggregate: &AggregateEnvelope,
+    merged_head: &HeadDescriptor,
+    evaluation: &HeadEvaluationBinding,
     merge_window: &MergeWindowState,
 ) -> anyhow::Result<ReductionCertificate> {
     let mut cross_checked_reducers = merge_window
@@ -194,11 +198,20 @@ pub(super) fn build_reduction_certificate(
         .cloned()
         .collect::<Vec<_>>();
     sort_and_dedup(&mut cross_checked_reducers);
-    Ok(ReductionCertificate {
+    anyhow::ensure!(
+        evaluation.head_id == merged_head.head_id
+            && evaluation.artifact_id == merged_head.artifact_id,
+        "reduction evaluation binding does not match the merged head",
+    );
+    let certificate = ReductionCertificate {
         reduction_id: ContentId::derive(&(
             aggregate.aggregate_id.as_str(),
             prepared.local_peer_id.as_str(),
             merge_window.window_id.0,
+            evaluation.head_id.as_str(),
+            evaluation.artifact_id.as_str(),
+            evaluation.eval_protocol_id.as_str(),
+            evaluation.eval_report_id.as_str(),
         ))?,
         study_id: experiment.study_id.clone(),
         experiment_id: experiment.experiment_id.clone(),
@@ -206,12 +219,15 @@ pub(super) fn build_reduction_certificate(
         window_id: merge_window.window_id,
         base_head_id: prepared.base_head_id.clone(),
         aggregate_id: aggregate.aggregate_id.clone(),
+        evaluation: Some(evaluation.clone()),
         promoter_peer_id: prepared.local_peer_id.clone(),
         promotion_mode: super::head_promotion_mode(merge_window),
         promotion_quorum: super::effective_promotion_quorum(merge_window) as u16,
         cross_checked_reducers,
         issued_at: Utc::now(),
-    })
+    };
+    certificate.validate_structure()?;
+    Ok(certificate)
 }
 
 pub(super) fn build_validation_contribution(
@@ -293,13 +309,17 @@ pub(super) fn build_validation_quorum_certificate(
     prepared: &ValidationPreparedState,
     aggregate: &AggregateEnvelope,
     merged_head: &HeadDescriptor,
-    attesting_validators: &[PeerId],
-    reduction_ids: &[ContentId],
+    coordination: &ValidationCoordinationState,
 ) -> anyhow::Result<ValidationQuorumCertificate> {
-    let mut attesting_validators = attesting_validators.to_vec();
-    let mut reduction_ids = reduction_ids.to_vec();
+    let eval_protocol_id = coordination.eval_protocol_id.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("validator quorum is missing a common evaluation protocol")
+    })?;
+    let mut attesting_validators = coordination.attesters.clone();
+    let mut reduction_ids = coordination.reduction_ids.clone();
+    let mut eval_report_ids = coordination.eval_report_ids.clone();
     sort_and_dedup(&mut attesting_validators);
     sort_and_dedup(&mut reduction_ids);
+    sort_and_dedup(&mut eval_report_ids);
     let certificate = ValidationQuorumCertificate {
         quorum_cert_id: ContentId::derive(&(
             experiment.study_id.as_str(),
@@ -308,6 +328,9 @@ pub(super) fn build_validation_quorum_certificate(
             prepared.base_head_id.as_str(),
             aggregate.aggregate_id.as_str(),
             merged_head.head_id.as_str(),
+            merged_head.artifact_id.as_str(),
+            eval_protocol_id.as_str(),
+            &eval_report_ids,
         ))?,
         study_id: experiment.study_id.clone(),
         experiment_id: experiment.experiment_id.clone(),
@@ -317,6 +340,9 @@ pub(super) fn build_validation_quorum_certificate(
         aggregate_id: aggregate.aggregate_id.clone(),
         aggregate_artifact_id: aggregate.aggregate_artifact_id.clone(),
         merged_head_id: merged_head.head_id.clone(),
+        merged_artifact_id: Some(merged_head.artifact_id.clone()),
+        eval_protocol_id: Some(eval_protocol_id.clone()),
+        eval_report_ids,
         promotion_mode: super::head_promotion_mode(&prepared.merge_window),
         validator_quorum: super::effective_validator_quorum(&prepared.merge_window) as u16,
         coordinator: prepared.local_peer_id.clone(),

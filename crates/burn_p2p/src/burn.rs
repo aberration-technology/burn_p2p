@@ -12,11 +12,14 @@ use chrono::Utc;
 use crate::{
     ArtifactDescriptor, ArtifactKind, AssignmentLease, CachedMicroShard, ChunkingScheme,
     ClientReleaseManifest, ContentId, DatasetViewId, EvalSplit, ExperimentId, FlattenedTensorPack,
-    FsArtifactStore, HeadId, LeaseId, MergeModelCandidate, MergePolicy, MetricReport, MetricValue,
-    NetworkId, NodeBuilder, P2pWorkload, PatchOutcome, PatchSupport, PeerId, Precision, RevisionId,
+    FsArtifactStore, GenesisArtifactLoadContext, GenesisArtifactMaterializationContext,
+    GenesisMaterialization, HeadId, LeaseId, MaterializedWorkloadUpdate, MergeModelCandidate,
+    MergePolicy, MetricReport, MetricValue, NetworkId, NodeBuilder, P2pWorkload,
+    ParameterSubsetCatalog, PatchOutcome, PatchSupport, PeerId, Precision, RevisionId,
     RuntimePatch, SingleWorkloadProjectFamily, StateBlob, StudyId, SupportedWorkload, TrainError,
     TrainerCanonicalReconcileStrategy, TrainingContractManifest, ValidatedWorkloadUpdate,
-    WindowCtx, WindowId, WindowReport, WorkloadUpdateEnvelope, WorkloadUpdateValidationContext,
+    WindowCtx, WindowId, WindowReport, WorkloadUpdateEnvelope,
+    WorkloadUpdateMaterializationContext, WorkloadUpdateValidationContext,
 };
 
 pub use burn::module::Module as BurnModule;
@@ -26,13 +29,17 @@ pub use burn_p2p_engine::{
     BurnLearner, BurnLearningCheckpointer, BurnMergeCandidate, BurnModuleInventory,
     BurnModuleParameter, BurnModuleTarget, BurnRecordBytesFormat, BurnRecordFileFormat,
     BurnRecordPrecision, BurnStoreFormat, BurnTensorKind, EngineError, RecordArtifactBytesOptions,
-    StoreArtifactBytesOptions, apply_root_ema_modules, encode_record_bytes, encode_store_bytes,
+    StoreArtifactBytesOptions, apply_module_float_parameter_subset_delta, apply_root_ema_modules,
+    diff_module_float_parameter_subset, encode_record_bytes, encode_store_bytes,
+    flatten_module_float_parameter_subset, flatten_module_float_parameter_subset_async,
     flatten_module_float_parameters, inspect_module, load_record_bytes, load_record_file,
     load_store_bytes, load_store_file, materialize_record_bytes_artifact,
     materialize_record_bytes_artifact_with_schema, materialize_record_file_artifact,
     materialize_store_bytes_artifact, materialize_store_bytes_artifact_with_schema,
-    materialize_store_file_artifact, merge_weighted_mean_modules, module_schema_hash,
-    module_tensor_digest, replace_module_float_parameters, save_record_file, save_store_file,
+    materialize_store_file_artifact, merge_weighted_mean_modules,
+    module_float_parameter_subset_catalog, module_schema_hash, module_tensor_digest,
+    replace_module_float_parameter_subset, replace_module_float_parameters, save_record_file,
+    save_store_file,
 };
 pub use burn_p2p_workload::{
     DiLoCoInnerLoopReport, DiLoCoWorkload, WorkloadExecutionStage, WorkloadTrainingBudget,
@@ -70,6 +77,19 @@ pub type BurnLearnerBatch<LC> =
 /// Type alias for the training step output used by a concrete learner.
 pub type BurnLearnerOutput<LC> =
     <<LC as LearningComponentsTypes>::TrainingModel as TrainStep>::Output;
+
+/// Result of a Burn-native persistent local optimizer loop.
+#[derive(Clone, Debug)]
+pub struct BurnPersistentInnerLoopResult<M> {
+    /// Model after the requested local microsteps.
+    pub model: M,
+    /// Opaque optimizer and scheduler state to retain for the next local round.
+    pub inner_optimizer_state: StateBlob,
+    /// Number of local microsteps consumed.
+    pub steps_completed: u32,
+    /// Metrics emitted while executing the local loop.
+    pub metrics: BTreeMap<String, MetricValue>,
+}
 
 /// Type alias for burn's supervised training dataloader.
 pub type BurnTrainLoader<LC> = burn::train::TrainLoader<LC>;
@@ -114,10 +134,45 @@ type LearnerWorkloadUpdateFn<LC> = dyn Fn(
     ) -> anyhow::Result<BurnLearnerModel<LC>>
     + Send
     + Sync;
+type LearnerWorkloadUpdateMaterializationFn<LC> = dyn for<'a> Fn(
+        WorkloadUpdateMaterializationContext<'a, BurnLearnerDevice<LC>, BurnLearnerModel<LC>>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>>
+    + Send
+    + Sync;
 type LearnerWorkloadUpdateValidationFn<LC> = dyn Fn(
         BurnLearnerModel<LC>,
         WorkloadUpdateValidationContext<'_, BurnLearnerDevice<LC>>,
     ) -> anyhow::Result<ValidatedWorkloadUpdate<BurnLearnerModel<LC>>>
+    + Send
+    + Sync;
+type LearnerGenesisMaterializationFn<LC> = dyn for<'a> Fn(
+        GenesisArtifactMaterializationContext<'a, BurnLearnerModel<LC>>,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>>
+    + Send
+    + Sync;
+type LearnerGenesisLoadFn<LC> = dyn Fn(
+        BurnLearnerModel<LC>,
+        GenesisArtifactLoadContext<'_, BurnLearnerDevice<LC>>,
+    ) -> anyhow::Result<Option<BurnLearnerModel<LC>>>
+    + Send
+    + Sync;
+type LearnerModelArtifactMaterializationFn<LC> = dyn Fn(
+        &BurnLearnerModel<LC>,
+        ArtifactKind,
+        &HeadId,
+        Option<&HeadId>,
+        &FsArtifactStore,
+        &ContentId,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>>
+    + Send
+    + Sync;
+type LearnerModelArtifactLoadFn<LC> = dyn Fn(
+        &BurnLearnerModel<LC>,
+        &ArtifactDescriptor,
+        &FsArtifactStore,
+        &BurnLearnerDevice<LC>,
+        &ContentId,
+    ) -> anyhow::Result<Option<BurnLearnerModel<LC>>>
     + Send
     + Sync;
 
@@ -418,6 +473,15 @@ pub struct BurnWorkloadConfig {
     /// architecture/config identity while the tensor digest still binds the
     /// concrete parameter layout and values.
     pub model_schema_hash: Option<ContentId>,
+    /// Optional deterministic parameter subset used by DiLoCo synchronization.
+    ///
+    /// Parameters omitted from this catalog must be deterministic and immutable
+    /// for the lifetime of the training contract. Import reconstructs those
+    /// parameters from [`BurnWorkload::init_model`] and replaces only this
+    /// catalog. This keeps architecture-specific subset selection in the
+    /// downstream workload while the synchronization implementation remains
+    /// generic.
+    pub diloco_parameter_subset: Option<ParameterSubsetCatalog>,
     /// The merge behavior exposed to validators.
     pub merge: BurnMergeConfig,
 }
@@ -434,6 +498,7 @@ impl BurnWorkloadConfig {
             supported_workload,
             artifact,
             model_schema_hash: None,
+            diloco_parameter_subset: None,
             merge: BurnMergeConfig::WeightedMean,
         }
     }
@@ -441,6 +506,12 @@ impl BurnWorkloadConfig {
     /// Uses an application-defined semantic model schema across backends.
     pub fn with_model_schema_hash(mut self, model_schema_hash: ContentId) -> Self {
         self.model_schema_hash = Some(model_schema_hash);
+        self
+    }
+
+    /// Synchronizes only the selected deterministic parameter subset in DiLoCo.
+    pub fn with_diloco_parameter_subset(mut self, catalog: Option<ParameterSubsetCatalog>) -> Self {
+        self.diloco_parameter_subset = catalog;
         self
     }
 
@@ -516,7 +587,10 @@ impl BurnTarget {
 mod dataset;
 mod learner;
 pub use dataset::{BurnShardedDataset, BurnShardedDatasetConfig};
-pub use learner::{BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders};
+pub use learner::{
+    BurnLearnerProject, BurnLearnerProjectBuilder, from_learner, from_loaders,
+    from_stateful_components, from_stateful_loaders,
+};
 
 /// Advanced learner-backed burn integration seam.
 ///
@@ -810,6 +884,84 @@ pub trait BurnWorkload {
         cached_microshards: &[CachedMicroShard],
     ) -> anyhow::Result<Vec<Self::Batch>>;
 
+    /// Runs a local loop while preserving optimizer and scheduler state.
+    ///
+    /// Workloads that return `None` use the compatibility path that rebuilds a
+    /// learner for every DiLoCo round. Learner-backed projects created with
+    /// `from_stateful_components` return a stateful result here.
+    fn run_persistent_inner_steps(
+        &self,
+        _model: &Self::Model,
+        _batches: &[Self::Batch],
+        _num_inner_steps: u32,
+        _inner_optimizer_state: Option<&StateBlob>,
+    ) -> Option<Result<BurnPersistentInnerLoopResult<Self::Model>, TrainError>>
+    where
+        Self::Batch: Clone,
+    {
+        None
+    }
+
+    /// Materializes a workload-specific deterministic-reconstruction genesis artifact.
+    fn materialize_deterministic_genesis(
+        &self,
+        _context: GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>> {
+        Ok(None)
+    }
+
+    /// Loads a workload-specific deterministic-reconstruction genesis artifact.
+    fn load_deterministic_genesis(
+        &self,
+        _model: Self::Model,
+        _context: GenesisArtifactLoadContext<'_, BackendDevice<Self::Backend>>,
+    ) -> anyhow::Result<Option<Self::Model>> {
+        Ok(None)
+    }
+
+    /// Optionally materializes a workload-specific canonical model artifact.
+    ///
+    /// This is useful when a model has deterministic immutable state and only
+    /// a compact mutable subset belongs on the wire. Returning `None` delegates
+    /// to the configured Burn record/store format.
+    fn materialize_model_artifact(
+        &self,
+        _model: &Self::Model,
+        _artifact_kind: ArtifactKind,
+        _head_id: &HeadId,
+        _base_head_id: Option<&HeadId>,
+        _store: &FsArtifactStore,
+        _model_schema_hash: &ContentId,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>> {
+        Ok(None)
+    }
+
+    /// Optionally loads a workload-specific canonical model artifact.
+    ///
+    /// Returning `None` delegates to the configured Burn record/store loader.
+    fn load_model_artifact(
+        &self,
+        _model: &Self::Model,
+        _descriptor: &ArtifactDescriptor,
+        _store: &FsArtifactStore,
+        _device: &BackendDevice<Self::Backend>,
+        _model_schema_hash: &ContentId,
+    ) -> anyhow::Result<Option<Self::Model>> {
+        Ok(None)
+    }
+
+    /// Materializes an optional contract-bound compact update for a completed window.
+    fn materialize_workload_update(
+        &self,
+        _context: WorkloadUpdateMaterializationContext<
+            '_,
+            BackendDevice<Self::Backend>,
+            Self::Model,
+        >,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        Ok(None)
+    }
+
     /// Reconstructs one validated typed update from a canonical base model.
     fn apply_workload_update(
         &self,
@@ -890,6 +1042,7 @@ pub struct BurnWorkloadAdapter<W> {
     workload: W,
     supported_workload: SupportedWorkload,
     model_schema_hash: ContentId,
+    diloco_parameter_subset: Option<ParameterSubsetCatalog>,
     artifact: BurnArtifactConfig,
     merge: BurnMergeConfig,
 }
@@ -906,11 +1059,22 @@ where
         let model_schema_hash = config
             .model_schema_hash
             .unwrap_or(derived_model_schema_hash);
+        if let Some(catalog) = config.diloco_parameter_subset.as_ref() {
+            if catalog.model_schema_hash != model_schema_hash {
+                return Err(EngineError::TensorSnapshot(format!(
+                    "DiLoCo parameter subset model schema {} does not match workload model schema {}",
+                    catalog.model_schema_hash.as_str(),
+                    model_schema_hash.as_str()
+                )));
+            }
+            flatten_module_float_parameter_subset::<W::Backend, _>(&model, catalog)?;
+        }
 
         Ok(Self {
             workload,
             supported_workload: config.supported_workload,
             model_schema_hash,
+            diloco_parameter_subset: config.diloco_parameter_subset,
             artifact: config.artifact,
             merge: config.merge,
         })
@@ -1064,6 +1228,15 @@ where
         store: &FsArtifactStore,
         device: &Self::Device,
     ) -> anyhow::Result<Self::Model> {
+        if let Some(model) = self.workload.load_model_artifact(
+            &model,
+            descriptor,
+            store,
+            device,
+            &self.model_schema_hash,
+        )? {
+            return Ok(model);
+        }
         Ok(match &self.artifact {
             BurnArtifactConfig::StoreBytes { format, .. } => {
                 load_store_bytes_runtime_artifact::<W::Backend, _>(
@@ -1078,9 +1251,37 @@ where
         })
     }
 
+    fn load_genesis_artifact(
+        &self,
+        model: Self::Model,
+        context: GenesisArtifactLoadContext<'_, Self::Device>,
+    ) -> anyhow::Result<Self::Model> {
+        match context.materialization {
+            GenesisMaterialization::FullArtifact => {
+                self.load_model_artifact(model, context.descriptor, context.store, context.device)
+            }
+            GenesisMaterialization::DeterministicReconstruction { .. } => self
+                .workload
+                .load_deterministic_genesis(model, context)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "burn workload {} does not implement deterministic genesis reconstruction",
+                        self.workload_id().as_str(),
+                    )
+                }),
+        }
+    }
+
     fn model_tensor_digest(&self, model: &Self::Model) -> anyhow::Result<ContentId> {
         module_tensor_digest::<W::Backend, _>(model, self.model_schema_hash.clone())
             .map_err(anyhow::Error::from)
+    }
+
+    fn materialize_workload_update(
+        &self,
+        context: WorkloadUpdateMaterializationContext<'_, Self::Device, Self::Model>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        self.workload.materialize_workload_update(context)
     }
 
     fn apply_workload_update(
@@ -1113,6 +1314,16 @@ where
         base_head_id: Option<HeadId>,
         store: &FsArtifactStore,
     ) -> anyhow::Result<ArtifactDescriptor> {
+        if let Some(artifact) = self.workload.materialize_model_artifact(
+            model,
+            artifact_kind.clone(),
+            &head_id,
+            base_head_id.as_ref(),
+            store,
+            &self.model_schema_hash,
+        )? {
+            return Ok(artifact);
+        }
         Ok(match &self.artifact {
             BurnArtifactConfig::StoreBytes {
                 format,
@@ -1151,6 +1362,30 @@ where
         })
     }
 
+    fn materialize_genesis_artifact(
+        &self,
+        context: GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        match context.materialization {
+            GenesisMaterialization::FullArtifact => self.materialize_model_artifact(
+                context.model,
+                ArtifactKind::FullHead,
+                context.head_id,
+                None,
+                context.store,
+            ),
+            GenesisMaterialization::DeterministicReconstruction { .. } => self
+                .workload
+                .materialize_deterministic_genesis(context)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "burn workload {} does not implement deterministic genesis materialization",
+                        self.workload_id().as_str(),
+                    )
+                }),
+        }
+    }
+
     fn contribution_metrics(
         &self,
         report: &WindowReport<Self::WindowStats>,
@@ -1171,7 +1406,14 @@ where
         match self.merge {
             BurnMergeConfig::Disabled => Ok(None),
             BurnMergeConfig::WeightedMean | BurnMergeConfig::WeightedMeanWithRootEma { .. } => {
-                let weighted = candidates
+                let mut canonical_candidates = candidates.iter().collect::<Vec<_>>();
+                canonical_candidates.sort_by(|left, right| {
+                    left.peer_id
+                        .cmp(right.peer_id)
+                        .then(left.head_id.cmp(right.head_id))
+                        .then(left.artifact_id.cmp(right.artifact_id))
+                });
+                let weighted = canonical_candidates
                     .iter()
                     .map(|candidate| {
                         let quality = match policy {
@@ -1246,6 +1488,14 @@ where
     W::Batch: Clone,
 {
     fn export_parameter_pack(&self, model: &Self::Model) -> anyhow::Result<FlattenedTensorPack> {
+        if let Some(catalog) = self.diloco_parameter_subset.as_ref() {
+            let values = flatten_module_float_parameter_subset::<W::Backend, _>(model, catalog)?;
+            return Ok(FlattenedTensorPack::new(
+                self.model_schema_hash.clone(),
+                catalog.catalog_id()?,
+                values,
+            ));
+        }
         flatten_module_float_parameters::<W::Backend, _>(model, self.model_schema_hash.clone())
             .map_err(anyhow::Error::from)
     }
@@ -1256,6 +1506,19 @@ where
         pack: &FlattenedTensorPack,
     ) -> anyhow::Result<Self::Model> {
         let model = self.init_model(device);
+        if let Some(catalog) = self.diloco_parameter_subset.as_ref() {
+            anyhow::ensure!(
+                pack.model_schema_hash == self.model_schema_hash
+                    && pack.layout_hash == catalog.catalog_id()?,
+                "DiLoCo parameter subset pack identity does not match the configured workload catalog"
+            );
+            return replace_module_float_parameter_subset::<W::Backend, _>(
+                &model,
+                catalog,
+                &pack.values,
+            )
+            .map_err(anyhow::Error::from);
+        }
         replace_module_float_parameters::<W::Backend, _>(
             &model,
             self.model_schema_hash.clone(),
@@ -1271,6 +1534,32 @@ where
         num_inner_steps: u32,
         inner_optimizer_state: Option<&StateBlob>,
     ) -> Result<DiLoCoInnerLoopReport, TrainError> {
+        if let Some(result) = self.workload.run_persistent_inner_steps(
+            model,
+            batches,
+            num_inner_steps,
+            inner_optimizer_state,
+        ) {
+            let mut result = result?;
+            result.metrics.insert(
+                "diloco_inner_steps_completed".into(),
+                MetricValue::Integer(i64::from(result.steps_completed)),
+            );
+            result.metrics.insert(
+                "diloco_inner_state_input_present".into(),
+                MetricValue::Bool(inner_optimizer_state.is_some()),
+            );
+            let local_parameters = self
+                .export_parameter_pack(&result.model)
+                .map_err(|error| TrainError::new(error.to_string()))?;
+            return Ok(DiLoCoInnerLoopReport {
+                local_parameters,
+                inner_optimizer_state: Some(result.inner_optimizer_state),
+                steps_completed: result.steps_completed,
+                metrics: result.metrics,
+            });
+        }
+
         if num_inner_steps > 0 && batches.is_empty() {
             return Err(TrainError::new(
                 "DiLoCo inner loop requires at least one batch",

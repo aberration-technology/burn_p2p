@@ -29,9 +29,11 @@ pub(crate) use crate::candidate::{
 };
 #[cfg(test)]
 pub(crate) use crate::candidate_screening::PeerRobustnessState;
+#[cfg(test)]
+pub(crate) use crate::candidate_screening::build_validation_canary_report;
 pub(crate) use crate::candidate_screening::{
     CandidateRobustnessContext, CandidateRobustnessOutcome, PersistedRobustnessState,
-    build_validation_canary_report, evaluate_candidate_robustness,
+    build_validation_canary_report_with_policy, evaluate_candidate_robustness,
 };
 use output::{
     LocalAggregateMaterialization, ValidationExecution, aggregate_stats_from_updates,

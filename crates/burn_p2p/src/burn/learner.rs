@@ -1,8 +1,15 @@
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 
+use burn::{
+    optim::GradientsAccumulator,
+    record::{BinBytesRecorder, FullPrecisionSettings, Recorder},
+};
 use chrono::Utc;
 
 use super::*;
+
+const PERSISTENT_INNER_STATE_ENCODING: &str = "burn-learner-inner-state:bin-full-v1";
+const PERSISTENT_INNER_STATE_MAGIC: &[u8; 8] = b"BLISv001";
 
 #[derive(Clone, Debug)]
 struct BurnLocalDatasetConfig {
@@ -23,6 +30,28 @@ impl Default for BurnLocalDatasetConfig {
     }
 }
 
+struct PersistentLearnerComponents<LC>
+where
+    LC: LearningComponentsTypes + 'static,
+{
+    optimizer: <LC as LearningComponentsTypes>::Optimizer,
+    scheduler: <LC as LearningComponentsTypes>::LrScheduler,
+    gradient_accumulation_steps: usize,
+}
+
+impl<LC> Clone for PersistentLearnerComponents<LC>
+where
+    LC: LearningComponentsTypes + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            optimizer: self.optimizer.clone(),
+            scheduler: self.scheduler.clone(),
+            gradient_accumulation_steps: self.gradient_accumulation_steps,
+        }
+    }
+}
+
 /// Learner-first workload built directly from a burn [`BurnLearner`].
 pub struct BurnLearnerProject<LC>
 where
@@ -35,8 +64,14 @@ where
     data_pipeline: BurnLearnerDataPipeline<LC>,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
+    persistent_inner_loop: Option<PersistentLearnerComponents<LC>>,
+    materialize_workload_update: Option<Arc<LearnerWorkloadUpdateMaterializationFn<LC>>>,
     apply_workload_update: Option<Arc<LearnerWorkloadUpdateFn<LC>>>,
     validate_workload_update: Option<Arc<LearnerWorkloadUpdateValidationFn<LC>>>,
+    materialize_genesis: Option<Arc<LearnerGenesisMaterializationFn<LC>>>,
+    load_genesis: Option<Arc<LearnerGenesisLoadFn<LC>>>,
+    materialize_model_artifact: Option<Arc<LearnerModelArtifactMaterializationFn<LC>>>,
+    load_model_artifact: Option<Arc<LearnerModelArtifactLoadFn<LC>>>,
 }
 
 impl<LC> Clone for BurnLearnerProject<LC>
@@ -52,8 +87,14 @@ where
             data_pipeline: self.data_pipeline.clone(),
             after_train_step: Arc::clone(&self.after_train_step),
             after_window: Arc::clone(&self.after_window),
+            persistent_inner_loop: self.persistent_inner_loop.clone(),
+            materialize_workload_update: self.materialize_workload_update.clone(),
             apply_workload_update: self.apply_workload_update.clone(),
             validate_workload_update: self.validate_workload_update.clone(),
+            materialize_genesis: self.materialize_genesis.clone(),
+            load_genesis: self.load_genesis.clone(),
+            materialize_model_artifact: self.materialize_model_artifact.clone(),
+            load_model_artifact: self.load_model_artifact.clone(),
         }
     }
 }
@@ -99,8 +140,14 @@ where
     local_dataset: BurnLocalDatasetConfig,
     after_train_step: Arc<LearnerStepMetricFn<LC>>,
     after_window: Arc<LearnerWindowMetricFn<LC>>,
+    persistent_inner_loop: Option<PersistentLearnerComponents<LC>>,
+    materialize_workload_update: Option<Arc<LearnerWorkloadUpdateMaterializationFn<LC>>>,
     apply_workload_update: Option<Arc<LearnerWorkloadUpdateFn<LC>>>,
     validate_workload_update: Option<Arc<LearnerWorkloadUpdateValidationFn<LC>>>,
+    materialize_genesis: Option<Arc<LearnerGenesisMaterializationFn<LC>>>,
+    load_genesis: Option<Arc<LearnerGenesisLoadFn<LC>>>,
+    materialize_model_artifact: Option<Arc<LearnerModelArtifactMaterializationFn<LC>>>,
+    load_model_artifact: Option<Arc<LearnerModelArtifactLoadFn<LC>>>,
 }
 
 /// Starts the recommended burn integration path from an existing [`BurnLearner`].
@@ -130,6 +177,34 @@ where
         + 'static,
 {
     BurnLearnerProjectBuilder::new(learner, device)
+}
+
+/// Starts a learner-backed project with persistent DiLoCo optimizer state.
+///
+/// Unlike [`from_learner`], this constructor retains explicit optimizer and
+/// scheduler templates. Their Burn records are serialized into the peer-local
+/// DiLoCo state blob after every inner loop and restored before the next one.
+pub fn from_stateful_components<B, LR, M, O>(
+    model: M,
+    optimizer: O,
+    scheduler: LR,
+    gradient_accumulation_steps: usize,
+    device: B::Device,
+) -> BurnLearnerProjectBuilder<LearningComponentsMarker<B, LR, M, O>>
+where
+    B: AutodiffBackend + 'static,
+    LR: LrScheduler + 'static,
+    M: BurnModuleTarget<B> + TrainStep + AutodiffModule<B> + Clone + core::fmt::Display + 'static,
+    M::InnerModule: BurnModuleTarget<B::InnerBackend> + InferenceStep + Clone + 'static,
+    M::Input: Clone,
+    O: Optimizer<M, B> + Clone + 'static,
+{
+    let learner = BurnLearner::new(model, optimizer.clone(), scheduler.clone());
+    BurnLearnerProjectBuilder::new(learner, device).with_persistent_inner_loop(
+        optimizer,
+        scheduler,
+        gradient_accumulation_steps,
+    )
 }
 
 /// Starts the higher-level loader-based integration path from a burn learner
@@ -172,6 +247,37 @@ where
     builder
 }
 
+/// Starts the loader-based integration path with persistent DiLoCo state.
+#[allow(clippy::too_many_arguments)]
+pub fn from_stateful_loaders<B, LR, M, O>(
+    model: M,
+    optimizer: O,
+    scheduler: LR,
+    gradient_accumulation_steps: usize,
+    device: B::Device,
+    train_loader: BurnTrainLoader<LearningComponentsMarker<B, LR, M, O>>,
+    validation_loader: BurnValidationLoader<LearningComponentsMarker<B, LR, M, O>>,
+) -> BurnLearnerProjectBuilder<LearningComponentsMarker<B, LR, M, O>>
+where
+    B: AutodiffBackend + 'static,
+    LR: LrScheduler + 'static,
+    M: BurnModuleTarget<B> + TrainStep + AutodiffModule<B> + Clone + core::fmt::Display + 'static,
+    M::InnerModule: BurnModuleTarget<B::InnerBackend> + InferenceStep + Clone + 'static,
+    M::Input: Clone,
+    O: Optimizer<M, B> + Clone + 'static,
+{
+    let mut builder = from_stateful_components(
+        model,
+        optimizer,
+        scheduler,
+        gradient_accumulation_steps,
+        device,
+    );
+    builder.train_loader = Some(train_loader);
+    builder.validation_loader = Some(validation_loader);
+    builder
+}
+
 impl<LC> BurnLearnerProjectBuilder<LC>
 where
     LC: LearningComponentsTypes + 'static,
@@ -199,9 +305,29 @@ where
             local_dataset: BurnLocalDatasetConfig::default(),
             after_train_step: Arc::new(default_learner_step_metrics::<LC>),
             after_window: Arc::new(default_learner_window_metrics::<LC>),
+            persistent_inner_loop: None,
+            materialize_workload_update: None,
             apply_workload_update: None,
             validate_workload_update: None,
+            materialize_genesis: None,
+            load_genesis: None,
+            materialize_model_artifact: None,
+            load_model_artifact: None,
         }
+    }
+
+    fn with_persistent_inner_loop(
+        mut self,
+        optimizer: <LC as LearningComponentsTypes>::Optimizer,
+        scheduler: <LC as LearningComponentsTypes>::LrScheduler,
+        gradient_accumulation_steps: usize,
+    ) -> Self {
+        self.persistent_inner_loop = Some(PersistentLearnerComponents {
+            optimizer,
+            scheduler,
+            gradient_accumulation_steps,
+        });
+        self
     }
 
     /// Overrides capability estimation.
@@ -331,6 +457,20 @@ where
         self
     }
 
+    /// Installs a workload-specific compact-update materializer for trained windows.
+    pub fn with_workload_update_materializer(
+        mut self,
+        materialize: impl for<'a> Fn(
+            WorkloadUpdateMaterializationContext<'a, BurnLearnerDevice<LC>, BurnLearnerModel<LC>>,
+        ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.materialize_workload_update = Some(Arc::new(materialize));
+        self
+    }
+
     /// Installs workload-specific independent validation for typed updates.
     pub fn with_workload_update_validator(
         mut self,
@@ -343,6 +483,72 @@ where
         + 'static,
     ) -> Self {
         self.validate_workload_update = Some(Arc::new(validate));
+        self
+    }
+
+    /// Installs workload-specific deterministic genesis materialization.
+    pub fn with_genesis_materializer(
+        mut self,
+        materialize: impl for<'a> Fn(
+            GenesisArtifactMaterializationContext<'a, BurnLearnerModel<LC>>,
+        ) -> anyhow::Result<Option<ArtifactDescriptor>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.materialize_genesis = Some(Arc::new(materialize));
+        self
+    }
+
+    /// Installs workload-specific deterministic genesis reconstruction.
+    pub fn with_genesis_loader(
+        mut self,
+        load: impl Fn(
+            BurnLearnerModel<LC>,
+            GenesisArtifactLoadContext<'_, BurnLearnerDevice<LC>>,
+        ) -> anyhow::Result<Option<BurnLearnerModel<LC>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.load_genesis = Some(Arc::new(load));
+        self
+    }
+
+    /// Installs workload-specific canonical model artifact materialization.
+    pub fn with_model_artifact_materializer(
+        mut self,
+        materialize: impl Fn(
+            &BurnLearnerModel<LC>,
+            ArtifactKind,
+            &HeadId,
+            Option<&HeadId>,
+            &FsArtifactStore,
+            &ContentId,
+        ) -> anyhow::Result<Option<ArtifactDescriptor>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.materialize_model_artifact = Some(Arc::new(materialize));
+        self
+    }
+
+    /// Installs workload-specific canonical model artifact loading.
+    pub fn with_model_artifact_loader(
+        mut self,
+        load: impl Fn(
+            &BurnLearnerModel<LC>,
+            &ArtifactDescriptor,
+            &FsArtifactStore,
+            &BurnLearnerDevice<LC>,
+            &ContentId,
+        ) -> anyhow::Result<Option<BurnLearnerModel<LC>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.load_model_artifact = Some(Arc::new(load));
         self
     }
 
@@ -366,9 +572,21 @@ where
             local_dataset,
             after_train_step,
             after_window,
+            persistent_inner_loop,
+            materialize_workload_update,
             apply_workload_update,
             validate_workload_update,
+            materialize_genesis,
+            load_genesis,
+            materialize_model_artifact,
+            load_model_artifact,
         } = self;
+        anyhow::ensure!(
+            persistent_inner_loop
+                .as_ref()
+                .is_none_or(|state| state.gradient_accumulation_steps > 0),
+            "persistent burn inner-loop gradient_accumulation_steps must be greater than zero"
+        );
         let local_data_pipeline = if data_pipeline.is_none() {
             if let Some(train_loader) = train_loader.as_ref() {
                 Some(local_dataset_bundle::<LC>(
@@ -413,8 +631,14 @@ where
                 })?,
             after_train_step,
             after_window,
+            persistent_inner_loop,
+            materialize_workload_update,
             apply_workload_update,
             validate_workload_update,
+            materialize_genesis,
+            load_genesis,
+            materialize_model_artifact,
+            load_model_artifact,
         })
     }
 
@@ -756,6 +980,126 @@ where
     )
 }
 
+fn encode_persistent_inner_state<LC>(
+    optimizer: &<LC as LearningComponentsTypes>::Optimizer,
+    scheduler: &<LC as LearningComponentsTypes>::LrScheduler,
+    microsteps_completed: u64,
+) -> Result<StateBlob, TrainError>
+where
+    LC: LearningComponentsTypes + 'static,
+{
+    let recorder = BinBytesRecorder::<FullPrecisionSettings>::default();
+    let optimizer_bytes = recorder
+        .record(optimizer.to_record(), ())
+        .map_err(|error| TrainError::new(format!("failed to encode optimizer state: {error}")))?;
+    let scheduler_bytes = recorder
+        .record(scheduler.to_record::<BurnLearnerBackend<LC>>(), ())
+        .map_err(|error| TrainError::new(format!("failed to encode scheduler state: {error}")))?;
+    let optimizer_len = u64::try_from(optimizer_bytes.len())
+        .map_err(|_| TrainError::new("optimizer state length exceeds u64"))?;
+    let scheduler_len = u64::try_from(scheduler_bytes.len())
+        .map_err(|_| TrainError::new("scheduler state length exceeds u64"))?;
+    let mut bytes = Vec::with_capacity(
+        PERSISTENT_INNER_STATE_MAGIC.len()
+            + size_of::<u64>() * 3
+            + optimizer_bytes.len()
+            + scheduler_bytes.len(),
+    );
+    bytes.extend_from_slice(PERSISTENT_INNER_STATE_MAGIC);
+    bytes.extend_from_slice(&microsteps_completed.to_le_bytes());
+    bytes.extend_from_slice(&optimizer_len.to_le_bytes());
+    bytes.extend_from_slice(&scheduler_len.to_le_bytes());
+    bytes.extend_from_slice(&optimizer_bytes);
+    bytes.extend_from_slice(&scheduler_bytes);
+    StateBlob::try_new(PERSISTENT_INNER_STATE_ENCODING, bytes)
+        .map_err(|error| TrainError::new(format!("failed to bind optimizer state: {error}")))
+}
+
+fn take_u64(bytes: &mut &[u8], label: &str) -> Result<u64, TrainError> {
+    let encoded = bytes
+        .get(..size_of::<u64>())
+        .ok_or_else(|| TrainError::new(format!("persistent inner state is missing {label}")))?;
+    *bytes = &bytes[size_of::<u64>()..];
+    Ok(u64::from_le_bytes(
+        encoded
+            .try_into()
+            .expect("a checked u64 state field has eight bytes"),
+    ))
+}
+
+fn take_state_bytes<'a>(
+    bytes: &mut &'a [u8],
+    len: u64,
+    label: &str,
+) -> Result<&'a [u8], TrainError> {
+    let len = usize::try_from(len)
+        .map_err(|_| TrainError::new(format!("{label} state length exceeds usize")))?;
+    let selected = bytes
+        .get(..len)
+        .ok_or_else(|| TrainError::new(format!("persistent inner state truncates {label}")))?;
+    *bytes = &bytes[len..];
+    Ok(selected)
+}
+
+fn decode_persistent_inner_state<LC>(
+    templates: &PersistentLearnerComponents<LC>,
+    state: &StateBlob,
+    device: &BurnLearnerDevice<LC>,
+) -> Result<
+    (
+        <LC as LearningComponentsTypes>::Optimizer,
+        <LC as LearningComponentsTypes>::LrScheduler,
+        u64,
+    ),
+    TrainError,
+>
+where
+    LC: LearningComponentsTypes + 'static,
+{
+    if state.encoding != PERSISTENT_INNER_STATE_ENCODING {
+        return Err(TrainError::new(format!(
+            "unsupported persistent inner state encoding {}",
+            state.encoding
+        )));
+    }
+    let mut bytes = state.bytes.as_slice();
+    let magic = bytes
+        .get(..PERSISTENT_INNER_STATE_MAGIC.len())
+        .ok_or_else(|| TrainError::new("persistent inner state is missing its header"))?;
+    if magic != PERSISTENT_INNER_STATE_MAGIC {
+        return Err(TrainError::new(
+            "persistent inner state magic does not match",
+        ));
+    }
+    bytes = &bytes[PERSISTENT_INNER_STATE_MAGIC.len()..];
+    let microsteps_completed = take_u64(&mut bytes, "microstep count")?;
+    let optimizer_len = take_u64(&mut bytes, "optimizer length")?;
+    let scheduler_len = take_u64(&mut bytes, "scheduler length")?;
+    let optimizer_bytes = take_state_bytes(&mut bytes, optimizer_len, "optimizer")?;
+    let scheduler_bytes = take_state_bytes(&mut bytes, scheduler_len, "scheduler")?;
+    if !bytes.is_empty() {
+        return Err(TrainError::new(
+            "persistent inner state contains trailing bytes",
+        ));
+    }
+
+    let recorder = BinBytesRecorder::<FullPrecisionSettings>::default();
+    let optimizer_record = recorder
+        .load(optimizer_bytes.to_vec(), device)
+        .map_err(|error| TrainError::new(format!("failed to decode optimizer state: {error}")))?;
+    let scheduler_record = recorder
+        .load(scheduler_bytes.to_vec(), device)
+        .map_err(|error| TrainError::new(format!("failed to decode scheduler state: {error}")))?;
+    Ok((
+        templates.optimizer.clone().load_record(optimizer_record),
+        templates
+            .scheduler
+            .clone()
+            .load_record::<BurnLearnerBackend<LC>>(scheduler_record),
+        microsteps_completed,
+    ))
+}
+
 impl<LC> BurnWorkload for BurnLearnerProject<LC>
 where
     LC: LearningComponentsTypes + 'static,
@@ -857,6 +1201,171 @@ where
             .load_batches(lease, cached_microshards, &self.device)
     }
 
+    fn run_persistent_inner_steps(
+        &self,
+        model: &Self::Model,
+        batches: &[Self::Batch],
+        num_inner_steps: u32,
+        inner_optimizer_state: Option<&StateBlob>,
+    ) -> Option<Result<BurnPersistentInnerLoopResult<Self::Model>, TrainError>>
+    where
+        Self::Batch: Clone,
+    {
+        let templates = self.persistent_inner_loop.as_ref()?;
+        Some((|| {
+            if num_inner_steps > 0 && batches.is_empty() {
+                return Err(TrainError::new(
+                    "persistent Burn inner loop requires at least one batch",
+                ));
+            }
+            let state_restored = inner_optimizer_state.is_some();
+            let (mut optimizer, mut scheduler, microstep_offset) = match inner_optimizer_state {
+                Some(state) => decode_persistent_inner_state::<LC>(templates, state, &self.device)?,
+                None => (templates.optimizer.clone(), templates.scheduler.clone(), 0),
+            };
+            let selected_batches = batches
+                .iter()
+                .cloned()
+                .cycle()
+                .take(num_inner_steps as usize)
+                .collect::<Vec<_>>();
+            let mut model = model.clone();
+            let mut accumulator = GradientsAccumulator::new();
+            let mut accumulated = 0_usize;
+            let mut optimizer_steps = 0_usize;
+            let mut last_lr = 0.0;
+            let mut metrics = BTreeMap::from([
+                (
+                    "batch_count".into(),
+                    MetricValue::Integer(selected_batches.len() as i64),
+                ),
+                (
+                    "gradient_accumulation_steps".into(),
+                    MetricValue::Integer(templates.gradient_accumulation_steps as i64),
+                ),
+                (
+                    "diloco_inner_state_restored".into(),
+                    MetricValue::Bool(state_restored),
+                ),
+                (
+                    "diloco_inner_microstep_offset_start".into(),
+                    MetricValue::Integer(microstep_offset.min(i64::MAX as u64) as i64),
+                ),
+            ]);
+
+            for (step_index, batch) in selected_batches.into_iter().enumerate() {
+                last_lr = scheduler.step();
+                let output = model.step(batch);
+                accumulator.accumulate(&model, output.grads);
+                accumulated += 1;
+                if accumulated == templates.gradient_accumulation_steps {
+                    model = optimizer.step(last_lr, model, accumulator.grads());
+                    accumulated = 0;
+                    optimizer_steps += 1;
+                }
+
+                metrics.insert(
+                    "train_steps".into(),
+                    MetricValue::Integer((step_index + 1) as i64),
+                );
+                metrics.insert("learning_rate".into(), MetricValue::Float(last_lr));
+                (self.after_train_step)(step_index, &output.item, &mut metrics)?;
+            }
+
+            let flushed_partial_accumulation = accumulated > 0;
+            if flushed_partial_accumulation {
+                model = optimizer.step(last_lr, model, accumulator.grads());
+                optimizer_steps += 1;
+            }
+            let microsteps_completed = microstep_offset.saturating_add(u64::from(num_inner_steps));
+            metrics.insert(
+                "optimizer_steps".into(),
+                MetricValue::Integer(optimizer_steps as i64),
+            );
+            metrics.insert(
+                "flushed_partial_gradient_accumulation".into(),
+                MetricValue::Bool(flushed_partial_accumulation),
+            );
+            metrics.insert(
+                "diloco_inner_microstep_offset_end".into(),
+                MetricValue::Integer(microsteps_completed.min(i64::MAX as u64) as i64),
+            );
+
+            let mut reporting_learner = self.learner.clone();
+            reporting_learner.fork(&self.device);
+            reporting_learner.load_model(model.clone().into_record());
+            (self.after_window)(&reporting_learner, &mut metrics)?;
+
+            Ok(BurnPersistentInnerLoopResult {
+                model,
+                inner_optimizer_state: encode_persistent_inner_state::<LC>(
+                    &optimizer,
+                    &scheduler,
+                    microsteps_completed,
+                )?,
+                steps_completed: num_inner_steps,
+                metrics,
+            })
+        })())
+    }
+
+    fn materialize_deterministic_genesis(
+        &self,
+        context: GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>> {
+        match self.materialize_genesis.as_ref() {
+            Some(materialize) => materialize(context),
+            None => Ok(None),
+        }
+    }
+
+    fn load_deterministic_genesis(
+        &self,
+        model: Self::Model,
+        context: GenesisArtifactLoadContext<'_, BurnLearnerDevice<LC>>,
+    ) -> anyhow::Result<Option<Self::Model>> {
+        match self.load_genesis.as_ref() {
+            Some(load) => load(model, context),
+            None => Ok(None),
+        }
+    }
+
+    fn materialize_model_artifact(
+        &self,
+        model: &Self::Model,
+        artifact_kind: ArtifactKind,
+        head_id: &HeadId,
+        base_head_id: Option<&HeadId>,
+        store: &FsArtifactStore,
+        model_schema_hash: &ContentId,
+    ) -> anyhow::Result<Option<ArtifactDescriptor>> {
+        match self.materialize_model_artifact.as_ref() {
+            Some(materialize) => materialize(
+                model,
+                artifact_kind,
+                head_id,
+                base_head_id,
+                store,
+                model_schema_hash,
+            ),
+            None => Ok(None),
+        }
+    }
+
+    fn load_model_artifact(
+        &self,
+        model: &Self::Model,
+        descriptor: &ArtifactDescriptor,
+        store: &FsArtifactStore,
+        device: &BurnLearnerDevice<LC>,
+        model_schema_hash: &ContentId,
+    ) -> anyhow::Result<Option<Self::Model>> {
+        match self.load_model_artifact.as_ref() {
+            Some(load) => load(model, descriptor, store, device, model_schema_hash),
+            None => Ok(None),
+        }
+    }
+
     fn apply_workload_update(
         &self,
         base_model: Self::Model,
@@ -872,6 +1381,16 @@ where
                 descriptor.artifact_id.as_str()
             )
         })?(base_model, descriptor, update, contract, store, device)
+    }
+
+    fn materialize_workload_update(
+        &self,
+        context: WorkloadUpdateMaterializationContext<'_, BurnLearnerDevice<LC>, Self::Model>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        match self.materialize_workload_update.as_ref() {
+            Some(materialize) => materialize(context),
+            None => Ok(None),
+        }
     }
 
     fn validate_and_apply_workload_update(

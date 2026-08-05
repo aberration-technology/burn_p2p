@@ -327,6 +327,7 @@ fn reference_round_advances_cursor_and_emits_checkpoint() {
             momentum_micros: Some(500_000),
             nesterov: false,
             weight_decay_micros: None,
+            max_pseudo_gradient_rms_ratio_micros: None,
         },
         ..DiLoCoPolicy::default()
     };

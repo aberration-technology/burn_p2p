@@ -63,8 +63,9 @@ pub use burn_p2p_core::{
     ArtifactDescriptor, ArtifactId, ArtifactKind, ArtifactTargetKind, AssignmentLease,
     AuthProvider, BackpressurePolicy, BadgeAward, BadgeKind, BaseCheckpointId, BrowserCapability,
     BrowserEdgeSnapshot, BrowserLoginProvider, BrowserMode, BrowserRole, BrowserRolePolicy,
-    BrowserVisibilityPolicy, COMPACT_UPDATE_PAYLOAD_VERSION, CanaryEvalReport, CapabilityCard,
-    CapabilityEstimate, ChunkId, ClientPlatform, ClientReleaseManifest,
+    BrowserVisibilityPolicy, COMPACT_UPDATE_PAYLOAD_VERSION, CanaryEvalReport,
+    CanaryMetricDirection, CanaryMetricGate, CanaryMetricGateFailure, CanaryMetricGateResult,
+    CapabilityCard, CapabilityEstimate, ChunkId, ClientPlatform, ClientReleaseManifest,
     ClientReleaseManifestBuilder, CohortRobustnessReport, CompactScalarEncoding,
     CompactScalarVector, CompactUpdateBody, CompactUpdatePayload, CompiledFeatureSet,
     ConfiguredServiceSet, ContentId, ContributionReceipt, ContributionReceiptId,
@@ -77,31 +78,34 @@ pub use burn_p2p_core::{
     EvalAggregationRule, EvalMetricDef, EvalProtocolManifest, EvalProtocolOptions,
     ExperimentDirectoryEntry, ExperimentId, ExperimentManifest, ExperimentOptInPolicy,
     ExperimentResourceRequirements, ExperimentScope, ExperimentVisibility, FlattenedTensorPack,
-    GenesisSpec, GradientCodec, GroupId, HeadDescriptor, HeadEvalReport, HeadEvalStatus, HeadId,
-    HeadPromotionMode, HeadPromotionPolicy, IdentityVisibility, LagPolicy, LagState,
-    LeaderboardEntry, LeaderboardIdentity, LeaderboardSnapshot, LeaseId, LocalOptimizerStatePolicy,
-    MODEL_GENESIS_SIGNATURE_KEY_ID, MergeCertId, MergeCertificate, MergePolicy, MergeStrategy,
-    MergeTopologyPolicy, MergeWindowMissPolicy, MergeWindowState, MetricScope, MetricTrustClass,
-    MetricValue, MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest, MicroShardId,
-    ModelGenesisManifest, NetworkCompatibilityError, NetworkEstimate, NetworkId, NetworkManifest,
-    NetworkManifestBuilder, NodeCertId, NodeCertificate, NodeCertificateClaims,
-    OuterOptimizerPolicy, PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics,
-    PeerWindowPlacementHint, PeerWindowStatus, Precision, PrincipalId, ProfileMode,
-    ProjectFamilyId, PseudoGradientChunk, PseudoGradientManifest, PseudoGradientManifestInput,
-    REVISION_CONTRACT_SIGNATURE_KEY_ID, RecurrentStatePolicy, ReducerAssignment,
-    ReducerCohortMetrics, ReducerCohortStatus, ReducerLoadReport, ReductionCertificate,
-    RejectionReason, ReleaseTrainManifest, RequestFailureCounter, RequestFailureKind,
-    RequestFailureOperation, RequestFailureReason, RevisionContractAuthorityPayload,
-    RevisionContractBundle, RevisionId, RevisionManifest, RevocationEpoch, RobustnessAlert,
-    RobustnessDecision, RobustnessPolicy, RobustnessPreset, RoundCursor, RoundId, RoundPhase,
-    SchedulerStatePolicy, SeededFitnessGeneration, SeededFitnessReplayPolicy, SignMajorityTieBreak,
-    SignatureAlgorithm, SignatureMetadata, SignedModelGenesisManifest, SignedPayload, SocialMode,
-    SocialProfile, StateBlob, StudyId, SupportedWorkload, SupportedWorkloadBuilder,
-    TRAINING_CONTRACT_VERSION, TargetArtifactManifest, TelemetrySummary,
-    TrainerPromotionAttestation, TrainingContractError, TrainingContractManifest, TrainingProtocol,
-    TrainingProtocolValidationError, TrustScore, UpdateAnnounce, UpdateCodec, UpdateFeatureSketch,
-    UpdateNormStats, UpdateReplayStats, ValidatedUpdateEvidence, ValidationQuorumCertificate,
-    WindowActivation, WindowId, WorkloadId, WorkloadUpdateEnvelope,
+    GenesisMaterialization, GenesisSpec, GradientCodec, GroupId, HeadDescriptor, HeadEvalReport,
+    HeadEvalStatus, HeadEvaluationBinding, HeadId, HeadPromotionMode, HeadPromotionPolicy,
+    IdentityVisibility, LagPolicy, LagState, LeaderboardEntry, LeaderboardIdentity,
+    LeaderboardSnapshot, LeaseId, LocalOptimizerStatePolicy, MODEL_GENESIS_SIGNATURE_KEY_ID,
+    MergeCertId, MergeCertificate, MergePolicy, MergeStrategy, MergeTopologyPolicy,
+    MergeWindowMissPolicy, MergeWindowState, MetricScope, MetricTrustClass, MetricValue,
+    MetricsLedgerSegment, MetricsMode, MetricsSnapshotManifest, MicroShardId, ModelGenesisManifest,
+    NetworkCompatibilityError, NetworkEstimate, NetworkId, NetworkManifest, NetworkManifestBuilder,
+    NodeCertId, NodeCertificate, NodeCertificateClaims, OuterOptimizerPolicy,
+    PARAMETER_SUBSET_CATALOG_VERSION, ParameterSubsetCatalog, ParameterSubsetEntry,
+    PeerAuthEnvelope, PeerId, PeerRole, PeerRoleSet, PeerWindowMetrics, PeerWindowPlacementHint,
+    PeerWindowStatus, Precision, PrincipalId, ProfileMode, ProjectFamilyId, PseudoGradientChunk,
+    PseudoGradientManifest, PseudoGradientManifestInput, REVISION_CONTRACT_SIGNATURE_KEY_ID,
+    RecurrentStatePolicy, ReducerAssignment, ReducerCohortMetrics, ReducerCohortStatus,
+    ReducerLoadReport, ReductionCertificate, ReductionCertificateError, RejectionReason,
+    ReleaseTrainManifest, RequestFailureCounter, RequestFailureKind, RequestFailureOperation,
+    RequestFailureReason, RevisionContractAuthorityPayload, RevisionContractBundle, RevisionId,
+    RevisionManifest, RevocationEpoch, RobustnessAlert, RobustnessDecision, RobustnessPolicy,
+    RobustnessPreset, RoundCursor, RoundId, RoundPhase, SchedulerStatePolicy,
+    SeededFitnessGeneration, SeededFitnessReplayPolicy, SignMajorityTieBreak, SignatureAlgorithm,
+    SignatureMetadata, SignedModelGenesisManifest, SignedPayload, SocialMode, SocialProfile,
+    StateBlob, StudyId, SupportedWorkload, SupportedWorkloadBuilder, TRAINING_CONTRACT_VERSION,
+    TargetArtifactManifest, TelemetrySummary, TrainerPromotionAttestation, TrainingContractError,
+    TrainingContractManifest, TrainingProtocol, TrainingProtocolValidationError, TrustScore,
+    UpdateAnnounce, UpdateCodec, UpdateFeatureSketch, UpdateNormStats, UpdateReplayStats,
+    UpdateRoutingContext, ValidatedUpdateEvidence, ValidationQuorumCertificate,
+    ValidationQuorumCertificateError, ValidatorCanaryPolicy, WindowActivation, WindowId,
+    WorkloadId, WorkloadUpdateEnvelope,
 };
 pub use burn_p2p_dataloader::{
     BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, DataReceiptBuilder,
@@ -159,16 +163,18 @@ pub use burn_p2p_swarm::{
 };
 pub use burn_p2p_workload::{
     ContinuousTrainerPolicy, DiLoCoInnerLoopReport, DiLoCoWorkload, DirectoryMetadataAttachment,
-    EvalSplit, GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider, LeaseDataPipeline,
-    LeaseDataPipelineDescriptor, LeaseDataPipelineKind, MergeModelCandidate, MetricReport,
-    P2pWorkload, PatchOutcome, ReducerOutcome, TrainError, TrainerCanonicalReconcileStrategy,
-    TrainingWindowOutcome, TrainingWindowTiming, ValidatedWorkloadUpdate,
-    ValidationCoordinationState, ValidationDriveOutcome, ValidationOutcome, WindowCtx,
-    WindowExecutorLifecycle, WindowExecutorSession, WindowExecutorSessionError, WindowReport,
-    WorkloadExecutionObserver, WorkloadExecutionStage, WorkloadInputSource,
-    WorkloadTrainingArtifact, WorkloadTrainingArtifactChunk, WorkloadTrainingBudget,
-    WorkloadTrainingContribution, WorkloadTrainingLease, WorkloadTrainingPlan,
-    WorkloadTrainingProgress, WorkloadTrainingResult, WorkloadUpdateReplayContext,
+    EvalSplit, GeneratedWorkloadInputDescriptor, GeneratedWorkloadInputProvider,
+    GenesisArtifactLoadContext, GenesisArtifactMaterializationContext, LeaseDataPipeline,
+    LeaseDataPipelineDescriptor, LeaseDataPipelineKind, MaterializedWorkloadUpdate,
+    MergeModelCandidate, MetricReport, P2pWorkload, PatchOutcome, ReducerOutcome, TrainError,
+    TrainerCanonicalReconcileStrategy, TrainingWindowOutcome, TrainingWindowTiming,
+    ValidatedWorkloadUpdate, ValidationCoordinationState, ValidationDriveOutcome,
+    ValidationOutcome, WindowCtx, WindowExecutorLifecycle, WindowExecutorSession,
+    WindowExecutorSessionError, WindowReport, WorkloadExecutionObserver, WorkloadExecutionStage,
+    WorkloadInputSource, WorkloadTrainingArtifact, WorkloadTrainingArtifactChunk,
+    WorkloadTrainingBudget, WorkloadTrainingContribution, WorkloadTrainingLease,
+    WorkloadTrainingPlan, WorkloadTrainingProgress, WorkloadTrainingResult,
+    WorkloadUpdateMaterializationContext, WorkloadUpdateReplayContext,
     WorkloadUpdateValidationContext, WorkloadValidationPlan, WorkloadValidationProgress,
     WorkloadValidationResult, WorkloadWindowExecutor, find_matching_directory_entry,
     find_matching_directory_entry_with_predicate, local_upstream_root,
@@ -196,7 +202,7 @@ pub use handles::{
 pub(crate) use node::TrainingPrefetchTask;
 #[cfg(test)]
 pub(crate) use node::prioritized_artifact_source_peers;
-pub use node::{Node, NodeBuilder, RunningNode};
+pub use node::{MaterializedHeadEvaluation, Node, NodeBuilder, RunningNode};
 pub use project_family::{P2pProjectFamily, SelectedWorkloadProject, SingleWorkloadProjectFamily};
 pub use runtime_support::latest_promoted_head_from_control_plane;
 use runtime_support::{
@@ -277,6 +283,13 @@ pub mod security {
 /// Burn-specific runtime integration helpers.
 pub mod burn;
 
+#[cfg(feature = "burn-module")]
+/// Backend-generic Burn module state, checkpoint, and merge helpers.
+///
+/// Unlike [`burn`], this surface does not enable Burn's native learner stack
+/// and is therefore suitable for browser WebGPU peers.
+pub use burn_p2p_engine as burn_module;
+
 #[cfg(feature = "tensor-identity")]
 /// Backend-generic canonical Burn tensor identity.
 pub use burn_p2p_tensor_identity as tensor_identity;
@@ -285,6 +298,8 @@ pub use burn_p2p_tensor_identity as tensor_identity;
 pub mod prelude {
     #[cfg(feature = "burn")]
     pub use crate::burn;
+    #[cfg(feature = "burn-module")]
+    pub use crate::burn_module;
     pub use crate::{
         AggregateArtifactBytes, AggregateArtifactInput, AggregateArtifactRecord, ArtifactBuildSpec,
         BurnDataLoaderAdapter, CachedMicroShard, CachedMicroShardLoader, CapabilityCalibrator,

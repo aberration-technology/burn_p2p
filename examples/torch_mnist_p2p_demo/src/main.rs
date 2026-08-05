@@ -379,6 +379,7 @@ fn run_diloco_demo(
             momentum_micros: None,
             nesterov: false,
             weight_decay_micros: None,
+            max_pseudo_gradient_rms_ratio_micros: None,
         },
         ..DiLoCoPolicy::default()
     };

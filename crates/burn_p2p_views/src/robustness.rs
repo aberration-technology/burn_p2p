@@ -1,6 +1,6 @@
 use burn_p2p_core::{
-    CanaryEvalReport, CohortRobustnessReport, PeerId, RejectionReason, RobustnessAlert,
-    RobustnessPolicy, RobustnessPreset, TrustScore,
+    CanaryEvalReport, CanaryMetricGateResult, CohortRobustnessReport, PeerId, RejectionReason,
+    RobustnessAlert, RobustnessPolicy, RobustnessPreset, TrustScore,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,8 @@ pub struct CanaryRegressionView {
     pub regression_margin: f64,
     /// Whether a backdoor trigger was detected.
     pub detected_backdoor_trigger: bool,
+    /// Explicit metric gates that were applied to the candidate.
+    pub metric_gate_results: Vec<CanaryMetricGateResult>,
     /// Evaluation timestamp.
     pub evaluated_at: DateTime<Utc>,
 }
@@ -141,6 +143,7 @@ impl RobustnessPanelView {
                 candidate_head_id: report.candidate_head_id.clone(),
                 regression_margin: report.regression_margin,
                 detected_backdoor_trigger: report.detected_backdoor_trigger,
+                metric_gate_results: report.metric_gate_results.clone(),
                 evaluated_at: report.evaluated_at,
             })
             .collect::<Vec<_>>();

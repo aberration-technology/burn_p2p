@@ -2,11 +2,12 @@ use super::*;
 use crate::candidate::{
     ValidationCandidate, ValidationCandidateHead, ValidationCandidateLoadArgs,
     ValidationCandidateView, collect_validation_candidate_heads, fallback_best_candidate_index,
-    load_validation_candidate_model, select_validation_head,
+    load_validation_candidate_model, same_update_identity, select_validation_head,
 };
 use crate::candidate_screening::{
-    CandidateRobustnessContext, PersistedRobustnessState, build_validation_canary_report,
-    build_validation_canary_report_against_baseline, evaluate_candidate_robustness,
+    CandidateRobustnessContext, PersistedRobustnessState,
+    build_validation_canary_report_against_baseline_with_policy,
+    build_validation_canary_report_with_policy, evaluate_candidate_robustness,
 };
 use crate::runtime_support::{active_experiment_directory_entry, load_json, trace_to_stderr};
 use crate::training::load_model_for_head;
@@ -212,7 +213,7 @@ fn local_candidate_head_for_update(
     let workload_update = snapshot
         .update_announcements
         .iter()
-        .find(|announcement| announcement.update == *update)
+        .find(|announcement| same_update_identity(&announcement.update, update))
         .and_then(|announcement| announcement.workload_update.clone());
     let announced = snapshot
         .head_announcements
@@ -1299,11 +1300,13 @@ where
             candidate_heads.len()
         ));
 
-        let canary_threshold = robustness_policy
-            .validator_canary_policy
-            .maximum_regression_delta;
         let mut loaded_candidates = Vec::<ValidationCandidate<P::Model>>::new();
         let base_load_started = Instant::now();
+        let revision_contract = self
+            .node
+            .as_ref()
+            .and_then(|node| node.revision_contracts.get(&experiment.revision_id))
+            .cloned();
         let base_model = {
             let node = self
                 .node
@@ -1312,7 +1315,7 @@ where
             let project = &mut node.project;
             let device = project.runtime_device();
             if let Some((head, _)) = base_head.as_ref() {
-                load_model_for_head(project, head, &store, &device)?
+                load_model_for_head(project, head, revision_contract.as_ref(), &store, &device)?
             } else {
                 project.init_model(&device)
             }
@@ -1423,7 +1426,7 @@ where
                         baseline_metrics: base_evaluation
                             .as_ref()
                             .map(|evaluation| &evaluation.metrics),
-                        canary_threshold,
+                        canary_policy: &robustness_policy.validator_canary_policy,
                         evaluate_candidates: true,
                         replay_snapshots: &candidate_snapshots,
                         dataset_cache_dir: storage.dataset_cache_dir(),
@@ -1605,25 +1608,21 @@ where
             select_started.elapsed().as_millis()
         ));
         let canary_report = match base_evaluation.as_ref() {
-            Some(base_evaluation) => build_validation_canary_report_against_baseline(
+            Some(base_evaluation) => build_validation_canary_report_against_baseline_with_policy(
                 experiment,
                 &current_head,
                 &base_evaluation.metrics,
                 &merged_head,
                 &evaluation,
-                robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
+                &robustness_policy.validator_canary_policy,
                 1,
             )?,
-            None => build_validation_canary_report(
+            None => build_validation_canary_report_with_policy(
                 experiment,
                 &current_head,
                 &merged_head,
                 &evaluation,
-                robustness_policy
-                    .validator_canary_policy
-                    .maximum_regression_delta,
+                &robustness_policy.validator_canary_policy,
                 1,
             )?,
         };
@@ -1816,6 +1815,69 @@ mod tests {
         );
         assert_eq!(candidate.head.parent_head_id, Some(HeadId::new("base")));
         assert_eq!(candidate.head.global_step, 8);
+    }
+
+    #[test]
+    fn local_candidate_keeps_typed_envelope_across_relay_metadata() {
+        let experiment = ExperimentHandle {
+            network_id: NetworkId::new("net"),
+            study_id: StudyId::new("study"),
+            experiment_id: ExperimentId::new("experiment"),
+            revision_id: RevisionId::new("revision"),
+        };
+        let local_peer_id = PeerId::new("peer-local");
+        let mut local_update = test_update(local_peer_id.as_str(), 1.0, 1.0);
+        local_update.lease_id = Some(LeaseId::new("lease-local"));
+        let relayed_update = UpdateAnnounce {
+            providers: vec![PeerId::new("peer-relay")],
+            announced_at: local_update.announced_at + chrono::Duration::milliseconds(1),
+            ..local_update.clone()
+        };
+        let descriptor = ArtifactDescriptor {
+            artifact_id: local_update.delta_artifact_id.clone(),
+            kind: ArtifactKind::DeltaPack,
+            head_id: Some(HeadId::new("experiment-peer-local-window-7")),
+            base_head_id: Some(local_update.base_head_id.clone()),
+            precision: Precision::Fp32,
+            model_schema_hash: ContentId::new("schema"),
+            record_format: "compact-test".into(),
+            bytes_len: 1,
+            chunks: Vec::new(),
+            root_hash: ContentId::new("root"),
+        };
+        let workload_update = WorkloadUpdateEnvelope {
+            training_contract_id: ContentId::new("contract"),
+            revision_id: experiment.revision_id.clone(),
+            base_head_id: local_update.base_head_id.clone(),
+            window_id: local_update.window_id,
+            lease_id: local_update.lease_id.clone().expect("lease"),
+            codec: UpdateCodec::DenseDelta,
+            routing_context: None,
+            artifact: descriptor,
+            decoded_tensor_digest: None,
+            claimed_norm_stats: None,
+            claimed_feature_sketch: None,
+        };
+        let snapshot = ControlPlaneSnapshot {
+            update_announcements: vec![UpdateEnvelopeAnnouncement {
+                overlay: experiment.overlay_set().expect("overlay").heads,
+                update: local_update,
+                workload_update: Some(workload_update.clone()),
+            }],
+            ..ControlPlaneSnapshot::default()
+        };
+
+        let candidate = local_candidate_head_for_update(
+            &snapshot,
+            &experiment,
+            &local_peer_id,
+            &HeadId::new("base"),
+            8,
+            &relayed_update,
+        )
+        .expect("local candidate head");
+
+        assert_eq!(candidate.workload_update, Some(workload_update));
     }
 
     #[test]

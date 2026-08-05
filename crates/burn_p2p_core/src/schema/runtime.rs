@@ -545,6 +545,19 @@ pub struct AggregateEnvelope {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Binds one validator attestation to the exact materialized head and evaluation result.
+pub struct HeadEvaluationBinding {
+    /// Evaluated head identifier.
+    pub head_id: HeadId,
+    /// Evaluated model artifact identifier.
+    pub artifact_id: ArtifactId,
+    /// Fixed evaluation protocol used by the validator.
+    pub eval_protocol_id: ContentId,
+    /// Content identifier derived from the complete head evaluation report.
+    pub eval_report_id: ContentId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Carries the reduction certificate data.
 pub struct ReductionCertificate {
     /// The reduction ID.
@@ -561,6 +574,9 @@ pub struct ReductionCertificate {
     pub base_head_id: HeadId,
     /// The aggregate ID.
     pub aggregate_id: ContentId,
+    /// Exact head evaluation backing validator-quorum participation.
+    #[serde(default)]
+    pub evaluation: Option<HeadEvaluationBinding>,
     /// The local peer that emitted this reduction or promotion certificate.
     pub promoter_peer_id: PeerId,
     /// The promotion mode this reduction participates in.
@@ -572,6 +588,28 @@ pub struct ReductionCertificate {
     pub cross_checked_reducers: Vec<PeerId>,
     /// The issued at.
     pub issued_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Structural error in a reduction or validator attestation certificate.
+pub enum ReductionCertificateError {
+    #[error("reduction certificate declares a zero promotion quorum")]
+    ZeroQuorum,
+    #[error("validator-quorum reduction certificate is missing exact-head evaluation evidence")]
+    MissingEvaluationEvidence,
+}
+
+impl ReductionCertificate {
+    /// Verifies architecture-neutral certificate structure before admission.
+    pub fn validate_structure(&self) -> Result<(), ReductionCertificateError> {
+        if self.promotion_quorum == 0 {
+            return Err(ReductionCertificateError::ZeroQuorum);
+        }
+        if self.promotion_mode == HeadPromotionMode::ValidatorQuorum && self.evaluation.is_none() {
+            return Err(ReductionCertificateError::MissingEvaluationEvidence);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -595,6 +633,15 @@ pub struct ValidationQuorumCertificate {
     pub aggregate_artifact_id: ArtifactId,
     /// The merged head ID this quorum accepted.
     pub merged_head_id: HeadId,
+    /// The exact merged artifact evaluated by the quorum.
+    #[serde(default)]
+    pub merged_artifact_id: Option<ArtifactId>,
+    /// The common evaluation protocol used by every attesting validator.
+    #[serde(default)]
+    pub eval_protocol_id: Option<ContentId>,
+    /// Distinct content-addressed evaluation reports backing the quorum.
+    #[serde(default)]
+    pub eval_report_ids: Vec<ContentId>,
     /// The promotion mode this quorum certificate attests.
     #[serde(default)]
     pub promotion_mode: HeadPromotionMode,
@@ -625,6 +672,14 @@ pub enum ValidationQuorumCertificateError {
         "validation quorum certificate has {found} distinct reduction ids but requires {required}"
     )]
     InsufficientReductionEvidence { found: usize, required: usize },
+    #[error("validation quorum certificate is missing the evaluated merged artifact")]
+    MissingMergedArtifact,
+    #[error("validation quorum certificate is missing the common evaluation protocol")]
+    MissingEvaluationProtocol,
+    #[error(
+        "validation quorum certificate has {found} distinct evaluation reports but requires {required}"
+    )]
+    InsufficientEvaluationEvidence { found: usize, required: usize },
 }
 
 impl ValidationQuorumCertificate {
@@ -650,11 +705,26 @@ impl ValidationQuorumCertificate {
         if !attesters.contains(&self.coordinator) {
             return Err(ValidationQuorumCertificateError::CoordinatorDidNotAttest);
         }
+        if self.merged_artifact_id.is_none() {
+            return Err(ValidationQuorumCertificateError::MissingMergedArtifact);
+        }
+        if self.eval_protocol_id.is_none() {
+            return Err(ValidationQuorumCertificateError::MissingEvaluationProtocol);
+        }
         let reduction_ids = self.reduction_ids.iter().collect::<BTreeSet<_>>();
         if reduction_ids.len() < required {
             return Err(
                 ValidationQuorumCertificateError::InsufficientReductionEvidence {
                     found: reduction_ids.len(),
+                    required,
+                },
+            );
+        }
+        let eval_report_ids = self.eval_report_ids.iter().collect::<BTreeSet<_>>();
+        if eval_report_ids.len() < required {
+            return Err(
+                ValidationQuorumCertificateError::InsufficientEvaluationEvidence {
+                    found: eval_report_ids.len(),
                     required,
                 },
             );

@@ -13,9 +13,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use burn_p2p_checkpoint::FsArtifactStore;
 use burn_p2p_core::{
-    ArtifactDescriptor, ArtifactKind, AssignmentLease, CapabilityEstimate, ContentId, HeadId,
-    MergePolicy, MetricValue, PeerId, RevisionManifest, SupportedWorkload,
-    TrainingContractManifest, ValidatedUpdateEvidence, WorkloadUpdateEnvelope,
+    ArtifactDescriptor, ArtifactKind, AssignmentLease, CapabilityEstimate, ContentId,
+    GenesisMaterialization, HeadId, LeaseId, MergePolicy, MetricValue, PeerId, RevisionId,
+    RevisionManifest, SupportedWorkload, TrainingContractManifest, ValidatedUpdateEvidence,
+    WindowId, WorkloadUpdateEnvelope,
 };
 use burn_p2p_dataloader::{CachedMicroShard, DatasetRegistration, MicroShardPlan, UpstreamAdapter};
 use burn_p2p_experiment::{PatchSupport, RuntimePatch};
@@ -27,8 +28,10 @@ pub use backend::{
     WindowCtx, WindowReport,
 };
 pub use compact_update::{
-    CompactUpdateReconstructor, MAX_COMPACT_UPDATE_BYTES, SeededSubspaceReconstructor,
-    ValidatedCompactUpdate, average_subspace_updates, decode_compact_update, encode_compact_update,
+    CompactUpdateReconstructor, ContextSparseDeltaReconstructor, MAX_COMPACT_UPDATE_BYTES,
+    MutableSubsetParameterReconstructor, SeededSubspaceReconstructor, ValidatedCompactUpdate,
+    average_context_sparse_deltas, average_mutable_subset_parameters, average_subspace_updates,
+    decode_compact_update, decode_context_sparse_update, encode_compact_update,
     reconstructed_update_norm_stats,
 };
 pub use data_pipeline::{
@@ -132,6 +135,38 @@ pub struct WorkloadUpdateValidationContext<'a, D> {
     pub replay: WorkloadUpdateReplayContext<'a>,
 }
 
+/// Inputs for materializing a deterministic-reconstruction genesis artifact.
+pub struct GenesisArtifactMaterializationContext<'a, M> {
+    /// Locally initialized model whose mutable state must be serialized.
+    pub model: &'a M,
+    /// Canonical genesis head identity.
+    pub head_id: HeadId,
+    /// Authority-bound training contract identity.
+    pub training_contract_id: &'a ContentId,
+    /// Authority-bound training semantics.
+    pub contract: &'a TrainingContractManifest,
+    /// Deterministic reconstruction contract.
+    pub materialization: &'a GenesisMaterialization,
+    /// Destination artifact store.
+    pub store: &'a FsArtifactStore,
+}
+
+/// Inputs for loading a deterministic-reconstruction genesis artifact.
+pub struct GenesisArtifactLoadContext<'a, D> {
+    /// Authority-bound genesis artifact.
+    pub descriptor: &'a ArtifactDescriptor,
+    /// Authority-bound training contract identity.
+    pub training_contract_id: &'a ContentId,
+    /// Authority-bound training semantics.
+    pub contract: &'a TrainingContractManifest,
+    /// Deterministic reconstruction contract.
+    pub materialization: &'a GenesisMaterialization,
+    /// Source artifact store.
+    pub store: &'a FsArtifactStore,
+    /// Runtime device receiving the reconstructed model.
+    pub device: &'a D,
+}
+
 /// Candidate model plus validator-owned reconstruction and replay evidence.
 pub struct ValidatedWorkloadUpdate<M> {
     /// Model reconstructed from the canonical base and typed update.
@@ -140,12 +175,46 @@ pub struct ValidatedWorkloadUpdate<M> {
     pub evidence: ValidatedUpdateEvidence,
 }
 
+/// Inputs for materializing one contract-bound update after a local training window.
+pub struct WorkloadUpdateMaterializationContext<'a, D, M> {
+    /// Canonical model head used at the beginning of the window.
+    pub base_model: &'a M,
+    /// Locally trained model at the end of the window.
+    pub trained_model: &'a M,
+    /// Content identity of the governing training contract.
+    pub training_contract_id: &'a ContentId,
+    /// Governing training contract.
+    pub contract: &'a TrainingContractManifest,
+    /// Revision producing the update.
+    pub revision_id: &'a RevisionId,
+    /// Canonical base head identity.
+    pub base_head_id: &'a HeadId,
+    /// Logical candidate head identity.
+    pub candidate_head_id: &'a HeadId,
+    /// Window that authorized the update.
+    pub window_id: WindowId,
+    /// Lease that authorized the update.
+    pub lease_id: &'a LeaseId,
+    /// Content-addressed artifact store.
+    pub store: &'a FsArtifactStore,
+    /// Runtime backend device.
+    pub device: &'a D,
+}
+
+/// One materialized compact artifact plus its contract-bound wire envelope.
+pub struct MaterializedWorkloadUpdate {
+    /// Compact update artifact descriptor.
+    pub artifact: ArtifactDescriptor,
+    /// Metadata required for validator reconstruction.
+    pub envelope: WorkloadUpdateEnvelope,
+}
+
 /// Defines one executable workload inside a project family.
 pub trait P2pWorkload {
     /// Defines the device alias.
     type Device;
     /// Defines the model alias.
-    type Model;
+    type Model: Clone;
     /// Defines the batch alias.
     type Batch;
     /// Defines the window stats alias.
@@ -198,6 +267,23 @@ pub trait P2pWorkload {
         device: &Self::Device,
     ) -> anyhow::Result<Self::Model>;
 
+    /// Loads genesis state, regenerating deterministic immutable parameters when declared.
+    fn load_genesis_artifact(
+        &self,
+        model: Self::Model,
+        context: GenesisArtifactLoadContext<'_, Self::Device>,
+    ) -> anyhow::Result<Self::Model> {
+        match context.materialization {
+            GenesisMaterialization::FullArtifact => {
+                self.load_model_artifact(model, context.descriptor, context.store, context.device)
+            }
+            GenesisMaterialization::DeterministicReconstruction { .. } => anyhow::bail!(
+                "workload {} does not implement deterministic genesis reconstruction",
+                self.workload_id().as_str(),
+            ),
+        }
+    }
+
     /// Computes the canonical tensor digest for a decoded model.
     ///
     /// Workloads participating in authority-signed revisions must implement
@@ -208,6 +294,17 @@ pub trait P2pWorkload {
             "workload {} does not implement canonical model tensor digests",
             self.workload_id().as_str(),
         )
+    }
+
+    /// Materializes a compact update when the training contract does not use full-model payloads.
+    ///
+    /// The default fails closed by returning no update. Runtimes require a
+    /// concrete result for every non-`FullModel` contract.
+    fn materialize_workload_update(
+        &self,
+        _context: WorkloadUpdateMaterializationContext<'_, Self::Device, Self::Model>,
+    ) -> anyhow::Result<Option<MaterializedWorkloadUpdate>> {
+        Ok(None)
     }
 
     /// Reconstructs one contract-bound typed update from its canonical base model.
@@ -274,6 +371,26 @@ pub trait P2pWorkload {
         base_head_id: Option<HeadId>,
         store: &FsArtifactStore,
     ) -> anyhow::Result<ArtifactDescriptor>;
+
+    /// Materializes genesis state according to its reconstruction contract.
+    fn materialize_genesis_artifact(
+        &self,
+        context: GenesisArtifactMaterializationContext<'_, Self::Model>,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        match context.materialization {
+            GenesisMaterialization::FullArtifact => self.materialize_model_artifact(
+                context.model,
+                ArtifactKind::FullHead,
+                context.head_id,
+                None,
+                context.store,
+            ),
+            GenesisMaterialization::DeterministicReconstruction { .. } => anyhow::bail!(
+                "workload {} does not implement deterministic genesis materialization",
+                self.workload_id().as_str(),
+            ),
+        }
+    }
 
     /// Returns receipt metrics for a completed training window.
     fn contribution_metrics(

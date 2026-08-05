@@ -31,6 +31,16 @@ pub struct P2pWindowFinished {
 impl burn_ecs::prelude::Message for P2pWindowFinished {}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// Reports one accepted context-bound update for a run/window.
+pub struct P2pContextUpdateObserved {
+    pub run_id: TrainingRunId,
+    pub window_id: u64,
+    pub context: crate::UpdateRoutingContext,
+}
+
+impl burn_ecs::prelude::Message for P2pContextUpdateObserved {}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct P2pCanonicalReconcileEvent {
     pub run_id: TrainingRunId,
     pub experiment_id: String,

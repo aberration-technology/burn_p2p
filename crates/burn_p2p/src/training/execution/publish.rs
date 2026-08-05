@@ -79,7 +79,7 @@ impl<P> RunningNode<P> {
                 providers: vec![prepared.local_peer_id.clone()],
                 announced_at: Utc::now(),
             },
-            workload_update: None,
+            workload_update: execution.workload_update.clone(),
         })?;
         self.control.publish_head(HeadAnnouncement {
             overlay: overlays.heads.clone(),
