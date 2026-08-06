@@ -21,7 +21,10 @@ pub use control::{
     ExperimentSnapshot, FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochEnvelope,
     PatchPlan, StageError,
 };
-pub use directory::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};
+pub use directory::{
+    ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt,
+    directory_revision_contract_matches,
+};
 pub use spec::{
     ExperimentSpec, PatchClass, PatchSupport, PatchValue, RevisionCompatibility,
     RevisionMetricsPolicy, RevisionSpec, RuntimePatch, StudySpec,

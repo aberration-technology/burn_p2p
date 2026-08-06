@@ -704,10 +704,90 @@ fn best_head_by_ids_from_snapshots_selects_newest_directory_head() {
     }
 
     let snapshots = [(PeerId::new("edge"), snapshot)];
-    let head_ids = directory_current_head_ids_from_snapshots(&snapshots, &experiment);
+    let head_ids = directory_current_head_ids_from_snapshots(&snapshots, &experiment, None);
     let resolved = best_head_by_ids_from_snapshots(&snapshots, &experiment, &head_ids);
 
     assert_eq!(resolved, Some((PeerId::new("trainer-current"), current)));
+}
+
+#[test]
+fn directory_head_selection_uses_latest_compatible_revision_announcement() {
+    let experiment = test_experiment_handle();
+    let now = Utc::now();
+    let mut baseline = test_directory_entry(&experiment);
+    baseline.current_head_id = None;
+    let mut stale = baseline.clone();
+    stale.current_head_id = Some(HeadId::new("head-stale"));
+    let mut current = baseline.clone();
+    current.current_head_id = Some(HeadId::new("head-current"));
+    let mut incompatible = baseline.clone();
+    incompatible.current_head_id = Some(HeadId::new("head-incompatible"));
+    incompatible.model_schema_hash = ContentId::new("other-schema");
+
+    let snapshot = ControlPlaneSnapshot {
+        directory_announcements: vec![
+            ExperimentDirectoryAnnouncement {
+                network_id: experiment.network_id.clone(),
+                entries: vec![stale],
+                announced_at: now - chrono::TimeDelta::seconds(2),
+            },
+            ExperimentDirectoryAnnouncement {
+                network_id: experiment.network_id.clone(),
+                entries: vec![current],
+                announced_at: now - chrono::TimeDelta::seconds(1),
+            },
+            ExperimentDirectoryAnnouncement {
+                network_id: experiment.network_id.clone(),
+                entries: vec![incompatible],
+                announced_at: now,
+            },
+        ],
+        ..ControlPlaneSnapshot::default()
+    };
+    let snapshots = [(PeerId::new("edge"), snapshot)];
+
+    let head_ids =
+        directory_current_head_ids_from_snapshots(&snapshots, &experiment, Some(&baseline));
+
+    assert_eq!(head_ids, BTreeSet::from([HeadId::new("head-current")]));
+}
+
+#[test]
+fn directory_head_selection_binds_first_accepted_transition_contract() {
+    let experiment = test_experiment_handle();
+    let now = Utc::now();
+    let baseline = test_directory_entry(&experiment);
+    let mut transitioned = baseline.clone();
+    transitioned.current_revision_id = RevisionId::new("revision-2");
+    transitioned.current_head_id = Some(HeadId::new("head-transitioned"));
+    let mut collision = transitioned.clone();
+    collision.current_head_id = Some(HeadId::new("head-collision"));
+    collision.model_schema_hash = ContentId::new("collision-schema");
+    let announcements = vec![
+        ExperimentDirectoryAnnouncement {
+            network_id: experiment.network_id.clone(),
+            entries: vec![transitioned],
+            announced_at: now - chrono::TimeDelta::seconds(1),
+        },
+        ExperimentDirectoryAnnouncement {
+            network_id: experiment.network_id.clone(),
+            entries: vec![collision],
+            announced_at: now,
+        },
+    ];
+
+    let selected =
+        latest_compatible_directory_entries(&announcements, &experiment.network_id, &[baseline]);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].current_head_id,
+        Some(HeadId::new("head-transitioned"))
+    );
+    assert_eq!(
+        selected[0].current_revision_id,
+        RevisionId::new("revision-2")
+    );
 }
 
 #[test]

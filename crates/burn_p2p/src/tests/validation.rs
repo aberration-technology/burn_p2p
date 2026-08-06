@@ -516,7 +516,7 @@ fn sync_rejects_remote_head_artifact_with_mismatched_model_schema() {
         || leader_telemetry.snapshot().local_peer_id.is_some(),
         "leader did not start",
     );
-    let _ = leader
+    let incompatible_head = leader
         .initialize_local_head(&experiment)
         .expect("leader genesis head");
     let leader_addr = leader
@@ -530,7 +530,7 @@ fn sync_rejects_remote_head_artifact_with_mismatched_model_schema() {
         .with_mainnet(mainnet().genesis.clone())
         .with_listen_address(loopback_listen_address())
         .with_bootstrap_peer(leader_addr)
-        .with_storage(StorageConfig::new(follower_storage))
+        .with_storage(StorageConfig::new(follower_storage.clone()))
         .spawn()
         .expect("follower spawn");
     let follower_telemetry = follower.telemetry();
@@ -565,6 +565,19 @@ fn sync_rejects_remote_head_artifact_with_mismatched_model_schema() {
     assert!(
         error.contains("workload expects schema-b"),
         "unexpected error: {error}"
+    );
+    let follower_store = FsArtifactStore::new(follower_storage);
+    assert!(
+        !follower_store.has_manifest(&incompatible_head.artifact_id),
+        "schema rejection must happen before the incompatible manifest or chunks are persisted"
+    );
+    assert!(
+        follower_telemetry
+            .snapshot()
+            .in_flight_transfers
+            .get(&incompatible_head.artifact_id)
+            .is_none_or(|state| state.completed_chunks.is_empty()),
+        "schema rejection must not request checkpoint chunks"
     );
 
     follower.shutdown().expect("follower shutdown");

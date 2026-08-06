@@ -1,8 +1,8 @@
 use super::*;
 use crate::runtime_support::{
     best_head_by_ids_from_snapshots, directory_current_head_ids_from_snapshots,
-    head_provider_peers, load_slot_assignments, persist_slot_assignments, resolve_canonical_head,
-    runtime_window_reducers,
+    head_provider_peers, latest_compatible_directory_entries, load_slot_assignments,
+    persist_slot_assignments, resolve_canonical_head, runtime_window_reducers,
 };
 use anyhow::Context;
 
@@ -32,21 +32,18 @@ impl<P> RunningNode<P> {
             })
             .unwrap_or_default();
 
-        let mut directory = self
-            .telemetry()
-            .snapshot()
-            .control_plane
-            .directory_announcements
-            .iter()
-            .filter(|announcement| announcement.network_id == self.mainnet().genesis.network_id)
-            .flat_map(|announcement| announcement.entries.clone())
-            .collect::<Vec<_>>();
-
-        if directory.is_empty()
-            && let Some(auth) = &self.config().auth
-        {
-            directory = auth.experiment_directory.clone();
-        }
+        let telemetry = self.telemetry().snapshot();
+        let trusted_baseline = self
+            .config()
+            .auth
+            .as_ref()
+            .map(|auth| auth.experiment_directory.as_slice())
+            .unwrap_or_default();
+        let directory = latest_compatible_directory_entries(
+            &telemetry.control_plane.directory_announcements,
+            &self.mainnet().genesis.network_id,
+            trusted_baseline,
+        );
 
         let directory = ExperimentDirectory {
             network_id: self.mainnet().genesis.network_id.clone(),
@@ -313,16 +310,11 @@ impl<P> RunningNode<P> {
                 )
             })
             .unwrap_or((None, Utc::now()));
+        let local_model_schema_hash = self.current_workload_model_schema_hash()?;
         let head_id = expected_artifact
             .as_ref()
             .and_then(|artifact| artifact.head_id.clone())
-            .unwrap_or_else(|| {
-                HeadId::new(format!(
-                    "{}-{}-genesis",
-                    experiment.experiment_id.as_str(),
-                    experiment.revision_id.as_str(),
-                ))
-            });
+            .unwrap_or_else(|| unsigned_genesis_head_id(experiment, &local_model_schema_hash));
         let project = &mut self
             .node
             .as_mut()
@@ -508,15 +500,18 @@ impl<P> RunningNode<P> {
             telemetry_snapshot.local_peer_id.as_ref(),
             &telemetry_snapshot.control_plane,
         );
-        let local_directory_current_head_ids = self
-            .list_experiments()
+        let expected_directory_entry = self
+            .visible_experiment_entry(
+                &experiment.study_id,
+                &experiment.experiment_id,
+                &experiment.revision_id,
+            )
+            .ok();
+        let local_directory_current_head_ids = expected_directory_entry
+            .as_ref()
+            .and_then(|entry| entry.current_head_id.as_ref())
+            .cloned()
             .into_iter()
-            .filter(|entry| {
-                entry.study_id == experiment.study_id
-                    && entry.experiment_id == experiment.experiment_id
-                    && entry.current_revision_id == experiment.revision_id
-            })
-            .filter_map(|entry| entry.current_head_id)
             .collect::<BTreeSet<_>>();
         let mut snapshots = cached_snapshots;
         let mut resolved_head = resolve_sync_target_head(
@@ -524,6 +519,7 @@ impl<P> RunningNode<P> {
             experiment,
             &cached_canonical_snapshots,
             &local_directory_current_head_ids,
+            expected_directory_entry.as_ref(),
             target_mode,
         )?;
 
@@ -539,6 +535,7 @@ impl<P> RunningNode<P> {
                 experiment,
                 &canonical_snapshots,
                 &local_directory_current_head_ids,
+                expected_directory_entry.as_ref(),
                 target_mode,
             )?;
         }
@@ -562,6 +559,7 @@ impl<P> RunningNode<P> {
                     experiment,
                     &canonical_snapshots,
                     &local_directory_current_head_ids,
+                    expected_directory_entry.as_ref(),
                     target_mode,
                 )?;
             }
@@ -592,6 +590,8 @@ impl<P> RunningNode<P> {
         };
         let store = FsArtifactStore::new(storage.root.clone());
         if !store.has_complete_artifact(&head.artifact_id)? {
+            let expected_model_schema_hash =
+                self.expected_model_schema_hash_for_experiment(experiment)?;
             let bootstrap_snapshots = self.fetch_bootstrap_snapshots(ci_scaled_timeout(
                 Duration::from_secs(3),
                 Duration::from_secs(10),
@@ -611,6 +611,7 @@ impl<P> RunningNode<P> {
                     experiment,
                     &canonical_snapshots,
                     &local_directory_current_head_ids,
+                    expected_directory_entry.as_ref(),
                     target_mode,
                 )? {
                     source_peer_id = refreshed_source_peer_id;
@@ -633,16 +634,18 @@ impl<P> RunningNode<P> {
             let deadline = Instant::now() + head_sync_wait_timeout;
             loop {
                 let result = if provider_peer_ids.is_empty() {
-                    self.sync_artifact_from_peer_bounded(
+                    self.sync_artifact_from_peer_bounded_for_model_schema(
                         &source_peer_id,
                         head.artifact_id.clone(),
+                        &expected_model_schema_hash,
                         head_sync_wait_timeout,
                     )
                     .map(|_| ())
                 } else {
-                    self.wait_for_artifact_from_peers(
+                    self.wait_for_artifact_from_peers_for_model_schema(
                         &provider_peer_ids,
                         &head.artifact_id,
+                        &expected_model_schema_hash,
                         head_sync_wait_timeout,
                     )
                 };
@@ -769,6 +772,36 @@ impl<P> RunningNode<P> {
         artifact_id: &ArtifactId,
         timeout: Duration,
     ) -> anyhow::Result<()> {
+        self.wait_for_artifact_from_peers_with_model_schema(
+            provider_peer_ids,
+            artifact_id,
+            None,
+            timeout,
+        )
+    }
+
+    fn wait_for_artifact_from_peers_for_model_schema(
+        &self,
+        provider_peer_ids: &[PeerId],
+        artifact_id: &ArtifactId,
+        expected_model_schema_hash: &ContentId,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        self.wait_for_artifact_from_peers_with_model_schema(
+            provider_peer_ids,
+            artifact_id,
+            Some(expected_model_schema_hash),
+            timeout,
+        )
+    }
+
+    fn wait_for_artifact_from_peers_with_model_schema(
+        &self,
+        provider_peer_ids: &[PeerId],
+        artifact_id: &ArtifactId,
+        expected_model_schema_hash: Option<&ContentId>,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
         const ARTIFACT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
         let Some(store) = self.artifact_store() else {
@@ -833,13 +866,29 @@ impl<P> RunningNode<P> {
                 ) else {
                     break;
                 };
-                match self.sync_artifact_from_peer_bounded(
-                    provider_peer_id,
-                    artifact_id.clone(),
-                    sync_timeout,
-                ) {
+                let sync_result = match expected_model_schema_hash {
+                    Some(expected_model_schema_hash) => self
+                        .sync_artifact_from_peer_bounded_for_model_schema(
+                            provider_peer_id,
+                            artifact_id.clone(),
+                            expected_model_schema_hash,
+                            sync_timeout,
+                        ),
+                    None => self.sync_artifact_from_peer_bounded(
+                        provider_peer_id,
+                        artifact_id.clone(),
+                        sync_timeout,
+                    ),
+                };
+                match sync_result {
                     Ok(_) => return Ok(()),
                     Err(error) => {
+                        if error
+                            .downcast_ref::<super::artifacts::ArtifactModelSchemaMismatch>()
+                            .is_some()
+                        {
+                            return Err(error);
+                        }
                         last_error = Some(format!(
                             "could not fetch {} from {}: {error}",
                             artifact_id.as_str(),
@@ -1394,17 +1443,34 @@ fn ensure_genesis_tensor_digest(actual: &ContentId, expected: &ContentId) -> any
     Ok(())
 }
 
+fn unsigned_genesis_head_id(
+    experiment: &ExperimentHandle,
+    model_schema_hash: &ContentId,
+) -> HeadId {
+    HeadId::new(format!(
+        "{}-{}-{}-genesis",
+        experiment.experiment_id.as_str(),
+        experiment.revision_id.as_str(),
+        model_schema_hash.as_str(),
+    ))
+}
+
 fn resolve_sync_target_head(
     storage: &StorageConfig,
     experiment: &ExperimentHandle,
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     local_directory_current_head_ids: &BTreeSet<HeadId>,
+    expected_directory_entry: Option<&ExperimentDirectoryEntry>,
     target_mode: HeadSyncTargetMode,
 ) -> anyhow::Result<Option<(PeerId, HeadDescriptor)>> {
     let mut directory_current_head_ids = local_directory_current_head_ids.clone();
-    directory_current_head_ids.extend(directory_current_head_ids_from_snapshots(
-        snapshots, experiment,
-    ));
+    if directory_current_head_ids.is_empty() {
+        directory_current_head_ids.extend(directory_current_head_ids_from_snapshots(
+            snapshots,
+            experiment,
+            expected_directory_entry,
+        ));
+    }
 
     let directory_current = if directory_current_head_ids.is_empty() {
         None
@@ -1603,6 +1669,7 @@ mod tests {
             &experiment,
             &snapshots,
             &directory_current_head_ids,
+            None,
             HeadSyncTargetMode::DirectoryCurrent,
         )
         .expect("resolve directory current")
@@ -1612,6 +1679,7 @@ mod tests {
             &experiment,
             &snapshots,
             &directory_current_head_ids,
+            None,
             HeadSyncTargetMode::LatestPromoted,
         )
         .expect("resolve latest promoted")
@@ -1643,5 +1711,16 @@ mod tests {
                 .to_string()
                 .contains("does not match authority-signed")
         );
+    }
+
+    #[test]
+    fn unsigned_genesis_identity_binds_model_schema() {
+        let experiment = experiment();
+        let schema_a = unsigned_genesis_head_id(&experiment, &ContentId::new("schema-a"));
+        let schema_a_again = unsigned_genesis_head_id(&experiment, &ContentId::new("schema-a"));
+        let schema_b = unsigned_genesis_head_id(&experiment, &ContentId::new("schema-b"));
+
+        assert_eq!(schema_a, schema_a_again);
+        assert_ne!(schema_a, schema_b);
     }
 }

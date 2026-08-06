@@ -3,6 +3,36 @@ use crate::runtime_support::trace_to_stderr;
 
 const ARTIFACT_TRACE_ENV: &str = "BURN_P2P_ARTIFACT_TRACE";
 
+#[derive(Debug)]
+pub(crate) struct ArtifactModelSchemaMismatch {
+    artifact_id: ArtifactId,
+    actual: ContentId,
+    expected: ContentId,
+}
+
+impl std::fmt::Display for ArtifactModelSchemaMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "artifact {} has model schema {}, but the selected workload expects {}; refusing checkpoint chunks",
+            self.artifact_id.as_str(),
+            self.actual.as_str(),
+            self.expected.as_str(),
+        )
+    }
+}
+
+impl std::error::Error for ArtifactModelSchemaMismatch {}
+
+#[derive(Clone, Copy)]
+struct ArtifactSyncOptions<'a> {
+    provider_locate_timeout: Duration,
+    chunk_fetch_timeout: Duration,
+    request_timeout: Duration,
+    total_timeout: Option<Duration>,
+    expected_model_schema_hash: Option<&'a ContentId>,
+}
+
 /// Result of evaluating one exact, materialized model head on a read-only peer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterializedHeadEvaluation {
@@ -255,10 +285,13 @@ impl<P> RunningNode<P> {
         self.sync_artifact_from_peer_with_timeouts(
             peer_id,
             artifact_id,
-            artifact_provider_locate_timeout,
-            artifact_chunk_fetch_timeout,
-            artifact_request_timeout,
-            None,
+            ArtifactSyncOptions {
+                provider_locate_timeout: artifact_provider_locate_timeout,
+                chunk_fetch_timeout: artifact_chunk_fetch_timeout,
+                request_timeout: artifact_request_timeout,
+                total_timeout: None,
+                expected_model_schema_hash: None,
+            },
         )
     }
 
@@ -278,10 +311,43 @@ impl<P> RunningNode<P> {
         self.sync_artifact_from_peer_with_timeouts(
             peer_id,
             artifact_id,
-            budget,
-            budget,
-            request_timeout,
-            Some(budget),
+            ArtifactSyncOptions {
+                provider_locate_timeout: budget,
+                chunk_fetch_timeout: budget,
+                request_timeout,
+                total_timeout: Some(budget),
+                expected_model_schema_hash: None,
+            },
+        )
+    }
+
+    /// Synchronizes an artifact only when its manifest matches the expected model schema.
+    ///
+    /// The manifest is validated before any chunks are requested. This keeps a stale or
+    /// incompatible canonical head from consuming the full checkpoint transfer budget.
+    pub fn sync_artifact_from_peer_bounded_for_model_schema(
+        &self,
+        peer_id: &PeerId,
+        artifact_id: ArtifactId,
+        expected_model_schema_hash: &ContentId,
+        timeout: Duration,
+    ) -> anyhow::Result<ArtifactDescriptor> {
+        let budget = timeout.max(Duration::from_secs(1));
+        let request_timeout = budget.min(ci_scaled_timeout(
+            Duration::from_secs(3),
+            Duration::from_secs(15),
+        ));
+
+        self.sync_artifact_from_peer_with_timeouts(
+            peer_id,
+            artifact_id,
+            ArtifactSyncOptions {
+                provider_locate_timeout: budget,
+                chunk_fetch_timeout: budget,
+                request_timeout,
+                total_timeout: Some(budget),
+                expected_model_schema_hash: Some(expected_model_schema_hash),
+            },
         )
     }
 
@@ -289,18 +355,17 @@ impl<P> RunningNode<P> {
         &self,
         peer_id: &PeerId,
         artifact_id: ArtifactId,
-        artifact_provider_locate_timeout: Duration,
-        artifact_chunk_fetch_timeout: Duration,
-        artifact_request_timeout: Duration,
-        total_sync_timeout: Option<Duration>,
+        options: ArtifactSyncOptions<'_>,
     ) -> anyhow::Result<ArtifactDescriptor> {
-        let total_sync_deadline = total_sync_timeout.map(|timeout| Instant::now() + timeout);
+        let total_sync_deadline = options
+            .total_timeout
+            .map(|timeout| Instant::now() + timeout);
         let admission_policy = self.effective_admission_policy();
         let mut admitted_provider_snapshot = None;
         if let Some(policy) = admission_policy.as_ref() {
             let snapshot = self
                 .control
-                .fetch_snapshot(peer_id.as_str(), artifact_request_timeout)?;
+                .fetch_snapshot(peer_id.as_str(), options.request_timeout)?;
             let report = verify_snapshot_admission(policy, peer_id, &snapshot)?;
             if !matches!(report.decision(), AdmissionDecision::Allow) {
                 return Err(anyhow::anyhow!(
@@ -318,6 +383,7 @@ impl<P> RunningNode<P> {
 
         if store.has_complete_artifact(&artifact_id)? {
             let descriptor = store.load_manifest(&artifact_id)?;
+            ensure_artifact_model_schema(&descriptor, options.expected_model_schema_hash)?;
             self.clear_transfer_state(&artifact_id);
             artifact_trace(format_args!(
                 "sync-skip-complete peer={} artifact={} chunks={}",
@@ -350,7 +416,7 @@ impl<P> RunningNode<P> {
             "sync-start peer={} artifact={} budget_ms={} source_peers={:?} connected_peers={}",
             peer_id.as_str(),
             artifact_id.as_str(),
-            artifact_provider_locate_timeout.as_millis(),
+            options.provider_locate_timeout.as_millis(),
             transfer_state
                 .source_peers
                 .iter()
@@ -359,7 +425,9 @@ impl<P> RunningNode<P> {
             connected_peers.len()
         ));
         if transfer_state.descriptor.is_none() && store.has_manifest(&artifact_id) {
-            transfer_state.descriptor = Some(store.load_manifest(&artifact_id)?);
+            let descriptor = store.load_manifest(&artifact_id)?;
+            ensure_artifact_model_schema(&descriptor, options.expected_model_schema_hash)?;
+            transfer_state.descriptor = Some(descriptor);
             transfer_state.set_phase(ArtifactTransferPhase::FetchingChunks);
         }
         if let Some(descriptor) = transfer_state.descriptor.clone() {
@@ -393,7 +461,7 @@ impl<P> RunningNode<P> {
             self.record_transfer_state(transfer_state.clone());
 
             let deadline = bounded_deadline(
-                Instant::now() + artifact_provider_locate_timeout,
+                Instant::now() + options.provider_locate_timeout,
                 total_sync_deadline,
             );
             while Instant::now() < deadline && selected_provider.is_none() {
@@ -401,7 +469,7 @@ impl<P> RunningNode<P> {
                 for candidate in &transfer_state.source_peers {
                     let Some(request_timeout) = fair_request_timeout(
                         deadline,
-                        artifact_request_timeout,
+                        options.request_timeout,
                         transfer_state.source_peers.len(),
                     ) else {
                         break;
@@ -448,6 +516,10 @@ impl<P> RunningNode<P> {
                         request_timeout,
                     ) {
                         Ok(Some(found)) => {
+                            ensure_artifact_model_schema(
+                                &found,
+                                options.expected_model_schema_hash,
+                            )?;
                             candidate_manifest_results
                                 .insert(candidate.clone(), "found".to_owned());
                             artifact_trace(format_args!(
@@ -587,7 +659,7 @@ impl<P> RunningNode<P> {
                 continue;
             }
             let chunk_deadline = bounded_deadline(
-                Instant::now() + artifact_chunk_fetch_timeout,
+                Instant::now() + options.chunk_fetch_timeout,
                 total_sync_deadline,
             );
             let mut stored = false;
@@ -598,7 +670,7 @@ impl<P> RunningNode<P> {
                 for candidate in &provider_candidates {
                     let Some(request_timeout) = fair_request_timeout(
                         chunk_deadline,
-                        artifact_request_timeout,
+                        options.request_timeout,
                         provider_candidates.len(),
                     ) else {
                         break;
@@ -678,7 +750,8 @@ impl<P> RunningNode<P> {
                     candidate_attempt_counts,
                     candidate_last_results,
                     sync_started.elapsed().as_millis(),
-                    total_sync_timeout
+                    options
+                        .total_timeout
                         .map(|timeout| timeout.as_millis().to_string())
                         .unwrap_or_else(|| "unbounded".to_owned())
                 ));
@@ -689,7 +762,8 @@ impl<P> RunningNode<P> {
                     descriptor.chunks.len(),
                     descriptor.artifact_id.as_str(),
                     sync_started.elapsed().as_millis(),
-                    total_sync_timeout
+                    options
+                        .total_timeout
                         .map(|timeout| timeout.as_millis().to_string())
                         .unwrap_or_else(|| "unbounded".to_owned()),
                     provider_candidates
@@ -819,6 +893,24 @@ pub(crate) fn artifact_sync_attempt_timeout(
         ci_scaled_timeout(Duration::from_secs(10), Duration::from_secs(30));
     let transfer_budget = fair_transfer_slice.max(minimum_transfer_slice);
     Some(transfer_budget.min(timeout).min(remaining))
+}
+
+pub(crate) fn ensure_artifact_model_schema(
+    descriptor: &ArtifactDescriptor,
+    expected_model_schema_hash: Option<&ContentId>,
+) -> anyhow::Result<()> {
+    let Some(expected_model_schema_hash) = expected_model_schema_hash else {
+        return Ok(());
+    };
+    if descriptor.model_schema_hash != *expected_model_schema_hash {
+        return Err(ArtifactModelSchemaMismatch {
+            artifact_id: descriptor.artifact_id.clone(),
+            actual: descriptor.model_schema_hash.clone(),
+            expected: expected_model_schema_hash.clone(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 pub(crate) fn bounded_deadline(deadline: Instant, total_deadline: Option<Instant>) -> Instant {
