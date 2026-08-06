@@ -31,6 +31,25 @@ const BROWSER_RECOMMENDED_PRECISION_KEY: &str = "burn_p2p.revision.browser.recom
 const ROBUSTNESS_POLICY_JSON_KEY: &str = "burn_p2p.revision.robustness.policy_json";
 const ROBUSTNESS_PRESET_KEY: &str = "burn_p2p.revision.robustness.preset";
 
+/// Returns whether two directory entries describe the same immutable revision contract.
+///
+/// Operational fields such as the current head, display metadata, role admission, and
+/// resource estimates may change without changing revision identity. Workload, model,
+/// dataset, and training protocol changes require a new revision contract.
+pub fn directory_revision_contract_matches(
+    left: &ExperimentDirectoryEntry,
+    right: &ExperimentDirectoryEntry,
+) -> bool {
+    left.network_id == right.network_id
+        && left.study_id == right.study_id
+        && left.experiment_id == right.experiment_id
+        && left.current_revision_id == right.current_revision_id
+        && left.workload_id == right.workload_id
+        && left.model_schema_hash == right.model_schema_hash
+        && left.dataset_view_id == right.dataset_view_id
+        && left.training_protocol == right.training_protocol
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Represents an experiment directory.
 pub struct ExperimentDirectory {
@@ -552,7 +571,10 @@ mod tests {
     };
     use chrono::Utc;
 
-    use super::{ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt};
+    use super::{
+        ExperimentDirectory, ExperimentDirectoryAccess, ExperimentDirectoryPolicyExt,
+        directory_revision_contract_matches,
+    };
 
     fn entry() -> ExperimentDirectoryEntry {
         let experiment_id = burn_p2p_core::ExperimentId::new("exp-a");
@@ -585,6 +607,18 @@ mod tests {
             training_protocol: TrainingProtocol::default(),
             metadata: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn revision_contract_ignores_operational_head_changes_but_binds_schema() {
+        let baseline = entry();
+        let mut advanced = baseline.clone();
+        advanced.current_head_id = Some(HeadId::new("head-b"));
+        advanced.display_name = "Updated display name".into();
+        assert!(directory_revision_contract_matches(&baseline, &advanced));
+
+        advanced.model_schema_hash = ContentId::new("model-b");
+        assert!(!directory_revision_contract_matches(&baseline, &advanced));
     }
 
     fn capability_card(

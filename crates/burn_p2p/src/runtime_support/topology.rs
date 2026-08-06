@@ -567,20 +567,85 @@ pub(crate) fn head_by_id_from_snapshots(
 pub(crate) fn directory_current_head_ids_from_snapshots(
     snapshots: &[(PeerId, ControlPlaneSnapshot)],
     experiment: &ExperimentHandle,
+    expected_entry: Option<&ExperimentDirectoryEntry>,
 ) -> BTreeSet<HeadId> {
-    snapshots
+    let announcements = snapshots
         .iter()
         .flat_map(|(_, snapshot)| snapshot.directory_announcements.iter())
         .filter(|announcement| announcement.network_id == experiment.network_id)
-        .flat_map(|announcement| announcement.entries.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let baseline = expected_entry.into_iter().cloned().collect::<Vec<_>>();
+    latest_compatible_directory_entries(&announcements, &experiment.network_id, &baseline)
+        .into_iter()
         .filter(|entry| {
-            entry.network_id == experiment.network_id
-                && entry.study_id == experiment.study_id
+            entry.study_id == experiment.study_id
                 && entry.experiment_id == experiment.experiment_id
                 && entry.current_revision_id == experiment.revision_id
         })
         .filter_map(|entry| entry.current_head_id.clone())
         .collect()
+}
+
+pub(crate) fn latest_compatible_directory_entries(
+    announcements: &[ExperimentDirectoryAnnouncement],
+    network_id: &NetworkId,
+    trusted_baseline: &[ExperimentDirectoryEntry],
+) -> Vec<ExperimentDirectoryEntry> {
+    let mut latest = BTreeMap::<
+        (StudyId, ExperimentId),
+        (Option<DateTime<Utc>>, ExperimentDirectoryEntry),
+    >::new();
+    for entry in trusted_baseline
+        .iter()
+        .filter(|entry| &entry.network_id == network_id)
+    {
+        latest.insert(
+            (entry.study_id.clone(), entry.experiment_id.clone()),
+            (None, entry.clone()),
+        );
+    }
+
+    for announcement in announcements
+        .iter()
+        .filter(|announcement| &announcement.network_id == network_id)
+    {
+        for entry in announcement
+            .entries
+            .iter()
+            .filter(|entry| &entry.network_id == network_id)
+        {
+            let key = (entry.study_id.clone(), entry.experiment_id.clone());
+            let same_revision_baseline = trusted_baseline
+                .iter()
+                .find(|baseline| {
+                    baseline.study_id == entry.study_id
+                        && baseline.experiment_id == entry.experiment_id
+                        && baseline.current_revision_id == entry.current_revision_id
+                })
+                .or_else(|| {
+                    latest
+                        .get(&key)
+                        .map(|(_, current)| current)
+                        .filter(|current| current.current_revision_id == entry.current_revision_id)
+                });
+            if let Some(baseline) = same_revision_baseline
+                && !directory_revision_contract_matches(baseline, entry)
+            {
+                continue;
+            }
+
+            let replace = latest
+                .get(&key)
+                .and_then(|(announced_at, _)| *announced_at)
+                .is_none_or(|announced_at| announcement.announced_at >= announced_at);
+            if replace {
+                latest.insert(key, (Some(announcement.announced_at), entry.clone()));
+            }
+        }
+    }
+
+    latest.into_values().map(|(_, entry)| entry).collect()
 }
 
 pub(crate) fn best_head_by_ids_from_snapshots(

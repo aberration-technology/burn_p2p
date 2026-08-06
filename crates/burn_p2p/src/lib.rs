@@ -120,6 +120,7 @@ pub use burn_p2p_experiment::{
     ExperimentLifecyclePlan, ExperimentLifecyclePlanBuilder, ExperimentSpec,
     FleetScheduleAssignment, FleetScheduleEpoch, FleetScheduleEpochBuilder, PatchClass,
     PatchSupport, PatchValue, RevisionCompatibility, RevisionSpec, RuntimePatch, StudySpec,
+    directory_revision_contract_matches,
 };
 pub use burn_p2p_limits::{
     CapabilityCalibrator, CapabilityProbe, CapabilityResourceProbe, LimitPolicy, LimitProfile,

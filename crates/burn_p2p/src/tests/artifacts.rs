@@ -750,12 +750,31 @@ fn native_running_nodes_sync_artifacts_over_tcp() {
         "dialer runtime did not connect to listener",
     );
 
+    let incompatible = dialer
+        .sync_artifact_from_peer_bounded_for_model_schema(
+            &listener_peer_id,
+            descriptor.artifact_id.clone(),
+            &crate::ContentId::new("other-schema"),
+            Duration::from_secs(5),
+        )
+        .expect_err("schema-incompatible artifact must fail before chunk transfer");
+    assert!(
+        incompatible
+            .to_string()
+            .contains("refusing checkpoint chunks"),
+        "{incompatible:#}"
+    );
+    let dialer_store = dialer.artifact_store().expect("dialer store");
+    assert!(
+        !dialer_store.has_manifest(&descriptor.artifact_id),
+        "incompatible artifact manifest must not be committed to the local store"
+    );
+
     let synced_descriptor = dialer
         .sync_artifact_from_peer(&listener_peer_id, descriptor.artifact_id.clone())
         .expect("sync artifact");
     assert_eq!(synced_descriptor, descriptor);
 
-    let dialer_store = dialer.artifact_store().expect("dialer store");
     let materialized = dialer_store
         .materialize_artifact_bytes(&synced_descriptor)
         .expect("materialize");

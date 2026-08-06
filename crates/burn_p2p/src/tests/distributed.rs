@@ -853,8 +853,16 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
         Duration::from_secs(5),
         || {
             let snapshot = validator_telemetry.snapshot();
-            snapshot.control_plane.update_announcements.len() >= learning_rates.len()
-                && !snapshot.control_plane.merge_window_announcements.is_empty()
+            trainer_outcomes.iter().all(|outcome| {
+                snapshot
+                    .control_plane
+                    .update_announcements
+                    .iter()
+                    .any(|announcement| {
+                        announcement.update.peer_id == outcome.contribution.peer_id
+                            && announcement.update.delta_artifact_id == outcome.head.artifact_id
+                    })
+            }) && !snapshot.control_plane.merge_window_announcements.is_empty()
                 && snapshot
                     .control_plane
                     .reducer_assignment_announcements
@@ -866,12 +874,14 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
     wait_for(
         Duration::from_secs(5),
         || {
-            validator_telemetry
-                .snapshot()
-                .control_plane
-                .head_announcements
-                .len()
-                > learning_rates.len()
+            let snapshot = validator_telemetry.snapshot();
+            trainer_outcomes.iter().all(|outcome| {
+                snapshot
+                    .control_plane
+                    .head_announcements
+                    .iter()
+                    .any(|announcement| announcement.head.head_id == outcome.head.head_id)
+            })
         },
         "validator did not observe all trainer head announcements for the merge window",
     );
@@ -898,17 +908,55 @@ fn validator_can_fan_in_many_native_trainers_in_one_round() {
             .iter()
             .all(|outcome| outcome.head.head_id != validated.merged_head.head_id)
     );
-    let expected_model = {
-        let (weighted_sum, total_weight) = trainer_outcomes.iter().fold(
-            (0.0_f64, 0.0_f64),
-            |(weighted_sum, total_weight), outcome| {
-                let model = metric_float(&outcome.report.stats, "model");
-                let quality = 1.0 / (1.0 + metric_float(&outcome.report.stats, "loss").abs());
-                (weighted_sum + (model * quality), total_weight + quality)
-            },
-        );
-        weighted_sum / total_weight
-    };
+    let aggregate = validator_telemetry
+        .snapshot()
+        .control_plane
+        .aggregate_proposal_announcements
+        .into_iter()
+        .map(|announcement| announcement.proposal)
+        .find(|proposal| {
+            proposal.base_head_id == genesis_head.head_id
+                && proposal.window_id == trainer_outcomes[0].lease.window_id
+        })
+        .expect("validator should publish the fan-in aggregate proposal");
+    let store = FsArtifactStore::new(
+        validator
+            .config()
+            .storage
+            .as_ref()
+            .expect("validator storage")
+            .root
+            .clone(),
+    );
+    let aggregate_descriptor = store
+        .load_manifest(&aggregate.aggregate_artifact_id)
+        .expect("load fan-in aggregate manifest");
+    let aggregate_record: crate::AggregateArtifactRecord = serde_json::from_slice(
+        &store
+            .materialize_artifact_bytes(&aggregate_descriptor)
+            .expect("materialize fan-in aggregate"),
+    )
+    .expect("decode fan-in aggregate");
+    assert!(
+        aggregate_record.inputs.len() >= 2,
+        "fan-in aggregate should retain multiple trainer contributions"
+    );
+    let (weighted_sum, total_weight) = aggregate_record.inputs.iter().fold(
+        (0.0_f64, 0.0_f64),
+        |(weighted_sum, total_weight), input| {
+            let outcome = trainer_outcomes
+                .iter()
+                .find(|outcome| {
+                    outcome.contribution.peer_id == input.peer_id
+                        && outcome.head.artifact_id == input.artifact_id
+                })
+                .expect("aggregate input should reference a trainer outcome");
+            let model = metric_float(&outcome.report.stats, "model");
+            let weight = input.sample_weight * input.quality_weight;
+            (weighted_sum + (model * weight), total_weight + weight)
+        },
+    );
+    let expected_model = weighted_sum / total_weight;
     let merged_model = metric_float(&validated.merged_head.metrics, "model");
     assert!(
         (merged_model - expected_model).abs() < 1e-9,
